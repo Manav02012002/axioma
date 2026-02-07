@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use ax_context::load_project_paths;
 use ax_diagnostics::Diagnostic;
 use ax_trace::TraceReport;
