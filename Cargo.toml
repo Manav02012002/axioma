@@ -8,6 +8,8 @@ members = [
   "crates/ax-diagnostics",
   "crates/ax-cli",
   "crates/ax-plugin-host",
+  "crates/ax-plugin-api",
+  "plugins/axp-echo",
 ]
 
 [workspace.package]
