@@ -1,0 +1,11 @@
+{
+  "axioma": {
+    "aas_version": "0.1.0",
+    "toolchain": { "axioma_version": "0.1.0", "deterministic": true },
+    "project": { "root": ".", "entry": "src/Main.ax" },
+    "session": { "context": "GR5D", "mode": "fast", "trace_level": "summary" }
+  },
+  "actions": [
+    { "id": "a1", "op": "load", "args": { "module": "Std.Basic" } }
+  ]
+}

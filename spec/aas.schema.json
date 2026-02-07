@@ -1,0 +1,121 @@
+{
+  "$id": "https://axioma-lang.org/spec/aas/0.1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "type": "object"
+          },
+          "id": {
+            "pattern": "^[a-zA-Z0-9_\\-]{1,64}$",
+            "type": "string"
+          },
+          "op": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "op",
+          "args"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "axioma": {
+      "additionalProperties": false,
+      "properties": {
+        "aas_version": {
+          "const": "0.1.0",
+          "type": "string"
+        },
+        "project": {
+          "additionalProperties": false,
+          "properties": {
+            "entry": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "root": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "root",
+            "entry"
+          ],
+          "type": "object"
+        },
+        "session": {
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "mode": {
+              "enum": [
+                "fast",
+                "verified"
+              ],
+              "type": "string"
+            },
+            "trace_level": {
+              "enum": [
+                "none",
+                "summary",
+                "full"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "context",
+            "mode",
+            "trace_level"
+          ],
+          "type": "object"
+        },
+        "toolchain": {
+          "additionalProperties": false,
+          "properties": {
+            "axioma_version": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "deterministic": {
+              "const": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "axioma_version",
+            "deterministic"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "aas_version",
+        "toolchain",
+        "project",
+        "session"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "axioma",
+    "actions"
+  ],
+  "title": "Axioma ActionScript (AAS)",
+  "type": "object"
+}
