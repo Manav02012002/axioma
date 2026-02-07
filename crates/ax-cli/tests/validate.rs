@@ -1,7 +1,6 @@
-use std::{path::PathBuf, process::Command};
+use std::{fs, path::PathBuf, process::Command};
 
 fn repo_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR = .../crates/ax-cli
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.pop(); // ax-cli
     p.pop(); // crates
@@ -14,14 +13,32 @@ fn bin() -> Command {
     c
 }
 
-fn repo_file(rel: &str) -> String {
-    repo_root().join(rel).to_string_lossy().to_string()
+fn repo_file(rel: &str) -> PathBuf {
+    repo_root().join(rel)
+}
+
+fn blake3_hex(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+fn run_id(schema_hash_hex: &str, script_hash_hex: &str) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(b"axioma/");
+    h.update(b"0.1.0");
+    h.update(b"\n");
+    h.update(schema_hash_hex.as_bytes());
+    h.update(b"\n");
+    h.update(script_hash_hex.as_bytes());
+    h.finalize().to_hex().to_string()
 }
 
 #[test]
 fn ok_script_exits_zero() {
     let ok = repo_file("examples/ok.aas.json");
-    let out = bin().args(["validate", &ok]).output().expect("run ax-cli");
+    let out = bin()
+        .args(["validate", ok.to_string_lossy().as_ref()])
+        .output()
+        .expect("run ax-cli");
 
     assert!(
         out.status.success(),
@@ -37,10 +54,41 @@ fn ok_script_exits_zero() {
 #[test]
 fn bad_script_exits_nonzero_and_emits_diag_code() {
     let bad = repo_file("examples/bad.aas.json");
-    let out = bin().args(["validate", &bad]).output().expect("run ax-cli");
+    let out = bin()
+        .args(["validate", bad.to_string_lossy().as_ref()])
+        .output()
+        .expect("run ax-cli");
 
     assert!(!out.status.success(), "expected failure");
-
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("\"code\": \"AXAAS0001\""), "stdout was:\n{s}");
+}
+
+#[test]
+fn ok_script_writes_expected_trace_file() {
+    // Precompute expected run_id from on-disk bytes.
+    let schema_bytes = fs::read(repo_file("spec/aas.schema.json")).expect("read schema");
+    let script_bytes = fs::read(repo_file("examples/ok.aas.json")).expect("read script");
+
+    let schema_hash = blake3_hex(&schema_bytes);
+    let script_hash = blake3_hex(&script_bytes);
+    let rid = run_id(&schema_hash, &script_hash);
+
+    // Run validate (idempotent).
+    let out = bin()
+        .args([
+            "validate",
+            repo_file("examples/ok.aas.json").to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run ax-cli");
+    assert!(out.status.success(), "expected success");
+
+    let trace_path = repo_root().join("build/trace").join(format!("{rid}.json"));
+
+    assert!(
+        trace_path.exists(),
+        "expected trace file to exist at {}",
+        trace_path.display()
+    );
 }

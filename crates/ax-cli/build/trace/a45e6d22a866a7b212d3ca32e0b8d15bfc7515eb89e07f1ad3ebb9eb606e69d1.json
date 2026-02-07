@@ -1,0 +1,32 @@
+{
+  "axioma_version": "0.1.0",
+  "diagnostics_json": {
+    "diagnostics": [
+      {
+        "code": "AXAAS0001",
+        "level": "error",
+        "message": "AAS validation error at /actions: [] has less than 1 item"
+      },
+      {
+        "code": "AXAAS0001",
+        "level": "error",
+        "message": "AAS validation error at /axioma: \"toolchain\" is a required property"
+      },
+      {
+        "code": "AXAAS0001",
+        "level": "error",
+        "message": "AAS validation error at /axioma: \"project\" is a required property"
+      },
+      {
+        "code": "AXAAS0001",
+        "level": "error",
+        "message": "AAS validation error at /axioma: \"session\" is a required property"
+      }
+    ]
+  },
+  "elapsed_ms": 11,
+  "exit_code": 1,
+  "run_id": "a45e6d22a866a7b212d3ca32e0b8d15bfc7515eb89e07f1ad3ebb9eb606e69d1",
+  "schema_hash": "905db04ac9fa780d4259e07f53dd01ce32a8ad65167da891df40132482e168d2",
+  "script_hash": "ec8c6ad6e171f788d1bab4bfee62a19b8c9f31a17af137f218f7965678b86a45"
+}

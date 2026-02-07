@@ -1,24 +1,40 @@
 use anyhow::{bail, Context, Result};
 use ax_diagnostics::Diagnostic;
+use ax_trace::TraceReport;
+use blake3::Hasher;
 use jsonschema::JSONSchema;
 use serde_json::Value;
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, path::PathBuf, time::Instant};
+
+const AXIOMA_VERSION: &str = "0.1.0";
 
 fn repo_root_from_env() -> Option<PathBuf> {
     env::var("AXIOMA_ROOT").ok().map(PathBuf::from)
 }
 
-fn load_schema() -> Result<Value> {
+fn load_schema_bytes() -> Result<(PathBuf, Vec<u8>)> {
     let schema_path = match repo_root_from_env() {
         Some(root) => root.join("spec/aas.schema.json"),
         None => PathBuf::from("spec/aas.schema.json"),
     };
-
-    let text = fs::read_to_string(&schema_path)
+    let bytes = fs::read(&schema_path)
         .with_context(|| format!("failed to read schema at {}", schema_path.display()))?;
-    let v: Value = serde_json::from_str(&text)
-        .with_context(|| format!("schema is not valid JSON: {}", schema_path.display()))?;
-    Ok(v)
+    Ok((schema_path, bytes))
+}
+
+fn blake3_hex(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
+}
+
+fn run_id(schema_hash_hex: &str, script_hash_hex: &str) -> String {
+    let mut h = Hasher::new();
+    h.update(b"axioma/");
+    h.update(AXIOMA_VERSION.as_bytes());
+    h.update(b"\n");
+    h.update(schema_hash_hex.as_bytes());
+    h.update(b"\n");
+    h.update(script_hash_hex.as_bytes());
+    h.finalize().to_hex().to_string()
 }
 
 fn validate_aas(schema: &Value, doc: &Value) -> Vec<Diagnostic> {
@@ -45,26 +61,62 @@ fn validate_aas(schema: &Value, doc: &Value) -> Vec<Diagnostic> {
 }
 
 fn main() -> Result<()> {
+    let start = Instant::now();
+
     let mut args = env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
     if cmd != "validate" {
         bail!("usage: axioma validate <script.json>");
     }
 
-    let path = args.next().context("missing <script.json>")?;
-    let text = fs::read_to_string(&path).with_context(|| format!("failed to read {path}"))?;
+    let script_path = args.next().context("missing <script.json>")?;
+
+    // Read inputs as bytes for hashing (deterministic)
+    let script_bytes =
+        fs::read(&script_path).with_context(|| format!("failed to read {script_path}"))?;
+
+    let (_schema_path, schema_bytes) = load_schema_bytes()?;
+
+    let schema_hash = blake3_hex(&schema_bytes);
+    let script_hash = blake3_hex(&script_bytes);
+    let rid = run_id(&schema_hash, &script_hash);
+
+    // Parse JSON after hashing (hash is over raw bytes on disk)
+    let schema_json: Value =
+        serde_json::from_slice(&schema_bytes).with_context(|| "schema is not valid JSON")?;
     let doc: Value =
-        serde_json::from_str(&text).with_context(|| format!("invalid JSON in {path}"))?;
+        serde_json::from_slice(&script_bytes).with_context(|| "invalid JSON in script")?;
 
-    let schema = load_schema()?;
-    let diags = validate_aas(&schema, &doc);
+    let diags = validate_aas(&schema_json, &doc);
+    let ok = diags.is_empty();
 
-    if diags.is_empty() {
+    let diagnostics_json = if ok {
+        serde_json::json!({ "diagnostics": [] })
+    } else {
+        serde_json::json!({ "diagnostics": diags })
+    };
+
+    let exit_code = if ok { 0 } else { 1 };
+
+    let trace = TraceReport {
+        run_id: rid.clone(),
+        axioma_version: AXIOMA_VERSION.to_string(),
+        schema_hash,
+        script_hash,
+        exit_code,
+        elapsed_ms: start.elapsed().as_millis(),
+        diagnostics_json: diagnostics_json.clone(),
+    };
+
+    // Best-effort trace write; failure shouldn't hide validation result.
+    let _ = trace.write_to_build_dir();
+
+    if ok {
         println!("ok: AAS is valid");
         return Ok(());
     }
 
-    let out = serde_json::json!({ "diagnostics": diags });
-    println!("{}", serde_json::to_string_pretty(&out)?);
+    // On failure, stdout is JSON only (tool-friendly).
+    println!("{}", serde_json::to_string_pretty(&diagnostics_json)?);
     std::process::exit(1);
 }
