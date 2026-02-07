@@ -3,3 +3,7 @@
 .DS_Store
 .idea
 .vscode
+
+# Axioma build artifacts
+/build/
+**/build/
