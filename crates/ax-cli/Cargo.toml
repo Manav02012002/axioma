@@ -16,3 +16,4 @@ ax-diagnostics = { path = "../ax-diagnostics" }
 
 [dev-dependencies]
 blake3 = { workspace = true }
+ax-context = { path = "../ax-context" }

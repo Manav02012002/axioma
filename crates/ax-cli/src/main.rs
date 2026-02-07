@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use ax_context::load_project_paths;
 use ax_diagnostics::Diagnostic;
 use ax_trace::TraceReport;
 use blake3::Hasher;
@@ -7,20 +8,6 @@ use serde_json::Value;
 use std::{env, fs, path::PathBuf, time::Instant};
 
 const AXIOMA_VERSION: &str = "0.1.0";
-
-fn repo_root_from_env() -> Option<PathBuf> {
-    env::var("AXIOMA_ROOT").ok().map(PathBuf::from)
-}
-
-fn load_schema_bytes() -> Result<(PathBuf, Vec<u8>)> {
-    let schema_path = match repo_root_from_env() {
-        Some(root) => root.join("spec/aas.schema.json"),
-        None => PathBuf::from("spec/aas.schema.json"),
-    };
-    let bytes = fs::read(&schema_path)
-        .with_context(|| format!("failed to read schema at {}", schema_path.display()))?;
-    Ok((schema_path, bytes))
-}
 
 fn blake3_hex(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
@@ -71,17 +58,22 @@ fn main() -> Result<()> {
 
     let script_path = args.next().context("missing <script.json>")?;
 
+    // Resolve root/spec/build paths
+    let paths = load_project_paths(None)?;
+
     // Read inputs as bytes for hashing (deterministic)
     let script_bytes =
         fs::read(&script_path).with_context(|| format!("failed to read {script_path}"))?;
 
-    let (_schema_path, schema_bytes) = load_schema_bytes()?;
+    let schema_path = paths.spec_dir.join("aas.schema.json");
+    let schema_bytes = fs::read(&schema_path)
+        .with_context(|| format!("failed to read schema at {}", schema_path.display()))?;
 
     let schema_hash = blake3_hex(&schema_bytes);
     let script_hash = blake3_hex(&script_bytes);
     let rid = run_id(&schema_hash, &script_hash);
 
-    // Parse JSON after hashing (hash is over raw bytes on disk)
+    // Parse JSON after hashing
     let schema_json: Value =
         serde_json::from_slice(&schema_bytes).with_context(|| "schema is not valid JSON")?;
     let doc: Value =
@@ -108,15 +100,13 @@ fn main() -> Result<()> {
         diagnostics_json: diagnostics_json.clone(),
     };
 
-    // Best-effort trace write; failure shouldn't hide validation result.
-    let _ = trace.write_to_build_dir();
+    let _ = trace.write_to_build_dir(&paths.build_dir);
 
     if ok {
         println!("ok: AAS is valid");
         return Ok(());
     }
 
-    // On failure, stdout is JSON only (tool-friendly).
     println!("{}", serde_json::to_string_pretty(&diagnostics_json)?);
     std::process::exit(1);
 }

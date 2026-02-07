@@ -1,0 +1,6 @@
+[axioma]
+version = "0.1.0"
+
+[paths]
+spec_dir = "spec"
+build_dir = "build"
