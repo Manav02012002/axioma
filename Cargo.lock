@@ -108,6 +108,7 @@ dependencies = [
  "ax-diagnostics",
  "ax-trace",
  "blake3",
+ "clap",
  "jsonschema",
  "serde_json",
 ]

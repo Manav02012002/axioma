@@ -8,7 +8,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn bin() -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_ax-cli"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_axioma"));
     c.env("AXIOMA_ROOT", repo_root());
     c
 }
@@ -36,9 +36,9 @@ fn run_id(schema_hash_hex: &str, script_hash_hex: &str) -> String {
 fn ok_script_exits_zero() {
     let ok = repo_file("examples/ok.aas.json");
     let out = bin()
-        .args(["validate", ok.to_string_lossy().as_ref()])
+        .args(["validate", ok.to_string_lossy().as_ref(), "--no-trace"])
         .output()
-        .expect("run ax-cli");
+        .expect("run axioma validate");
 
     assert!(
         out.status.success(),
@@ -55,9 +55,9 @@ fn ok_script_exits_zero() {
 fn bad_script_exits_nonzero_and_emits_diag_code() {
     let bad = repo_file("examples/bad.aas.json");
     let out = bin()
-        .args(["validate", bad.to_string_lossy().as_ref()])
+        .args(["validate", bad.to_string_lossy().as_ref(), "--no-trace"])
         .output()
-        .expect("run ax-cli");
+        .expect("run axioma validate");
 
     assert!(!out.status.success(), "expected failure");
     let s = String::from_utf8_lossy(&out.stdout);
@@ -66,7 +66,6 @@ fn bad_script_exits_nonzero_and_emits_diag_code() {
 
 #[test]
 fn ok_script_writes_expected_trace_file() {
-    // Precompute expected run_id from on-disk bytes.
     let schema_bytes = fs::read(repo_file("spec/aas.schema.json")).expect("read schema");
     let script_bytes = fs::read(repo_file("examples/ok.aas.json")).expect("read script");
 
@@ -74,14 +73,13 @@ fn ok_script_writes_expected_trace_file() {
     let script_hash = blake3_hex(&script_bytes);
     let rid = run_id(&schema_hash, &script_hash);
 
-    // Run validate (idempotent).
     let out = bin()
         .args([
             "validate",
             repo_file("examples/ok.aas.json").to_string_lossy().as_ref(),
         ])
         .output()
-        .expect("run ax-cli");
+        .expect("run axioma validate");
     assert!(out.status.success(), "expected success");
 
     let trace_path = repo_root().join("build/trace").join(format!("{rid}.json"));
@@ -91,4 +89,13 @@ fn ok_script_writes_expected_trace_file() {
         "expected trace file to exist at {}",
         trace_path.display()
     );
+}
+
+#[test]
+fn paths_command_outputs_root_spec_build() {
+    let out = bin().args(["paths"]).output().expect("run axioma paths");
+    assert!(out.status.success(), "paths should succeed");
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("\"spec_dir\""), "stdout was:\n{s}");
+    assert!(s.contains("\"build_dir\""), "stdout was:\n{s}");
 }
