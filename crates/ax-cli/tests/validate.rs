@@ -94,8 +94,19 @@ fn ok_script_writes_expected_trace_file() {
 #[test]
 fn paths_command_outputs_root_spec_build() {
     let out = bin().args(["paths"]).output().expect("run axioma paths");
-    assert!(out.status.success(), "paths should succeed");
-    let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("\"spec_dir\""), "stdout was:\n{s}");
-    assert!(s.contains("\"build_dir\""), "stdout was:\n{s}");
+    assert!(
+        out.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout json");
+    let root = v["root"].as_str().expect("root str");
+    let spec = v["spec"].as_str().expect("spec str");
+    let build = v["build"].as_str().expect("build str");
+
+    assert!(root.ends_with("/Dev/axioma"), "root={root}");
+    assert!(spec.ends_with("/Dev/axioma/spec"), "spec={spec}");
+    assert!(build.ends_with("/Dev/axioma/build"), "build={build}");
 }

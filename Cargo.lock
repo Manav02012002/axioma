@@ -141,11 +141,14 @@ dependencies = [
  "anyhow",
  "ax-context",
  "ax-diagnostics",
+ "ax-plugin-api",
+ "ax-plugin-host",
  "ax-trace",
  "blake3",
  "clap",
  "jsonschema",
  "serde_json",
+ "wat",
 ]
 
 [[package]]
