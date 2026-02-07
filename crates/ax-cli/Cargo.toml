@@ -14,6 +14,7 @@ ax-trace = { path = "../ax-trace" }
 ax-diagnostics = { path = "../ax-diagnostics" }
 
 
+ax-context = { path = "../ax-context" }
 [dev-dependencies]
 blake3 = { workspace = true }
 ax-context = { path = "../ax-context" }

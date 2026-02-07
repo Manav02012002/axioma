@@ -5,7 +5,7 @@ use ax_trace::TraceReport;
 use blake3::Hasher;
 use jsonschema::JSONSchema;
 use serde_json::Value;
-use std::{env, fs, path::PathBuf, time::Instant};
+use std::{env, fs, time::Instant};
 
 const AXIOMA_VERSION: &str = "0.1.0";
 

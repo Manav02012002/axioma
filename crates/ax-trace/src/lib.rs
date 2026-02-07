@@ -35,9 +35,12 @@ fn atomic_write_json(path: &Path, value: &serde_json::Value) -> std::io::Result<
 
 impl TraceReport {
     pub fn write_to_build_dir(&self, build_dir: &Path) -> std::io::Result<PathBuf> {
-        let out_path = build_dir.join("trace").join(format!("{}.json", self.run_id));
+        let out_path = build_dir
+            .join("trace")
+            .join(format!("{}.json", self.run_id));
+
         let v = serde_json::to_value(self).expect("trace to json value");
         atomic_write_json(&out_path, &v)?;
         Ok(out_path)
     }
-
+}
