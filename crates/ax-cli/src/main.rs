@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{bail, Context, Result};
-use ax_context::load_project_paths;
+use ax_context::{load_config, load_project_paths};
 use ax_plugin_api::{PluginRequest, PluginResponse};
 use ax_plugin_host::WasmPlugin;
 use ax_trace::TraceReport;
@@ -53,13 +53,20 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum PluginCmd {
+    /// List plugins registered in axioma.toml
+    List {
+        /// Project root override (directory containing axioma.toml)
+        #[arg(long)]
+        root: Option<String>,
+    },
+
     /// Run a WASM plugin (sandboxed), JSON in/out.
     Run {
-        /// Path to plugin .wasm
+        /// Path to plugin .wasm (override registry)
         #[arg(long)]
-        wasm: String,
+        wasm: Option<String>,
 
-        /// Plugin id (defaults to wasm file stem)
+        /// Plugin id from registry (preferred)
         #[arg(long)]
         plugin: Option<String>,
 
@@ -197,6 +204,24 @@ fn real_main() -> Result<()> {
         }
 
         Command::Plugin { cmd } => match cmd {
+            PluginCmd::List { root } => {
+                let paths = load_project_paths(root.as_deref())?;
+                let cfg = load_config(&paths)?;
+                let mut items = vec![];
+                for (id, pcfg) in cfg.plugins.iter() {
+                    items.push(serde_json::json!({
+                        "id": id,
+                        "wasm": pcfg.wasm,
+                        "allow": pcfg.allow,
+                    }));
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({ "plugins": items }))?
+                );
+                Ok(())
+            }
+
             PluginCmd::Run {
                 wasm,
                 plugin,
@@ -207,18 +232,36 @@ fn real_main() -> Result<()> {
             } => {
                 let start = Instant::now();
                 let paths = load_project_paths(root.as_deref())?;
+                let cfg = load_config(&paths)?;
 
-                let wasm_path = std::path::PathBuf::from(&wasm);
+                // Resolve wasm path:
+                // - if --wasm provided: use it
+                // - else require --plugin and resolve from registry
+                let (plugin_id, wasm_path) = match (plugin, wasm) {
+                    (Some(pid), Some(wp)) => (pid, std::path::PathBuf::from(wp)),
+                    (Some(pid), None) => {
+                        let pcfg = cfg
+                            .plugins
+                            .get(&pid)
+                            .with_context(|| format!("plugin not found in axioma.toml: {}", pid))?;
+                        (pid, paths.root.join(&pcfg.wasm))
+                    }
+                    (None, Some(wp)) => {
+                        let p = std::path::PathBuf::from(&wp);
+                        let pid = p
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("plugin")
+                            .to_string();
+                        (pid, p)
+                    }
+                    (None, None) => {
+                        bail!("must provide --plugin <id> (registry) or --wasm <path>");
+                    }
+                };
+
                 let wasm_bytes = fs::read(&wasm_path)
                     .with_context(|| format!("failed to read wasm at {}", wasm_path.display()))?;
-
-                let plugin_id = plugin.unwrap_or_else(|| {
-                    wasm_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("plugin")
-                        .to_string()
-                });
 
                 let args_json: Value =
                     serde_json::from_str(&args).with_context(|| "invalid --args JSON")?;
