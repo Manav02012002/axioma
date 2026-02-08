@@ -35,7 +35,7 @@ pub struct AxiomaSection {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct PathsSection {
     #[serde(default = "default_spec_dir")]
     pub spec_dir: String,
