@@ -4,3 +4,7 @@ version = "0.1.0"
 [paths]
 spec_dir = "spec"
 build_dir = "build"
+
+[plugins.axp-echo]
+wasm = "target/wasm32-unknown-unknown/debug/axp_echo.wasm"
+allow = []
