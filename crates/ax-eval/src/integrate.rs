@@ -112,7 +112,11 @@ mod tests {
     fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
-        assert!(result.errors.is_empty(), "lower errors: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "lower errors: {:?}",
+            result.errors
+        );
         let expr = result.expr.expect("expected expression");
         let env = crate::Env::new();
         (crate::eval(&expr, &env, &interner), interner)

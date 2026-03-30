@@ -69,7 +69,12 @@ fn match_sequence(patterns: &[Pattern], terms: &[Expr], binds: &mut Bindings) ->
     helper(patterns, terms, &mut used, binds)
 }
 
-fn commutative_match(patterns: &[Pattern], terms: &[Expr], binds: &mut Bindings, is_add: bool) -> bool {
+fn commutative_match(
+    patterns: &[Pattern],
+    terms: &[Expr],
+    binds: &mut Bindings,
+    is_add: bool,
+) -> bool {
     if patterns.len() == 1 {
         let whole = if is_add {
             Expr::add(terms.to_vec())
@@ -173,7 +178,9 @@ pub fn substitute(template: &Expr, binds: &Bindings) -> Expr {
         Expr::Pow(base, exp) => Expr::pow(substitute(base, binds), substitute(exp, binds)),
         Expr::Neg(e) => Expr::neg(substitute(e, binds)),
         Expr::Call(f, args) => Expr::Call(*f, args.iter().map(|a| substitute(a, binds)).collect()),
-        Expr::Indexed(base, indices) => Expr::Indexed(Box::new(substitute(base, binds)), indices.clone()),
+        Expr::Indexed(base, indices) => {
+            Expr::Indexed(Box::new(substitute(base, binds)), indices.clone())
+        }
         Expr::Let(name, val, body) => Expr::Let(
             *name,
             Box::new(substitute(val, binds)),
@@ -208,7 +215,8 @@ pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> 
         Expr::Float(f) => Expr::Float(*f),
         Expr::Sym(s) => Expr::Sym(*s),
         Expr::Add(terms) => Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .map(|t| rewrite_once(rules, t, interner))
                 .collect(),
         ),
@@ -229,9 +237,10 @@ pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> 
                 .map(|a| rewrite_once(rules, a, interner))
                 .collect(),
         ),
-        Expr::Indexed(base, indices) => {
-            Expr::Indexed(Box::new(rewrite_once(rules, base, interner)), indices.clone())
-        }
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(rewrite_once(rules, base, interner)),
+            indices.clone(),
+        ),
         Expr::Let(name, val, body) => Expr::Let(
             *name,
             Box::new(rewrite_once(rules, val, interner)),

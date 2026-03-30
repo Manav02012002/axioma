@@ -7,6 +7,7 @@ mod cmd_fix;
 mod cmd_parse;
 mod cmd_render;
 mod cmd_repl;
+mod cmd_run;
 use anyhow::{bail, Context, Result};
 use ax_context::{load_config, load_project_paths};
 use ax_plugin_api::{PluginRequest, PluginResponse};
@@ -76,6 +77,9 @@ enum Command {
         file: std::path::PathBuf,
         #[arg(long, default_value = "latex")]
         format: String,
+    },
+    Run {
+        file: std::path::PathBuf,
     },
     Repl,
     /// Validate an Axioma ActionScript (AAS) JSON file against the schema.
@@ -265,6 +269,10 @@ fn real_main() -> Result<()> {
         }
         Command::Render { file, format } => {
             let code = cmd_render::run(&file, &format)?;
+            std::process::exit(code);
+        }
+        Command::Run { file } => {
+            let code = cmd_run::run(&file)?;
             std::process::exit(code);
         }
         Command::Repl => {

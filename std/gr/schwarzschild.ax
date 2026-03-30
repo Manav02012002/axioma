@@ -1,0 +1,8 @@
+// Schwarzschild spacetime (M = 1, Schwarzschild radius = 2)
+// ds² = -(1 - 2/r)dt² + (1 - 2/r)⁻¹dr² + r²dθ² + r²sin²θ dφ²
+let g = metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2))
+let coords = [t, r, theta, phi]
+let Gamma = christoffel(g, coords)
+let R = riemann(Gamma, coords)
+let Ric = ricci(R)
+Ric

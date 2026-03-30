@@ -1,0 +1,7 @@
+// Friedmann-Robertson-Walker (flat, k=0) spacetime
+// ds² = -dt² + a(t)²(dx² + dy² + dz²)
+// Using a(t) as a symbolic function
+let g = metric(diag(-1, a(t)^2, a(t)^2, a(t)^2))
+let coords = [t, x, y, z]
+let Gamma = christoffel(g, coords)
+Gamma

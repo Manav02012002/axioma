@@ -111,7 +111,8 @@ fn is_negative_one(expr: &Expr) -> bool {
 }
 
 fn render_joined(exprs: &[Expr], parent_prec: u8, interner: &ax_ir::Interner, sep: &str) -> String {
-    exprs.iter()
+    exprs
+        .iter()
         .map(|expr| render(expr, parent_prec, interner))
         .collect::<Vec<_>>()
         .join(sep)
@@ -184,7 +185,10 @@ fn render_mul(factors: &[Expr], parent_prec: u8, interner: &ax_ir::Interner) -> 
         return wrap_if_needed(frac, PREC_MUL_DIV, parent_prec);
     }
 
-    let numeric_factors = factors.iter().filter(|factor| is_numeric_literal(factor)).count();
+    let numeric_factors = factors
+        .iter()
+        .filter(|factor| is_numeric_literal(factor))
+        .count();
     if numeric_factors == 1
         && factors.len() > 1
         && factors
@@ -213,7 +217,10 @@ fn render_pow(base: &Expr, exp: &Expr, parent_prec: u8, interner: &ax_ir::Intern
             return format!("\\sqrt{{{}}}", render(base, PREC_TOP, interner));
         }
         if *r == neg_half {
-            return format!("\\frac{{1}}{{\\sqrt{{{}}}}}", render(base, PREC_TOP, interner));
+            return format!(
+                "\\frac{{1}}{{\\sqrt{{{}}}}}",
+                render(base, PREC_TOP, interner)
+            );
         }
     }
 
@@ -264,10 +271,7 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
             "\\frac{{\\partial^{{{}}} {}}}{{\\partial {}^{{{}}}}}",
             rendered_args[2], rendered_args[0], rendered_args[1], rendered_args[2]
         ),
-        ("integrate", 2) => format!(
-            "\\int {} \\, d\\,{}",
-            rendered_args[0], rendered_args[1]
-        ),
+        ("integrate", 2) => format!("\\int {} \\, d\\,{}", rendered_args[0], rendered_args[1]),
         ("integrate", 4) => format!(
             "\\int_{{{}}}^{{{}}} {} \\, d\\,{}",
             rendered_args[2], rendered_args[3], rendered_args[0], rendered_args[1]
@@ -350,7 +354,10 @@ fn render(expr: &Expr, parent_prec: u8, interner: &ax_ir::Interner) -> String {
             render(val, PREC_TOP, interner),
             render(body, PREC_TOP, interner)
         ),
-        Expr::List(items) => format!("\\left[ {} \\right]", render_joined(items, PREC_TOP, interner, ", ")),
+        Expr::List(items) => format!(
+            "\\left[ {} \\right]",
+            render_joined(items, PREC_TOP, interner, ", ")
+        ),
         Expr::Matrix(rows) => {
             let body = rows
                 .iter()

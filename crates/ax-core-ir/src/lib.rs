@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
 use ax_ir::{Expr, Index, Interner, Variance};
-use ax_syntax::{parser::parse_file, SyntaxKind, SyntaxNode};
 use std::ops::Range;
 
 #[derive(Debug, Clone)]
@@ -149,7 +148,9 @@ impl<'a> Cursor<'a> {
             return self.src[start..self.pos]
                 .parse::<f64>()
                 .map(Expr::Float)
-                .map_err(|e| self.error_at(start, self.pos, format!("invalid float literal: {e}")));
+                .map_err(|e| {
+                    self.error_at(start, self.pos, format!("invalid float literal: {e}"))
+                });
         }
 
         if !saw_digit {
@@ -172,11 +173,11 @@ impl<'a> Cursor<'a> {
                 return Err(self.error("expected '='"));
             }
             let value = self.parse_expr()?;
-            if !self.consume_keyword("in") {
-                return Err(self.error("expected 'in'"));
+            if self.consume_keyword("in") {
+                let body = self.parse_expr()?;
+                return Ok(Expr::Let(name, Box::new(value), Box::new(body)));
             }
-            let body = self.parse_expr()?;
-            return Ok(Expr::Let(name, Box::new(value), Box::new(body)));
+            return Ok(Expr::Let(name, Box::new(value), Box::new(Expr::Sym(name))));
         }
 
         match self.peek_char() {
@@ -193,6 +194,26 @@ impl<'a> Cursor<'a> {
                     return Err(self.error("expected ')'"));
                 }
                 Ok(expr)
+            }
+            Some('[') => {
+                self.bump_char();
+                let mut items = Vec::new();
+                self.skip_ws();
+                if !self.eat_if(']') {
+                    loop {
+                        items.push(self.parse_expr()?);
+                        self.skip_ws();
+                        if self.eat_if(',') {
+                            self.skip_ws();
+                            continue;
+                        }
+                        if self.eat_if(']') {
+                            break;
+                        }
+                        return Err(self.error("expected ',' or ']' in list"));
+                    }
+                }
+                Ok(Expr::List(items))
             }
             _ => Err(self.error("expected expression")),
         }
@@ -329,9 +350,8 @@ impl<'a> Cursor<'a> {
     fn finish(mut self) -> Result<Expr, LowerError> {
         let expr = self.parse_expr()?;
         self.skip_ws();
-        if self.eat_if(';') {
-            self.skip_ws();
-        }
+        let _ = self.eat_if(';');
+        self.skip_ws();
 
         if self.is_eof() {
             Ok(expr)
@@ -341,38 +361,144 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn lower_node(node: &SyntaxNode, interner: &Interner) -> Result<Expr, LowerError> {
-    let range = node.text_range();
-    let offset: usize = range.start().into();
-    let text = node.to_string();
-    Cursor::new(&text, offset, interner).finish()
+fn push_current(result: &mut Vec<(usize, String)>, current: &mut String, current_offset: usize) {
+    if !current.is_empty() {
+        result.push((current_offset, std::mem::take(current)));
+    }
+}
+
+fn append_segment(
+    result: &mut Vec<(usize, String)>,
+    current: &mut String,
+    current_offset: &mut usize,
+    segment: &str,
+    segment_offset: usize,
+    terminated: bool,
+) {
+    let trimmed = segment.trim();
+
+    if trimmed.is_empty() || trimmed.starts_with("//") {
+        if terminated {
+            push_current(result, current, *current_offset);
+        }
+        return;
+    }
+
+    if current.is_empty() {
+        *current_offset = segment_offset + (segment.len() - segment.trim_start().len());
+        current.push_str(trimmed);
+    } else {
+        current.push(' ');
+        current.push_str(trimmed);
+    }
+
+    if terminated {
+        push_current(result, current, *current_offset);
+    }
+}
+
+fn split_statements(source: &str) -> Vec<(usize, String)> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut current_offset = 0;
+    let mut offset = 0;
+
+    for chunk in source.split_inclusive('\n') {
+        let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+        let line_start = offset;
+
+        if !line.contains(';') {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                push_current(&mut result, &mut current, current_offset);
+            } else {
+                append_segment(
+                    &mut result,
+                    &mut current,
+                    &mut current_offset,
+                    line,
+                    line_start,
+                    !line_continues(trimmed),
+                );
+            }
+        } else {
+            let mut segment_start = 0;
+            for (idx, ch) in line.char_indices() {
+                if ch == ';' {
+                    let segment = &line[segment_start..idx];
+                    append_segment(
+                        &mut result,
+                        &mut current,
+                        &mut current_offset,
+                        segment,
+                        line_start + segment_start,
+                        true,
+                    );
+                    segment_start = idx + ch.len_utf8();
+                }
+            }
+
+            let trailing = &line[segment_start..];
+            let trailing_trimmed = trailing.trim();
+            if trailing_trimmed.is_empty() || trailing_trimmed.starts_with("//") {
+                push_current(&mut result, &mut current, current_offset);
+            } else {
+                append_segment(
+                    &mut result,
+                    &mut current,
+                    &mut current_offset,
+                    trailing,
+                    line_start + segment_start,
+                    !line_continues(trailing_trimmed),
+                );
+            }
+        }
+
+        offset += chunk.len();
+    }
+
+    push_current(&mut result, &mut current, current_offset);
+    result
+}
+
+fn line_continues(trimmed: &str) -> bool {
+    trimmed.ends_with('+')
+        || trimmed.ends_with('-')
+        || trimmed.ends_with('*')
+        || trimmed.ends_with('/')
+        || trimmed.ends_with('^')
+        || trimmed.ends_with('=')
+        || trimmed.ends_with(',')
+        || trimmed.ends_with('(')
+        || trimmed.ends_with('[')
+        || trimmed.ends_with('{')
 }
 
 pub fn lower(source: &str, interner: &Interner) -> LowerResult {
-    let (root, diagnostics) = parse_file(source);
     let mut exprs = Vec::new();
     let mut errors = Vec::new();
 
-    for child in root.children() {
-        match child.kind() {
-            SyntaxKind::KwModule | SyntaxKind::KwImport => {}
-            SyntaxKind::Error => match lower_node(&child, interner) {
-                Ok(expr) => exprs.push(expr),
-                Err(err) => errors.push(err),
-            },
-            _ => {}
+    for (offset, stmt) in split_statements(source) {
+        let trimmed = stmt.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.starts_with("module ") || trimmed.starts_with("import ") {
+            continue;
+        }
+
+        match Cursor::new(trimmed, offset, interner).finish() {
+            Ok(expr) => exprs.push(expr),
+            Err(err) => errors.push(err),
         }
     }
 
-    if exprs.is_empty() {
-        errors.extend(diagnostics.into_iter().map(|diag| LowerError {
-            message: diag.message,
-            span: diag.span,
-        }));
-    }
-
     let expr = exprs.last().cloned();
-    LowerResult { expr, exprs, errors }
+    LowerResult {
+        expr,
+        exprs,
+        errors,
+    }
 }
 
 #[cfg(test)]
@@ -396,6 +522,97 @@ mod tests {
     fn lower_addition() {
         let e = lower_one("1 + 2;");
         assert_eq!(e, ax_ir::Expr::Int(3.into()));
+    }
+
+    #[test]
+    fn lower_without_semicolon() {
+        let e = lower_one("42");
+        assert_eq!(e, ax_ir::Expr::Int(42.into()));
+    }
+
+    #[test]
+    fn lower_multiline() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("x + 1\ny + 2", &interner);
+        assert_eq!(result.exprs.len(), 2);
+    }
+
+    #[test]
+    fn lower_continuation() {
+        let e = lower_one("1 +\n2");
+        assert_eq!(e, ax_ir::Expr::Int(3.into()));
+    }
+
+    #[test]
+    fn lower_comment_skipped() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("// this is a comment\n42", &interner);
+        assert_eq!(result.exprs.len(), 1);
+    }
+
+    #[test]
+    fn lower_bare_let() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("let x = 5", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let expr = result.expr.unwrap();
+        match expr {
+            ax_ir::Expr::Let(name, val, body) => {
+                assert_eq!(interner.resolve(name), "x");
+                assert_eq!(*val, ax_ir::Expr::Int(5.into()));
+                assert!(matches!(*body, ax_ir::Expr::Sym(s) if interner.resolve(s) == "x"));
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lower_list_literal() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("[1, 2, 3]", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let expr = result.expr.unwrap();
+        match expr {
+            ax_ir::Expr::List(items) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0], ax_ir::Expr::Int(1.into()));
+            }
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lower_list_of_symbols() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("[t, r, theta, phi]", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let expr = result.expr.unwrap();
+        match expr {
+            ax_ir::Expr::List(items) => assert_eq!(items.len(), 4),
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lower_function_call_in_power() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("a(t)^2", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let expr = result.expr.unwrap();
+        match expr {
+            ax_ir::Expr::Pow(base, exp) => {
+                assert!(matches!(*base, ax_ir::Expr::Call(_, _)));
+                assert_eq!(*exp, ax_ir::Expr::Int(2.into()));
+            }
+            other => panic!("expected Pow(Call, Int), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lower_nested_expression() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("r^2 * sin(theta)^2", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
     #[test]

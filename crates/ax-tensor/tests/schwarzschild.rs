@@ -50,7 +50,10 @@ fn build_schwarzschild(interner: &Interner) -> (SymbolicMatrix, Vec<lasso::Spur>
 
     let two = Expr::Int(2.into());
     let r = Expr::Sym(r_sym);
-    let two_over_r = Expr::mul(vec![two.clone(), Expr::pow(r.clone(), Expr::Int((-1).into()))]);
+    let two_over_r = Expr::mul(vec![
+        two.clone(),
+        Expr::pow(r.clone(), Expr::Int((-1).into())),
+    ]);
     let f = Expr::add(vec![Expr::one(), Expr::neg(two_over_r.clone())]);
     let neg_f = Expr::neg(f.clone());
     let inv_f = Expr::pow(f.clone(), Expr::Int((-1).into()));
@@ -75,7 +78,7 @@ fn schwarzschild_ricci_is_zero() {
 
     let gamma = christoffel_from_metric(&g, &coords, &interner);
     let riemann = riemann_from_christoffel(&gamma, &coords, &interner);
-    let ricci = ricci_from_riemann(&riemann, 4);
+    let ricci = ricci_from_riemann(&riemann, 4, &interner);
 
     let mut nonzero = vec![];
     for j in 0..4 {
@@ -96,5 +99,57 @@ fn schwarzschild_ricci_is_zero() {
         nonzero.is_empty(),
         "Schwarzschild Ricci tensor has non-zero components:\n{}",
         nonzero.join("\n")
+    );
+}
+
+#[test]
+fn schwarzschild_christoffel_nonzero_components() {
+    let interner = ax_ir::Interner::new();
+    let t = interner.get_or_intern("t");
+    let r_sym = interner.get_or_intern("r");
+    let theta = interner.get_or_intern("theta");
+    let phi = interner.get_or_intern("phi");
+    let coords = vec![t, r_sym, theta, phi];
+    let sin_sym = interner.get_or_intern("sin");
+
+    let r = Expr::Sym(r_sym);
+    let two_over_r = Expr::mul(vec![
+        Expr::Int(2.into()),
+        Expr::pow(r.clone(), Expr::Int((-1).into())),
+    ]);
+    let f = Expr::add(vec![Expr::one(), Expr::neg(two_over_r)]);
+
+    let mut g = SymbolicMatrix::new(4);
+    g.set(0, 0, Expr::neg(f.clone()));
+    g.set(1, 1, Expr::pow(f.clone(), Expr::Int((-1).into())));
+    g.set(2, 2, Expr::pow(r.clone(), Expr::Int(2.into())));
+    let sin_theta = Expr::Call(sin_sym, vec![Expr::Sym(theta)]);
+    g.set(
+        3,
+        3,
+        Expr::mul(vec![
+            Expr::pow(r.clone(), Expr::Int(2.into())),
+            Expr::pow(sin_theta, Expr::Int(2.into())),
+        ]),
+    );
+
+    let gamma = christoffel_from_metric(&g, &coords, &interner);
+
+    let mut nonzero_count = 0;
+    for plane in gamma.iter().take(4) {
+        for row in plane.iter().take(4) {
+            for component in row.iter().take(4) {
+                if *component != Expr::zero() {
+                    nonzero_count += 1;
+                }
+            }
+        }
+    }
+
+    assert!(nonzero_count > 0, "expected non-zero Christoffel symbols");
+    assert!(
+        nonzero_count <= 13,
+        "too many non-zero components: {}",
+        nonzero_count
     );
 }

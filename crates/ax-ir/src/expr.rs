@@ -177,7 +177,10 @@ impl Expr {
             }
         }
 
-        if flat.iter().any(|factor| matches!(factor, Expr::Int(n) if n.is_zero())) {
+        if flat
+            .iter()
+            .any(|factor| matches!(factor, Expr::Int(n) if n.is_zero()))
+        {
             return Expr::zero();
         }
 

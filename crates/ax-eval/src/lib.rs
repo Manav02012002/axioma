@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
-pub mod simplify;
 pub mod integrate;
 pub mod series;
+pub mod simplify;
 
 use ax_ir::Expr;
 use num_bigint::BigInt;
@@ -191,10 +191,9 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
                 ])
             } else if !contains_var(base, var) {
                 match base.as_ref() {
-                    Expr::Sym(sym) if interner.resolve(*sym) == "e" => Expr::mul(vec![
-                        expr.clone(),
-                        differentiate(exp, var, interner),
-                    ]),
+                    Expr::Sym(sym) if interner.resolve(*sym) == "e" => {
+                        Expr::mul(vec![expr.clone(), differentiate(exp, var, interner)])
+                    }
                     Expr::Call(f, args) if interner.resolve(*f) == "exp" && args.len() == 1 => {
                         Expr::mul(vec![expr.clone(), differentiate(exp, var, interner)])
                     }
@@ -214,10 +213,7 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
             let darg = differentiate(&args[0], var, interner);
             match name {
                 "sin" => Expr::mul(vec![builtin_unary("cos", arg, interner), darg]),
-                "cos" => Expr::mul(vec![
-                    Expr::neg(builtin_unary("sin", arg, interner)),
-                    darg,
-                ]),
+                "cos" => Expr::mul(vec![Expr::neg(builtin_unary("sin", arg, interner)), darg]),
                 "exp" => Expr::mul(vec![builtin_unary("exp", arg, interner), darg]),
                 "log" => Expr::mul(vec![Expr::pow(arg, Expr::neg(Expr::one())), darg]),
                 "sqrt" => differentiate(&Expr::pow(arg, one_half()), var, interner),
@@ -352,7 +348,8 @@ fn builtin_call(name: &str, f: lasso::Spur, args: Vec<Expr>, interner: &ax_ir::I
                 if let Expr::Sym(var_sym) = args[1] {
                     let diffed = differentiate(&args[0], var_sym, interner);
                     let diff_sym = interner.get_or_intern("diff");
-                    if matches!(&diffed, Expr::Call(sym, inner_args) if *sym == diff_sym && inner_args == &args) {
+                    if matches!(&diffed, Expr::Call(sym, inner_args) if *sym == diff_sym && inner_args == &args)
+                    {
                         diffed
                     } else {
                         eval(&diffed, &Env::new(), interner)
@@ -381,9 +378,7 @@ fn builtin_call(name: &str, f: lasso::Spur, args: Vec<Expr>, interner: &ax_ir::I
                                 .collect::<Option<Vec<_>>>();
                             if let Some(coords) = coords {
                                 expr_3d_to_list(ax_tensor::christoffel_from_metric(
-                                    &metric,
-                                    &coords,
-                                    interner,
+                                    &metric, &coords, interner,
                                 ))
                             } else {
                                 Expr::Call(f, args)
@@ -430,7 +425,7 @@ fn builtin_call(name: &str, f: lasso::Spur, args: Vec<Expr>, interner: &ax_ir::I
             if args.len() == 1 {
                 if let Some(riemann) = expr_to_4d(&args[0]) {
                     let n = riemann.len();
-                    Expr::Matrix(ax_tensor::ricci_from_riemann(&riemann, n))
+                    Expr::Matrix(ax_tensor::ricci_from_riemann(&riemann, n, interner))
                 } else {
                     Expr::Call(f, args)
                 }
@@ -444,6 +439,40 @@ fn builtin_call(name: &str, f: lasso::Spur, args: Vec<Expr>, interner: &ax_ir::I
                     (Expr::Matrix(ricci), ginv_expr) => {
                         if let Some(ginv) = matrix_to_symbolic(ginv_expr) {
                             ax_tensor::ricci_scalar(ricci, &ginv, interner)
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "einstein" => {
+            if args.len() == 3 {
+                match (&args[0], &args[1], &args[2]) {
+                    (Expr::Matrix(ricci), scalar, metric_expr) => {
+                        if let Some(metric) = matrix_to_symbolic(metric_expr) {
+                            Expr::Matrix(ax_tensor::einstein_tensor(
+                                ricci, scalar, &metric, interner,
+                            ))
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "kretschner" => {
+            if args.len() == 2 {
+                match (expr_to_4d(&args[0]), &args[1]) {
+                    (Some(riemann), metric_expr) => {
+                        if let Some(metric) = matrix_to_symbolic(metric_expr) {
+                            ax_tensor::kretschner_scalar(&riemann, &metric, interner)
                         } else {
                             Expr::Call(f, args)
                         }
@@ -492,7 +521,11 @@ fn builtin_call(name: &str, f: lasso::Spur, args: Vec<Expr>, interner: &ax_ir::I
                         lo_env.bindings.insert(var_sym, args[2].clone());
                         let lo_val = eval(&integrated, &lo_env, interner);
 
-                        eval(&Expr::add(vec![hi_val, Expr::neg(lo_val)]), &Env::new(), interner)
+                        eval(
+                            &Expr::add(vec![hi_val, Expr::neg(lo_val)]),
+                            &Env::new(),
+                            interner,
+                        )
                     }
                 } else {
                     Expr::Call(f, args)
@@ -615,14 +648,7 @@ fn expr_to_3d(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
 fn expr_3d_to_list(data: Vec<Vec<Vec<Expr>>>) -> Expr {
     Expr::List(
         data.into_iter()
-            .map(|level2| {
-                Expr::List(
-                    level2
-                        .into_iter()
-                        .map(Expr::List)
-                        .collect(),
-                )
-            })
+            .map(|level2| Expr::List(level2.into_iter().map(Expr::List).collect()))
             .collect(),
     )
 }
@@ -665,9 +691,7 @@ fn expr_4d_to_list(data: Vec<Vec<Vec<Vec<Expr>>>>) -> Expr {
                 Expr::List(
                     level2
                         .into_iter()
-                        .map(|level3| {
-                            Expr::List(level3.into_iter().map(Expr::List).collect())
-                        })
+                        .map(|level3| Expr::List(level3.into_iter().map(Expr::List).collect()))
                         .collect(),
                 )
             })
@@ -700,7 +724,11 @@ mod tests {
     fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
-        assert!(result.errors.is_empty(), "lower errors: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "lower errors: {:?}",
+            result.errors
+        );
         let expr = result.expr.expect("expected expression");
         let env = Env::new();
         (eval(&expr, &env, &interner), interner)

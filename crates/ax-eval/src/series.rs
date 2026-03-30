@@ -64,7 +64,11 @@ mod tests {
     fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
-        assert!(result.errors.is_empty(), "lower errors: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "lower errors: {:?}",
+            result.errors
+        );
         let expr = result.expr.expect("expected expression");
         let env = crate::Env::new();
         (crate::eval(&expr, &env, &interner), interner)
@@ -88,10 +92,15 @@ mod tests {
     fn series_polynomial_is_exact() {
         let (e, int) = eval_src("series(x^2 + 1, x, 0, 3);");
         let direct = crate::eval(
-            &ax_core_ir::lower("x^2 + 1;", &int).expr.expect("expected expr"),
+            &ax_core_ir::lower("x^2 + 1;", &int)
+                .expr
+                .expect("expected expr"),
             &crate::Env::new(),
             &int,
         );
-        assert_eq!(ax_ir::pretty_print(&e, &int), ax_ir::pretty_print(&direct, &int));
+        assert_eq!(
+            ax_ir::pretty_print(&e, &int),
+            ax_ir::pretty_print(&direct, &int)
+        );
     }
 }

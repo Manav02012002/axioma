@@ -1,0 +1,8 @@
+// de Sitter spacetime
+// ds² = -(1 - Lambdar²/3)dt² + (1 - Lambdar²/3)⁻¹dr² + r²dθ² + r²sin²θ dφ²
+// Using Lambda = 1 for simplicity
+let f = 1 - r^2/3
+let g = metric(diag(-f, 1/f, r^2, r^2 * sin(theta)^2))
+let coords = [t, r, theta, phi]
+let Gamma = christoffel(g, coords)
+Gamma

@@ -57,17 +57,11 @@ fn factor_list(expr: &Expr) -> Vec<(Expr, BigRational)> {
     }
 }
 
-fn remove_common_factor(
-    factors: &[(Expr, BigRational)],
-    common: &[(Expr, BigRational)],
-) -> Expr {
+fn remove_common_factor(factors: &[(Expr, BigRational)], common: &[(Expr, BigRational)]) -> Expr {
     let mut remaining = factors.to_vec();
 
     for (common_base, common_exp) in common {
-        if let Some((_, exp)) = remaining
-            .iter_mut()
-            .find(|(base, _)| *base == *common_base)
-        {
+        if let Some((_, exp)) = remaining.iter_mut().find(|(base, _)| *base == *common_base) {
             *exp -= common_exp.clone();
         }
     }
@@ -201,13 +195,15 @@ pub fn expand(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
                 return Expr::mul(expanded_factors);
             }
 
-            if let Some((idx, terms)) = expanded_factors.iter().enumerate().find_map(|(i, factor)| {
-                if let Expr::Add(terms) = factor {
-                    Some((i, terms.clone()))
-                } else {
-                    None
-                }
-            }) {
+            if let Some((idx, terms)) =
+                expanded_factors.iter().enumerate().find_map(|(i, factor)| {
+                    if let Expr::Add(terms) = factor {
+                        Some((i, terms.clone()))
+                    } else {
+                        None
+                    }
+                })
+            {
                 let rest = expanded_factors
                     .iter()
                     .enumerate()
@@ -343,7 +339,9 @@ pub fn collect_terms(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
                     let rest = normalized
                         .iter()
                         .enumerate()
-                        .filter_map(|(i, factor)| if i != idx { Some(factor.clone()) } else { None })
+                        .filter_map(
+                            |(i, factor)| if i != idx { Some(factor.clone()) } else { None },
+                        )
                         .collect::<Vec<_>>();
 
                     let is_pure_sign_flip = rest.len() == 1
@@ -377,7 +375,9 @@ pub fn collect_terms(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
 
             Expr::mul(normalized)
         }
-        Expr::Pow(base, exp) => Expr::pow(collect_terms(base, interner), collect_terms(exp, interner)),
+        Expr::Pow(base, exp) => {
+            Expr::pow(collect_terms(base, interner), collect_terms(exp, interner))
+        }
         Expr::Neg(inner) => Expr::neg(collect_terms(inner, interner)),
         Expr::Call(f, args) => Expr::Call(
             *f,
@@ -401,7 +401,11 @@ pub fn collect_terms(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
         ),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
-                .map(|row| row.iter().map(|cell| collect_terms(cell, interner)).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| collect_terms(cell, interner))
+                        .collect()
+                })
                 .collect(),
         ),
         _ => expr.clone(),
@@ -421,7 +425,11 @@ mod tests {
     fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
-        assert!(result.errors.is_empty(), "lower errors: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "lower errors: {:?}",
+            result.errors
+        );
         let expr = result.expr.expect("expected expression");
         let env = crate::Env::new();
         (crate::eval(&expr, &env, &interner), interner)
@@ -431,7 +439,11 @@ mod tests {
     fn expand_distribute() {
         let (e, int) = eval_src("expand(a * (b + c));");
         let pp = ax_ir::pretty_print(&e, &int);
-        assert!(pp.contains("a") && pp.contains("b") && pp.contains("c"), "got: {}", pp);
+        assert!(
+            pp.contains("a") && pp.contains("b") && pp.contains("c"),
+            "got: {}",
+            pp
+        );
         assert!(!pp.contains("("), "got: {}", pp);
     }
 

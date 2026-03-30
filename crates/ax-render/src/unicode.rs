@@ -49,7 +49,10 @@ fn sym_to_unicode(sym: lasso::Spur, interner: &ax_ir::Interner) -> String {
 }
 
 fn common_fraction(r: &BigRational) -> Option<&'static str> {
-    match (r.numer().to_string().as_str(), r.denom().to_string().as_str()) {
+    match (
+        r.numer().to_string().as_str(),
+        r.denom().to_string().as_str(),
+    ) {
         ("1", "2") => Some("½"),
         ("1", "3") => Some("⅓"),
         ("1", "4") => Some("¼"),
@@ -72,7 +75,11 @@ fn format_float(f: f64) -> String {
             s.pop();
         }
     }
-    if s == "-0" { "0".to_string() } else { s }
+    if s == "-0" {
+        "0".to_string()
+    } else {
+        s
+    }
 }
 
 fn superscript_digits(s: &str) -> Option<String> {
@@ -217,7 +224,10 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
         Expr::Pow(base, exp) => {
             if let Expr::Rational(r) = exp.as_ref() {
                 if *r == BigRational::new(1.into(), 2.into()) {
-                    return (format!("√{}", render_with_paren(base, PREC_UNARY, interner)), PREC_UNARY);
+                    return (
+                        format!("√{}", render_with_paren(base, PREC_UNARY, interner)),
+                        PREC_UNARY,
+                    );
                 }
             }
 
@@ -228,16 +238,28 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
                     if let Some(sup) = superscript_digits(&n_str) {
                         (format!("{base_text}{sup}"), PREC_POW)
                     } else {
-                        (format!("{base_text}^({})", render_with_paren(exp, PREC_TOP, interner)), PREC_POW)
+                        (
+                            format!(
+                                "{base_text}^({})",
+                                render_with_paren(exp, PREC_TOP, interner)
+                            ),
+                            PREC_POW,
+                        )
                     }
                 }
                 _ => (
-                    format!("{base_text}^({})", render_with_paren(exp, PREC_TOP, interner)),
+                    format!(
+                        "{base_text}^({})",
+                        render_with_paren(exp, PREC_TOP, interner)
+                    ),
                     PREC_POW,
                 ),
             }
         }
-        Expr::Neg(e) => (format!("-{}", render_with_paren(e, PREC_UNARY, interner)), PREC_UNARY),
+        Expr::Neg(e) => (
+            format!("-{}", render_with_paren(e, PREC_UNARY, interner)),
+            PREC_UNARY,
+        ),
         Expr::Call(f, args) => (render_call(interner.resolve(*f), args, interner), PREC_POW),
         Expr::Indexed(base, indices) => (render_indexed(base, indices, interner), PREC_POW),
         Expr::Let(name, val, body) => (

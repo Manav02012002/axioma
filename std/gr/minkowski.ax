@@ -1,0 +1,6 @@
+// Minkowski (flat) spacetime
+// ds² = -dt² + dx² + dy² + dz²
+let g = metric(diag(-1, 1, 1, 1))
+let coords = [t, x, y, z]
+let Gamma = christoffel(g, coords)
+Gamma
