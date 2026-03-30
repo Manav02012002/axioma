@@ -5,6 +5,8 @@ mod cmd_ai_pack;
 
 mod cmd_fix;
 mod cmd_parse;
+mod cmd_render;
+mod cmd_repl;
 use anyhow::{bail, Context, Result};
 use ax_context::{load_config, load_project_paths};
 use ax_plugin_api::{PluginRequest, PluginResponse};
@@ -70,6 +72,12 @@ enum Command {
         #[arg(long)]
         diags_json: Option<std::path::PathBuf>,
     },
+    Render {
+        file: std::path::PathBuf,
+        #[arg(long, default_value = "latex")]
+        format: String,
+    },
+    Repl,
     /// Validate an Axioma ActionScript (AAS) JSON file against the schema.
     Validate {
         /// Path to AAS json
@@ -254,6 +262,14 @@ fn real_main() -> Result<()> {
             let code = cmd_parse::run(&file, diags_json)?;
 
             std::process::exit(code);
+        }
+        Command::Render { file, format } => {
+            let code = cmd_render::run(&file, &format)?;
+            std::process::exit(code);
+        }
+        Command::Repl => {
+            cmd_repl::run()?;
+            Ok(())
         }
         Command::Fix {
             file,

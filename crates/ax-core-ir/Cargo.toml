@@ -6,6 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ax-syntax = { path = "../ax-syntax" }
+ax-ir = { path = "../ax-ir" }
+thiserror = { workspace = true }
 
 [lib]
 path = "src/lib.rs"

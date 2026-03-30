@@ -1,16 +1,18 @@
 [package]
-name = "ax-ir"
+name = "ax-eval"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-lasso = { workspace = true, features = ["multi-threaded"] }
+ax-ir = { path = "../ax-ir" }
+lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }
 num-traits = { workspace = true }
 num-integer = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
+
+[dev-dependencies]
+ax-core-ir = { path = "../ax-core-ir" }
+ax-syntax = { path = "../ax-syntax" }

@@ -7,6 +7,8 @@ members = [
   "crates/ax-trace",
   "crates/ax-diagnostics",
   "crates/ax-cli",
+  "crates/ax-eval",
+  "crates/ax-render",
   "crates/ax-plugin-host",
   "crates/ax-plugin-api",
   "plugins/axp-echo", "crates/ax-ir", "crates/ax-syntax", "crates/ax-ai-proto",
@@ -28,3 +30,8 @@ schemars = "0.8"
 jsonschema = "0.17"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+lasso = { version = "0.7", features = ["serialize"] }
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
