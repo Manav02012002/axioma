@@ -205,7 +205,9 @@ version = "0.1.0"
 dependencies = [
  "ax-core-ir",
  "ax-ir",
+ "ax-rewrite",
  "ax-syntax",
+ "ax-tensor",
  "lasso",
  "num-bigint",
  "num-integer",
@@ -262,6 +264,15 @@ dependencies = [
 [[package]]
 name = "ax-rewrite"
 version = "0.1.0"
+dependencies = [
+ "ax-core-ir",
+ "ax-eval",
+ "ax-ir",
+ "lasso",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+]
 
 [[package]]
 name = "ax-syntax"
@@ -274,6 +285,19 @@ dependencies = [
  "serde_json",
  "smallvec",
  "thiserror",
+]
+
+[[package]]
+name = "ax-tensor"
+version = "0.1.0"
+dependencies = [
+ "ax-core-ir",
+ "ax-eval",
+ "ax-ir",
+ "lasso",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
 ]
 
 [[package]]

@@ -38,14 +38,14 @@ pub fn run() -> Result<()> {
                             let evaled_val = ax_eval::eval(&val, &env, &interner);
                             env.bindings.insert(name, evaled_val);
                             let result = ax_eval::eval(&body, &env, &interner);
-                            println!("{}", ax_ir::pretty_print(&result, &interner));
+                            println!("{}", ax_render::to_unicode(&result, &interner));
                             println!("  LaTeX: {}", ax_render::to_latex(&result, &interner));
                             continue;
                         }
                     }
 
                     let result = ax_eval::eval(&expr, &env, &interner);
-                    println!("{}", ax_ir::pretty_print(&result, &interner));
+                    println!("{}", ax_render::to_unicode(&result, &interner));
                     println!("  LaTeX: {}", ax_render::to_latex(&result, &interner));
                 }
             }

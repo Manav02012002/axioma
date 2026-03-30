@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 ax-ir = { path = "../ax-ir" }
+ax-rewrite = { path = "../ax-rewrite" }
+ax-tensor = { path = "../ax-tensor" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }

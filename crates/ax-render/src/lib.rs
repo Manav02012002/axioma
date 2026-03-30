@@ -1,8 +1,12 @@
 #![forbid(unsafe_code)]
 
+pub mod unicode;
+
 use ax_ir::{Expr, Index, Variance};
 use num_rational::BigRational;
 use num_traits::Signed;
+
+pub use unicode::to_unicode;
 
 const PREC_TOP: u8 = 0;
 const PREC_ADD_SUB: u8 = 50;
