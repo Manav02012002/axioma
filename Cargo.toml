@@ -9,7 +9,7 @@ members = [
   "crates/ax-cli",
   "crates/ax-plugin-host",
   "crates/ax-plugin-api",
-  "plugins/axp-echo",
+  "plugins/axp-echo", "crates/ax-ir", "crates/ax-syntax", "crates/ax-ai-proto",
 ]
 
 [workspace.package]

@@ -1,5 +1,10 @@
 #![forbid(unsafe_code)]
+mod cmd_ai;
+mod cmd_ai_apply;
+mod cmd_ai_pack;
 
+mod cmd_fix;
+mod cmd_parse;
 use anyhow::{bail, Context, Result};
 use ax_context::{load_config, load_project_paths};
 use ax_plugin_api::{PluginRequest, PluginResponse};
@@ -20,9 +25,51 @@ struct Cli {
     #[command(subcommand)]
     cmd: Command,
 }
+#[derive(Debug, Subcommand)]
+enum AiCmd {
+    Fix {
+        file: std::path::PathBuf,
+        #[arg(long, default_value_t = 8)]
+        max_iter: usize,
+        #[arg(long)]
+        diags_json: Option<std::path::PathBuf>,
+    },
+    Pack {
+        file: std::path::PathBuf,
+        #[arg(long, default_value = "build/ai_packet.json")]
+        out: std::path::PathBuf,
+    },
+    Apply {
+        file: std::path::PathBuf,
+        edits_json: std::path::PathBuf,
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        #[arg(long)]
+        print: bool,
+    },
+}
 
 #[derive(Debug, Subcommand)]
+
 enum Command {
+    Ai {
+        #[command(subcommand)]
+        cmd: AiCmd,
+    },
+
+    Fix {
+        file: std::path::PathBuf,
+        #[arg(long)]
+        diags_json: Option<std::path::PathBuf>,
+        #[arg(long)]
+        apply: bool,
+    },
+
+    Parse {
+        file: std::path::PathBuf,
+        #[arg(long)]
+        diags_json: Option<std::path::PathBuf>,
+    },
     /// Validate an Axioma ActionScript (AAS) JSON file against the schema.
     Validate {
         /// Path to AAS json
@@ -202,6 +249,43 @@ fn real_main() -> Result<()> {
                 bail!("AAS validation failed")
             }
         }
+
+        Command::Parse { file, diags_json } => {
+            let code = cmd_parse::run(&file, diags_json)?;
+
+            std::process::exit(code);
+        }
+        Command::Fix {
+            file,
+            diags_json,
+            apply,
+        } => {
+            let code = cmd_fix::run(&file, diags_json, apply)?;
+            std::process::exit(code);
+        }
+        Command::Ai { cmd } => match cmd {
+            AiCmd::Fix {
+                file,
+                max_iter,
+                diags_json,
+            } => {
+                let code = cmd_ai::fix(&file, max_iter, diags_json)?;
+                std::process::exit(code);
+            }
+            AiCmd::Pack { file, out } => {
+                cmd_ai_pack::pack(&file, &out, AXIOMA_VERSION)?;
+                std::process::exit(0);
+            }
+            AiCmd::Apply {
+                file,
+                edits_json,
+                out,
+                print,
+            } => {
+                cmd_ai_apply::run(&file, &edits_json, out.as_deref(), print)?;
+                std::process::exit(0);
+            }
+        },
 
         Command::Plugin { cmd } => match cmd {
             PluginCmd::List { root } => {
