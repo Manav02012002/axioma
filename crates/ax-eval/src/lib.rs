@@ -1828,9 +1828,9 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "canonicalize" => {
+        "canonicalise" | "canonicalize" => {
             if args.len() == 1 {
-                let canonical = ax_tensor::canonicalize_indices(&args[0], &env.tensor_properties, interner);
+                let canonical = ax_tensor::canonicalise(&args[0], &env.tensor_properties, interner);
                 ax_tensor::rename_dummies(&canonical, env, interner)
             } else {
                 Expr::Call(f, args)

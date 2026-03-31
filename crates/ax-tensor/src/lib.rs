@@ -138,6 +138,164 @@ pub fn extract_factor_info(
     result
 }
 
+fn detect_dummy_pairs(indices: &[ax_ir::Index]) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    let mut used = HashSet::new();
+
+    for i in 0..indices.len() {
+        if used.contains(&i) {
+            continue;
+        }
+        for j in (i + 1)..indices.len() {
+            if used.contains(&j) {
+                continue;
+            }
+            if indices[i].name == indices[j].name && indices[i].variance != indices[j].variance {
+                pairs.push((i, j));
+                used.insert(i);
+                used.insert(j);
+                break;
+            }
+        }
+    }
+
+    pairs
+}
+
+fn canonicalise_product(
+    expr: &Expr,
+    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let precanonical = canonicalize_indices(expr, tensor_properties, interner);
+    if precanonical == Expr::zero() {
+        return Expr::zero();
+    }
+
+    let wrapped;
+    let expr_ref = match &precanonical {
+        Expr::Mul(_) => &precanonical,
+        Expr::Indexed(_, _) => {
+            wrapped = Expr::Mul(vec![precanonical.clone()]);
+            &wrapped
+        }
+        _ => return precanonical,
+    };
+
+    let factor_info = extract_factor_info(expr_ref, tensor_properties, interner);
+    if factor_info.is_empty() {
+        return expr.clone();
+    }
+
+    let generators = build_generating_set(&factor_info, interner);
+    let factors = match expr_ref {
+        Expr::Mul(factors) => factors,
+        _ => unreachable!(),
+    };
+
+    let mut all_indices = Vec::new();
+    let mut scalar_factors = Vec::new();
+    for factor in factors {
+        match factor {
+            Expr::Indexed(_, indices) => all_indices.extend(indices.iter().cloned()),
+            _ => scalar_factors.push(factor.clone()),
+        }
+    }
+
+    let total_indices = all_indices.len();
+    if total_indices == 0 {
+        return expr.clone();
+    }
+
+    let mut keyed_positions: Vec<(usize, (String, u8))> = all_indices
+        .iter()
+        .enumerate()
+        .map(|(i, idx)| (i, sort_key(idx, interner)))
+        .collect();
+    keyed_positions.sort_by(|(ia, ka), (ib, kb)| ka.cmp(kb).then(ia.cmp(ib)));
+
+    let mut rank_by_pos = vec![0usize; total_indices];
+    for (rank, (pos, _)) in keyed_positions.iter().enumerate() {
+        rank_by_pos[*pos] = rank;
+    }
+
+    let mut extended_perm = rank_by_pos.clone();
+    extended_perm.push(total_indices);
+    extended_perm.push(total_indices + 1);
+
+    let dummy_pairs = detect_dummy_pairs(&all_indices);
+    let degree = total_indices + 2;
+
+    let (canon_perm, canon_sign) = if generators.is_empty() {
+        (extended_perm.clone(), 1)
+    } else {
+        let sgs = ax_perm::schreier_sims(&[], &generators, degree);
+        ax_perm::canonical_perm(&extended_perm, &sgs, &dummy_pairs)
+    };
+
+    if canon_sign == -1 && canon_perm[..total_indices] == extended_perm[..total_indices] {
+        return Expr::zero();
+    }
+
+    let mut index_by_rank = vec![all_indices[0].clone(); total_indices];
+    for (pos, rank) in rank_by_pos.iter().enumerate() {
+        index_by_rank[*rank] = all_indices[pos].clone();
+    }
+    let new_indices: Vec<ax_ir::Index> = canon_perm[..total_indices]
+        .iter()
+        .map(|rank| index_by_rank[*rank].clone())
+        .collect();
+
+    let mut result_factors = scalar_factors;
+    let mut idx_pos = 0usize;
+    for factor in factors {
+        if let Expr::Indexed(base, indices) = factor {
+            let n = indices.len();
+            result_factors.push(Expr::Indexed(
+                base.clone(),
+                new_indices[idx_pos..idx_pos + n].to_vec(),
+            ));
+            idx_pos += n;
+        }
+    }
+
+    let result = Expr::mul(result_factors);
+    if canon_sign == -1 {
+        Expr::neg(result)
+    } else {
+        result
+    }
+}
+
+/// Canonicalise a tensor product expression by reordering indices to canonical form.
+///
+/// This uses the Butler-Portugal algorithm (via ax-perm) to find the lexicographically
+/// smallest index permutation consistent with the tensor symmetries.
+pub fn canonicalise(
+    expr: &ax_ir::Expr,
+    tensor_properties: &std::collections::HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Mul(_) => canonicalise_product(expr, tensor_properties, interner),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| canonicalise(term, tensor_properties, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(canonicalise(inner, tensor_properties, interner)),
+        Expr::Indexed(_, _) => {
+            let result = canonicalise_product(expr, tensor_properties, interner);
+            match result {
+                Expr::Mul(mut factors) if factors.len() == 1 => factors.remove(0),
+                other => other,
+            }
+        }
+        _ => expr.clone(),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SymbolicMatrix {
     pub dim: usize,
@@ -3112,6 +3270,33 @@ mod tests {
     }
 
     #[test]
+    fn canonicalise_symmetric_tensor() {
+        let interner = ax_ir::Interner::new();
+        let g_sym = interner.get_or_intern("g");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+
+        let mut props = HashMap::new();
+        props.insert(g_sym, vec![ax_ir::TensorProperty::Symmetric(vec![0, 1])]);
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(g_sym)),
+            vec![
+                ax_ir::Index { name: nu, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
+            ],
+        );
+        let result = canonicalise(&expr, &props, &interner);
+        if let Expr::Indexed(_, indices) = &result {
+            let first = interner.resolve(indices[0].name);
+            let second = interner.resolve(indices[1].name);
+            assert!(first <= second, "expected canonical order, got {} {}", first, second);
+        } else {
+            panic!("expected Indexed, got {:?}", result);
+        }
+    }
+
+    #[test]
     fn generating_set_antisymmetric_2tensor() {
         let interner = ax_ir::Interner::new();
         let f_sym = interner.get_or_intern("F");
@@ -3129,6 +3314,26 @@ mod tests {
         assert_eq!(gens[0][1], 0);
         assert_eq!(gens[0][2], 3);
         assert_eq!(gens[0][3], 2);
+    }
+
+    #[test]
+    fn canonicalise_antisymmetric_zero() {
+        let interner = ax_ir::Interner::new();
+        let f_sym = interner.get_or_intern("F");
+        let mu = interner.get_or_intern("mu");
+
+        let mut props = HashMap::new();
+        props.insert(f_sym, vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])]);
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(f_sym)),
+            vec![
+                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
+            ],
+        );
+        let result = canonicalise(&expr, &props, &interner);
+        assert_eq!(result, Expr::zero());
     }
 
     #[test]
