@@ -357,6 +357,34 @@ impl<'a> Cursor<'a> {
             return Ok(Expr::Call(declare_sym, args));
         }
 
+        if self.consume_keyword("coordinates") {
+            self.skip_ws();
+            if !self.eat_if('[') {
+                return Err(self.error("expected '['"));
+            }
+            let mut coords = Vec::new();
+            self.skip_ws();
+            if !self.eat_if(']') {
+                loop {
+                    coords.push(self.parse_ident()?);
+                    self.skip_ws();
+                    if self.eat_if(',') {
+                        self.skip_ws();
+                        continue;
+                    }
+                    if self.eat_if(']') {
+                        break;
+                    }
+                    return Err(self.error("expected ',' or ']'"));
+                }
+            }
+            let sym = self.interner.get_or_intern("__declare_coordinates");
+            return Ok(ax_ir::Expr::Call(
+                sym,
+                coords.into_iter().map(ax_ir::Expr::Sym).collect(),
+            ));
+        }
+
         if self.consume_keyword("convention") {
             let field = self.parse_ident()?;
             self.skip_ws();
@@ -1046,6 +1074,13 @@ mod tests {
     fn parse_index_declaration() {
         let interner = ax_ir::Interner::new();
         let result = lower("indices spacetime [mu, nu, rho, sigma] dim=4", &interner);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_coordinates() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("coordinates [t, r, theta, phi]", &interner);
         assert!(result.errors.is_empty(), "{:?}", result.errors);
     }
 

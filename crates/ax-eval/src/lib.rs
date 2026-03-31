@@ -10,7 +10,7 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default)]
@@ -21,6 +21,7 @@ pub struct Env {
     pub assumptions: HashMap<lasso::Spur, Vec<Assumption>>,
     pub gradings: HashMap<lasso::Spur, Grading>,
     pub operators: HashMap<lasso::Spur, ax_qm::OperatorKind>,
+    pub coordinates: HashSet<lasso::Spur>,
     pub index_families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
     pub index_to_family: HashMap<lasso::Spur, lasso::Spur>,
     pub tensor_properties: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
@@ -36,6 +37,7 @@ impl Env {
             assumptions: HashMap::new(),
             gradings: HashMap::new(),
             operators: HashMap::new(),
+            coordinates: HashSet::new(),
             index_families: HashMap::new(),
             index_to_family: HashMap::new(),
             tensor_properties: HashMap::new(),
@@ -59,6 +61,7 @@ impl Env {
             assumptions: self.assumptions.clone(),
             gradings: self.gradings.clone(),
             operators: self.operators.clone(),
+            coordinates: self.coordinates.clone(),
             index_families: self.index_families.clone(),
             index_to_family: self.index_to_family.clone(),
             tensor_properties: self.tensor_properties.clone(),
@@ -336,6 +339,31 @@ pub fn apply_operator_declaration(
             ax_qm::OperatorKind::Annihilation => "annihilation",
         };
         Some(format!("declared {kind_name} operators: {}", declared.join(", ")))
+    }
+}
+
+pub fn apply_coordinate_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "__declare_coordinates" {
+        return None;
+    }
+    let mut declared = 0usize;
+    for arg in args {
+        if let Expr::Sym(sym) = arg {
+            env.coordinates.insert(*sym);
+            declared += 1;
+        }
+    }
+    if declared == 0 {
+        None
+    } else {
+        Some("declared coordinates".to_string())
     }
 }
 
@@ -1736,7 +1764,7 @@ fn builtin_call(
         "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => {
             Expr::Call(f, args)
         }
-        "__declare_indices" => Expr::Call(f, args),
+        "__declare_indices" | "__declare_coordinates" => Expr::Call(f, args),
         "grassmann" => Expr::Call(f, args),
         "expand" => {
             if args.len() == 1 {
