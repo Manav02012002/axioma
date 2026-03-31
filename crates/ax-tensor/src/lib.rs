@@ -134,6 +134,210 @@ fn sort_key(index: &ax_ir::Index, interner: &Interner) -> (String, u8) {
     )
 }
 
+fn tensor_sort_key(expr: &Expr, interner: &ax_ir::Interner) -> (u8, String, String) {
+    match expr {
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => (0, String::new(), String::new()),
+        Expr::Sym(s) => (1, interner.resolve(*s).to_string(), String::new()),
+        Expr::Indexed(base, indices) => {
+            let base_name = if let Expr::Sym(s) = base.as_ref() {
+                interner.resolve(*s).to_string()
+            } else {
+                format!("{base:?}")
+            };
+            let first_index = indices
+                .first()
+                .map(|idx| interner.resolve(idx.name).to_string())
+                .unwrap_or_default();
+            (2, base_name, first_index)
+        }
+        Expr::Call(f, args) => {
+            let first_arg = args.first().map(|arg| format!("{arg:?}")).unwrap_or_default();
+            (2, interner.resolve(*f).to_string(), first_arg)
+        }
+        _ => (4, format!("{expr:?}"), String::new()),
+    }
+}
+
+pub fn sort_product(
+    expr: &ax_ir::Expr,
+    _tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut sorted: Vec<Expr> = factors
+                .iter()
+                .map(|factor| sort_product(factor, _tensor_properties, interner))
+                .collect();
+            sorted.sort_by(|a, b| tensor_sort_key(a, interner).cmp(&tensor_sort_key(b, interner)));
+            Expr::mul(sorted)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| sort_product(term, _tensor_properties, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(sort_product(inner, _tensor_properties, interner)),
+        Expr::Pow(base, exp) => Expr::pow(
+            sort_product(base, _tensor_properties, interner),
+            sort_product(exp, _tensor_properties, interner),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| sort_product(arg, _tensor_properties, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(sort_product(re, _tensor_properties, interner)),
+            Box::new(sort_product(im, _tensor_properties, interner)),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(sort_product(body, _tensor_properties, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(sort_product(lhs, _tensor_properties, interner)),
+            Box::new(sort_product(rhs, _tensor_properties, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| (sort_product(value, _tensor_properties, interner), cond.clone()))
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(sort_product(value, _tensor_properties, interner)),
+            Box::new(sort_product(body, _tensor_properties, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| sort_product(item, _tensor_properties, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| sort_product(cell, _tensor_properties, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+pub fn product_rule(
+    expr: &ax_ir::Expr,
+    derivative_syms: &HashSet<lasso::Spur>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Call(f, args) if derivative_syms.contains(f) && args.len() == 1 => match &args[0] {
+            Expr::Mul(factors) if factors.len() >= 2 => {
+                let terms: Vec<Expr> = (0..factors.len())
+                    .map(|i| {
+                        let mut new_factors = Vec::with_capacity(factors.len());
+                        for (j, factor) in factors.iter().enumerate() {
+                            if i == j {
+                                new_factors.push(Expr::Call(
+                                    *f,
+                                    vec![product_rule(factor, derivative_syms, interner)],
+                                ));
+                            } else {
+                                new_factors.push(product_rule(factor, derivative_syms, interner));
+                            }
+                        }
+                        Expr::mul(new_factors)
+                    })
+                    .collect();
+                Expr::add(terms)
+            }
+            Expr::Add(terms) => Expr::add(
+                terms
+                    .iter()
+                    .map(|term| Expr::Call(*f, vec![product_rule(term, derivative_syms, interner)]))
+                    .collect(),
+            ),
+            Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Expr::zero(),
+            _ => Expr::Call(
+                *f,
+                vec![product_rule(&args[0], derivative_syms, interner)],
+            ),
+        },
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| product_rule(term, derivative_syms, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| product_rule(factor, derivative_syms, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(product_rule(inner, derivative_syms, interner)),
+        Expr::Pow(base, exp) => Expr::pow(
+            product_rule(base, derivative_syms, interner),
+            product_rule(exp, derivative_syms, interner),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| product_rule(arg, derivative_syms, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(product_rule(re, derivative_syms, interner)),
+            Box::new(product_rule(im, derivative_syms, interner)),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(product_rule(body, derivative_syms, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(product_rule(lhs, derivative_syms, interner)),
+            Box::new(product_rule(rhs, derivative_syms, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| (product_rule(value, derivative_syms, interner), cond.clone()))
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(product_rule(value, derivative_syms, interner)),
+            Box::new(product_rule(body, derivative_syms, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| product_rule(item, derivative_syms, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| product_rule(cell, derivative_syms, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
 pub fn canonicalize_indices(
     expr: &ax_ir::Expr,
     properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
@@ -2327,5 +2531,103 @@ mod tests {
         let r1 = rename_dummies(&expr1, &env, &interner);
         let r2 = rename_dummies(&expr2, &env, &interner);
         assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn sort_puts_scalars_first() {
+        let interner = ax_ir::Interner::new();
+        let props = HashMap::new();
+        let b_sym = interner.get_or_intern("B");
+        let a_sym = interner.get_or_intern("A");
+        let mu = interner.get_or_intern("mu");
+
+        let expr = Expr::Mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(b_sym)),
+                vec![ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::Int(3.into()),
+            Expr::Indexed(
+                Box::new(Expr::Sym(a_sym)),
+                vec![ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        let result = sort_product(&expr, &props, &interner);
+        if let Expr::Mul(factors) = &result {
+            assert_eq!(factors[0], Expr::Int(3.into()));
+            if let Expr::Indexed(base, _) = &factors[1] {
+                assert_eq!(**base, Expr::Sym(a_sym));
+            } else {
+                panic!("expected indexed tensor as second factor");
+            }
+            if let Expr::Indexed(base, _) = &factors[2] {
+                assert_eq!(**base, Expr::Sym(b_sym));
+            } else {
+                panic!("expected indexed tensor as third factor");
+            }
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn leibniz_on_product() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("D");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+
+        let mut derivs = HashSet::new();
+        derivs.insert(d);
+
+        let expr = Expr::Call(d, vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)])]);
+        let result = product_rule(&expr, &derivs, &interner);
+
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2);
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn leibniz_on_constant() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("D");
+
+        let mut derivs = HashSet::new();
+        derivs.insert(d);
+
+        let expr = Expr::Call(d, vec![Expr::Int(5.into())]);
+        let result = product_rule(&expr, &derivs, &interner);
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn leibniz_on_sum() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("D");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+
+        let mut derivs = HashSet::new();
+        derivs.insert(d);
+
+        let expr = Expr::Call(d, vec![Expr::add(vec![Expr::Sym(a), Expr::Sym(b)])]);
+        let result = product_rule(&expr, &derivs, &interner);
+
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2);
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
     }
 }

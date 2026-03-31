@@ -1843,6 +1843,35 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "sort_product" => {
+            if args.len() == 1 {
+                ax_tensor::sort_product(&args[0], &env.tensor_properties, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "product_rule" | "leibniz" => {
+            if args.len() == 1 {
+                let deriv_syms: HashSet<lasso::Spur> = env
+                    .tensor_properties
+                    .iter()
+                    .filter(|(_, props)| {
+                        props.iter().any(|p| {
+                            matches!(
+                                p,
+                                ax_ir::TensorProperty::Derivative
+                                    | ax_ir::TensorProperty::PartialDerivative
+                                    | ax_ir::TensorProperty::CovariantDerivative
+                            )
+                        })
+                    })
+                    .map(|(sym, _)| *sym)
+                    .collect();
+                ax_tensor::product_rule(&args[0], &deriv_syms, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "eliminate_kronecker" => {
             if !args.is_empty() {
                 let delta = if args.len() >= 2 {
