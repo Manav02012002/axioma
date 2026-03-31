@@ -21,6 +21,27 @@ pub struct Index {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexFamily {
+    pub name: Sym,
+    pub values: Vec<Sym>,
+    pub position: IndexPosition,
+    pub dimension: Option<usize>,
+    pub parent: Option<Sym>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexPosition {
+    Free,
+    Fixed,
+}
+
+impl Default for IndexPosition {
+    fn default() -> Self {
+        IndexPosition::Free
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Assumption {
     Real,
     Positive,

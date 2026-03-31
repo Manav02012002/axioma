@@ -21,6 +21,8 @@ pub struct Env {
     pub assumptions: HashMap<lasso::Spur, Vec<Assumption>>,
     pub gradings: HashMap<lasso::Spur, Grading>,
     pub operators: HashMap<lasso::Spur, ax_qm::OperatorKind>,
+    pub index_families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
+    pub index_to_family: HashMap<lasso::Spur, lasso::Spur>,
     pub tensor_properties: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
     pub convention: ax_ir::Convention,
 }
@@ -34,6 +36,8 @@ impl Env {
             assumptions: HashMap::new(),
             gradings: HashMap::new(),
             operators: HashMap::new(),
+            index_families: HashMap::new(),
+            index_to_family: HashMap::new(),
             tensor_properties: HashMap::new(),
             convention: ax_ir::Convention::default(),
         }
@@ -55,6 +59,8 @@ impl Env {
             assumptions: self.assumptions.clone(),
             gradings: self.gradings.clone(),
             operators: self.operators.clone(),
+            index_families: self.index_families.clone(),
+            index_to_family: self.index_to_family.clone(),
             tensor_properties: self.tensor_properties.clone(),
             convention: self.convention.clone(),
         }
@@ -2978,6 +2984,26 @@ mod tests {
     fn convention_default_is_mtw() {
         let env = Env::new();
         assert_eq!(env.convention.riemann_sign, ax_ir::RiemannSign::MTW);
+    }
+
+    #[test]
+    fn index_family_creation() {
+        let interner = ax_ir::Interner::new();
+        let spacetime = interner.get_or_intern("spacetime");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+        let family = ax_ir::IndexFamily {
+            name: spacetime,
+            values: vec![],
+            position: ax_ir::IndexPosition::Free,
+            dimension: Some(4),
+            parent: None,
+        };
+        let mut env = Env::new();
+        env.index_families.insert(spacetime, family);
+        env.index_to_family.insert(mu, spacetime);
+        env.index_to_family.insert(nu, spacetime);
+        assert_eq!(env.index_to_family[&mu], spacetime);
     }
 
     #[test]
