@@ -1840,6 +1840,15 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "eliminate_metric" => {
+            if !args.is_empty() {
+                let metric = interner.get_or_intern("g");
+                let inv_metric = interner.get_or_intern("ginv");
+                ax_tensor::eliminate_metric(&args[0], metric, inv_metric, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "dim" => {
             if args.len() == 1 {
                 let mut units = ax_units::si_units(interner);

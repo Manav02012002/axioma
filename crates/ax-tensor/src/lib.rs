@@ -449,6 +449,55 @@ fn replace_index(expr: &Expr, from: lasso::Spur, to: lasso::Spur) -> Expr {
     }
 }
 
+fn has_index_with_variance(expr: &Expr, name: lasso::Spur, variance: &ax_ir::Variance) -> bool {
+    match expr {
+        Expr::Indexed(_, indices) => indices
+            .iter()
+            .any(|index| index.name == name && index.variance == *variance),
+        Expr::Mul(factors) => factors
+            .iter()
+            .any(|factor| has_index_with_variance(factor, name, variance)),
+        _ => false,
+    }
+}
+
+fn replace_index_with_variance(
+    expr: &Expr,
+    from_name: lasso::Spur,
+    from_variance: &ax_ir::Variance,
+    to_name: lasso::Spur,
+    to_variance: &ax_ir::Variance,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let new_indices: Vec<ax_ir::Index> = indices
+                .iter()
+                .map(|idx| {
+                    if idx.name == from_name && idx.variance == *from_variance {
+                        ax_ir::Index {
+                            name: to_name,
+                            variance: to_variance.clone(),
+                            index_type: idx.index_type,
+                        }
+                    } else {
+                        idx.clone()
+                    }
+                })
+                .collect();
+            Expr::Indexed(base.clone(), new_indices)
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| {
+                    replace_index_with_variance(f, from_name, from_variance, to_name, to_variance)
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
 pub fn eliminate_kronecker(
     expr: &ax_ir::Expr,
     delta_sym: lasso::Spur,
@@ -534,6 +583,123 @@ pub fn eliminate_kronecker(
             }
             expr.clone()
         }
+        _ => expr.clone(),
+    }
+}
+
+pub fn eliminate_metric(
+    expr: &ax_ir::Expr,
+    metric_sym: lasso::Spur,
+    inv_metric_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut remaining = factors.clone();
+            let mut changed = true;
+            while changed {
+                changed = false;
+                for i in 0..remaining.len() {
+                    let metric_info = match &remaining[i] {
+                        Expr::Indexed(base, indices) => match base.as_ref() {
+                            Expr::Sym(s) if indices.len() == 2 => Some((
+                                *s,
+                                indices[0].name,
+                                indices[0].variance.clone(),
+                                indices[1].name,
+                                indices[1].variance.clone(),
+                            )),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let Some((sym, left_name, left_var, right_name, right_var)) = metric_info else {
+                        continue;
+                    };
+
+                    let is_metric = sym == metric_sym
+                        && left_var == ax_ir::Variance::Down
+                        && right_var == ax_ir::Variance::Down;
+                    let is_inv_metric = sym == inv_metric_sym
+                        && left_var == ax_ir::Variance::Up
+                        && right_var == ax_ir::Variance::Up;
+                    if !is_metric && !is_inv_metric {
+                        continue;
+                    }
+
+                    let target_variance = if is_metric {
+                        ax_ir::Variance::Up
+                    } else {
+                        ax_ir::Variance::Down
+                    };
+                    let new_variance = if is_metric {
+                        ax_ir::Variance::Down
+                    } else {
+                        ax_ir::Variance::Up
+                    };
+
+                    let mut found = false;
+                    let mut contract_idx = right_name;
+                    let mut replace_with = left_name;
+                    for j in 0..remaining.len() {
+                        if i == j {
+                            continue;
+                        }
+                        if has_index_with_variance(&remaining[j], contract_idx, &target_variance) {
+                            remaining[j] = replace_index_with_variance(
+                                &remaining[j],
+                                contract_idx,
+                                &target_variance,
+                                replace_with,
+                                &new_variance,
+                            );
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if !found {
+                        contract_idx = left_name;
+                        replace_with = right_name;
+                        for j in 0..remaining.len() {
+                            if i == j {
+                                continue;
+                            }
+                            if has_index_with_variance(&remaining[j], contract_idx, &target_variance) {
+                                remaining[j] = replace_index_with_variance(
+                                    &remaining[j],
+                                    contract_idx,
+                                    &target_variance,
+                                    replace_with,
+                                    &new_variance,
+                                );
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if found {
+                        remaining.remove(i);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            Expr::mul(
+                remaining
+                    .into_iter()
+                    .map(|f| eliminate_metric(&f, metric_sym, inv_metric_sym, interner))
+                    .collect(),
+            )
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| eliminate_metric(t, metric_sym, inv_metric_sym, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(eliminate_metric(e, metric_sym, inv_metric_sym, interner)),
         _ => expr.clone(),
     }
 }
@@ -1873,5 +2039,50 @@ mod tests {
         );
         let result = eliminate_kronecker(&expr, delta, &interner);
         assert_eq!(result, Expr::Sym(dim));
+    }
+
+    #[test]
+    fn metric_lowers_index() {
+        let interner = ax_ir::Interner::new();
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let v_sym = interner.get_or_intern("V");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+
+        let metric = Expr::Indexed(
+            Box::new(Expr::Sym(g)),
+            vec![
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: nu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let vector = Expr::Indexed(
+            Box::new(Expr::Sym(v_sym)),
+            vec![ax_ir::Index {
+                name: nu,
+                variance: ax_ir::Variance::Up,
+                index_type: None,
+            }],
+        );
+        let product = Expr::mul(vec![metric, vector]);
+        let result = eliminate_metric(&product, g, ginv, &interner);
+
+        if let Expr::Indexed(base, indices) = &result {
+            assert_eq!(**base, Expr::Sym(v_sym));
+            assert_eq!(indices.len(), 1);
+            assert_eq!(indices[0].name, mu);
+            assert_eq!(indices[0].variance, ax_ir::Variance::Down);
+        } else {
+            panic!("expected Indexed, got {:?}", result);
+        }
     }
 }
