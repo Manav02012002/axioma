@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use ax_perm::{Perm, SGS};
 use ax_ir::{Expr, Interner};
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -8,6 +9,133 @@ use std::collections::{HashMap, HashSet};
 pub trait DummyRenameEnv {
     fn index_families(&self) -> &HashMap<lasso::Spur, ax_ir::IndexFamily>;
     fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur>;
+}
+
+/// Information about a tensor factor in a product, extracted from Expr.
+#[derive(Clone, Debug)]
+pub struct TensorFactorInfo {
+    pub name: lasso::Spur,
+    pub n_indices: usize,
+    pub start_position: usize,
+    pub properties: Vec<ax_ir::TensorProperty>,
+}
+
+/// Build the generating set for the symmetry group of a tensor product expression.
+///
+/// Each tensor in the product has index positions. The symmetry generators
+/// are permutations of these positions.
+pub fn build_generating_set(
+    factors: &[TensorFactorInfo],
+    _interner: &ax_ir::Interner,
+) -> Vec<Perm> {
+    let _sgs_marker: Option<SGS> = None;
+    let total_indices: usize = factors.iter().map(|factor| factor.n_indices).sum();
+    let degree = total_indices + 2;
+    let sign_pos = total_indices;
+    let sign_neg = total_indices + 1;
+
+    let mut generators = Vec::new();
+
+    for factor in factors {
+        for prop in &factor.properties {
+            match prop {
+                ax_ir::TensorProperty::Symmetric(positions) => {
+                    if positions.len() < 2 {
+                        continue;
+                    }
+                    for i in 0..(positions.len() - 1) {
+                        let mut generator: Perm = (0..degree).collect();
+                        let p1 = factor.start_position + positions[i];
+                        let p2 = factor.start_position + positions[i + 1];
+                        generator.swap(p1, p2);
+                        generators.push(generator);
+                    }
+                }
+                ax_ir::TensorProperty::AntiSymmetric(positions) => {
+                    if positions.len() < 2 {
+                        continue;
+                    }
+                    for i in 0..(positions.len() - 1) {
+                        let mut generator: Perm = (0..degree).collect();
+                        let p1 = factor.start_position + positions[i];
+                        let p2 = factor.start_position + positions[i + 1];
+                        generator.swap(p1, p2);
+                        generator.swap(sign_pos, sign_neg);
+                        generators.push(generator);
+                    }
+                }
+                ax_ir::TensorProperty::RiemannSymmetry => {
+                    if factor.n_indices >= 4 {
+                        let s = factor.start_position;
+
+                        let mut g1: Perm = (0..degree).collect();
+                        g1.swap(s, s + 1);
+                        g1.swap(sign_pos, sign_neg);
+                        generators.push(g1);
+
+                        let mut g2: Perm = (0..degree).collect();
+                        g2.swap(s + 2, s + 3);
+                        g2.swap(sign_pos, sign_neg);
+                        generators.push(g2);
+
+                        let mut g3: Perm = (0..degree).collect();
+                        g3.swap(s, s + 2);
+                        g3.swap(s + 1, s + 3);
+                        generators.push(g3);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for i in 0..factors.len() {
+        for j in (i + 1)..factors.len() {
+            if factors[i].name == factors[j].name && factors[i].n_indices == factors[j].n_indices {
+                let mut generator: Perm = (0..degree).collect();
+                for k in 0..factors[i].n_indices {
+                    generator.swap(
+                        factors[i].start_position + k,
+                        factors[j].start_position + k,
+                    );
+                }
+                generators.push(generator);
+            }
+        }
+    }
+
+    generators
+}
+
+pub fn extract_factor_info(
+    expr: &ax_ir::Expr,
+    tensor_properties: &std::collections::HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    _interner: &ax_ir::Interner,
+) -> Vec<TensorFactorInfo> {
+    let factors = match expr {
+        ax_ir::Expr::Mul(factors) => factors,
+        _ => return vec![],
+    };
+
+    let mut result = Vec::new();
+    let mut position = 0usize;
+
+    for factor in factors {
+        if let ax_ir::Expr::Indexed(base, indices) = factor {
+            if let ax_ir::Expr::Sym(name) = base.as_ref() {
+                let props = tensor_properties.get(name).cloned().unwrap_or_default();
+                result.push(TensorFactorInfo {
+                    name: *name,
+                    n_indices: indices.len(),
+                    start_position: position,
+                    properties: props,
+                });
+                position += indices.len();
+            }
+        }
+    }
+
+    result
 }
 
 #[derive(Clone, Debug)]
@@ -2961,5 +3089,87 @@ mod tests {
         let result = epsilon_to_delta(&product, eps, delta, 4, &interner);
         let simplified = ax_eval::eval(&result, &ax_eval::Env::new(), &interner);
         assert_eq!(simplified, Expr::Int(24.into()));
+    }
+
+    #[test]
+    fn generating_set_symmetric_2tensor() {
+        let interner = ax_ir::Interner::new();
+        let g_sym = interner.get_or_intern("g");
+
+        let factors = vec![TensorFactorInfo {
+            name: g_sym,
+            n_indices: 2,
+            start_position: 0,
+            properties: vec![ax_ir::TensorProperty::Symmetric(vec![0, 1])],
+        }];
+
+        let gens = build_generating_set(&factors, &interner);
+        assert_eq!(gens.len(), 1);
+        assert_eq!(gens[0][0], 1);
+        assert_eq!(gens[0][1], 0);
+        assert_eq!(gens[0][2], 2);
+        assert_eq!(gens[0][3], 3);
+    }
+
+    #[test]
+    fn generating_set_antisymmetric_2tensor() {
+        let interner = ax_ir::Interner::new();
+        let f_sym = interner.get_or_intern("F");
+
+        let factors = vec![TensorFactorInfo {
+            name: f_sym,
+            n_indices: 2,
+            start_position: 0,
+            properties: vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])],
+        }];
+
+        let gens = build_generating_set(&factors, &interner);
+        assert_eq!(gens.len(), 1);
+        assert_eq!(gens[0][0], 1);
+        assert_eq!(gens[0][1], 0);
+        assert_eq!(gens[0][2], 3);
+        assert_eq!(gens[0][3], 2);
+    }
+
+    #[test]
+    fn generating_set_riemann() {
+        let interner = ax_ir::Interner::new();
+        let r_sym = interner.get_or_intern("R");
+
+        let factors = vec![TensorFactorInfo {
+            name: r_sym,
+            n_indices: 4,
+            start_position: 0,
+            properties: vec![ax_ir::TensorProperty::RiemannSymmetry],
+        }];
+
+        let gens = build_generating_set(&factors, &interner);
+        assert_eq!(gens.len(), 3);
+    }
+
+    #[test]
+    fn identical_tensor_exchange() {
+        let interner = ax_ir::Interner::new();
+        let a_sym = interner.get_or_intern("A");
+
+        let factors = vec![
+            TensorFactorInfo {
+                name: a_sym,
+                n_indices: 1,
+                start_position: 0,
+                properties: vec![],
+            },
+            TensorFactorInfo {
+                name: a_sym,
+                n_indices: 1,
+                start_position: 1,
+                properties: vec![],
+            },
+        ];
+
+        let gens = build_generating_set(&factors, &interner);
+        assert_eq!(gens.len(), 1);
+        assert_eq!(gens[0][0], 1);
+        assert_eq!(gens[0][1], 0);
     }
 }

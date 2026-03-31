@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
+ax-perm = { path = "../ax-perm" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }

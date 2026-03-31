@@ -472,6 +472,7 @@ dependencies = [
  "ax-eval",
  "ax-ir",
  "ax-linalg",
+ "ax-perm",
  "lasso",
  "num-bigint",
  "num-rational",
