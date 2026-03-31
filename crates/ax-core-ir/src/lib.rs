@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use ax_ir::{Expr, Index, Interner, Variance};
+use ax_ir::{Assumption, Condition, Expr, Index, Interner, Variance};
 use std::ops::Range;
 
 #[derive(Debug, Clone)]
@@ -101,6 +101,16 @@ impl<'a> Cursor<'a> {
         true
     }
 
+    fn consume_arrow(&mut self) -> bool {
+        self.skip_ws();
+        if self.rest().starts_with("=>") {
+            self.pos += 2;
+            true
+        } else {
+            false
+        }
+    }
+
     fn parse_ident(&mut self) -> Result<ax_ir::expr::Sym, LowerError> {
         self.skip_ws();
         let start = self.pos;
@@ -166,6 +176,22 @@ impl<'a> Cursor<'a> {
     fn parse_primary(&mut self) -> Result<Expr, LowerError> {
         self.skip_ws();
 
+        if self.consume_keyword("if") {
+            let cond = self.parse_condition()?;
+            if !self.consume_keyword("then") {
+                return Err(self.error("expected 'then'"));
+            }
+            let then_expr = self.parse_expr()?;
+            if !self.consume_keyword("else") {
+                return Err(self.error("expected 'else'"));
+            }
+            let else_expr = self.parse_expr()?;
+            return Ok(Expr::Piecewise(vec![
+                (then_expr, cond),
+                (else_expr, Condition::True),
+            ]));
+        }
+
         if self.consume_keyword("let") {
             let name = self.parse_ident()?;
             self.skip_ws();
@@ -178,6 +204,67 @@ impl<'a> Cursor<'a> {
                 return Ok(Expr::Let(name, Box::new(value), Box::new(body)));
             }
             return Ok(Expr::Let(name, Box::new(value), Box::new(Expr::Sym(name))));
+        }
+
+        if self.consume_keyword("assume") {
+            let var = self.parse_ident()?;
+            let mut assumptions = Vec::new();
+            loop {
+                self.skip_ws();
+                if self.consume_keyword("real") {
+                    assumptions.push(Assumption::Real);
+                } else if self.consume_keyword("positive") {
+                    assumptions.push(Assumption::Positive);
+                } else if self.consume_keyword("negative") {
+                    assumptions.push(Assumption::Negative);
+                } else if self.consume_keyword("nonzero") {
+                    assumptions.push(Assumption::NonZero);
+                } else if self.consume_keyword("integer") {
+                    assumptions.push(Assumption::Integer);
+                } else if self.consume_keyword("even") {
+                    assumptions.push(Assumption::Even);
+                } else if self.consume_keyword("odd") {
+                    assumptions.push(Assumption::Odd);
+                } else {
+                    break;
+                }
+            }
+            return Ok(Expr::Assume(var, assumptions));
+        }
+
+        if self.consume_keyword("import") {
+            let mut path = Vec::new();
+            path.push(self.parse_ident()?);
+            loop {
+                self.skip_ws();
+                if self.eat_if('.') {
+                    path.push(self.parse_ident()?);
+                } else {
+                    break;
+                }
+            }
+            return Ok(Expr::Import(path));
+        }
+
+        if self.consume_keyword("rule") {
+            let saved = self.pos;
+            if self.parse_ident().is_ok() {
+                self.skip_ws();
+                if !self.eat_if(':') {
+                    self.pos = saved;
+                }
+            } else {
+                self.pos = saved;
+            }
+            self.skip_ws();
+            let lhs = self.parse_expr()?;
+            self.skip_ws();
+            if !self.consume_arrow() {
+                return Err(self.error("expected '=>' in rule"));
+            }
+            self.skip_ws();
+            let rhs = self.parse_expr()?;
+            return Ok(Expr::Rule(Box::new(lhs), Box::new(rhs)));
         }
 
         match self.peek_char() {
@@ -219,6 +306,103 @@ impl<'a> Cursor<'a> {
         }
     }
 
+    fn parse_condition(&mut self) -> Result<Condition, LowerError> {
+        self.skip_ws();
+
+        if self.consume_keyword("true") {
+            return Ok(Condition::True);
+        }
+        if self.consume_keyword("false") {
+            return Ok(Condition::False);
+        }
+
+        let lhs = self.parse_add()?;
+        self.skip_ws();
+
+        if self.rest().starts_with(">=") {
+            self.pos += 2;
+            let rhs = self.parse_add()?;
+            return Ok(Condition::Ge(lhs, rhs));
+        }
+        if self.rest().starts_with("<=") {
+            self.pos += 2;
+            let rhs = self.parse_add()?;
+            return Ok(Condition::Le(lhs, rhs));
+        }
+        if self.rest().starts_with("==") {
+            self.pos += 2;
+            let rhs = self.parse_add()?;
+            return Ok(Condition::Eq(lhs, rhs));
+        }
+        if self.rest().starts_with("!=") {
+            self.pos += 2;
+            let rhs = self.parse_add()?;
+            return Ok(Condition::Ne(lhs, rhs));
+        }
+        if self.eat_if('>') {
+            let rhs = self.parse_add()?;
+            return Ok(Condition::Gt(lhs, rhs));
+        }
+        if self.eat_if('<') {
+            let rhs = self.parse_add()?;
+            return Ok(Condition::Lt(lhs, rhs));
+        }
+
+        Err(self.error("expected comparison operator"))
+    }
+
+    fn parse_piecewise_args(&mut self) -> Result<Vec<(Expr, Condition)>, LowerError> {
+        let mut cases = Vec::new();
+        self.skip_ws();
+        if self.eat_if(')') {
+            return Ok(cases);
+        }
+
+        loop {
+            let value = self.parse_expr()?;
+            self.skip_ws();
+            if !self.eat_if(',') {
+                return Err(self.error("expected ',' after piecewise value"));
+            }
+            self.skip_ws();
+
+            if self.consume_keyword("true") {
+                self.skip_ws();
+                if !self.eat_if(')') {
+                    return Err(self.error("expected ')' after piecewise default case"));
+                }
+                cases.push((value, Condition::True));
+                break;
+            }
+            if self.consume_keyword("false") {
+                let condition = Condition::False;
+                self.skip_ws();
+                if self.eat_if(',') {
+                    cases.push((value, condition));
+                    continue;
+                }
+                if self.eat_if(')') {
+                    cases.push((value, condition));
+                    break;
+                }
+                return Err(self.error("expected ',' or ')' in piecewise"));
+            }
+
+            let condition = self.parse_condition()?;
+            cases.push((value, condition));
+            self.skip_ws();
+            if self.eat_if(',') {
+                continue;
+            }
+            if self.eat_if(')') {
+                break;
+            }
+            return Err(self.error("expected ',' or ')' in piecewise"));
+        }
+
+        Ok(cases)
+    }
+
     fn parse_postfix(&mut self) -> Result<Expr, LowerError> {
         let mut expr = self.parse_primary()?;
 
@@ -238,6 +422,11 @@ impl<'a> Cursor<'a> {
                     };
 
                     self.bump_char();
+                    if self.interner.resolve(callee) == "piecewise" {
+                        expr = Expr::Piecewise(self.parse_piecewise_args()?);
+                        continue;
+                    }
+
                     let mut args = Vec::new();
                     self.skip_ws();
                     if !self.eat_if(')') {
@@ -347,8 +536,28 @@ impl<'a> Cursor<'a> {
         self.parse_add()
     }
 
+    fn try_rewrite_as_fn_def(&mut self, expr: Expr) -> Result<Expr, LowerError> {
+        self.skip_ws();
+        if let Expr::Call(name, args) = expr {
+            if self.eat_if('=') {
+                let params = args
+                    .iter()
+                    .map(|arg| match arg {
+                        Expr::Sym(sym) => Ok(*sym),
+                        _ => Err(self.error("function parameters must be identifiers")),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let body = self.parse_expr()?;
+                return Ok(Expr::FnDef(name, params, Box::new(body)));
+            }
+            return Ok(Expr::Call(name, args));
+        }
+        Ok(expr)
+    }
+
     fn finish(mut self) -> Result<Expr, LowerError> {
         let expr = self.parse_expr()?;
+        let expr = self.try_rewrite_as_fn_def(expr)?;
         self.skip_ws();
         let _ = self.eat_if(';');
         self.skip_ws();
@@ -483,7 +692,7 @@ pub fn lower(source: &str, interner: &Interner) -> LowerResult {
         if trimmed.is_empty() || trimmed.starts_with("//") {
             continue;
         }
-        if trimmed.starts_with("module ") || trimmed.starts_with("import ") {
+        if trimmed.starts_with("module ") {
             continue;
         }
 
@@ -654,5 +863,47 @@ mod tests {
             }
             other => panic!("expected Call, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn lower_function_definition() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("f(x, y) = x^2 + y", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        match result.expr.unwrap() {
+            ax_ir::Expr::FnDef(name, params, body) => {
+                assert_eq!(interner.resolve(name), "f");
+                assert_eq!(params.len(), 2);
+                assert_eq!(interner.resolve(params[0]), "x");
+                assert_eq!(interner.resolve(params[1]), "y");
+                assert!(matches!(*body, ax_ir::Expr::Add(_)));
+            }
+            other => panic!("expected FnDef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_rule() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("rule pythag: sin(x_)^2 + cos(x_)^2 => 1", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let expr = result.expr.unwrap();
+        assert!(matches!(expr, ax_ir::Expr::Rule(_, _)));
+    }
+
+    #[test]
+    fn assume_integer_parse() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("assume n integer", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(matches!(result.expr.unwrap(), ax_ir::Expr::Assume(_, _)));
+    }
+
+    #[test]
+    fn parse_import() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("import std.gr.schwarzschild", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(matches!(result.expr.unwrap(), ax_ir::Expr::Import(_)));
     }
 }

@@ -99,6 +99,11 @@ pub fn diff_component(
             Expr::Pow(base, exp) => contains_var(base, var) || contains_var(exp, var),
             Expr::Neg(e) => contains_var(e, var),
             Expr::Call(_, args) => args.iter().any(|arg| contains_var(arg, var)),
+            Expr::FnDef(_, _, body) => contains_var(body, var),
+            Expr::Rule(lhs, rhs) => contains_var(lhs, var) || contains_var(rhs, var),
+            Expr::Import(_) => false,
+            Expr::Assume(_, _) => false,
+            Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_var(value, var)),
             Expr::Indexed(base, _) => contains_var(base, var),
             Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
             Expr::Matrix(rows) => rows
@@ -174,6 +179,20 @@ pub fn diff_component(
             Expr::Call(_, _) | Expr::Indexed(_, _) => Expr::Call(
                 interner.get_or_intern("diff"),
                 vec![expr.clone(), Expr::Sym(var)],
+            ),
+            Expr::FnDef(name, params, body) => {
+                Expr::FnDef(*name, params.clone(), Box::new(diff(body, var, interner)))
+            }
+            Expr::Rule(lhs, rhs) => Expr::Rule(
+                Box::new(diff(lhs, var, interner)),
+                Box::new(diff(rhs, var, interner)),
+            ),
+            Expr::Import(path) => Expr::Import(path.clone()),
+            Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+            Expr::Piecewise(cases) => Expr::Piecewise(
+                cases.iter()
+                    .map(|(value, condition)| (diff(value, var, interner), condition.clone()))
+                    .collect(),
             ),
             Expr::Let(name, val, body) => {
                 Expr::Let(*name, val.clone(), Box::new(diff(body, var, interner)))
@@ -426,6 +445,17 @@ fn eval_expr(expr: &Expr) -> Expr {
         }
         Expr::Neg(e) => Expr::neg(eval_expr(e)),
         Expr::Call(f, args) => Expr::Call(*f, args.iter().map(eval_expr).collect()),
+        Expr::FnDef(name, params, body) => {
+            Expr::FnDef(*name, params.clone(), Box::new(eval_expr(body)))
+        }
+        Expr::Rule(lhs, rhs) => Expr::Rule(Box::new(eval_expr(lhs)), Box::new(eval_expr(rhs))),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases.iter()
+                .map(|(value, condition)| (eval_expr(value), condition.clone()))
+                .collect(),
+        ),
         Expr::Let(name, val, body) => {
             Expr::Let(*name, Box::new(eval_expr(val)), Box::new(eval_expr(body)))
         }
@@ -449,6 +479,13 @@ fn node_count(expr: &Expr) -> usize {
         Expr::Pow(base, exp) => 1 + node_count(base) + node_count(exp),
         Expr::Neg(inner) => 1 + node_count(inner),
         Expr::Call(_, args) => 1 + args.iter().map(node_count).sum::<usize>(),
+        Expr::FnDef(_, params, body) => params.len() + 1 + node_count(body),
+        Expr::Rule(lhs, rhs) => 1 + node_count(lhs) + node_count(rhs),
+        Expr::Import(path) => 1 + path.len(),
+        Expr::Assume(_, assumptions) => 1 + assumptions.len(),
+        Expr::Piecewise(cases) => {
+            1 + cases.iter().map(|(value, _)| node_count(value)).sum::<usize>()
+        }
         Expr::Indexed(base, _) => 1 + node_count(base),
         Expr::Let(_, val, body) => 1 + node_count(val) + node_count(body),
         Expr::Matrix(rows) => 1 + rows.iter().flatten().map(node_count).sum::<usize>(),
@@ -531,6 +568,20 @@ fn expand_expr(expr: &Expr, interner: &Interner) -> Expr {
         Expr::Call(f, args) => {
             Expr::Call(*f, args.iter().map(|a| expand_expr(a, interner)).collect())
         }
+        Expr::FnDef(name, params, body) => {
+            Expr::FnDef(*name, params.clone(), Box::new(expand_expr(body, interner)))
+        }
+        Expr::Rule(lhs, rhs) => Expr::Rule(
+            Box::new(expand_expr(lhs, interner)),
+            Box::new(expand_expr(rhs, interner)),
+        ),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases.iter()
+                .map(|(value, condition)| (expand_expr(value, interner), condition.clone()))
+                .collect(),
+        ),
         Expr::Indexed(base, indices) => {
             Expr::Indexed(Box::new(expand_expr(base, interner)), indices.clone())
         }
@@ -664,6 +715,15 @@ fn collect_terms_expr(expr: &Expr, interner: &Interner) -> Expr {
             args.iter()
                 .map(|arg| collect_terms_expr(arg, interner))
                 .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(collect_terms_expr(body, interner)),
+        ),
+        Expr::Rule(lhs, rhs) => Expr::Rule(
+            Box::new(collect_terms_expr(lhs, interner)),
+            Box::new(collect_terms_expr(rhs, interner)),
         ),
         Expr::Indexed(base, indices) => Expr::Indexed(
             Box::new(collect_terms_expr(base, interner)),

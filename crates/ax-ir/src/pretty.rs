@@ -1,4 +1,4 @@
-use crate::expr::{Expr, Index, Variance};
+use crate::expr::{Assumption, Condition, Expr, Index, Variance};
 use crate::intern::Interner;
 
 fn needs_parens_in_pow_base(expr: &Expr) -> bool {
@@ -15,6 +15,42 @@ fn render_index(index: &Index, interner: &Interner) -> String {
         Variance::Down => "-",
     };
     format!("{}{}", interner.resolve(index.name), variance)
+}
+
+fn render_assumption(assumption: &Assumption) -> &'static str {
+    match assumption {
+        Assumption::Real => "real",
+        Assumption::Positive => "positive",
+        Assumption::Negative => "negative",
+        Assumption::NonZero => "nonzero",
+        Assumption::Integer => "integer",
+        Assumption::Even => "even",
+        Assumption::Odd => "odd",
+    }
+}
+
+fn render_condition(condition: &Condition, interner: &Interner) -> String {
+    match condition {
+        Condition::Gt(a, b) => format!("{} > {}", render(a, interner), render(b, interner)),
+        Condition::Lt(a, b) => format!("{} < {}", render(a, interner), render(b, interner)),
+        Condition::Ge(a, b) => format!("{} >= {}", render(a, interner), render(b, interner)),
+        Condition::Le(a, b) => format!("{} <= {}", render(a, interner), render(b, interner)),
+        Condition::Eq(a, b) => format!("{} == {}", render(a, interner), render(b, interner)),
+        Condition::Ne(a, b) => format!("{} != {}", render(a, interner), render(b, interner)),
+        Condition::And(a, b) => format!(
+            "({}) and ({})",
+            render_condition(a, interner),
+            render_condition(b, interner)
+        ),
+        Condition::Or(a, b) => format!(
+            "({}) or ({})",
+            render_condition(a, interner),
+            render_condition(b, interner)
+        ),
+        Condition::Not(c) => format!("not ({})", render_condition(c, interner)),
+        Condition::True => "true".to_string(),
+        Condition::False => "false".to_string(),
+    }
 }
 
 fn render(expr: &Expr, interner: &Interner) -> String {
@@ -79,6 +115,51 @@ fn render(expr: &Expr, interner: &Interner) -> String {
             interner.resolve(*f),
             args.iter()
                 .map(|arg| render(arg, interner))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Expr::FnDef(name, params, body) => format!(
+            "{}({}) = {}",
+            interner.resolve(*name),
+            params
+                .iter()
+                .map(|param| interner.resolve(*param).to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            render(body, interner)
+        ),
+        Expr::Rule(lhs, rhs) => format!("{} => {}", render(lhs, interner), render(rhs, interner)),
+        Expr::Import(path) => format!(
+            "import {}",
+            path.iter()
+                .map(|sym| interner.resolve(*sym))
+                .collect::<Vec<_>>()
+                .join(".")
+        ),
+        Expr::Assume(name, assumptions) => format!(
+            "assume {}{}",
+            interner.resolve(*name),
+            if assumptions.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " {}",
+                    assumptions
+                        .iter()
+                        .map(render_assumption)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }
+        ),
+        Expr::Piecewise(cases) => format!(
+            "piecewise({})",
+            cases.iter()
+                .map(|(value, condition)| format!(
+                    "{}, {}",
+                    render(value, interner),
+                    render_condition(condition, interner)
+                ))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),

@@ -1,4 +1,4 @@
-use ax_ir::{Expr, Index, Variance};
+use ax_ir::{Assumption, Condition, Expr, Index, Variance};
 use num_rational::BigRational;
 const PREC_TOP: u8 = 0;
 const PREC_ADD: u8 = 50;
@@ -186,6 +186,42 @@ fn render_indexed(base: &Expr, indices: &[Index], interner: &ax_ir::Interner) ->
     out
 }
 
+fn render_assumption(assumption: &Assumption) -> &'static str {
+    match assumption {
+        Assumption::Real => "real",
+        Assumption::Positive => "positive",
+        Assumption::Negative => "negative",
+        Assumption::NonZero => "nonzero",
+        Assumption::Integer => "integer",
+        Assumption::Even => "even",
+        Assumption::Odd => "odd",
+    }
+}
+
+fn render_condition(condition: &Condition, interner: &ax_ir::Interner) -> String {
+    match condition {
+        Condition::Gt(a, b) => format!("{} > {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
+        Condition::Lt(a, b) => format!("{} < {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
+        Condition::Ge(a, b) => format!("{} >= {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
+        Condition::Le(a, b) => format!("{} <= {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
+        Condition::Eq(a, b) => format!("{} == {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
+        Condition::Ne(a, b) => format!("{} != {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
+        Condition::And(a, b) => format!(
+            "({}) and ({})",
+            render_condition(a, interner),
+            render_condition(b, interner)
+        ),
+        Condition::Or(a, b) => format!(
+            "({}) or ({})",
+            render_condition(a, interner),
+            render_condition(b, interner)
+        ),
+        Condition::Not(c) => format!("not ({})", render_condition(c, interner)),
+        Condition::True => "true".to_string(),
+        Condition::False => "false".to_string(),
+    }
+}
+
 fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
     match expr {
         Expr::Int(n) => (n.to_string(), PREC_POW),
@@ -261,6 +297,70 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
             PREC_UNARY,
         ),
         Expr::Call(f, args) => (render_call(interner.resolve(*f), args, interner), PREC_POW),
+        Expr::FnDef(name, params, body) => (
+            format!(
+                "{}({}) = {}",
+                sym_to_unicode(*name, interner),
+                params
+                    .iter()
+                    .map(|param| sym_to_unicode(*param, interner))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                render_with_paren(body, PREC_TOP, interner)
+            ),
+            PREC_TOP,
+        ),
+        Expr::Rule(lhs, rhs) => (
+            format!(
+                "{} => {}",
+                render_with_paren(lhs, PREC_TOP, interner),
+                render_with_paren(rhs, PREC_TOP, interner)
+            ),
+            PREC_TOP,
+        ),
+        Expr::Import(path) => (
+            format!(
+                "import {}",
+                path.iter()
+                    .map(|sym| sym_to_unicode(*sym, interner))
+                    .collect::<Vec<_>>()
+                    .join(".")
+            ),
+            PREC_TOP,
+        ),
+        Expr::Assume(name, assumptions) => (
+            format!(
+                "assume {}{}",
+                sym_to_unicode(*name, interner),
+                if assumptions.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " {}",
+                        assumptions
+                            .iter()
+                            .map(render_assumption)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            ),
+            PREC_TOP,
+        ),
+        Expr::Piecewise(cases) => (
+            format!(
+                "piecewise({})",
+                cases.iter()
+                    .map(|(value, condition)| format!(
+                        "{}, {}",
+                        render_with_paren(value, PREC_TOP, interner),
+                        render_condition(condition, interner)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            PREC_TOP,
+        ),
         Expr::Indexed(base, indices) => (render_indexed(base, indices, interner), PREC_POW),
         Expr::Let(name, val, body) => (
             format!(

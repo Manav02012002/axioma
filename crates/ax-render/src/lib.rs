@@ -2,7 +2,7 @@
 
 pub mod unicode;
 
-use ax_ir::{Expr, Index, Variance};
+use ax_ir::{Assumption, Condition, Expr, Index, Variance};
 use num_rational::BigRational;
 use num_traits::Signed;
 
@@ -295,6 +295,42 @@ fn render_index_name(index: &Index, interner: &ax_ir::Interner) -> String {
     symbol_to_latex(index.name, interner)
 }
 
+fn render_assumption(assumption: &Assumption) -> &'static str {
+    match assumption {
+        Assumption::Real => "\\text{real}",
+        Assumption::Positive => "\\text{positive}",
+        Assumption::Negative => "\\text{negative}",
+        Assumption::NonZero => "\\text{nonzero}",
+        Assumption::Integer => "\\text{integer}",
+        Assumption::Even => "\\text{even}",
+        Assumption::Odd => "\\text{odd}",
+    }
+}
+
+fn render_condition(condition: &Condition, interner: &ax_ir::Interner) -> String {
+    match condition {
+        Condition::Gt(a, b) => format!("{} > {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
+        Condition::Lt(a, b) => format!("{} < {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
+        Condition::Ge(a, b) => format!("{} \\ge {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
+        Condition::Le(a, b) => format!("{} \\le {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
+        Condition::Eq(a, b) => format!("{} = {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
+        Condition::Ne(a, b) => format!("{} \\ne {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
+        Condition::And(a, b) => format!(
+            "\\left({}\\right) \\land \\left({}\\right)",
+            render_condition(a, interner),
+            render_condition(b, interner)
+        ),
+        Condition::Or(a, b) => format!(
+            "\\left({}\\right) \\lor \\left({}\\right)",
+            render_condition(a, interner),
+            render_condition(b, interner)
+        ),
+        Condition::Not(c) => format!("\\lnot \\left({}\\right)", render_condition(c, interner)),
+        Condition::True => "\\text{true}".to_string(),
+        Condition::False => "\\text{false}".to_string(),
+    }
+}
+
 fn render_indexed(base: &Expr, indices: &[Index], interner: &ax_ir::Interner) -> String {
     let mut out = render(base, PREC_ATOM, interner);
     let mut i = 0;
@@ -347,6 +383,58 @@ fn render(expr: &Expr, parent_prec: u8, interner: &ax_ir::Interner) -> String {
             wrap_if_needed(rendered, PREC_UNARY, parent_prec)
         }
         Expr::Call(f, args) => render_call(*f, args, interner),
+        Expr::FnDef(name, params, body) => format!(
+            "{}\\!\\left({}\\right) = {}",
+            symbol_to_latex(*name, interner),
+            params
+                .iter()
+                .map(|param| symbol_to_latex(*param, interner))
+                .collect::<Vec<_>>()
+                .join(", "),
+            render(body, PREC_TOP, interner)
+        ),
+        Expr::Rule(lhs, rhs) => format!(
+            "{} \\Rightarrow {}",
+            render(lhs, PREC_TOP, interner),
+            render(rhs, PREC_TOP, interner)
+        ),
+        Expr::Import(path) => format!(
+            "\\text{{import }} {}",
+            path.iter()
+                .map(|sym| symbol_to_latex(*sym, interner))
+                .collect::<Vec<_>>()
+                .join(".")
+        ),
+        Expr::Assume(name, assumptions) => format!(
+            "\\text{{assume }} {}{}",
+            symbol_to_latex(*name, interner),
+            if assumptions.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\\text{{ is }} {}",
+                    assumptions
+                        .iter()
+                        .map(render_assumption)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        ),
+        Expr::Piecewise(cases) => {
+            let body = cases
+                .iter()
+                .map(|(value, condition)| {
+                    format!(
+                        "{} & \\text{{if }} {}",
+                        render(value, PREC_TOP, interner),
+                        render_condition(condition, interner)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" \\\\ ");
+            format!("\\begin{{cases}} {body} \\end{{cases}}")
+        }
         Expr::Indexed(base, indices) => render_indexed(base, indices, interner),
         Expr::Let(name, val, body) => format!(
             "\\text{{let }} {} = {} \\text{{ in }} {}",

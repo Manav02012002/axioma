@@ -18,6 +18,32 @@ pub struct Index {
     pub variance: Variance,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Assumption {
+    Real,
+    Positive,
+    Negative,
+    NonZero,
+    Integer,
+    Even,
+    Odd,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Condition {
+    Gt(Expr, Expr),
+    Lt(Expr, Expr),
+    Ge(Expr, Expr),
+    Le(Expr, Expr),
+    Eq(Expr, Expr),
+    Ne(Expr, Expr),
+    And(Box<Condition>, Box<Condition>),
+    Or(Box<Condition>, Box<Condition>),
+    Not(Box<Condition>),
+    True,
+    False,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Int(BigInt),
@@ -29,6 +55,11 @@ pub enum Expr {
     Pow(Box<Expr>, Box<Expr>),
     Neg(Box<Expr>),
     Call(Sym, Vec<Expr>),
+    FnDef(Sym, Vec<Sym>, Box<Expr>),
+    Rule(Box<Expr>, Box<Expr>),
+    Import(Vec<Sym>),
+    Assume(Sym, Vec<Assumption>),
+    Piecewise(Vec<(Expr, Condition)>),
     Indexed(Box<Expr>, Vec<Index>),
     Let(Sym, Box<Expr>, Box<Expr>),
     List(Vec<Expr>),
@@ -93,6 +124,11 @@ fn expr_sort_key(e: &Expr) -> ExprSortKey {
         Expr::Int(n) => ExprSortKey::Numeric(BigRational::from_integer(n.clone())),
         Expr::Rational(r) => ExprSortKey::Numeric(r.clone()),
         Expr::Sym(s) => ExprSortKey::Sym(s.into_usize()),
+        Expr::FnDef(_, _, _) => ExprSortKey::Other(format!("{e:?}")),
+        Expr::Rule(_, _) => ExprSortKey::Other(format!("{e:?}")),
+        Expr::Import(_) => ExprSortKey::Other(format!("{e:?}")),
+        Expr::Assume(_, _) => ExprSortKey::Other(format!("{e:?}")),
+        Expr::Piecewise(_) => ExprSortKey::Other(format!("{e:?}")),
         _ => ExprSortKey::Other(format!("{e:?}")),
     }
 }

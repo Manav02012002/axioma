@@ -178,6 +178,20 @@ pub fn substitute(template: &Expr, binds: &Bindings) -> Expr {
         Expr::Pow(base, exp) => Expr::pow(substitute(base, binds), substitute(exp, binds)),
         Expr::Neg(e) => Expr::neg(substitute(e, binds)),
         Expr::Call(f, args) => Expr::Call(*f, args.iter().map(|a| substitute(a, binds)).collect()),
+        Expr::FnDef(name, params, body) => {
+            Expr::FnDef(*name, params.clone(), Box::new(substitute(body, binds)))
+        }
+        Expr::Rule(lhs, rhs) => Expr::Rule(
+            Box::new(substitute(lhs, binds)),
+            Box::new(substitute(rhs, binds)),
+        ),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases.iter()
+                .map(|(value, condition)| (substitute(value, binds), condition.clone()))
+                .collect(),
+        ),
         Expr::Indexed(base, indices) => {
             Expr::Indexed(Box::new(substitute(base, binds)), indices.clone())
         }
@@ -235,6 +249,22 @@ pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> 
             *f,
             args.iter()
                 .map(|a| rewrite_once(rules, a, interner))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(rewrite_once(rules, body, interner)),
+        ),
+        Expr::Rule(lhs, rhs) => Expr::Rule(
+            Box::new(rewrite_once(rules, lhs, interner)),
+            Box::new(rewrite_once(rules, rhs, interner)),
+        ),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases.iter()
+                .map(|(value, condition)| (rewrite_once(rules, value, interner), condition.clone()))
                 .collect(),
         ),
         Expr::Indexed(base, indices) => Expr::Indexed(

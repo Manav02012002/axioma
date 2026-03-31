@@ -251,6 +251,20 @@ pub fn expand(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
             }
         }
         Expr::Call(f, args) => Expr::Call(*f, args.iter().map(|a| expand(a, interner)).collect()),
+        Expr::FnDef(name, params, body) => {
+            Expr::FnDef(*name, params.clone(), Box::new(expand(body, interner)))
+        }
+        Expr::Rule(lhs, rhs) => Expr::Rule(
+            Box::new(expand(lhs, interner)),
+            Box::new(expand(rhs, interner)),
+        ),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases.iter()
+                .map(|(value, condition)| (expand(value, interner), condition.clone()))
+                .collect(),
+        ),
         Expr::Indexed(base, indices) => {
             Expr::Indexed(Box::new(expand(base, interner)), indices.clone())
         }
@@ -383,6 +397,22 @@ pub fn collect_terms(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
             *f,
             args.iter()
                 .map(|arg| collect_terms(arg, interner))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(collect_terms(body, interner)),
+        ),
+        Expr::Rule(lhs, rhs) => Expr::Rule(
+            Box::new(collect_terms(lhs, interner)),
+            Box::new(collect_terms(rhs, interner)),
+        ),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases.iter()
+                .map(|(value, condition)| (collect_terms(value, interner), condition.clone()))
                 .collect(),
         ),
         Expr::Indexed(base, indices) => {

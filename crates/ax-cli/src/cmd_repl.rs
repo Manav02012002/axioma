@@ -1,11 +1,11 @@
 use anyhow::Result;
-use ax_ir::Expr;
 use rustyline::error::ReadlineError;
 
 pub fn run() -> Result<()> {
     let interner = ax_ir::Interner::new();
     let mut env = ax_eval::Env::new();
     let mut editor = rustyline::DefaultEditor::new()?;
+    let search_paths = crate::cmd_run::default_search_paths(None);
 
     println!("axioma v0.1.0 — type an expression, or :quit to exit");
 
@@ -28,23 +28,11 @@ pub fn run() -> Result<()> {
                 }
 
                 if let Some(expr) = lowered.expr {
-                    if let Expr::Let(name, val, body) = &expr {
-                        let evaled_val = ax_eval::eval(val, &env, &interner);
-                        env.bindings.insert(*name, evaled_val.clone());
-                        if matches!(body.as_ref(), Expr::Sym(s) if *s == *name) {
-                            println!("{}", ax_render::to_unicode(&evaled_val, &interner));
-                            println!("  LaTeX: {}", ax_render::to_latex(&evaled_val, &interner));
-                        } else {
-                            let result = ax_eval::eval(body, &env, &interner);
-                            println!("{}", ax_render::to_unicode(&result, &interner));
-                            println!("  LaTeX: {}", ax_render::to_latex(&result, &interner));
-                        }
-                        continue;
+                    if let Some(message) =
+                        crate::cmd_run::execute_expr(&expr, &mut env, &interner, &search_paths)?
+                    {
+                        println!("{message}");
                     }
-
-                    let result = ax_eval::eval(&expr, &env, &interner);
-                    println!("{}", ax_render::to_unicode(&result, &interner));
-                    println!("  LaTeX: {}", ax_render::to_latex(&result, &interner));
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,

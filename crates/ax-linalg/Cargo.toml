@@ -1,5 +1,5 @@
 [package]
-name = "ax-eval"
+name = "ax-linalg"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -7,16 +7,11 @@ rust-version.workspace = true
 
 [dependencies]
 ax-ir = { path = "../ax-ir" }
-ax-linalg = { path = "../ax-linalg" }
-ax-rewrite = { path = "../ax-rewrite" }
-ax-solve = { path = "../ax-solve" }
-ax-tensor = { path = "../ax-tensor" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }
 num-traits = { workspace = true }
-num-integer = { workspace = true }
 
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }
-ax-syntax = { path = "../ax-syntax" }
+ax-eval = { path = "../ax-eval" }

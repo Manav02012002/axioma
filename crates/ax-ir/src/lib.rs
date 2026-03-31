@@ -2,7 +2,7 @@ pub mod expr;
 pub mod intern;
 pub mod pretty;
 
-pub use expr::{Expr, Index, Variance};
+pub use expr::{Assumption, Condition, Expr, Index, Variance};
 pub use intern::Interner;
 pub use pretty::pretty_print;
 
