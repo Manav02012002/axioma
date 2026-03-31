@@ -6,6 +6,14 @@ use std::collections::VecDeque;
 /// Indices are 0-based internally. The identity permutation of degree n is [0, 1, 2, ..., n-1].
 pub type Perm = Vec<usize>;
 
+/// Result of the Schreier-Sims algorithm.
+#[derive(Clone, Debug)]
+pub struct SGS {
+    pub base: Vec<usize>,
+    pub generators: Vec<Perm>,
+    pub n: usize,
+}
+
 /// Create the identity permutation of degree n.
 pub fn identity(n: usize) -> Perm {
     (0..n).collect()
@@ -161,7 +169,7 @@ pub fn trace_schreier(
         if gen_index == usize::MAX {
             return identity(n);
         }
-        let generator = inverse(&generators[gen_index]);
+        let generator = generators[gen_index].clone();
         trace = product(&generator, &trace);
         current = nu[current];
     }
@@ -192,19 +200,20 @@ pub fn stabilizer(points: &[usize], generators: &[Perm], n: usize) -> Vec<Perm> 
     }
 
     let base = points[0];
-    let (nu, w) = schreier_vector(base, generators, n);
+    let schreier_gens = extended_generators(generators);
+    let (nu, w) = schreier_vector(base, &schreier_gens, n);
     let orbit_points: Vec<usize> = (0..n)
         .filter(|point| nu[*point] != usize::MAX)
         .collect();
 
     for orbit_point in orbit_points {
-        let trace_to_orbit = trace_schreier(orbit_point, base, &nu, &w, generators, n);
+        let trace_to_orbit = trace_schreier(orbit_point, base, &nu, &w, &schreier_gens, n);
         for generator in generators {
             let moved = on_points(orbit_point, generator);
             if moved >= n || nu[moved] == usize::MAX {
                 continue;
             }
-            let trace_to_moved = trace_schreier(moved, base, &nu, &w, generators, n);
+            let trace_to_moved = trace_schreier(moved, base, &nu, &w, &schreier_gens, n);
             let schreier_gen = product(
                 &product(&trace_to_orbit, generator),
                 &inverse(&trace_to_moved),
@@ -236,6 +245,169 @@ pub fn transposition(n: usize, i: usize, j: usize) -> Perm {
     let mut p = identity(n);
     p.swap(i, j);
     p
+}
+
+fn stabilizer_generators_for_level(base: &[usize], level: usize, generators: &[Perm]) -> Vec<Perm> {
+    generators
+        .iter()
+        .filter(|g| base[..level].iter().all(|&b| on_points(b, g) == b))
+        .cloned()
+        .collect()
+}
+
+fn extended_generators(generators: &[Perm]) -> Vec<Perm> {
+    let mut extended = generators.to_vec();
+    for inverse_gen in generators.iter().map(|g| inverse(g)) {
+        if !contains_perm(&extended, &inverse_gen) {
+            extended.push(inverse_gen);
+        }
+    }
+    extended
+}
+
+fn generated_group(generators: &[Perm], n: usize) -> Vec<Perm> {
+    let mut elements = vec![identity(n)];
+    let mut queue = VecDeque::from([identity(n)]);
+    let extended = extended_generators(generators);
+
+    while let Some(current) = queue.pop_front() {
+        for generator in &extended {
+            let next = product(&current, generator);
+            if !contains_perm(&elements, &next) {
+                elements.push(next.clone());
+                queue.push_back(next);
+            }
+        }
+    }
+
+    elements
+}
+
+/// Sift a permutation through the stabilizer chain.
+/// Returns true if the permutation is already in the group (sifts to identity).
+fn sift(perm: &[usize], base: &[usize], generators: &[Perm], n: usize) -> bool {
+    let mut current = perm.to_vec();
+
+    for (level, &bp) in base.iter().enumerate() {
+        let img = on_points(bp, &current);
+        if img == bp {
+            continue;
+        }
+
+        let stab_gens = stabilizer_generators_for_level(base, level, generators);
+        let schreier_gens = extended_generators(&stab_gens);
+        let (nu, w) = schreier_vector(bp, &schreier_gens, n);
+        if nu.get(img).copied().unwrap_or(usize::MAX) == usize::MAX {
+            return false;
+        }
+
+        let rep = trace_schreier(img, bp, &nu, &w, &schreier_gens, n);
+        current = product(&current, &inverse(&rep));
+    }
+
+    is_identity(&current)
+}
+
+/// Compute a Strong Generating Set from generators.
+///
+/// Input: initial base hint (can be empty), generators, degree n.
+/// Output: SGS with a valid base and strong generating set.
+pub fn schreier_sims(
+    base_hint: &[usize],
+    generators: &[Perm],
+    n: usize,
+) -> SGS {
+    if generators.is_empty() {
+        return SGS {
+            base: vec![],
+            generators: vec![],
+            n,
+        };
+    }
+
+    let mut base: Vec<usize> = base_hint.to_vec();
+    let mut strong_gens: Vec<Perm> = generators.to_vec();
+
+    for generator in generators {
+        for (i, &img) in generator.iter().enumerate() {
+            if img != i && !base.contains(&i) {
+                base.push(i);
+            }
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    base.retain(|x| seen.insert(*x));
+
+    let mut changed = true;
+    let mut iteration = 0usize;
+    let max_iterations = 100usize;
+
+    while changed && iteration < max_iterations {
+        changed = false;
+        iteration += 1;
+
+        for level in (0..base.len()).rev() {
+            let stab_gens = stabilizer_generators_for_level(&base, level, &strong_gens);
+            if stab_gens.is_empty() {
+                continue;
+            }
+
+            let bp = base[level];
+            let schreier_gens = extended_generators(&stab_gens);
+            let (nu, w) = schreier_vector(bp, &schreier_gens, n);
+            let orb = orbit(bp, &stab_gens);
+
+            for &gamma in &orb {
+                for generator in &stab_gens {
+                    let gen_gamma = on_points(gamma, generator);
+                    let trace_gamma = trace_schreier(gamma, bp, &nu, &w, &schreier_gens, n);
+                    let trace_gen_gamma =
+                        trace_schreier(gen_gamma, bp, &nu, &w, &schreier_gens, n);
+
+                    let schreier_gen = product(
+                        &product(&inverse(&trace_gen_gamma), generator),
+                        &trace_gamma,
+                    );
+
+                    if !is_identity(&schreier_gen)
+                        && !contains_perm(&strong_gens, &schreier_gen)
+                        && !sift(&schreier_gen, &base, &strong_gens, n)
+                    {
+                        strong_gens.push(schreier_gen);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    strong_gens = generated_group(&strong_gens, n)
+        .into_iter()
+        .filter(|g| !is_identity(g))
+        .collect();
+
+    SGS {
+        base,
+        generators: strong_gens,
+        n,
+    }
+}
+
+/// Test membership in the group.
+pub fn is_member(perm: &[usize], sgs: &SGS) -> bool {
+    sift(perm, &sgs.base, &sgs.generators, sgs.n)
+}
+
+/// Compute the order of the group from its SGS.
+pub fn group_order(sgs: &SGS) -> u64 {
+    let mut order = 1u64;
+    for (level, &bp) in sgs.base.iter().enumerate() {
+        let stab_gens = stabilizer_generators_for_level(&sgs.base, level, &sgs.generators);
+        let orb = orbit(bp, &stab_gens);
+        order *= orb.len() as u64;
+    }
+    order
 }
 
 #[cfg(test)]
@@ -298,5 +470,46 @@ mod tests {
         for g in &stab {
             assert_eq!(g[0], 0, "stabilizer element doesn't fix 0: {:?}", g);
         }
+    }
+
+    #[test]
+    fn sgs_of_s3() {
+        let gens = vec![vec![1, 0, 2], vec![0, 2, 1]];
+        let sgs = schreier_sims(&[], &gens, 3);
+        assert_eq!(group_order(&sgs), 6);
+    }
+
+    #[test]
+    fn sgs_of_z2() {
+        let gens = vec![vec![1, 0]];
+        let sgs = schreier_sims(&[], &gens, 2);
+        assert_eq!(group_order(&sgs), 2);
+    }
+
+    #[test]
+    fn sgs_of_s4() {
+        let gens = vec![
+            vec![1, 0, 2, 3],
+            vec![0, 2, 1, 3],
+            vec![0, 1, 3, 2],
+        ];
+        let sgs = schreier_sims(&[], &gens, 4);
+        assert_eq!(group_order(&sgs), 24);
+    }
+
+    #[test]
+    fn membership_test() {
+        let gens = vec![vec![1, 0, 2], vec![0, 2, 1]];
+        let sgs = schreier_sims(&[], &gens, 3);
+
+        let perm = vec![2, 0, 1];
+        assert!(is_member(&perm, &sgs));
+        assert!(is_member(&identity(3), &sgs));
+    }
+
+    #[test]
+    fn empty_group() {
+        let sgs = schreier_sims(&[], &[], 3);
+        assert_eq!(group_order(&sgs), 1);
     }
 }
