@@ -410,6 +410,176 @@ pub fn group_order(sgs: &SGS) -> u64 {
     order
 }
 
+fn compare_on_free_indices(a: &[usize], b: &[usize], free_indices: &[usize]) -> std::cmp::Ordering {
+    for &idx in free_indices {
+        match (a.get(idx), b.get(idx)) {
+            (Some(lhs), Some(rhs)) => match lhs.cmp(rhs) {
+                std::cmp::Ordering::Equal => {}
+                non_eq => return non_eq,
+            },
+            _ => {}
+        }
+    }
+    a.cmp(b)
+}
+
+fn choose_better(
+    candidate: Perm,
+    current_best: Option<Perm>,
+    free_indices: &[usize],
+) -> Option<Perm> {
+    match current_best {
+        None => Some(candidate),
+        Some(best) => {
+            let ordering = if free_indices.is_empty() {
+                candidate.cmp(&best)
+            } else {
+                compare_on_free_indices(&candidate, &best, free_indices)
+            };
+            if ordering == std::cmp::Ordering::Less {
+                Some(candidate)
+            } else {
+                Some(best)
+            }
+        }
+    }
+}
+
+fn coset_representative_backtrack(
+    current: &[usize],
+    sgs: &SGS,
+    level: usize,
+    free_indices: &[usize],
+) -> Perm {
+    if level >= sgs.base.len() {
+        return current.to_vec();
+    }
+
+    let bp = sgs.base[level];
+    let level_gens = stabilizer_generators_for_level(&sgs.base, level, &sgs.generators);
+    if level_gens.is_empty() {
+        return coset_representative_backtrack(current, sgs, level + 1, free_indices);
+    }
+
+    let schreier_gens = extended_generators(&level_gens);
+    let (nu, w) = schreier_vector(bp, &schreier_gens, sgs.n);
+    let orbit_points = orbit(bp, &level_gens);
+    let min_image = orbit_points
+        .iter()
+        .map(|&pt| current[pt])
+        .min()
+        .unwrap_or(current[bp]);
+
+    let mut best = None;
+    for &pt in &orbit_points {
+        if current[pt] != min_image {
+            continue;
+        }
+        let rep = trace_schreier(pt, bp, &nu, &w, &schreier_gens, sgs.n);
+        let next = apply_group_action(current, &rep);
+        let candidate = coset_representative_backtrack(&next, sgs, level + 1, free_indices);
+        best = choose_better(candidate, best, free_indices);
+    }
+
+    best.unwrap_or_else(|| current.to_vec())
+}
+
+/// Compute the coset representative of a permutation relative to a subgroup.
+/// Given perm and a group (base, generators), find the unique coset representative
+/// cr such that perm = cr * h for some h in the group.
+/// The representative is the lexicographically smallest element in the coset.
+pub fn coset_representative(
+    perm: &[usize],
+    sgs: &SGS,
+    free_indices: &[usize],
+) -> Perm {
+    coset_representative_backtrack(perm, sgs, 0, free_indices)
+}
+
+fn apply_group_action(perm: &[usize], g: &[usize]) -> Perm {
+    (0..perm.len()).map(|i| perm[on_points(i, g)]).collect()
+}
+
+fn extract_sign_from_perm(perm: &[usize], sign_slots: Option<(usize, usize)>) -> i32 {
+    match sign_slots {
+        Some((i, j)) if i < perm.len() && j < perm.len() && perm[i] > perm[j] => -1,
+        _ => 1,
+    }
+}
+
+fn canonical_perm_backtrack(
+    perm: &[usize],
+    sgs: &SGS,
+    dummy_pairs: &[(usize, usize)],
+) -> (Perm, i32) {
+    fn recurse(
+        current: &[usize],
+        sgs: &SGS,
+        level: usize,
+        dummy_pairs: &[(usize, usize)],
+    ) -> Perm {
+        if level >= sgs.base.len() {
+            let mut leaf = current.to_vec();
+            for &(d1, d2) in dummy_pairs {
+                if d1 < leaf.len() && d2 < leaf.len() && leaf[d1] > leaf[d2] {
+                    leaf.swap(d1, d2);
+                }
+            }
+            return leaf;
+        }
+
+        let bp = sgs.base[level];
+        let level_gens = stabilizer_generators_for_level(&sgs.base, level, &sgs.generators);
+        if level_gens.is_empty() {
+            return recurse(current, sgs, level + 1, dummy_pairs);
+        }
+
+        let schreier_gens = extended_generators(&level_gens);
+        let (nu, w) = schreier_vector(bp, &schreier_gens, sgs.n);
+        let orbit_points = orbit(bp, &level_gens);
+        let min_image = orbit_points
+            .iter()
+            .map(|&pt| current[pt])
+            .min()
+            .unwrap_or(current[bp]);
+
+        let mut best: Option<Perm> = None;
+        for &pt in &orbit_points {
+            if current[pt] != min_image {
+                continue;
+            }
+            let rep = trace_schreier(pt, bp, &nu, &w, &schreier_gens, sgs.n);
+            let next = apply_group_action(current, &rep);
+            let candidate = recurse(&next, sgs, level + 1, dummy_pairs);
+            best = choose_better(candidate, best, &[]);
+        }
+
+        best.unwrap_or_else(|| current.to_vec())
+    }
+
+    let best = recurse(perm, sgs, 0, dummy_pairs);
+    let sign_slots = (sgs.n >= 2).then_some((sgs.n - 2, sgs.n - 1));
+    let sign = extract_sign_from_perm(&best, sign_slots);
+    (best, sign)
+}
+
+/// Find the lexicographically smallest permutation in the orbit of `perm` under the
+/// group generated by `sgs`. This is the canonical form.
+///
+/// Also handles a sign slot: the last two elements of the permutation
+/// encode the sign. If they're swapped relative to [n, n+1], the expression
+/// picks up a minus sign.
+pub fn canonical_perm(
+    perm: &[usize],
+    sgs: &SGS,
+    dummy_pairs: &[(usize, usize)],
+) -> (Perm, i32) {
+    if sgs.generators.is_empty() {
+        return (perm.to_vec(), 1);
+    }
+    canonical_perm_backtrack(perm, sgs, dummy_pairs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +681,24 @@ mod tests {
     fn empty_group() {
         let sgs = schreier_sims(&[], &[], 3);
         assert_eq!(group_order(&sgs), 1);
+    }
+
+    #[test]
+    fn canonical_perm_symmetric_tensor() {
+        let gens = vec![vec![1, 0]];
+        let sgs = schreier_sims(&[0], &gens, 2);
+
+        let (canon, sign) = canonical_perm(&[1, 0], &sgs, &[]);
+        assert_eq!(canon, vec![0, 1]);
+        assert_eq!(sign, 1);
+    }
+
+    #[test]
+    fn canonical_perm_antisymmetric_tensor() {
+        let gens = vec![vec![1, 0, 3, 2]];
+        let sgs = schreier_sims(&[0], &gens, 4);
+
+        let (canon, _s) = canonical_perm(&[1, 0, 2, 3], &sgs, &[]);
+        assert!(canon[0] <= canon[1] || (canon[0] == 0 && canon[1] == 1));
     }
 }
