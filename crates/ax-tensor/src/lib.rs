@@ -5,6 +5,11 @@ use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::collections::{HashMap, HashSet};
 
+pub trait DummyRenameEnv {
+    fn index_families(&self) -> &HashMap<lasso::Spur, ax_ir::IndexFamily>;
+    fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur>;
+}
+
 #[derive(Clone, Debug)]
 pub struct SymbolicMatrix {
     pub dim: usize,
@@ -297,118 +302,293 @@ pub fn canonicalize_indices(
     }
 }
 
+fn collect_all_indices(
+    expr: &Expr,
+    counts: &mut HashMap<lasso::Spur, Vec<(ax_ir::Variance, usize)>>,
+    id: &mut usize,
+) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            collect_all_indices(base, counts, id);
+            for idx in indices {
+                counts
+                    .entry(idx.name)
+                    .or_default()
+                    .push((idx.variance.clone(), *id));
+                *id += 1;
+            }
+        }
+        Expr::Mul(factors) | Expr::List(factors) => {
+            for factor in factors {
+                collect_all_indices(factor, counts, id);
+            }
+        }
+        Expr::Add(terms) => {
+            for term in terms {
+                collect_all_indices(term, counts, id);
+            }
+        }
+        Expr::Neg(inner) => collect_all_indices(inner, counts, id),
+        Expr::Pow(base, exp) => {
+            collect_all_indices(base, counts, id);
+            collect_all_indices(exp, counts, id);
+        }
+        Expr::Call(_, args) => {
+            for arg in args {
+                collect_all_indices(arg, counts, id);
+            }
+        }
+        Expr::Complex(re, im) => {
+            collect_all_indices(re, counts, id);
+            collect_all_indices(im, counts, id);
+        }
+        Expr::FnDef(_, _, body) => collect_all_indices(body, counts, id),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_all_indices(lhs, counts, id);
+            collect_all_indices(rhs, counts, id);
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                collect_all_indices(value, counts, id);
+            }
+        }
+        Expr::Let(_, value, body) => {
+            collect_all_indices(value, counts, id);
+            collect_all_indices(body, counts, id);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_all_indices(cell, counts, id);
+                }
+            }
+        }
+        Expr::SetConvention(_, _)
+        | Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_)
+        | Expr::Sym(_) => {}
+    }
+}
+
+fn apply_index_rename(expr: &Expr, rename_map: &HashMap<lasso::Spur, lasso::Spur>) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(apply_index_rename(base, rename_map)),
+            indices
+                .iter()
+                .map(|idx| ax_ir::Index {
+                    name: rename_map.get(&idx.name).copied().unwrap_or(idx.name),
+                    variance: idx.variance.clone(),
+                    index_type: idx.index_type,
+                })
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| apply_index_rename(factor, rename_map))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| apply_index_rename(term, rename_map))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(apply_index_rename(inner, rename_map)),
+        Expr::Pow(base, exp) => Expr::pow(
+            apply_index_rename(base, rename_map),
+            apply_index_rename(exp, rename_map),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| apply_index_rename(arg, rename_map))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(apply_index_rename(re, rename_map)),
+            Box::new(apply_index_rename(im, rename_map)),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(apply_index_rename(body, rename_map)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(apply_index_rename(lhs, rename_map)),
+            Box::new(apply_index_rename(rhs, rename_map)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| (apply_index_rename(value, rename_map), cond.clone()))
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(apply_index_rename(value, rename_map)),
+            Box::new(apply_index_rename(body, rename_map)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| apply_index_rename(item, rename_map))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| apply_index_rename(cell, rename_map))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+pub fn rename_dummies<E: DummyRenameEnv>(
+    expr: &ax_ir::Expr,
+    env: &E,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    fn family_key<E: DummyRenameEnv>(
+        env: &E,
+        sym: lasso::Spur,
+        interner: &ax_ir::Interner,
+    ) -> String {
+        env.index_to_family()
+            .get(&sym)
+            .map(|family| interner.resolve(*family).to_string())
+            .unwrap_or_default()
+    }
+
+    fn canonical_name<E: DummyRenameEnv>(
+        env: &E,
+        original: lasso::Spur,
+        slot: usize,
+        interner: &ax_ir::Interner,
+    ) -> lasso::Spur {
+        if let Some(family) = env.index_to_family().get(&original) {
+            interner.get_or_intern(&format!("_{}_d{}", interner.resolve(*family), slot))
+        } else {
+            interner.get_or_intern(&format!("_d{}", slot))
+        }
+    }
+
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms.iter()
+                .map(|term| rename_dummies(term, env, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(rename_dummies(inner, env, interner)),
+        Expr::Pow(base, exp) => Expr::pow(
+            rename_dummies(base, env, interner),
+            rename_dummies(exp, env, interner),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| rename_dummies(arg, env, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(rename_dummies(re, env, interner)),
+            Box::new(rename_dummies(im, env, interner)),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(rename_dummies(body, env, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(rename_dummies(lhs, env, interner)),
+            Box::new(rename_dummies(rhs, env, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| (rename_dummies(value, env, interner), cond.clone()))
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(rename_dummies(value, env, interner)),
+            Box::new(rename_dummies(body, env, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| rename_dummies(item, env, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| rename_dummies(cell, env, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => {
+            let mut index_count: HashMap<lasso::Spur, Vec<(ax_ir::Variance, usize)>> = HashMap::new();
+            let mut occurrence_id = 0usize;
+            collect_all_indices(expr, &mut index_count, &mut occurrence_id);
+
+            let mut dummy_indices = Vec::new();
+            for (name, occurrences) in &index_count {
+                if occurrences.len() == 2 && occurrences[0].0 != occurrences[1].0 {
+                    dummy_indices.push(*name);
+                }
+            }
+            dummy_indices.sort_by_key(|sym| {
+                let first_occurrence = index_count
+                    .get(sym)
+                    .and_then(|items| items.iter().map(|(_, id)| *id).min())
+                    .unwrap_or(usize::MAX);
+                (family_key(env, *sym, interner), first_occurrence)
+            });
+
+            let mut rename_map = HashMap::new();
+            for (i, dummy) in dummy_indices.iter().enumerate() {
+                rename_map.insert(*dummy, canonical_name(env, *dummy, i, interner));
+            }
+
+            apply_index_rename(expr, &rename_map)
+        }
+    }
+}
+
 pub fn rename_dummy_indices(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
-    fn collect(
-        expr: &Expr,
-        seen: &mut Vec<(lasso::Spur, ax_ir::Variance)>,
-        counts: &mut HashMap<lasso::Spur, Vec<ax_ir::Variance>>,
-    ) {
-        match expr {
-            Expr::Indexed(_, indices) => {
-                for index in indices {
-                    seen.push((index.name, index.variance.clone()));
-                    counts.entry(index.name).or_default().push(index.variance.clone());
-                }
-            }
-            Expr::Add(items) | Expr::Mul(items) | Expr::List(items) => {
-                for item in items {
-                    collect(item, seen, counts);
-                }
-            }
-            Expr::Pow(base, exp) => {
-                collect(base, seen, counts);
-                collect(exp, seen, counts);
-            }
-            Expr::Neg(inner) => collect(inner, seen, counts),
-            Expr::Call(_, args) => {
-                for arg in args {
-                    collect(arg, seen, counts);
-                }
-            }
-            Expr::Complex(re, im) => {
-                collect(re, seen, counts);
-                collect(im, seen, counts);
-            }
-            Expr::FnDef(_, _, body) => collect(body, seen, counts),
-            Expr::Rule(lhs, rhs, _) => {
-                collect(lhs, seen, counts);
-                collect(rhs, seen, counts);
-            }
-            Expr::Piecewise(cases) => {
-                for (value, _) in cases {
-                    collect(value, seen, counts);
-                }
-            }
-            Expr::SetConvention(_, _) => {}
-            Expr::Let(_, val, body) => {
-                collect(val, seen, counts);
-                collect(body, seen, counts);
-            }
-            Expr::Matrix(rows) => {
-                for cell in rows.iter().flatten() {
-                    collect(cell, seen, counts);
-                }
-            }
-            _ => {}
+    struct EmptyDummyEnv {
+        index_families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
+        index_to_family: HashMap<lasso::Spur, lasso::Spur>,
+    }
+
+    impl DummyRenameEnv for EmptyDummyEnv {
+        fn index_families(&self) -> &HashMap<lasso::Spur, ax_ir::IndexFamily> {
+            &self.index_families
+        }
+
+        fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
+            &self.index_to_family
         }
     }
 
-    fn replace(expr: &Expr, mapping: &HashMap<lasso::Spur, lasso::Spur>) -> Expr {
-        match expr {
-            Expr::Indexed(base, indices) => Expr::Indexed(
-                Box::new(replace(base, mapping)),
-                indices
-                    .iter()
-                    .map(|index| ax_ir::Index {
-                        name: mapping.get(&index.name).copied().unwrap_or(index.name),
-                        variance: index.variance.clone(),
-                        index_type: index.index_type,
-                    })
-                    .collect(),
-            ),
-            Expr::Add(items) => Expr::add(items.iter().map(|item| replace(item, mapping)).collect()),
-            Expr::Mul(items) => Expr::mul(items.iter().map(|item| replace(item, mapping)).collect()),
-            Expr::Pow(base, exp) => Expr::pow(replace(base, mapping), replace(exp, mapping)),
-            Expr::Neg(inner) => Expr::neg(replace(inner, mapping)),
-            Expr::Call(f, args) => Expr::Call(*f, args.iter().map(|arg| replace(arg, mapping)).collect()),
-            Expr::Complex(re, im) => Expr::Complex(Box::new(replace(re, mapping)), Box::new(replace(im, mapping))),
-            Expr::FnDef(name, params, body) => Expr::FnDef(*name, params.clone(), Box::new(replace(body, mapping))),
-            Expr::Rule(lhs, rhs, trust) => Expr::Rule(
-                Box::new(replace(lhs, mapping)),
-                Box::new(replace(rhs, mapping)),
-                *trust,
-            ),
-            Expr::Piecewise(cases) => Expr::Piecewise(
-                cases.iter().map(|(value, cond)| (replace(value, mapping), cond.clone())).collect(),
-            ),
-            Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
-            Expr::Let(name, val, body) => Expr::Let(*name, Box::new(replace(val, mapping)), Box::new(replace(body, mapping))),
-            Expr::List(items) => Expr::List(items.iter().map(|item| replace(item, mapping)).collect()),
-            Expr::Matrix(rows) => Expr::Matrix(rows.iter().map(|row| row.iter().map(|cell| replace(cell, mapping)).collect()).collect()),
-            _ => expr.clone(),
-        }
-    }
-
-    let mut seen = Vec::new();
-    let mut counts = HashMap::new();
-    collect(expr, &mut seen, &mut counts);
-
-    let mut mapping = HashMap::new();
-    let mut next = 0usize;
-    for (sym, _) in seen {
-        if mapping.contains_key(&sym) {
-            continue;
-        }
-        if let Some(vars) = counts.get(&sym) {
-            if vars.len() == 2 && vars[0] != vars[1] {
-                let canonical = interner.get_or_intern(&format!("_d{next}"));
-                mapping.insert(sym, canonical);
-                next += 1;
-            }
-        }
-    }
-
-    replace(expr, &mapping)
+    let env = EmptyDummyEnv {
+        index_families: HashMap::new(),
+        index_to_family: HashMap::new(),
+    };
+    rename_dummies(expr, &env, interner)
 }
 
 fn contains_index(expr: &Expr, idx: lasso::Spur) -> bool {
@@ -2084,5 +2264,68 @@ mod tests {
         } else {
             panic!("expected Indexed, got {:?}", result);
         }
+    }
+
+    #[test]
+    fn rename_dummies_canonical() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let alpha = interner.get_or_intern("alpha");
+
+        struct TestEnv {
+            index_families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
+            index_to_family: HashMap<lasso::Spur, lasso::Spur>,
+        }
+
+        impl DummyRenameEnv for TestEnv {
+            fn index_families(&self) -> &HashMap<lasso::Spur, ax_ir::IndexFamily> {
+                &self.index_families
+            }
+
+            fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
+                &self.index_to_family
+            }
+        }
+
+        let env = TestEnv {
+            index_families: HashMap::new(),
+            index_to_family: HashMap::new(),
+        };
+
+        let expr1 = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let expr2 = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![
+                ax_ir::Index {
+                    name: alpha,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: alpha,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let r1 = rename_dummies(&expr1, &env, &interner);
+        let r2 = rename_dummies(&expr2, &env, &interner);
+        assert_eq!(r1, r2);
     }
 }

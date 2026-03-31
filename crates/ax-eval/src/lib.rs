@@ -70,6 +70,16 @@ impl Env {
     }
 }
 
+impl ax_tensor::DummyRenameEnv for Env {
+    fn index_families(&self) -> &HashMap<lasso::Spur, ax_ir::IndexFamily> {
+        &self.index_families
+    }
+
+    fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
+        &self.index_to_family
+    }
+}
+
 fn grading_rank(grading: Grading) -> usize {
     match grading {
         Grading::Even => 0,
@@ -1271,12 +1281,14 @@ fn equiv_description(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner) 
     }
 
     if contains_indexed_expr(&ta) || contains_indexed_expr(&tb) {
-        let ca = ax_tensor::rename_dummy_indices(
+        let ca = ax_tensor::rename_dummies(
             &ax_tensor::canonicalize_indices(&ta, &env.tensor_properties, interner),
+            env,
             interner,
         );
-        let cb = ax_tensor::rename_dummy_indices(
+        let cb = ax_tensor::rename_dummies(
             &ax_tensor::canonicalize_indices(&tb, &env.tensor_properties, interner),
+            env,
             interner,
         );
         if ca == cb {
@@ -1819,7 +1831,14 @@ fn builtin_call(
         "canonicalize" => {
             if args.len() == 1 {
                 let canonical = ax_tensor::canonicalize_indices(&args[0], &env.tensor_properties, interner);
-                ax_tensor::rename_dummy_indices(&canonical, interner)
+                ax_tensor::rename_dummies(&canonical, env, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "rename_dummies" => {
+            if args.len() == 1 {
+                ax_tensor::rename_dummies(&args[0], env, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -3042,7 +3061,7 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
             } else {
                 Vec::new()
             };
-            ax_tensor::rename_dummy_indices(&canonical, interner)
+            ax_tensor::rename_dummies(&canonical, env, interner)
         }
         Expr::List(items) => {
             let evaled: Vec<Expr> = items.iter().map(|item| eval(item, env, interner)).collect();

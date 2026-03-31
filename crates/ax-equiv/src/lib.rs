@@ -262,12 +262,14 @@ pub fn check_equiv(
     }
 
     if contains_indexed(&ta) || contains_indexed(&tb) {
-        let ca = ax_tensor::rename_dummy_indices(
+        let ca = ax_tensor::rename_dummies(
             &ax_tensor::canonicalize_indices(&ta, &env.tensor_properties, interner),
+            env,
             interner,
         );
-        let cb = ax_tensor::rename_dummy_indices(
+        let cb = ax_tensor::rename_dummies(
             &ax_tensor::canonicalize_indices(&tb, &env.tensor_properties, interner),
+            env,
             interner,
         );
         if ca == cb {
