@@ -338,6 +338,116 @@ pub fn product_rule(
     }
 }
 
+pub fn tensor_distribute(
+    expr: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let distributed_factors: Vec<Expr> = factors
+                .iter()
+                .map(|factor| tensor_distribute(factor, interner))
+                .collect();
+            for (i, factor) in distributed_factors.iter().enumerate() {
+                if let Expr::Add(terms) = factor {
+                    let rest: Vec<Expr> = distributed_factors
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, f)| f.clone())
+                        .collect();
+                    let expanded: Vec<Expr> = terms
+                        .iter()
+                        .map(|term| {
+                            let mut new_factors = rest.clone();
+                            new_factors.push(term.clone());
+                            Expr::mul(new_factors)
+                        })
+                        .collect();
+                    return tensor_distribute(&Expr::add(expanded), interner);
+                }
+            }
+            Expr::mul(distributed_factors)
+        }
+        Expr::Indexed(base, indices) => {
+            let distributed_base = tensor_distribute(base, interner);
+            if let Expr::Add(terms) = distributed_base {
+                Expr::add(
+                    terms
+                        .iter()
+                        .map(|term| {
+                            Expr::Indexed(
+                                Box::new(tensor_distribute(term, interner)),
+                                indices.clone(),
+                            )
+                        })
+                        .collect(),
+                )
+            } else {
+                Expr::Indexed(Box::new(distributed_base), indices.clone())
+            }
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| tensor_distribute(term, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(tensor_distribute(inner, interner)),
+        Expr::Pow(base, exp) => Expr::pow(
+            tensor_distribute(base, interner),
+            tensor_distribute(exp, interner),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| tensor_distribute(arg, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(tensor_distribute(re, interner)),
+            Box::new(tensor_distribute(im, interner)),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(tensor_distribute(body, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(tensor_distribute(lhs, interner)),
+            Box::new(tensor_distribute(rhs, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| (tensor_distribute(value, interner), cond.clone()))
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(tensor_distribute(value, interner)),
+            Box::new(tensor_distribute(body, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| tensor_distribute(item, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| tensor_distribute(cell, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
 pub fn canonicalize_indices(
     expr: &ax_ir::Expr,
     properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
@@ -2623,6 +2733,34 @@ mod tests {
 
         let expr = Expr::Call(d, vec![Expr::add(vec![Expr::Sym(a), Expr::Sym(b)])]);
         let result = product_rule(&expr, &derivs, &interner);
+
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2);
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn distribute_product_over_sum() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let mu = interner.get_or_intern("mu");
+
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::add(vec![Expr::Sym(b), Expr::Sym(c)]),
+        ]);
+        let result = tensor_distribute(&expr, &interner);
 
         if let Expr::Add(terms) = &result {
             assert_eq!(terms.len(), 2);

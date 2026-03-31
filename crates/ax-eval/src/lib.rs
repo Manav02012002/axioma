@@ -1872,6 +1872,13 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "tensor_distribute" | "tdistribute" => {
+            if args.len() == 1 {
+                ax_tensor::tensor_distribute(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "eliminate_kronecker" => {
             if !args.is_empty() {
                 let delta = if args.len() >= 2 {
