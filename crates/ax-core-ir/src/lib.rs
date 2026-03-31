@@ -24,6 +24,16 @@ struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
+    fn parse_trust_level(&self, name: &str) -> ax_ir::TrustLevel {
+        match name {
+            "exact" => ax_ir::TrustLevel::Exact,
+            "assumptions" => ax_ir::TrustLevel::UnderAssumptions,
+            "heuristic" => ax_ir::TrustLevel::Heuristic,
+            "numerical" => ax_ir::TrustLevel::NumericallyChecked,
+            _ => ax_ir::TrustLevel::Unverified,
+        }
+    }
+
     fn new(src: &'a str, offset: usize, interner: &'a Interner) -> Self {
         Self {
             src,
@@ -232,6 +242,35 @@ impl<'a> Cursor<'a> {
             return Ok(Expr::Assume(var, assumptions));
         }
 
+        if self.consume_keyword("grassmann") {
+            let mut vars = Vec::new();
+            loop {
+                self.skip_ws();
+                let saved = self.pos;
+                match self.parse_ident() {
+                    Ok(sym) => vars.push(sym),
+                    Err(_) => {
+                        self.pos = saved;
+                        break;
+                    }
+                }
+            }
+            let grassmann_sym = self.interner.get_or_intern("grassmann");
+            return Ok(Expr::Call(
+                grassmann_sym,
+                vars.into_iter().map(Expr::Sym).collect(),
+            ));
+        }
+
+        if self.consume_keyword("convention") {
+            let field = self.parse_ident()?;
+            self.skip_ws();
+            let value = self.parse_ident()?;
+            let field_str = self.interner.resolve(field).to_string();
+            let value_str = self.interner.resolve(value).to_string();
+            return Ok(Expr::SetConvention(field_str, value_str));
+        }
+
         if self.consume_keyword("import") {
             let mut path = Vec::new();
             path.push(self.parse_ident()?);
@@ -247,6 +286,19 @@ impl<'a> Cursor<'a> {
         }
 
         if self.consume_keyword("rule") {
+            self.skip_ws();
+            let trust = if self.eat_if('[') {
+                self.skip_ws();
+                let level_name = self.parse_ident()?;
+                self.skip_ws();
+                if !self.eat_if(']') {
+                    return Err(self.error("expected ']'"));
+                }
+                let name = self.interner.resolve(level_name);
+                self.parse_trust_level(name)
+            } else {
+                ax_ir::TrustLevel::Unverified
+            };
             let saved = self.pos;
             if self.parse_ident().is_ok() {
                 self.skip_ws();
@@ -264,7 +316,7 @@ impl<'a> Cursor<'a> {
             }
             self.skip_ws();
             let rhs = self.parse_expr()?;
-            return Ok(Expr::Rule(Box::new(lhs), Box::new(rhs)));
+            return Ok(Expr::Rule(Box::new(lhs), Box::new(rhs), trust));
         }
 
         match self.peek_char() {
@@ -888,7 +940,19 @@ mod tests {
         let result = lower("rule pythag: sin(x_)^2 + cos(x_)^2 => 1", &interner);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let expr = result.expr.unwrap();
-        assert!(matches!(expr, ax_ir::Expr::Rule(_, _)));
+        assert!(matches!(expr, ax_ir::Expr::Rule(_, _, _)));
+    }
+
+    #[test]
+    fn parse_rule_with_trust() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("rule [exact] foo: sin(x_)^2 + cos(x_)^2 => 1", &interner);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        if let ax_ir::Expr::Rule(_, _, trust) = result.expr.unwrap() {
+            assert_eq!(trust, ax_ir::TrustLevel::Exact);
+        } else {
+            panic!("expected Rule");
+        }
     }
 
     #[test]

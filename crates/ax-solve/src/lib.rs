@@ -28,6 +28,7 @@ fn is_zero(expr: &Expr) -> bool {
 fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
+        Expr::Complex(re, im) => contains_var(re, var) || contains_var(im, var),
         Expr::Sym(s) => *s == var,
         Expr::Add(items) | Expr::Mul(items) | Expr::List(items) => {
             items.iter().any(|item| contains_var(item, var))
@@ -36,9 +37,10 @@ fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
         Expr::Neg(inner) => contains_var(inner, var),
         Expr::Call(_, args) => args.iter().any(|arg| contains_var(arg, var)),
         Expr::FnDef(_, _, body) => contains_var(body, var),
-        Expr::Rule(lhs, rhs) => contains_var(lhs, var) || contains_var(rhs, var),
+        Expr::Rule(lhs, rhs, _) => contains_var(lhs, var) || contains_var(rhs, var),
         Expr::Import(_) => false,
         Expr::Assume(_, _) => false,
+        Expr::SetConvention(_, _) => false,
         Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_var(value, var)),
         Expr::Indexed(base, _) => contains_var(base, var),
         Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
@@ -86,6 +88,10 @@ fn perfect_square_root(n: &BigInt) -> Option<BigInt> {
 fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Sym(_) => expr,
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(simplify_expr(*re, interner)),
+            Box::new(simplify_expr(*im, interner)),
+        ),
         Expr::Add(terms) => Expr::add(
             terms
                 .into_iter()
@@ -127,12 +133,14 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
         Expr::FnDef(name, params, body) => {
             Expr::FnDef(name, params, Box::new(simplify_expr(*body, interner)))
         }
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(simplify_expr(*lhs, interner)),
             Box::new(simplify_expr(*rhs, interner)),
+            trust,
         ),
         Expr::Import(path) => Expr::Import(path),
         Expr::Assume(name, assumptions) => Expr::Assume(name, assumptions),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field, value),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases
                 .into_iter()
@@ -218,6 +226,7 @@ pub fn extract_polynomial(
 ) -> Option<Vec<ax_ir::Expr>> {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Some(vec![expr.clone()]),
+        Expr::Complex(_, _) => None,
         Expr::Sym(sym) => {
             if *sym == var {
                 Some(vec![Expr::zero(), Expr::one()])
@@ -253,9 +262,10 @@ pub fn extract_polynomial(
         }
         Expr::Call(_, _)
         | Expr::FnDef(_, _, _)
-        | Expr::Rule(_, _)
+        | Expr::Rule(_, _, _)
         | Expr::Import(_)
         | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
         | Expr::Piecewise(_)
         | Expr::Indexed(_, _)
         | Expr::Let(_, _, _)

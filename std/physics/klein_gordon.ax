@@ -1,0 +1,12 @@
+// Klein-Gordon field equation from Lagrangian
+// L = (1/2)(∂_μ φ)(∂^μ φ) - (1/2) m^2 φ^2
+// In flat spacetime with coordinates [t, x, y, z]:
+let dphi_dt = dphi_dt
+let dphi_dx = dphi_dx
+let dphi_dy = dphi_dy
+let dphi_dz = dphi_dz
+// L = (1/2)(dphi_dt^2 - dphi_dx^2 - dphi_dy^2 - dphi_dz^2) - (1/2)m^2phi^2
+let L = 1/2 * (dphi_dt^2 - dphi_dx^2 - dphi_dy^2 - dphi_dz^2) - 1/2 * m^2 * phi^2
+let EOM = euler_lagrange(L, phi, [dphi_dt, dphi_dx, dphi_dy, dphi_dz], [t, x, y, z])
+// Should give: -m^2 * phi - (second time derivative - laplacian of phi) = 0
+EOM

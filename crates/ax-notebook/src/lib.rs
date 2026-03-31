@@ -94,12 +94,15 @@ fn handle_import(
                 let result = ax_eval::eval(&expr, env, interner);
                 env.bindings.insert(*name, result);
             }
-            Expr::Rule(_, _) => {
+            Expr::Rule(_, _, _) => {
                 let result = ax_eval::eval(&expr, env, interner);
                 let _ = ax_eval::register_rule(&result, env, interner);
             }
             Expr::Assume(var, assumptions) => {
                 env.assumptions.entry(*var).or_default().extend(assumptions.clone());
+            }
+            Expr::SetConvention(_, _) => {
+                let _ = ax_eval::apply_set_convention(&expr, env);
             }
             _ => {
                 let _ = ax_eval::eval(&expr, env, interner);
@@ -165,6 +168,13 @@ pub fn handle_eval(
     let mut last_svg = None;
 
     for expr in &lowered.exprs {
+        let rewrite_target = match expr {
+            Expr::Call(f, args) if interner.resolve(*f) == "rewrite" && args.len() == 1 => {
+                Some(args[0].clone())
+            }
+            _ => None,
+        };
+
         if let Expr::Import(path) = expr {
             if let Err(err) = handle_import(path, env, interner, search_paths) {
                 return EvalResponse {
@@ -181,6 +191,12 @@ pub fn handle_eval(
                     .collect::<Vec<_>>()
                     .join(".")
             ));
+            last_latex = None;
+            continue;
+        }
+
+        if let Some(description) = ax_eval::apply_set_convention(expr, env) {
+            last_unicode = Some(format!("active convention: {description}"));
             last_latex = None;
             continue;
         }
@@ -223,15 +239,28 @@ pub fn handle_eval(
             last_latex = None;
             continue;
         }
+        if let Some(message) = ax_eval::apply_grassmann_declaration(&result, env, interner) {
+            last_unicode = Some(message);
+            last_latex = None;
+            continue;
+        }
 
         if is_plot_call(expr, interner) {
             last_svg = std::fs::read_to_string("axioma_plot.svg").ok();
             last_unicode = Some("plot saved to axioma_plot.svg".to_string());
             last_latex = None;
         } else {
-            last_unicode = Some(ax_render::to_unicode(&result, interner));
-            last_latex = Some(ax_render::to_latex(&result, interner));
+        last_unicode = Some(ax_render::to_unicode(&result, interner));
+        last_latex = Some(ax_render::to_latex(&result, interner));
+        if let Some(target) = rewrite_target {
+            let (_, trace) = ax_eval::rewrite_with_trace(&target, env, interner);
+            let trust = ax_eval::describe_rewrite_trace(&trace);
+            last_unicode = Some(match last_unicode.take() {
+                Some(text) => format!("{text}\n{trust}"),
+                None => trust,
+            });
         }
+    }
     }
 
     EvalResponse {

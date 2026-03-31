@@ -3,7 +3,7 @@
 use ax_ir::{Expr, Interner};
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub struct SymbolicMatrix {
@@ -84,6 +84,314 @@ pub fn detect_contractions(indices: &[ax_ir::Index]) -> Vec<(usize, usize)> {
     pairs
 }
 
+fn permutation_parity(original: &[ax_ir::Index], sorted: &[ax_ir::Index]) -> bool {
+    let mut used = vec![false; sorted.len()];
+    let mut permutation = Vec::with_capacity(original.len());
+    for item in original {
+        let pos = sorted
+            .iter()
+            .enumerate()
+            .find(|(idx, candidate)| !used[*idx] && *candidate == item)
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        used[pos] = true;
+        permutation.push(pos);
+    }
+
+    let mut inversions = 0usize;
+    for i in 0..permutation.len() {
+        for j in (i + 1)..permutation.len() {
+            if permutation[i] > permutation[j] {
+                inversions += 1;
+            }
+        }
+    }
+    inversions % 2 == 1
+}
+
+fn sort_key(index: &ax_ir::Index, interner: &Interner) -> (String, u8) {
+    (
+        interner.resolve(index.name).to_string(),
+        match index.variance {
+            ax_ir::Variance::Down => 0,
+            ax_ir::Variance::Up => 1,
+        },
+    )
+}
+
+pub fn canonicalize_indices(
+    expr: &ax_ir::Expr,
+    properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let base_expr = canonicalize_indices(base, properties, interner);
+            let mut indices = indices.clone();
+            let mut negate = false;
+
+            if let Expr::Sym(sym) = &base_expr {
+                if let Some(props) = properties.get(sym) {
+                    for prop in props {
+                        match prop {
+                            ax_ir::TensorProperty::Symmetric(positions) => {
+                                let mut original = positions
+                                    .iter()
+                                    .filter_map(|&pos| indices.get(pos).cloned())
+                                    .collect::<Vec<_>>();
+                                let mut sorted = original.clone();
+                                sorted.sort_by_key(|idx| sort_key(idx, interner));
+                                for (slot, value) in positions.iter().zip(sorted.iter()) {
+                                    if let Some(target) = indices.get_mut(*slot) {
+                                        *target = value.clone();
+                                    }
+                                }
+                                original.clear();
+                            }
+                            ax_ir::TensorProperty::AntiSymmetric(positions) => {
+                                let original = positions
+                                    .iter()
+                                    .filter_map(|&pos| indices.get(pos).cloned())
+                                    .collect::<Vec<_>>();
+                                if original.len() >= 2 {
+                                    for i in 0..original.len() {
+                                        for j in (i + 1)..original.len() {
+                                            if original[i] == original[j] {
+                                                return Expr::zero();
+                                            }
+                                        }
+                                    }
+                                }
+                                let mut sorted = original.clone();
+                                sorted.sort_by_key(|idx| sort_key(idx, interner));
+                                if permutation_parity(&original, &sorted) {
+                                    negate = !negate;
+                                }
+                                for (slot, value) in positions.iter().zip(sorted.iter()) {
+                                    if let Some(target) = indices.get_mut(*slot) {
+                                        *target = value.clone();
+                                    }
+                                }
+                            }
+                            ax_ir::TensorProperty::RiemannSymmetry => {
+                                if indices.len() == 4 {
+                                    let pairs = [vec![0usize, 1usize], vec![2usize, 3usize]];
+                                    for positions in pairs {
+                                        let original = positions
+                                            .iter()
+                                            .filter_map(|&pos| indices.get(pos).cloned())
+                                            .collect::<Vec<_>>();
+                                        if original[0] == original[1] {
+                                            return Expr::zero();
+                                        }
+                                        let mut sorted = original.clone();
+                                        sorted.sort_by_key(|idx| sort_key(idx, interner));
+                                        if permutation_parity(&original, &sorted) {
+                                            negate = !negate;
+                                        }
+                                        for (slot, value) in positions.iter().zip(sorted.iter()) {
+                                            indices[*slot] = value.clone();
+                                        }
+                                    }
+
+                                    let left = vec![indices[0].clone(), indices[1].clone()];
+                                    let right = vec![indices[2].clone(), indices[3].clone()];
+                                    let left_key = left.iter().map(|i| sort_key(i, interner)).collect::<Vec<_>>();
+                                    let right_key = right.iter().map(|i| sort_key(i, interner)).collect::<Vec<_>>();
+                                    if right_key < left_key {
+                                        indices.swap(0, 2);
+                                        indices.swap(1, 3);
+                                    }
+                                }
+                            }
+                            ax_ir::TensorProperty::Traceless | ax_ir::TensorProperty::Metric => {}
+                        }
+                    }
+                }
+            }
+
+            let out = Expr::Indexed(Box::new(base_expr), indices);
+            if negate { Expr::neg(out) } else { out }
+        }
+        Expr::Add(terms) => Expr::add(
+            terms.iter()
+                .map(|term| canonicalize_indices(term, properties, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| canonicalize_indices(factor, properties, interner))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            canonicalize_indices(base, properties, interner),
+            canonicalize_indices(exp, properties, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(canonicalize_indices(inner, properties, interner)),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| canonicalize_indices(arg, properties, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(canonicalize_indices(re, properties, interner)),
+            Box::new(canonicalize_indices(im, properties, interner)),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(canonicalize_indices(body, properties, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(canonicalize_indices(lhs, properties, interner)),
+            Box::new(canonicalize_indices(rhs, properties, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases.iter()
+                .map(|(value, cond)| (canonicalize_indices(value, properties, interner), cond.clone()))
+                .collect(),
+        ),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
+        Expr::Let(name, val, body) => Expr::Let(
+            *name,
+            Box::new(canonicalize_indices(val, properties, interner)),
+            Box::new(canonicalize_indices(body, properties, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| canonicalize_indices(item, properties, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| canonicalize_indices(cell, properties, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+pub fn rename_dummy_indices(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
+    fn collect(
+        expr: &Expr,
+        seen: &mut Vec<(lasso::Spur, ax_ir::Variance)>,
+        counts: &mut HashMap<lasso::Spur, Vec<ax_ir::Variance>>,
+    ) {
+        match expr {
+            Expr::Indexed(_, indices) => {
+                for index in indices {
+                    seen.push((index.name, index.variance.clone()));
+                    counts.entry(index.name).or_default().push(index.variance.clone());
+                }
+            }
+            Expr::Add(items) | Expr::Mul(items) | Expr::List(items) => {
+                for item in items {
+                    collect(item, seen, counts);
+                }
+            }
+            Expr::Pow(base, exp) => {
+                collect(base, seen, counts);
+                collect(exp, seen, counts);
+            }
+            Expr::Neg(inner) => collect(inner, seen, counts),
+            Expr::Call(_, args) => {
+                for arg in args {
+                    collect(arg, seen, counts);
+                }
+            }
+            Expr::Complex(re, im) => {
+                collect(re, seen, counts);
+                collect(im, seen, counts);
+            }
+            Expr::FnDef(_, _, body) => collect(body, seen, counts),
+            Expr::Rule(lhs, rhs, _) => {
+                collect(lhs, seen, counts);
+                collect(rhs, seen, counts);
+            }
+            Expr::Piecewise(cases) => {
+                for (value, _) in cases {
+                    collect(value, seen, counts);
+                }
+            }
+            Expr::SetConvention(_, _) => {}
+            Expr::Let(_, val, body) => {
+                collect(val, seen, counts);
+                collect(body, seen, counts);
+            }
+            Expr::Matrix(rows) => {
+                for cell in rows.iter().flatten() {
+                    collect(cell, seen, counts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn replace(expr: &Expr, mapping: &HashMap<lasso::Spur, lasso::Spur>) -> Expr {
+        match expr {
+            Expr::Indexed(base, indices) => Expr::Indexed(
+                Box::new(replace(base, mapping)),
+                indices
+                    .iter()
+                    .map(|index| ax_ir::Index {
+                        name: mapping.get(&index.name).copied().unwrap_or(index.name),
+                        variance: index.variance.clone(),
+                    })
+                    .collect(),
+            ),
+            Expr::Add(items) => Expr::add(items.iter().map(|item| replace(item, mapping)).collect()),
+            Expr::Mul(items) => Expr::mul(items.iter().map(|item| replace(item, mapping)).collect()),
+            Expr::Pow(base, exp) => Expr::pow(replace(base, mapping), replace(exp, mapping)),
+            Expr::Neg(inner) => Expr::neg(replace(inner, mapping)),
+            Expr::Call(f, args) => Expr::Call(*f, args.iter().map(|arg| replace(arg, mapping)).collect()),
+            Expr::Complex(re, im) => Expr::Complex(Box::new(replace(re, mapping)), Box::new(replace(im, mapping))),
+            Expr::FnDef(name, params, body) => Expr::FnDef(*name, params.clone(), Box::new(replace(body, mapping))),
+            Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+                Box::new(replace(lhs, mapping)),
+                Box::new(replace(rhs, mapping)),
+                *trust,
+            ),
+            Expr::Piecewise(cases) => Expr::Piecewise(
+                cases.iter().map(|(value, cond)| (replace(value, mapping), cond.clone())).collect(),
+            ),
+            Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
+            Expr::Let(name, val, body) => Expr::Let(*name, Box::new(replace(val, mapping)), Box::new(replace(body, mapping))),
+            Expr::List(items) => Expr::List(items.iter().map(|item| replace(item, mapping)).collect()),
+            Expr::Matrix(rows) => Expr::Matrix(rows.iter().map(|row| row.iter().map(|cell| replace(cell, mapping)).collect()).collect()),
+            _ => expr.clone(),
+        }
+    }
+
+    let mut seen = Vec::new();
+    let mut counts = HashMap::new();
+    collect(expr, &mut seen, &mut counts);
+
+    let mut mapping = HashMap::new();
+    let mut next = 0usize;
+    for (sym, _) in seen {
+        if mapping.contains_key(&sym) {
+            continue;
+        }
+        if let Some(vars) = counts.get(&sym) {
+            if vars.len() == 2 && vars[0] != vars[1] {
+                let canonical = interner.get_or_intern(&format!("_d{next}"));
+                mapping.insert(sym, canonical);
+                next += 1;
+            }
+        }
+    }
+
+    replace(expr, &mapping)
+}
+
 pub fn diff_component(
     expr: &ax_ir::Expr,
     coord: lasso::Spur,
@@ -92,6 +400,7 @@ pub fn diff_component(
     fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
         match expr {
             Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
+            Expr::Complex(re, im) => contains_var(re, var) || contains_var(im, var),
             Expr::Sym(s) => *s == var,
             Expr::Add(items) | Expr::Mul(items) | Expr::List(items) => {
                 items.iter().any(|item| contains_var(item, var))
@@ -100,9 +409,10 @@ pub fn diff_component(
             Expr::Neg(e) => contains_var(e, var),
             Expr::Call(_, args) => args.iter().any(|arg| contains_var(arg, var)),
             Expr::FnDef(_, _, body) => contains_var(body, var),
-            Expr::Rule(lhs, rhs) => contains_var(lhs, var) || contains_var(rhs, var),
+            Expr::Rule(lhs, rhs, _) => contains_var(lhs, var) || contains_var(rhs, var),
             Expr::Import(_) => false,
             Expr::Assume(_, _) => false,
+            Expr::SetConvention(_, _) => false,
             Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_var(value, var)),
             Expr::Indexed(base, _) => contains_var(base, var),
             Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
@@ -119,6 +429,9 @@ pub fn diff_component(
     fn diff(expr: &Expr, var: lasso::Spur, interner: &Interner) -> Expr {
         match expr {
             Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Expr::zero(),
+            Expr::Complex(re, im) => {
+                Expr::Complex(Box::new(diff(re, var, interner)), Box::new(diff(im, var, interner)))
+            }
             Expr::Sym(s) => {
                 if *s == var {
                     Expr::one()
@@ -183,12 +496,14 @@ pub fn diff_component(
             Expr::FnDef(name, params, body) => {
                 Expr::FnDef(*name, params.clone(), Box::new(diff(body, var, interner)))
             }
-            Expr::Rule(lhs, rhs) => Expr::Rule(
+            Expr::Rule(lhs, rhs, trust) => Expr::Rule(
                 Box::new(diff(lhs, var, interner)),
                 Box::new(diff(rhs, var, interner)),
+                *trust,
             ),
             Expr::Import(path) => Expr::Import(path.clone()),
             Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+            Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
             Expr::Piecewise(cases) => Expr::Piecewise(
                 cases.iter()
                     .map(|(value, condition)| (diff(value, var, interner), condition.clone()))
@@ -431,6 +746,7 @@ fn eval_expr(expr: &Expr) -> Expr {
         Expr::Int(n) => Expr::Int(n.clone()),
         Expr::Rational(r) => Expr::Rational(r.clone()),
         Expr::Float(f) => Expr::Float(*f),
+        Expr::Complex(re, im) => Expr::Complex(Box::new(eval_expr(re)), Box::new(eval_expr(im))),
         Expr::Sym(s) => Expr::Sym(*s),
         Expr::Add(terms) => Expr::add(terms.iter().map(eval_expr).collect()),
         Expr::Mul(factors) => Expr::mul(factors.iter().map(eval_expr).collect()),
@@ -448,9 +764,12 @@ fn eval_expr(expr: &Expr) -> Expr {
         Expr::FnDef(name, params, body) => {
             Expr::FnDef(*name, params.clone(), Box::new(eval_expr(body)))
         }
-        Expr::Rule(lhs, rhs) => Expr::Rule(Box::new(eval_expr(lhs)), Box::new(eval_expr(rhs))),
+        Expr::Rule(lhs, rhs, trust) => {
+            Expr::Rule(Box::new(eval_expr(lhs)), Box::new(eval_expr(rhs)), *trust)
+        }
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases.iter()
                 .map(|(value, condition)| (eval_expr(value), condition.clone()))
@@ -473,6 +792,7 @@ fn eval_expr(expr: &Expr) -> Expr {
 fn node_count(expr: &Expr) -> usize {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Sym(_) => 1,
+        Expr::Complex(re, im) => 1 + node_count(re) + node_count(im),
         Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
             1 + terms.iter().map(node_count).sum::<usize>()
         }
@@ -480,9 +800,10 @@ fn node_count(expr: &Expr) -> usize {
         Expr::Neg(inner) => 1 + node_count(inner),
         Expr::Call(_, args) => 1 + args.iter().map(node_count).sum::<usize>(),
         Expr::FnDef(_, params, body) => params.len() + 1 + node_count(body),
-        Expr::Rule(lhs, rhs) => 1 + node_count(lhs) + node_count(rhs),
+        Expr::Rule(lhs, rhs, _) => 1 + node_count(lhs) + node_count(rhs),
         Expr::Import(path) => 1 + path.len(),
         Expr::Assume(_, assumptions) => 1 + assumptions.len(),
+        Expr::SetConvention(field, value) => 1 + field.len() + value.len(),
         Expr::Piecewise(cases) => {
             1 + cases.iter().map(|(value, _)| node_count(value)).sum::<usize>()
         }
@@ -496,6 +817,10 @@ fn node_count(expr: &Expr) -> usize {
 fn expand_expr(expr: &Expr, interner: &Interner) -> Expr {
     let _ = interner;
     match expr {
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(expand_expr(re, interner)),
+            Box::new(expand_expr(im, interner)),
+        ),
         Expr::Add(terms) => {
             let expanded = Expr::add(terms.iter().map(|t| expand_expr(t, interner)).collect());
             collect_flat_add(&expanded)
@@ -571,12 +896,14 @@ fn expand_expr(expr: &Expr, interner: &Interner) -> Expr {
         Expr::FnDef(name, params, body) => {
             Expr::FnDef(*name, params.clone(), Box::new(expand_expr(body, interner)))
         }
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(expand_expr(lhs, interner)),
             Box::new(expand_expr(rhs, interner)),
+            *trust,
         ),
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases.iter()
                 .map(|(value, condition)| (expand_expr(value, interner), condition.clone()))
@@ -721,12 +1048,14 @@ fn collect_terms_expr(expr: &Expr, interner: &Interner) -> Expr {
             params.clone(),
             Box::new(collect_terms_expr(body, interner)),
         ),
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(collect_terms_expr(lhs, interner)),
             Box::new(collect_terms_expr(rhs, interner)),
+            *trust,
         ),
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases.iter()
                 .map(|(value, condition)| (collect_terms_expr(value, interner), condition.clone()))
@@ -798,6 +1127,7 @@ pub fn riemann_from_christoffel(
     gamma: &[Vec<Vec<ax_ir::Expr>>],
     coords: &[lasso::Spur],
     interner: &ax_ir::Interner,
+    convention: &ax_ir::Convention,
 ) -> Vec<Vec<Vec<Vec<ax_ir::Expr>>>> {
     let n = coords.len();
     let mut riemann = vec![vec![vec![vec![Expr::zero(); n]; n]; n]; n];
@@ -822,13 +1152,21 @@ pub fn riemann_from_christoffel(
                         ]));
                     }
 
-                    let expr = Expr::add(vec![
-                        term1,
-                        Expr::neg(term2),
-                        Expr::add(pos_terms),
-                        Expr::neg(Expr::add(neg_terms)),
-                    ]);
-                    riemann[i][j][k][l] = expr;
+                    let expr = match convention.riemann_sign {
+                        ax_ir::RiemannSign::MTW => Expr::add(vec![
+                            term1,
+                            Expr::neg(term2),
+                            Expr::add(pos_terms),
+                            Expr::neg(Expr::add(neg_terms)),
+                        ]),
+                        ax_ir::RiemannSign::Weinberg => Expr::add(vec![
+                            term2,
+                            Expr::neg(term1),
+                            Expr::add(neg_terms),
+                            Expr::neg(Expr::add(pos_terms)),
+                        ]),
+                    };
+                    riemann[i][j][k][l] = simplify_expr(expr, interner);
                 }
             }
         }
@@ -840,15 +1178,19 @@ pub fn riemann_from_christoffel(
 pub fn ricci_from_riemann(
     riemann: &[Vec<Vec<Vec<ax_ir::Expr>>>],
     n: usize,
-    _interner: &ax_ir::Interner,
+    interner: &ax_ir::Interner,
+    convention: &ax_ir::Convention,
 ) -> Vec<Vec<ax_ir::Expr>> {
     let mut ricci = vec![vec![Expr::zero(); n]; n];
     for j in 0..n {
         for l in 0..n {
             let terms = (0..n)
-                .map(|i| riemann[i][j][i][l].clone())
+                .map(|i| match convention.ricci_contraction {
+                    ax_ir::RicciContraction::FirstThird => riemann[i][j][i][l].clone(),
+                    ax_ir::RicciContraction::FirstFourth => riemann[i][j][l][i].clone(),
+                })
                 .collect::<Vec<_>>();
-            ricci[j][l] = Expr::add(terms);
+            ricci[j][l] = simplify_expr(Expr::add(terms), interner);
         }
     }
     ricci
@@ -1078,6 +1420,7 @@ pub fn lie_derivative_vector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn diagonal_inverse() {
@@ -1158,7 +1501,12 @@ mod tests {
         ]);
 
         let gamma = christoffel_from_metric(&g, &coords, &interner);
-        let riemann = riemann_from_christoffel(&gamma, &coords, &interner);
+        let riemann = riemann_from_christoffel(
+            &gamma,
+            &coords,
+            &interner,
+            &ax_ir::Convention::default(),
+        );
         let k = kretschner_scalar(&riemann, &g, &interner);
         assert_eq!(k, Expr::zero());
     }
@@ -1183,5 +1531,66 @@ mod tests {
         for (i, eq) in geod.iter().enumerate() {
             assert_eq!(*eq, Expr::zero(), "geodesic[{}] = {:?}", i, eq);
         }
+    }
+
+    #[test]
+    fn symmetric_tensor_canonicalize() {
+        let interner = ax_ir::Interner::new();
+        let g = interner.get_or_intern("g");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+
+        let mut properties = HashMap::new();
+        properties.insert(g, vec![ax_ir::TensorProperty::Symmetric(vec![0, 1])]);
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(g)),
+            vec![
+                ax_ir::Index {
+                    name: nu,
+                    variance: ax_ir::Variance::Down,
+                },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                },
+            ],
+        );
+        let result = canonicalize_indices(&expr, &properties, &interner);
+        if let Expr::Indexed(_, indices) = &result {
+            assert_eq!(indices[0].name, mu);
+            assert_eq!(indices[1].name, nu);
+        } else {
+            panic!("expected Indexed");
+        }
+    }
+
+    #[test]
+    fn antisymmetric_trace_is_zero() {
+        let interner = ax_ir::Interner::new();
+        let f_sym = interner.get_or_intern("F");
+        let mu = interner.get_or_intern("mu");
+
+        let mut properties = HashMap::new();
+        properties.insert(
+            f_sym,
+            vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])],
+        );
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(f_sym)),
+            vec![
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                },
+            ],
+        );
+        let result = canonicalize_indices(&expr, &properties, &interner);
+        assert_eq!(result, Expr::zero());
     }
 }

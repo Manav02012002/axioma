@@ -89,7 +89,7 @@ pub fn handle_import(
                 let result = ax_eval::eval(&expr, env, interner);
                 env.bindings.insert(*name, result);
             }
-            Expr::Rule(_, _) => {
+            Expr::Rule(_, _, _) => {
                 let result = ax_eval::eval(&expr, env, interner);
                 let _ = ax_eval::register_rule(&result, env, interner);
             }
@@ -99,8 +99,12 @@ pub fn handle_import(
                     .or_default()
                     .extend(assumptions.clone());
             }
+            Expr::SetConvention(_, _) => {
+                let _ = ax_eval::apply_set_convention(&expr, env);
+            }
             _ => {
-                let _ = ax_eval::eval(&expr, env, interner);
+                let result = ax_eval::eval(&expr, env, interner);
+                let _ = ax_eval::apply_grassmann_declaration(&result, env, interner);
             }
         }
     }
@@ -114,6 +118,13 @@ pub fn execute_expr(
     interner: &ax_ir::Interner,
     search_paths: &[PathBuf],
 ) -> Result<Option<String>> {
+    let rewrite_target = match expr {
+        Expr::Call(f, args) if interner.resolve(*f) == "rewrite" && args.len() == 1 => {
+            Some(args[0].clone())
+        }
+        _ => None,
+    };
+
     if let Expr::Import(path) = expr {
         handle_import(path, env, interner, search_paths)?;
         return Ok(Some(format!(
@@ -123,6 +134,10 @@ pub fn execute_expr(
                 .collect::<Vec<_>>()
                 .join(".")
         )));
+    }
+
+    if let Some(description) = ax_eval::apply_set_convention(expr, env) {
+        return Ok(Some(format!("active convention: {description}")));
     }
 
     if let Expr::Let(name, val, body) = expr {
@@ -154,9 +169,16 @@ pub fn execute_expr(
         env.bindings.insert(*name, result.clone());
         return Ok(Some(format!("defined {}", interner.resolve(*name))));
     }
+    if let Some(message) = ax_eval::apply_grassmann_declaration(&result, env, interner) {
+        return Ok(Some(message));
+    }
 
     println!("{}", ax_render::to_unicode(&result, interner));
     println!("  LaTeX: {}", ax_render::to_latex(&result, interner));
+    if let Some(target) = rewrite_target {
+        let (_, trace) = ax_eval::rewrite_with_trace(&target, env, interner);
+        println!("  {}", ax_eval::describe_rewrite_trace(&trace));
+    }
     Ok(None)
 }
 

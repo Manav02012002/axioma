@@ -1,0 +1,5 @@
+{
+    "argv": ["axioma-jupyter", "{connection_file}"],
+    "display_name": "Axioma",
+    "language": "axioma"
+}

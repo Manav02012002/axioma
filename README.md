@@ -52,6 +52,17 @@ axioma> Ric
 ./target/release/axioma run std/gr/schwarzschild.ax
 ```
 
+## Jupyter
+`ax-jupyter` requires `libzmq` to be installed on your system before it will compile.
+
+```bash
+# Install the Jupyter kernel
+jupyter kernelspec install --user share/jupyter/kernels/axioma
+
+# Run Jupyter with the Axioma kernel
+jupyter notebook
+```
+
 ## Architecture
 Axioma is built in Rust as a workspace of focused crates:
 

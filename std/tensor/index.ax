@@ -1,0 +1,6 @@
+// Index algebra utilities
+// Tensor notation: T[mu-, nu+] means T with lower index mu, upper index nu
+// Repeated indices with opposite variance are automatically contracted
+// Example: T[mu+, mu-] is a trace
+// detect_contractions — find contracted index pairs
+// canonicalize — put indices in canonical order using tensor symmetries

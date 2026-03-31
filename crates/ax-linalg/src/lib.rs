@@ -72,6 +72,10 @@ fn perfect_square_root(n: &BigInt) -> Option<BigInt> {
 fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Sym(_) => expr,
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(simplify_expr(*re, interner)),
+            Box::new(simplify_expr(*im, interner)),
+        ),
         Expr::Add(terms) => Expr::add(
             terms
                 .into_iter()
@@ -113,12 +117,14 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
         Expr::FnDef(name, params, body) => {
             Expr::FnDef(name, params, Box::new(simplify_expr(*body, interner)))
         }
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(simplify_expr(*lhs, interner)),
             Box::new(simplify_expr(*rhs, interner)),
+            trust,
         ),
         Expr::Import(path) => Expr::Import(path),
         Expr::Assume(name, assumptions) => Expr::Assume(name, assumptions),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field, value),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases
                 .into_iter()

@@ -1,0 +1,7 @@
+// Standard calculus operations
+// diff(expr, var)           — derivative
+// diff(expr, var, n)        — nth derivative (not yet implemented)
+// integrate(expr, var)      — indefinite integral
+// integrate(expr, var, a, b) — definite integral
+// series(expr, var, point, order) — Taylor series
+// limit(expr, var, point)   — limit

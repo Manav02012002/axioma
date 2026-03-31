@@ -1,0 +1,12 @@
+// Calculus Demo
+// =============
+// Differentiation
+diff(x^3 + sin(x), x)
+// Integration
+integrate(x^2, x)
+// Taylor series of e^x around 0
+series(exp(x), x, 0, 6)
+// Limit
+limit(sin(x)/x, x, 0)
+// Solve polynomial
+solve(x^2 - 5*x + 6, x)

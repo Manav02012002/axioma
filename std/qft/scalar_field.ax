@@ -1,0 +1,6 @@
+// Scalar field theory
+// Free scalar Lagrangian:
+// L = (1/2)(∂_μ φ)(∂^μ φ) - (1/2) m^2 φ^2
+// Equation of motion (Klein-Gordon):
+// (□ + m^2) φ = 0
+// where □ = ∂_μ ∂^μ is the d'Alembertian

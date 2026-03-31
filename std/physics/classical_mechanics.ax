@@ -1,0 +1,5 @@
+// Classical mechanics utilities
+// Lagrangian mechanics:
+// euler_lagrange(L, q, [dq_dt], [t]) gives the equation of motion
+// Example: Simple pendulum
+// L = (1/2) m l^2 theta_dot^2 + m g l cos(theta)

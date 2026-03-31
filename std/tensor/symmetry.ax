@@ -1,0 +1,7 @@
+// Tensor symmetry declarations
+// symmetric(tensor, [index_positions])
+// antisymmetric(tensor, [index_positions])
+// riemann_symmetry(tensor)
+// Example:
+// symmetric(g, [0, 1])         — metric is symmetric
+// antisymmetric(F, [0, 1])     — field strength is antisymmetric

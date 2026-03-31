@@ -227,6 +227,40 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
         Expr::Int(n) => (n.to_string(), PREC_POW),
         Expr::Rational(r) => (render_fractional_or_plain(r), PREC_POW),
         Expr::Float(f) => (format_float(*f), PREC_POW),
+        Expr::Complex(re, im) => {
+            if matches!(im.as_ref(), Expr::Int(n) if *n == 0.into()) {
+                return render(re, interner);
+            }
+            if matches!(re.as_ref(), Expr::Int(n) if *n == 0.into())
+                && matches!(im.as_ref(), Expr::Int(n) if *n == 1.into())
+            {
+                return ("i".to_string(), PREC_ADD);
+            }
+            if matches!(re.as_ref(), Expr::Int(n) if *n == 0.into()) {
+                return (format!("{}i", render_with_paren(im, PREC_MUL, interner)), PREC_ADD);
+            }
+            if matches!(im.as_ref(), Expr::Int(n) if *n == 1.into()) {
+                return (format!("{} + i", render_with_paren(re, PREC_ADD, interner)), PREC_ADD);
+            }
+            if let Expr::Neg(inner) = im.as_ref() {
+                return (
+                    format!(
+                        "{} - {}i",
+                        render_with_paren(re, PREC_ADD, interner),
+                        render_with_paren(inner, PREC_MUL, interner)
+                    ),
+                    PREC_ADD,
+                );
+            }
+            (
+                format!(
+                    "{} + {}i",
+                    render_with_paren(re, PREC_ADD, interner),
+                    render_with_paren(im, PREC_MUL, interner)
+                ),
+                PREC_ADD,
+            )
+        }
         Expr::Sym(s) => (sym_to_unicode(*s, interner), PREC_POW),
         Expr::Add(terms) => {
             let mut out = String::new();
@@ -310,7 +344,7 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
             ),
             PREC_TOP,
         ),
-        Expr::Rule(lhs, rhs) => (
+        Expr::Rule(lhs, rhs, _) => (
             format!(
                 "{} => {}",
                 render_with_paren(lhs, PREC_TOP, interner),
@@ -345,6 +379,10 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
                     )
                 }
             ),
+            PREC_TOP,
+        ),
+        Expr::SetConvention(field, value) => (
+            format!("convention {} {}", field, value),
             PREC_TOP,
         ),
         Expr::Piecewise(cases) => (

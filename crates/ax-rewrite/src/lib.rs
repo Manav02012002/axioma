@@ -23,6 +23,37 @@ pub struct RewriteRule {
     pub pattern: Pattern,
     pub replacement: Expr,
     pub condition: Option<fn(&Bindings, &Interner) -> bool>,
+    pub trust_level: ax_ir::TrustLevel,
+}
+
+#[derive(Clone, Debug)]
+pub struct RewriteStep {
+    pub rule_name: String,
+    pub trust_level: ax_ir::TrustLevel,
+    pub before: Expr,
+    pub after: Expr,
+    pub bindings: Bindings,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RewriteTrace {
+    pub steps: Vec<RewriteStep>,
+}
+
+impl RewriteTrace {
+    pub fn overall_trust(&self) -> ax_ir::TrustLevel {
+        self.steps
+            .iter()
+            .map(|s| s.trust_level)
+            .min_by_key(|t| match t {
+                ax_ir::TrustLevel::Exact => 0,
+                ax_ir::TrustLevel::UnderAssumptions => 1,
+                ax_ir::TrustLevel::NumericallyChecked => 2,
+                ax_ir::TrustLevel::Heuristic => 3,
+                ax_ir::TrustLevel::Unverified => 4,
+            })
+            .unwrap_or(ax_ir::TrustLevel::Exact)
+    }
 }
 
 fn restore_binds(target: &mut Bindings, snapshot: &Bindings) {
@@ -172,6 +203,9 @@ pub fn substitute(template: &Expr, binds: &Bindings) -> Expr {
         Expr::Int(n) => Expr::Int(n.clone()),
         Expr::Rational(r) => Expr::Rational(r.clone()),
         Expr::Float(f) => Expr::Float(*f),
+        Expr::Complex(re, im) => {
+            Expr::Complex(Box::new(substitute(re, binds)), Box::new(substitute(im, binds)))
+        }
         Expr::Sym(s) => binds.get(s).cloned().unwrap_or(Expr::Sym(*s)),
         Expr::Add(terms) => Expr::add(terms.iter().map(|t| substitute(t, binds)).collect()),
         Expr::Mul(factors) => Expr::mul(factors.iter().map(|f| substitute(f, binds)).collect()),
@@ -181,12 +215,14 @@ pub fn substitute(template: &Expr, binds: &Bindings) -> Expr {
         Expr::FnDef(name, params, body) => {
             Expr::FnDef(*name, params.clone(), Box::new(substitute(body, binds)))
         }
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(substitute(lhs, binds)),
             Box::new(substitute(rhs, binds)),
+            *trust,
         ),
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases.iter()
                 .map(|(value, condition)| (substitute(value, binds), condition.clone()))
@@ -222,11 +258,41 @@ pub fn apply_rule(rule: &RewriteRule, expr: &Expr, interner: &Interner) -> Optio
     Some(substitute(&rule.replacement, &binds))
 }
 
+pub fn apply_rule_traced(
+    rule: &RewriteRule,
+    expr: &Expr,
+    interner: &Interner,
+    trace: &mut RewriteTrace,
+) -> Option<Expr> {
+    let mut binds = Bindings::new();
+    if !match_pattern(&rule.pattern, expr, &mut binds) {
+        return None;
+    }
+    if let Some(condition) = rule.condition {
+        if !condition(&binds, interner) {
+            return None;
+        }
+    }
+    let after = substitute(&rule.replacement, &binds);
+    trace.steps.push(RewriteStep {
+        rule_name: rule.name.clone(),
+        trust_level: rule.trust_level,
+        before: expr.clone(),
+        after: after.clone(),
+        bindings: binds,
+    });
+    Some(after)
+}
+
 pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> Expr {
     let recursed = match expr {
         Expr::Int(n) => Expr::Int(n.clone()),
         Expr::Rational(r) => Expr::Rational(r.clone()),
         Expr::Float(f) => Expr::Float(*f),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(rewrite_once(rules, re, interner)),
+            Box::new(rewrite_once(rules, im, interner)),
+        ),
         Expr::Sym(s) => Expr::Sym(*s),
         Expr::Add(terms) => Expr::add(
             terms
@@ -256,12 +322,14 @@ pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> 
             params.clone(),
             Box::new(rewrite_once(rules, body, interner)),
         ),
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(rewrite_once(rules, lhs, interner)),
             Box::new(rewrite_once(rules, rhs, interner)),
+            *trust,
         ),
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases.iter()
                 .map(|(value, condition)| (rewrite_once(rules, value, interner), condition.clone()))
@@ -302,6 +370,103 @@ pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> 
     recursed
 }
 
+pub fn rewrite_once_traced(
+    rules: &[RewriteRule],
+    expr: &Expr,
+    interner: &Interner,
+    trace: &mut RewriteTrace,
+) -> Expr {
+    let recursed = match expr {
+        Expr::Int(n) => Expr::Int(n.clone()),
+        Expr::Rational(r) => Expr::Rational(r.clone()),
+        Expr::Float(f) => Expr::Float(*f),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(rewrite_once_traced(rules, re, interner, trace)),
+            Box::new(rewrite_once_traced(rules, im, interner, trace)),
+        ),
+        Expr::Sym(s) => Expr::Sym(*s),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| rewrite_once_traced(rules, t, interner, trace))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| rewrite_once_traced(rules, f, interner, trace))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            rewrite_once_traced(rules, base, interner, trace),
+            rewrite_once_traced(rules, exp, interner, trace),
+        ),
+        Expr::Neg(e) => Expr::neg(rewrite_once_traced(rules, e, interner, trace)),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|a| rewrite_once_traced(rules, a, interner, trace))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(rewrite_once_traced(rules, body, interner, trace)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(rewrite_once_traced(rules, lhs, interner, trace)),
+            Box::new(rewrite_once_traced(rules, rhs, interner, trace)),
+            *trust,
+        ),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (
+                        rewrite_once_traced(rules, value, interner, trace),
+                        condition.clone(),
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(rewrite_once_traced(rules, base, interner, trace)),
+            indices.clone(),
+        ),
+        Expr::Let(name, val, body) => Expr::Let(
+            *name,
+            Box::new(rewrite_once_traced(rules, val, interner, trace)),
+            Box::new(rewrite_once_traced(rules, body, interner, trace)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|i| rewrite_once_traced(rules, i, interner, trace))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| rewrite_once_traced(rules, cell, interner, trace))
+                        .collect()
+                })
+                .collect(),
+        ),
+    };
+
+    for rule in rules {
+        if let Some(rewritten) = apply_rule_traced(rule, &recursed, interner, trace) {
+            return rewritten;
+        }
+    }
+
+    recursed
+}
+
 pub fn rewrite_fixed_point(
     rules: &[RewriteRule],
     expr: &Expr,
@@ -311,6 +476,24 @@ pub fn rewrite_fixed_point(
     let mut current = expr.clone();
     for _ in 0..max_iter {
         let next = rewrite_once(rules, &current, interner);
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+pub fn rewrite_fixed_point_traced(
+    rules: &[RewriteRule],
+    expr: &Expr,
+    interner: &Interner,
+    max_iter: usize,
+    trace: &mut RewriteTrace,
+) -> Expr {
+    let mut current = expr.clone();
+    for _ in 0..max_iter {
+        let next = rewrite_once_traced(rules, &current, interner, trace);
         if next == current {
             break;
         }
@@ -385,6 +568,7 @@ mod tests {
             pattern: Pattern::Call(sin_sym, vec![Pattern::Slot(a)]),
             replacement: Expr::Call(cos_sym, vec![Expr::Sym(a)]),
             condition: None,
+            trust_level: ax_ir::TrustLevel::Exact,
         };
 
         let expr = Expr::Call(sin_sym, vec![Expr::Sym(x)]);
@@ -407,5 +591,30 @@ mod tests {
         let expr = Expr::Int(42.into());
         let result = rewrite_fixed_point(&[], &expr, &interner, 100);
         assert_eq!(result, Expr::Int(42.into()));
+    }
+
+    #[test]
+    fn traced_rewrite_records_steps() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a_");
+        let sin_sym = interner.get_or_intern("sin");
+        let cos_sym = interner.get_or_intern("cos");
+        let x = interner.get_or_intern("x");
+
+        let rule = RewriteRule {
+            name: "test".into(),
+            pattern: Pattern::Call(sin_sym, vec![Pattern::Slot(a)]),
+            replacement: Expr::Call(cos_sym, vec![Expr::Sym(a)]),
+            condition: None,
+            trust_level: ax_ir::TrustLevel::Heuristic,
+        };
+
+        let expr = Expr::Call(sin_sym, vec![Expr::Sym(x)]);
+        let mut trace = RewriteTrace::default();
+        let result = rewrite_once_traced(&[rule], &expr, &interner, &mut trace);
+        assert_eq!(result, Expr::Call(cos_sym, vec![Expr::Sym(x)]));
+        assert_eq!(trace.steps.len(), 1);
+        assert_eq!(trace.steps[0].trust_level, ax_ir::TrustLevel::Heuristic);
+        assert_eq!(trace.overall_trust(), ax_ir::TrustLevel::Heuristic);
     }
 }

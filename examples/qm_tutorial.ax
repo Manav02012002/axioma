@@ -1,0 +1,17 @@
+// Quantum Mechanics Tutorial with Axioma
+// =======================================
+// Pauli matrices
+let sx = pauli_x()
+let sy = pauli_y()
+let sz = pauli_z()
+// Verify: [σ_x, σ_y] = 2i σ_z
+let comm = commutator(sx, sy)
+comm
+// Spin-up and spin-down states
+let up = ket(0)
+let down = ket(1)
+// Inner product: ⟨up|down⟩ = 0
+braket(up, down)
+// Expectation value: ⟨up|σ_z|up⟩
+let result = matmul(sz, [[1], [0]])
+braket(up, [result[0][0], result[1][0]])

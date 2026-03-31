@@ -6,6 +6,7 @@ use std::collections::HashMap;
 fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
+        Expr::Complex(re, im) => contains_var(re, var) || contains_var(im, var),
         Expr::Sym(sym) => *sym == var,
         Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
             terms.iter().any(|term| contains_var(term, var))
@@ -14,8 +15,8 @@ fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
         Expr::Neg(inner) => contains_var(inner, var),
         Expr::Call(_, args) => args.iter().any(|arg| contains_var(arg, var)),
         Expr::FnDef(_, _, body) => contains_var(body, var),
-        Expr::Rule(lhs, rhs) => contains_var(lhs, var) || contains_var(rhs, var),
-        Expr::Import(_) | Expr::Assume(_, _) => false,
+        Expr::Rule(lhs, rhs, _) => contains_var(lhs, var) || contains_var(rhs, var),
+        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) => false,
         Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_var(value, var)),
         Expr::Indexed(base, _) => contains_var(base, var),
         Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
@@ -39,6 +40,10 @@ fn constant_symbol(interner: &ax_ir::Interner) -> Expr {
 fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
     let _ = interner;
     match expr {
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(simplify_expr(*re, interner)),
+            Box::new(simplify_expr(*im, interner)),
+        ),
         Expr::Add(terms) => Expr::add(terms.into_iter().map(|t| simplify_expr(t, interner)).collect()),
         Expr::Mul(factors) => {
             let simplified = factors
@@ -81,6 +86,11 @@ fn eval_numeric(expr: &Expr, bindings: &HashMap<lasso::Spur, f64>, interner: &ax
                 / num_traits::ToPrimitive::to_f64(r.denom())?,
         ),
         Expr::Float(f) => Some(*f),
+        Expr::Complex(re, im) => {
+            let re = eval_numeric(re, bindings, interner)?;
+            let im = eval_numeric(im, bindings, interner)?;
+            if im == 0.0 { Some(re) } else { None }
+        }
         Expr::Sym(sym) => bindings.get(sym).copied(),
         Expr::Add(terms) => {
             let mut acc = 0.0;

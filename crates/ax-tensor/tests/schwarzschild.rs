@@ -10,6 +10,7 @@ fn simplify(expr: &Expr, interner: &Interner) -> Expr {
 fn node_count(expr: &Expr) -> usize {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Sym(_) => 1,
+        Expr::Complex(re, im) => 1 + node_count(re) + node_count(im),
         Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
             1 + terms.iter().map(node_count).sum::<usize>()
         }
@@ -17,9 +18,10 @@ fn node_count(expr: &Expr) -> usize {
         Expr::Neg(inner) => 1 + node_count(inner),
         Expr::Call(_, args) => 1 + args.iter().map(node_count).sum::<usize>(),
         Expr::FnDef(_, params, body) => params.len() + 1 + node_count(body),
-        Expr::Rule(lhs, rhs) => 1 + node_count(lhs) + node_count(rhs),
+        Expr::Rule(lhs, rhs, _) => 1 + node_count(lhs) + node_count(rhs),
         Expr::Import(path) => 1 + path.len(),
         Expr::Assume(_, assumptions) => 1 + assumptions.len(),
+        Expr::SetConvention(field, value) => 1 + field.len() + value.len(),
         Expr::Piecewise(cases) => 1 + cases.iter().map(|(value, _)| node_count(value)).sum::<usize>(),
         Expr::Indexed(base, _) => 1 + node_count(base),
         Expr::Let(_, val, body) => 1 + node_count(val) + node_count(body),
@@ -42,6 +44,34 @@ fn aggressive_simplify(expr: &Expr, interner: &Interner) -> Expr {
         current = evaled;
     }
     current
+}
+
+fn numeric_eval(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::Int(n) => num_traits::ToPrimitive::to_f64(n),
+        Expr::Rational(r) => Some(
+            num_traits::ToPrimitive::to_f64(r.numer())?
+                / num_traits::ToPrimitive::to_f64(r.denom())?,
+        ),
+        Expr::Float(f) => Some(*f),
+        Expr::Add(terms) => {
+            let mut acc = 0.0;
+            for term in terms {
+                acc += numeric_eval(term)?;
+            }
+            Some(acc)
+        }
+        Expr::Mul(factors) => {
+            let mut acc = 1.0;
+            for factor in factors {
+                acc *= numeric_eval(factor)?;
+            }
+            Some(acc)
+        }
+        Expr::Pow(base, exp) => Some(numeric_eval(base)?.powf(numeric_eval(exp)?)),
+        Expr::Neg(inner) => Some(-numeric_eval(inner)?),
+        _ => None,
+    }
 }
 
 fn build_schwarzschild(interner: &Interner) -> (SymbolicMatrix, Vec<lasso::Spur>) {
@@ -82,8 +112,13 @@ fn schwarzschild_ricci_is_zero() {
     let (g, coords) = build_schwarzschild(&interner);
 
     let gamma = christoffel_from_metric(&g, &coords, &interner);
-    let riemann = riemann_from_christoffel(&gamma, &coords, &interner);
-    let ricci = ricci_from_riemann(&riemann, 4, &interner);
+    let riemann = riemann_from_christoffel(
+        &gamma,
+        &coords,
+        &interner,
+        &ax_ir::Convention::default(),
+    );
+    let ricci = ricci_from_riemann(&riemann, 4, &interner, &ax_ir::Convention::default());
 
     let mut nonzero = vec![];
     for j in 0..4 {
@@ -105,6 +140,38 @@ fn schwarzschild_ricci_is_zero() {
         "Schwarzschild Ricci tensor has non-zero components:\n{}",
         nonzero.join("\n")
     );
+}
+
+#[test]
+fn schwarzschild_ricci_zero_both_conventions() {
+    let interner = Interner::new();
+    let t = interner.get_or_intern("t");
+    let r_sym = interner.get_or_intern("r");
+    let theta = interner.get_or_intern("theta");
+    let phi = interner.get_or_intern("phi");
+    for riemann_sign in [ax_ir::RiemannSign::MTW, ax_ir::RiemannSign::Weinberg] {
+        let (g, coords) = build_schwarzschild(&interner);
+        let gamma = christoffel_from_metric(&g, &coords, &interner);
+        let mut convention = ax_ir::Convention::default();
+        convention.riemann_sign = riemann_sign;
+
+        let riemann = riemann_from_christoffel(&gamma, &coords, &interner, &convention);
+        let ricci = ricci_from_riemann(&riemann, 4, &interner, &convention);
+        let mut env = ax_eval::Env::new();
+        env.bindings.insert(t, Expr::Float(0.0));
+        env.bindings.insert(r_sym, Expr::Float(10.0));
+        env.bindings.insert(theta, Expr::Float(1.0));
+        env.bindings.insert(phi, Expr::Float(0.0));
+
+        for row in ricci.iter().take(4) {
+            for component in row.iter().take(4) {
+                let numeric = ax_eval::eval(component, &env, &interner);
+                let value = numeric_eval(&numeric)
+                    .unwrap_or_else(|| panic!("expected numeric Ricci component, got {:?}", numeric));
+                assert!(value.abs() < 1e-9, "component = {value}");
+            }
+        }
+    }
 }
 
 #[test]

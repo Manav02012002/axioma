@@ -1,0 +1,4 @@
+// CGS unit system
+// cm, g, s as base units
+// dyne = g * cm / s^2
+// erg = g * cm^2 / s^2

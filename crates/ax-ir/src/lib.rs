@@ -2,7 +2,10 @@ pub mod expr;
 pub mod intern;
 pub mod pretty;
 
-pub use expr::{Assumption, Condition, Expr, Index, Variance};
+pub use expr::{
+    Assumption, Condition, Convention, Expr, FourierSign, Grading, Index, LeviCivitaNorm,
+    MetricSignature, RicciContraction, RiemannSign, TensorProperty, TrustLevel, Variance,
+};
 pub use intern::Interner;
 pub use pretty::pretty_print;
 

@@ -1,0 +1,5 @@
+// Weinberg conventions
+convention metric_signature mostly_plus
+convention riemann_sign weinberg
+convention ricci_contraction first_third
+convention levi_civita_norm plus_one

@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 
 pub mod integrate;
+pub mod limits;
 pub mod series;
 pub mod simplify;
 
-use ax_ir::{Assumption, Condition, Expr};
+use ax_ir::{Assumption, Condition, Expr, Grading};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -18,6 +19,9 @@ pub struct Env {
     pub parent: Option<Box<Env>>,
     pub rules: Vec<ax_rewrite::RewriteRule>,
     pub assumptions: HashMap<lasso::Spur, Vec<Assumption>>,
+    pub gradings: HashMap<lasso::Spur, Grading>,
+    pub tensor_properties: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    pub convention: ax_ir::Convention,
 }
 
 impl Env {
@@ -27,6 +31,9 @@ impl Env {
             parent: None,
             rules: Vec::new(),
             assumptions: HashMap::new(),
+            gradings: HashMap::new(),
+            tensor_properties: HashMap::new(),
+            convention: ax_ir::Convention::default(),
         }
     }
 
@@ -44,8 +51,366 @@ impl Env {
             parent: Some(Box::new(self.clone())),
             rules: self.rules.clone(),
             assumptions: self.assumptions.clone(),
+            gradings: self.gradings.clone(),
+            tensor_properties: self.tensor_properties.clone(),
+            convention: self.convention.clone(),
         }
     }
+}
+
+fn grading_rank(grading: Grading) -> usize {
+    match grading {
+        Grading::Even => 0,
+        Grading::Odd => 1,
+    }
+}
+
+pub fn infer_grading(expr: &Expr, gradings: &HashMap<lasso::Spur, Grading>) -> Grading {
+    match expr {
+        Expr::Sym(sym) => gradings.get(sym).copied().unwrap_or(Grading::Even),
+        Expr::Neg(inner) => infer_grading(inner, gradings),
+        Expr::Mul(factors) => {
+            let odd_count = factors
+                .iter()
+                .filter(|factor| infer_grading(factor, gradings) == Grading::Odd)
+                .count();
+            if odd_count % 2 == 0 {
+                Grading::Even
+            } else {
+                Grading::Odd
+            }
+        }
+        Expr::Add(terms) => terms
+            .first()
+            .map(|term| infer_grading(term, gradings))
+            .unwrap_or(Grading::Even),
+        Expr::Pow(base, exp) => {
+            if infer_grading(base, gradings) == Grading::Odd {
+                match exp.as_ref() {
+                    Expr::Int(n) if n.is_zero() => Grading::Even,
+                    Expr::Int(n) if n.is_one() => Grading::Odd,
+                    Expr::Int(_) => Grading::Even,
+                    _ => Grading::Even,
+                }
+            } else {
+                Grading::Even
+            }
+        }
+        Expr::Complex(re, im) => {
+            let re_grade = infer_grading(re, gradings);
+            let im_grade = infer_grading(im, gradings);
+            if grading_rank(re_grade) >= grading_rank(im_grade) {
+                re_grade
+            } else {
+                im_grade
+            }
+        }
+        Expr::Call(_, _)
+        | Expr::FnDef(_, _, _)
+        | Expr::Rule(_, _, _)
+        | Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Piecewise(_)
+        | Expr::Indexed(_, _)
+        | Expr::Let(_, _, _)
+        | Expr::List(_)
+        | Expr::Matrix(_)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_) => Grading::Even,
+    }
+}
+
+pub fn grassmann_simplify(
+    expr: &Expr,
+    gradings: &HashMap<lasso::Spur, Grading>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    fn grassmann_key(expr: &Expr) -> String {
+        format!("{expr:?}")
+    }
+
+    fn simplify_product(
+        factors: &[Expr],
+        gradings: &HashMap<lasso::Spur, Grading>,
+        interner: &ax_ir::Interner,
+    ) -> Expr {
+        let mut flat = Vec::new();
+        for factor in factors {
+            let simplified = grassmann_simplify(factor, gradings, interner);
+            match simplified {
+                Expr::Mul(inner) => flat.extend(inner),
+                Expr::Pow(base, exp) => match (&*base, &*exp) {
+                    (_, Expr::Int(n)) if n.is_zero() => {}
+                    (_, Expr::Int(n)) if n.is_one() => flat.push(*base),
+                    _ if infer_grading(base.as_ref(), gradings) == Grading::Odd => {
+                        if matches!(&*exp, Expr::Int(n) if *n >= 2.into()) {
+                            return Expr::zero();
+                        }
+                        flat.push(Expr::Pow(base, exp));
+                    }
+                    _ => flat.push(Expr::Pow(base, exp)),
+                },
+                other => flat.push(other),
+            }
+        }
+
+        if flat.iter().any(|factor| factor == &Expr::zero()) {
+            return Expr::zero();
+        }
+
+        for i in 0..flat.len() {
+            if infer_grading(&flat[i], gradings) != Grading::Odd {
+                continue;
+            }
+            for j in (i + 1)..flat.len() {
+                if infer_grading(&flat[j], gradings) == Grading::Odd && flat[i] == flat[j] {
+                    return Expr::zero();
+                }
+            }
+        }
+
+        let mut odd_swaps = 0usize;
+        for i in 0..flat.len() {
+            for j in (i + 1)..flat.len() {
+                if infer_grading(&flat[i], gradings) == Grading::Odd
+                    && infer_grading(&flat[j], gradings) == Grading::Odd
+                    && grassmann_key(&flat[i]) > grassmann_key(&flat[j])
+                {
+                    odd_swaps += 1;
+                }
+            }
+        }
+
+        flat.sort_by_key(grassmann_key);
+        let product = Expr::mul(flat);
+        let product = if odd_swaps % 2 == 1 {
+            Expr::neg(product)
+        } else {
+            product
+        };
+        eval(&product, &Env::new(), interner)
+    }
+
+    match expr {
+        Expr::Add(terms) => eval(
+            &Expr::add(
+                terms
+                    .iter()
+                    .map(|term| grassmann_simplify(term, gradings, interner))
+                    .collect(),
+            ),
+            &Env::new(),
+            interner,
+        ),
+        Expr::Mul(factors) => simplify_product(factors, gradings, interner),
+        Expr::Pow(base, exp) => {
+            let simplified_base = grassmann_simplify(base, gradings, interner);
+            let simplified_exp = grassmann_simplify(exp, gradings, interner);
+            if infer_grading(&simplified_base, gradings) == Grading::Odd {
+                match &simplified_exp {
+                    Expr::Int(n) if n.is_zero() => Expr::one(),
+                    Expr::Int(n) if n.is_one() => simplified_base,
+                    Expr::Int(n) if *n >= 2.into() => Expr::zero(),
+                    _ => Expr::pow(simplified_base, simplified_exp),
+                }
+            } else {
+                Expr::pow(simplified_base, simplified_exp)
+            }
+        }
+        Expr::Neg(inner) => Expr::neg(grassmann_simplify(inner, gradings, interner)),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(grassmann_simplify(re, gradings, interner)),
+            Box::new(grassmann_simplify(im, gradings, interner)),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| grassmann_simplify(arg, gradings, interner))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(grassmann_simplify(body, gradings, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(grassmann_simplify(lhs, gradings, interner)),
+            Box::new(grassmann_simplify(rhs, gradings, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| (grassmann_simplify(value, gradings, interner), cond.clone()))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(grassmann_simplify(base, gradings, interner)),
+            indices.clone(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(grassmann_simplify(value, gradings, interner)),
+            Box::new(grassmann_simplify(body, gradings, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| grassmann_simplify(item, gradings, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|item| grassmann_simplify(item, gradings, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+pub fn apply_grassmann_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "grassmann" {
+        return None;
+    }
+    let mut declared = Vec::new();
+    for arg in args {
+        if let Expr::Sym(sym) = arg {
+            env.gradings.insert(*sym, Grading::Odd);
+            declared.push(interner.resolve(*sym).to_string());
+        }
+    }
+    if declared.is_empty() {
+        None
+    } else {
+        Some(format!("declared Grassmann variables: {}", declared.join(", ")))
+    }
+}
+
+fn parse_metric_signature(value: &str) -> Option<ax_ir::MetricSignature> {
+    match value {
+        "mostly_plus" => Some(ax_ir::MetricSignature::MostlyPlus),
+        "mostly_minus" => Some(ax_ir::MetricSignature::MostlyMinus),
+        _ => None,
+    }
+}
+
+fn parse_riemann_sign(value: &str) -> Option<ax_ir::RiemannSign> {
+    match value {
+        "mtw" => Some(ax_ir::RiemannSign::MTW),
+        "weinberg" => Some(ax_ir::RiemannSign::Weinberg),
+        _ => None,
+    }
+}
+
+fn parse_ricci_contraction(value: &str) -> Option<ax_ir::RicciContraction> {
+    match value {
+        "first_third" => Some(ax_ir::RicciContraction::FirstThird),
+        "first_fourth" => Some(ax_ir::RicciContraction::FirstFourth),
+        _ => None,
+    }
+}
+
+fn parse_levi_civita_norm(value: &str) -> Option<ax_ir::LeviCivitaNorm> {
+    match value {
+        "plus_one" => Some(ax_ir::LeviCivitaNorm::PlusOne),
+        "minus_one" => Some(ax_ir::LeviCivitaNorm::MinusOne),
+        "sqrt_g" => Some(ax_ir::LeviCivitaNorm::SqrtG),
+        _ => None,
+    }
+}
+
+fn parse_fourier_sign(value: &str) -> Option<ax_ir::FourierSign> {
+    match value {
+        "minus_i" => Some(ax_ir::FourierSign::MinusI),
+        "plus_i" => Some(ax_ir::FourierSign::PlusI),
+        _ => None,
+    }
+}
+
+pub fn describe_convention(convention: &ax_ir::Convention) -> String {
+    format!(
+        "metric_signature={:?}, riemann_sign={:?}, ricci_contraction={:?}, levi_civita_norm={:?}, fourier_sign={:?}",
+        convention.metric_signature,
+        convention.riemann_sign,
+        convention.ricci_contraction,
+        convention.levi_civita_norm,
+        convention.fourier_sign
+    )
+}
+
+pub fn apply_set_convention(expr: &Expr, env: &mut Env) -> Option<String> {
+    let Expr::SetConvention(field, value) = expr else {
+        return None;
+    };
+
+    let applied = match field.as_str() {
+        "metric_signature" => parse_metric_signature(value).map(|parsed| {
+            env.convention.metric_signature = parsed;
+        }),
+        "riemann_sign" => parse_riemann_sign(value).map(|parsed| {
+            env.convention.riemann_sign = parsed;
+        }),
+        "ricci_contraction" => parse_ricci_contraction(value).map(|parsed| {
+            env.convention.ricci_contraction = parsed;
+        }),
+        "levi_civita_norm" => parse_levi_civita_norm(value).map(|parsed| {
+            env.convention.levi_civita_norm = parsed;
+        }),
+        "fourier_sign" => parse_fourier_sign(value).map(|parsed| {
+            env.convention.fourier_sign = parsed;
+        }),
+        _ => None,
+    };
+
+    applied.map(|_| describe_convention(&env.convention))
+}
+
+pub fn check_convention_compatible(a: &ax_ir::Convention, b: &ax_ir::Convention) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if a.metric_signature != b.metric_signature {
+        warnings.push(format!(
+            "metric signature mismatch: {:?} vs {:?}",
+            a.metric_signature, b.metric_signature
+        ));
+    }
+    if a.riemann_sign != b.riemann_sign {
+        warnings.push(format!(
+            "Riemann sign convention mismatch: {:?} vs {:?}",
+            a.riemann_sign, b.riemann_sign
+        ));
+    }
+    if a.ricci_contraction != b.ricci_contraction {
+        warnings.push(format!(
+            "Ricci contraction mismatch: {:?} vs {:?}",
+            a.ricci_contraction, b.ricci_contraction
+        ));
+    }
+    if a.levi_civita_norm != b.levi_civita_norm {
+        warnings.push(format!(
+            "Levi-Civita normalization mismatch: {:?} vs {:?}",
+            a.levi_civita_norm, b.levi_civita_norm
+        ));
+    }
+    if a.fourier_sign != b.fourier_sign {
+        warnings.push(format!(
+            "Fourier sign mismatch: {:?} vs {:?}",
+            a.fourier_sign, b.fourier_sign
+        ));
+    }
+    warnings
 }
 
 fn has_assumption(env: &Env, sym: lasso::Spur, assumption: &Assumption) -> bool {
@@ -151,6 +516,7 @@ fn collapse_duplicate_sum_terms(terms: Vec<Expr>) -> Expr {
 fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
+        Expr::Complex(re, im) => contains_var(re, var) || contains_var(im, var),
         Expr::Sym(s) => *s == var,
         Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
             terms.iter().any(|term| contains_var(term, var))
@@ -159,9 +525,10 @@ fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
         Expr::Neg(e) => contains_var(e, var),
         Expr::Call(_, args) => args.iter().any(|arg| contains_var(arg, var)),
         Expr::FnDef(_, _, body) => contains_var(body, var),
-        Expr::Rule(lhs, rhs) => contains_var(lhs, var) || contains_var(rhs, var),
+        Expr::Rule(lhs, rhs, _) => contains_var(lhs, var) || contains_var(rhs, var),
         Expr::Import(_) => false,
         Expr::Assume(_, _) => false,
+        Expr::SetConvention(_, _) => false,
         Expr::Piecewise(cases) => cases
             .iter()
             .any(|(value, condition)| contains_var(value, var) || condition_contains_var(condition, var)),
@@ -193,6 +560,227 @@ fn compare_numeric(a: &Expr, b: &Expr) -> Option<Ordering> {
     let fa = to_f64(a)?;
     let fb = to_f64(b)?;
     fa.partial_cmp(&fb)
+}
+
+fn canonical_equiv_form(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    let expanded = simplify::expand(expr, interner);
+    let collected = simplify::collect_terms(&expanded, interner);
+    eval(&collected, &Env::new(), interner)
+}
+
+fn contains_indexed_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Indexed(_, _) => true,
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            terms.iter().any(contains_indexed_expr)
+        }
+        Expr::Pow(base, exp) => contains_indexed_expr(base) || contains_indexed_expr(exp),
+        Expr::Neg(inner) => contains_indexed_expr(inner),
+        Expr::Call(_, args) => args.iter().any(contains_indexed_expr),
+        Expr::Complex(re, im) => contains_indexed_expr(re) || contains_indexed_expr(im),
+        Expr::FnDef(_, _, body) => contains_indexed_expr(body),
+        Expr::Rule(lhs, rhs, _) => contains_indexed_expr(lhs) || contains_indexed_expr(rhs),
+        Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_indexed_expr(value)),
+        Expr::Let(_, value, body) => contains_indexed_expr(value) || contains_indexed_expr(body),
+        Expr::Matrix(rows) => rows.iter().flatten().any(contains_indexed_expr),
+        _ => false,
+    }
+}
+
+fn collect_unbound_syms(expr: &Expr, out: &mut Vec<lasso::Spur>) {
+    match expr {
+        Expr::Sym(s) => out.push(*s),
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            for term in terms {
+                collect_unbound_syms(term, out);
+            }
+        }
+        Expr::Pow(base, exp) => {
+            collect_unbound_syms(base, out);
+            collect_unbound_syms(exp, out);
+        }
+        Expr::Neg(inner) => collect_unbound_syms(inner, out),
+        Expr::Call(_, args) => {
+            for arg in args {
+                collect_unbound_syms(arg, out);
+            }
+        }
+        Expr::Complex(re, im) => {
+            collect_unbound_syms(re, out);
+            collect_unbound_syms(im, out);
+        }
+        Expr::FnDef(_, _, body) => collect_unbound_syms(body, out),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_unbound_syms(lhs, out);
+            collect_unbound_syms(rhs, out);
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                collect_unbound_syms(value, out);
+            }
+        }
+        Expr::Indexed(base, _) => collect_unbound_syms(base, out),
+        Expr::Let(_, value, body) => {
+            collect_unbound_syms(value, out);
+            collect_unbound_syms(body, out);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_unbound_syms(cell, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn equiv_sample_check(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner) -> Option<bool> {
+    let mut syms = Vec::new();
+    collect_unbound_syms(a, &mut syms);
+    collect_unbound_syms(b, &mut syms);
+    let reserved = ["pi", "e", "i", "inf", "infty", "neg_inf"];
+    syms.retain(|s| env.lookup(*s).is_none() && !reserved.contains(&interner.resolve(*s)));
+    syms.sort();
+    syms.dedup();
+    if syms.is_empty() {
+        return None;
+    }
+
+    fn numeric_eval_expr(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Option<f64> {
+        match expr {
+            Expr::Int(n) => num_traits::ToPrimitive::to_f64(n),
+            Expr::Rational(r) => Some(
+                num_traits::ToPrimitive::to_f64(r.numer())?
+                    / num_traits::ToPrimitive::to_f64(r.denom())?,
+            ),
+            Expr::Float(f) => Some(*f),
+            Expr::Complex(re, im) => {
+                let re = numeric_eval_expr(re, env, interner)?;
+                let im = numeric_eval_expr(im, env, interner)?;
+                if im == 0.0 { Some(re) } else { None }
+            }
+            Expr::Sym(s) => {
+                if let Some(bound) = env.lookup(*s) {
+                    numeric_eval_expr(bound, env, interner)
+                } else {
+                    match interner.resolve(*s) {
+                        "pi" => Some(std::f64::consts::PI),
+                        "e" => Some(std::f64::consts::E),
+                        _ => None,
+                    }
+                }
+            }
+            Expr::Add(terms) => {
+                let mut acc = 0.0;
+                for term in terms {
+                    acc += numeric_eval_expr(term, env, interner)?;
+                }
+                Some(acc)
+            }
+            Expr::Mul(factors) => {
+                let mut acc = 1.0;
+                for factor in factors {
+                    acc *= numeric_eval_expr(factor, env, interner)?;
+                }
+                Some(acc)
+            }
+            Expr::Pow(base, exp) => Some(
+                numeric_eval_expr(base, env, interner)?
+                    .powf(numeric_eval_expr(exp, env, interner)?),
+            ),
+            Expr::Neg(inner) => Some(-numeric_eval_expr(inner, env, interner)?),
+            Expr::Call(f, args) if args.len() == 1 => {
+                let arg = numeric_eval_expr(&args[0], env, interner)?;
+                match interner.resolve(*f) {
+                    "sin" => Some(arg.sin()),
+                    "cos" => Some(arg.cos()),
+                    "tan" => Some(arg.tan()),
+                    "exp" => Some(arg.exp()),
+                    "log" => Some(arg.ln()),
+                    "sqrt" => Some(arg.sqrt()),
+                    "abs" => Some(arg.abs()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    let base = [0.5, 1.0, -1.5, 2.3, -0.7];
+    let mut successes = 0usize;
+    for sample in 0..5 {
+        let mut sample_env = env.clone();
+        for (idx, sym) in syms.iter().enumerate() {
+            sample_env.bindings.insert(*sym, Expr::Float(base[(sample + idx) % base.len()]));
+        }
+        let (Some(lhs), Some(rhs)) = (
+            numeric_eval_expr(a, &sample_env, interner),
+            numeric_eval_expr(b, &sample_env, interner),
+        ) else {
+            continue;
+        };
+        if !lhs.is_finite() || !rhs.is_finite() {
+            continue;
+        }
+        successes += 1;
+        let scale = lhs.abs().max(rhs.abs()).max(1.0);
+        if (lhs - rhs).abs() / scale > 1e-10 {
+            return Some(false);
+        }
+    }
+    if successes == 5 { Some(true) } else { None }
+}
+
+fn equiv_description(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner) -> String {
+    let ea = eval(a, env, interner);
+    let eb = eval(b, env, interner);
+    if ea == eb {
+        return "equal".into();
+    }
+
+    let sa = canonical_equiv_form(&ea, interner);
+    let sb = canonical_equiv_form(&eb, interner);
+    if sa == sb {
+        return "equal".into();
+    }
+
+    let diff = canonical_equiv_form(&Expr::add(vec![sa.clone(), Expr::neg(sb.clone())]), interner);
+    if diff == Expr::zero() {
+        return "equal".into();
+    }
+
+    let ta = simplify::trig_simplify(&sa, interner);
+    let tb = simplify::trig_simplify(&sb, interner);
+    if ta == tb {
+        return "equal".into();
+    }
+
+    if contains_indexed_expr(&ta) || contains_indexed_expr(&tb) {
+        let ca = ax_tensor::rename_dummy_indices(
+            &ax_tensor::canonicalize_indices(&ta, &env.tensor_properties, interner),
+            interner,
+        );
+        let cb = ax_tensor::rename_dummy_indices(
+            &ax_tensor::canonicalize_indices(&tb, &env.tensor_properties, interner),
+            interner,
+        );
+        if ca == cb {
+            return "dummy_index_renamed".into();
+        }
+    }
+
+    match equiv_sample_check(&ta, &tb, env, interner) {
+        Some(true) => return "equal_under_assumptions".into(),
+        Some(false) => return "not_equal".into(),
+        None => {}
+    }
+
+    if ta == canonical_equiv_form(&Expr::neg(tb), interner) {
+        return "convention_difference".into();
+    }
+
+    "unknown".into()
 }
 
 fn eval_condition(cond: &Condition, env: &Env, interner: &ax_ir::Interner) -> Option<bool> {
@@ -275,18 +863,54 @@ pub fn register_rule(
     env: &mut Env,
     interner: &ax_ir::Interner,
 ) -> Option<String> {
-    if let Expr::Rule(lhs, rhs) = rule_expr {
+    if let Expr::Rule(lhs, rhs, trust_level) = rule_expr {
         let rule = ax_rewrite::RewriteRule {
             name: format!("user_rule_{}", env.rules.len()),
             pattern: expr_to_pattern(lhs, interner),
             replacement: *rhs.clone(),
             condition: None,
+            trust_level: *trust_level,
         };
         let name = rule.name.clone();
         env.rules.push(rule);
         Some(name)
     } else {
         None
+    }
+}
+
+pub fn rewrite_with_trace(
+    expr: &Expr,
+    env: &Env,
+    interner: &ax_ir::Interner,
+) -> (Expr, ax_rewrite::RewriteTrace) {
+    let mut trace = ax_rewrite::RewriteTrace::default();
+    let result = ax_rewrite::rewrite_fixed_point_traced(&env.rules, expr, interner, 100, &mut trace);
+    (result, trace)
+}
+
+fn trust_level_name(level: ax_ir::TrustLevel) -> &'static str {
+    match level {
+        ax_ir::TrustLevel::Exact => "exact",
+        ax_ir::TrustLevel::UnderAssumptions => "under_assumptions",
+        ax_ir::TrustLevel::Heuristic => "heuristic",
+        ax_ir::TrustLevel::NumericallyChecked => "numerically_checked",
+        ax_ir::TrustLevel::Unverified => "unverified",
+    }
+}
+
+pub fn describe_rewrite_trace(trace: &ax_rewrite::RewriteTrace) -> String {
+    if trace.steps.is_empty() {
+        "trust: exact".to_string()
+    } else {
+        let overall = trust_level_name(trace.overall_trust());
+        let used = trace
+            .steps
+            .iter()
+            .map(|step| step.rule_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("trust: {overall} (used rule{}: {used})", if trace.steps.len() == 1 { "" } else { "s" })
     }
 }
 
@@ -377,6 +1001,10 @@ pub fn resolve_import(
 pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Expr {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Expr::Int(0.into()),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(differentiate(re, var, interner)),
+            Box::new(differentiate(im, var, interner)),
+        ),
         Expr::Sym(s) => {
             if *s == var {
                 Expr::Int(1.into())
@@ -451,12 +1079,14 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
             params.clone(),
             Box::new(differentiate(body, var, interner)),
         ),
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(differentiate(lhs, var, interner)),
             Box::new(differentiate(rhs, var, interner)),
+            *trust,
         ),
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases.iter()
                 .map(|(value, condition)| (differentiate(value, var, interner), condition.clone()))
@@ -494,9 +1124,47 @@ fn builtin_call(
     env: &Env,
 ) -> Expr {
     match name {
+        "Re" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Complex(re, _) => re.as_ref().clone(),
+                    other => other.clone(),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "Im" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Complex(_, im) => im.as_ref().clone(),
+                    _ => Expr::zero(),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "conj" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Complex(re, im) => {
+                        Expr::Complex(Box::new(re.as_ref().clone()), Box::new(Expr::neg(im.as_ref().clone())))
+                    }
+                    other => other.clone(),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "N" => {
             if args.len() == 1 {
-                if let Some(v) = to_f64(&args[0]) {
+                if let Expr::Complex(re, im) = &args[0] {
+                    if let (Some(re), Some(im)) = (to_f64(re), to_f64(im)) {
+                        Expr::Complex(Box::new(Expr::Float(re)), Box::new(Expr::Float(im)))
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                } else if let Some(v) = to_f64(&args[0]) {
                     Expr::Float(v)
                 } else {
                     Expr::Call(f, args)
@@ -532,6 +1200,17 @@ fn builtin_call(
                 match &args[0] {
                     Expr::Float(v) => Expr::Float(v.exp()),
                     Expr::Int(n) if n.is_zero() => Expr::Int(1.into()),
+                    Expr::Complex(re, im) => {
+                        if let (Some(a), Some(b)) = (to_f64(re), to_f64(im)) {
+                            let mag = a.exp();
+                            Expr::Complex(
+                                Box::new(Expr::Float(mag * b.cos())),
+                                Box::new(Expr::Float(mag * b.sin())),
+                            )
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
                     _ => Expr::Call(f, args),
                 }
             } else {
@@ -582,6 +1261,13 @@ fn builtin_call(
                 match &args[0] {
                     Expr::Int(n) => Expr::Int(n.abs()),
                     Expr::Float(v) => Expr::Float(v.abs()),
+                    Expr::Complex(re, im) => Expr::Call(
+                        interner.get_or_intern("sqrt"),
+                        vec![Expr::add(vec![
+                            Expr::pow(re.as_ref().clone(), Expr::Int(2.into())),
+                            Expr::pow(im.as_ref().clone(), Expr::Int(2.into())),
+                        ])],
+                    ),
                     Expr::Sym(sym) if has_assumption(env, *sym, &Assumption::Positive) => {
                         Expr::Sym(*sym)
                     }
@@ -594,6 +1280,86 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "arg" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Complex(re, im) => {
+                        if let (Some(a), Some(b)) = (to_f64(re), to_f64(im)) {
+                            Expr::Float(b.atan2(a))
+                        } else {
+                            Expr::Call(
+                                interner.get_or_intern("arctan"),
+                                vec![Expr::mul(vec![
+                                    im.as_ref().clone(),
+                                    Expr::pow(re.as_ref().clone(), Expr::Int((-1).into())),
+                                ])],
+                            )
+                        }
+                    }
+                    _ => Expr::zero(),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "canonicalize" => {
+            if args.len() == 1 {
+                let canonical = ax_tensor::canonicalize_indices(&args[0], &env.tensor_properties, interner);
+                ax_tensor::rename_dummy_indices(&canonical, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "dim" => {
+            if args.len() == 1 {
+                let mut units = ax_units::si_units(interner);
+                units.extend(ax_units::natural_units(interner));
+                match ax_units::check_dimensions(&args[0], &units, interner) {
+                    Ok(unit) => ax_units::unit_to_expr(&unit, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "convert" => {
+            if args.len() == 3 {
+                let mut units = ax_units::si_units(interner);
+                units.extend(ax_units::natural_units(interner));
+                match (&args[1], &args[2]) {
+                    (Expr::Sym(from), Expr::Sym(to)) => {
+                        match (units.get(from), units.get(to)) {
+                            (Some(from_unit), Some(to_unit)) => {
+                                match ax_units::convert(&args[0], from_unit, to_unit) {
+                                    Ok(expr) => eval(&expr, &Env::new(), interner),
+                                    Err(_) => Expr::Call(f, args),
+                                }
+                            }
+                            _ => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "check_units" => {
+            if args.len() == 1 {
+                let mut units = ax_units::si_units(interner);
+                units.extend(ax_units::natural_units(interner));
+                match ax_units::check_dimensions(&args[0], &units, interner) {
+                    Ok(_) => Expr::Sym(interner.get_or_intern("ok")),
+                    Err(_) => Expr::Sym(interner.get_or_intern("unit_error")),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => {
+            Expr::Call(f, args)
+        }
+        "grassmann" => Expr::Call(f, args),
         "expand" => {
             if args.len() == 1 {
                 simplify::expand(&args[0], interner)
@@ -603,14 +1369,49 @@ fn builtin_call(
         }
         "simplify" => {
             if args.len() == 1 {
-                simplify::simplify(&args[0], interner)
+                let simplified =
+                    simplify::trig_simplify(&simplify::simplify(&args[0], interner), interner);
+                if env.gradings.is_empty() {
+                    simplified
+                } else {
+                    grassmann_simplify(&simplified, &env.gradings, interner)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "grassmann_simplify" => {
+            if args.len() == 1 {
+                grassmann_simplify(&args[0], &env.gradings, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "trig_simplify" => {
+            if args.len() == 1 {
+                simplify::trig_simplify(&args[0], interner)
             } else {
                 Expr::Call(f, args)
             }
         }
         "rewrite" => {
             if args.len() == 1 {
-                ax_rewrite::rewrite_fixed_point(&env.rules, &args[0], interner, 100)
+                rewrite_with_trace(&args[0], env, interner).0
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "equiv" => {
+            if args.len() == 2 {
+                Expr::Sym(interner.get_or_intern(&equiv_description(&args[0], &args[1], env, interner)))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "semantic_diff" => {
+            if args.len() == 2 {
+                let description = equiv_description(&args[0], &args[1], env, interner);
+                Expr::Sym(interner.get_or_intern(&format!("semantic_diff_{description}")))
             } else {
                 Expr::Call(f, args)
             }
@@ -771,6 +1572,25 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "gamma" => {
+            if args.is_empty() {
+                Expr::List(
+                    ax_qm::gamma_matrices_dirac(interner)
+                        .into_iter()
+                        .map(Expr::Matrix)
+                        .collect(),
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "gamma5" => {
+            if args.is_empty() {
+                Expr::Matrix(ax_qm::gamma5(interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "commutator" => {
             if args.len() == 2 {
                 match (&args[0], &args[1]) {
@@ -879,6 +1699,150 @@ fn builtin_call(
                 }
             } else {
                 Expr::Call(f, args)
+            }
+        }
+        "euler_lagrange" => {
+            if args.len() == 4 {
+                match (&args[0], &args[1], &args[2], &args[3]) {
+                    (lagrangian, Expr::Sym(field), Expr::List(field_derivs), Expr::List(coords)) => {
+                        let field_derivs = field_derivs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let coords = coords
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let (Some(field_derivs), Some(coords)) = (field_derivs, coords) {
+                            ax_variational::functional_derivative(
+                                lagrangian,
+                                *field,
+                                &field_derivs,
+                                &coords,
+                                interner,
+                            )
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "vary" => {
+            if args.len() == 5 {
+                match (&args[0], &args[1], &args[2], &args[3], &args[4]) {
+                    (
+                        lagrangian,
+                        Expr::Sym(field),
+                        Expr::Sym(variation),
+                        Expr::List(field_derivs),
+                        Expr::List(variation_derivs),
+                    ) => {
+                        let field_derivs = field_derivs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let variation_derivs = variation_derivs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let (Some(field_derivs), Some(variation_derivs)) =
+                            (field_derivs, variation_derivs)
+                        {
+                            ax_variational::vary_action(
+                                lagrangian,
+                                *field,
+                                *variation,
+                                &field_derivs,
+                                &variation_derivs,
+                                interner,
+                            )
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "gamma_trace" => {
+            let parse_indices = |expr: &Expr| -> Option<Vec<lasso::Spur>> {
+                let Expr::List(items) = expr else {
+                    return None;
+                };
+                items.iter()
+                    .map(|item| match item {
+                        Expr::Sym(sym) => Some(*sym),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            match args.as_slice() {
+                [indices_expr] => {
+                    if let Some(indices) = parse_indices(indices_expr) {
+                        let g = interner.get_or_intern("g");
+                        ax_qm::gamma_trace_recursive(&indices, g, interner)
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                }
+                [indices_expr, Expr::Sym(metric_sym)] => {
+                    if let Some(indices) = parse_indices(indices_expr) {
+                        ax_qm::gamma_trace_recursive(&indices, *metric_sym, interner)
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                }
+                _ => Expr::Call(f, args),
+            }
+        }
+        "gamma5_trace" => {
+            let parse_indices = |expr: &Expr| -> Option<Vec<lasso::Spur>> {
+                let Expr::List(items) = expr else {
+                    return None;
+                };
+                items.iter()
+                    .map(|item| match item {
+                        Expr::Sym(sym) => Some(*sym),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            match args.as_slice() {
+                [indices_expr] => {
+                    if let Some(indices) = parse_indices(indices_expr) {
+                        let entries = std::iter::once(ax_qm::GammaEntry::Gamma5)
+                            .chain(indices.into_iter().map(ax_qm::GammaEntry::Gamma))
+                            .collect::<Vec<_>>();
+                        let metric = ax_tensor::SymbolicMatrix::from_diagonal(vec![
+                            Expr::Int((-1).into()),
+                            Expr::one(),
+                            Expr::one(),
+                            Expr::one(),
+                        ]);
+                        ax_qm::gamma_trace(&entries, &metric, interner)
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                }
+                _ => Expr::Call(f, args),
             }
         }
         "dsolve" => {
@@ -1075,7 +2039,7 @@ fn builtin_call(
                             .collect::<Option<Vec<_>>>();
                         if let Some(coords) = coords {
                             expr_4d_to_list(ax_tensor::riemann_from_christoffel(
-                                &gamma, &coords, interner,
+                                &gamma, &coords, interner, &env.convention,
                             ))
                         } else {
                             Expr::Call(f, args)
@@ -1091,7 +2055,12 @@ fn builtin_call(
             if args.len() == 1 {
                 if let Some(riemann) = expr_to_4d(&args[0]) {
                     let n = riemann.len();
-                    Expr::Matrix(ax_tensor::ricci_from_riemann(&riemann, n, interner))
+                    Expr::Matrix(ax_tensor::ricci_from_riemann(
+                        &riemann,
+                        n,
+                        interner,
+                        &env.convention,
+                    ))
                 } else {
                     Expr::Call(f, args)
                 }
@@ -1307,6 +2276,17 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "limit" => {
+            if args.len() == 3 {
+                if let Expr::Sym(var_sym) = args[1] {
+                    limits::limit(&args[0], var_sym, &args[2], interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "series" => {
             if args.len() == 4 {
                 if let (Expr::Sym(var_sym), Expr::Int(order)) = (&args[1], &args[3]) {
@@ -1331,6 +2311,9 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
         Expr::Int(n) => Expr::Int(n.clone()),
         Expr::Rational(r) => Expr::Rational(r.clone()),
         Expr::Float(f) => Expr::Float(*f),
+        Expr::Complex(re, im) => {
+            Expr::Complex(Box::new(eval(re, env, interner)), Box::new(eval(im, env, interner)))
+        }
         Expr::Sym(s) => {
             if let Some(val) = env.lookup(*s) {
                 if matches!(val, Expr::Sym(bound) if *bound == *s) {
@@ -1338,25 +2321,41 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
                 } else {
                     eval(val, env, interner)
                 }
+            } else if interner.resolve(*s) == "i" {
+                Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()))
+            } else if interner.resolve(*s) == "pi" {
+                Expr::Float(std::f64::consts::PI)
+            } else if interner.resolve(*s) == "e" {
+                Expr::Float(std::f64::consts::E)
             } else {
                 Expr::Sym(*s)
             }
         }
         Expr::Add(terms) => {
             let evaluated = terms.iter().map(|term| eval(term, env, interner)).collect();
-            Expr::add(evaluated)
+            let result = Expr::add(evaluated);
+            if env.gradings.is_empty() {
+                result
+            } else {
+                grassmann_simplify(&result, &env.gradings, interner)
+            }
         }
         Expr::Mul(factors) => {
             let evaluated = factors
                 .iter()
                 .map(|factor| eval(factor, env, interner))
                 .collect();
-            Expr::mul(evaluated)
+            let result = Expr::mul(evaluated);
+            if env.gradings.is_empty() {
+                result
+            } else {
+                grassmann_simplify(&result, &env.gradings, interner)
+            }
         }
         Expr::Pow(base, exp) => {
             let evaled_base = eval(base, env, interner);
             let evaled_exp = eval(exp, env, interner);
-            if let Some(out) = numeric_pow(&evaled_base, &evaled_exp) {
+            let result = if let Some(out) = numeric_pow(&evaled_base, &evaled_exp) {
                 out
             } else if matches!(&evaled_base, Expr::Int(n) if *n == (-1).into()) {
                 match &evaled_exp {
@@ -1368,6 +2367,11 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
                 }
             } else {
                 Expr::pow(evaled_base, evaled_exp)
+            };
+            if env.gradings.is_empty() {
+                result
+            } else {
+                grassmann_simplify(&result, &env.gradings, interner)
             }
         }
         Expr::Neg(e) => Expr::neg(eval(e, env, interner)),
@@ -1391,9 +2395,10 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
             result
         }
         Expr::FnDef(name, params, body) => Expr::FnDef(*name, params.clone(), body.clone()),
-        Expr::Rule(lhs, rhs) => Expr::Rule(lhs.clone(), rhs.clone()),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(lhs.clone(), rhs.clone(), *trust),
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => {
             for (value, condition) in cases {
                 match eval_condition(condition, env, interner) {
@@ -1416,7 +2421,14 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
             eval(body, &child, interner)
         }
         Expr::Indexed(base, indices) => {
-            Expr::Indexed(Box::new(eval(base, env, interner)), indices.clone())
+            let indexed = Expr::Indexed(Box::new(eval(base, env, interner)), indices.clone());
+            let canonical = ax_tensor::canonicalize_indices(&indexed, &env.tensor_properties, interner);
+            let _ = if let Expr::Indexed(_, idxs) = &canonical {
+                ax_tensor::detect_contractions(idxs)
+            } else {
+                Vec::new()
+            };
+            ax_tensor::rename_dummy_indices(&canonical, interner)
         }
         Expr::List(items) => {
             let evaled: Vec<Expr> = items.iter().map(|item| eval(item, env, interner)).collect();
@@ -1456,11 +2468,18 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
     }
 }
 
-fn to_f64(expr: &Expr) -> Option<f64> {
+pub(crate) fn to_f64(expr: &Expr) -> Option<f64> {
     match expr {
         Expr::Int(n) => n.to_f64(),
         Expr::Rational(r) => Some(r.numer().to_f64()? / r.denom().to_f64()?),
         Expr::Float(f) => Some(*f),
+        Expr::Complex(re, im) => {
+            if to_f64(im)? == 0.0 {
+                to_f64(re)
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -1575,6 +2594,12 @@ mod tests {
         let expr = result.expr.expect("expected expression");
         let env = Env::new();
         (eval(&expr, &env, &interner), interner)
+    }
+
+    #[test]
+    fn convention_default_is_mtw() {
+        let env = Env::new();
+        assert_eq!(env.convention.riemann_sign, ax_ir::RiemannSign::MTW);
     }
 
     #[test]
@@ -1785,6 +2810,77 @@ mod tests {
         let expr = ax_core_ir::lower("sqrt(x^2)", &interner).expr.unwrap();
         let result = eval(&expr, &env, &interner);
         assert_eq!(result, Expr::Sym(x));
+    }
+
+    #[test]
+    fn grassmann_square_is_zero() {
+        let interner = ax_ir::Interner::new();
+        let theta = interner.get_or_intern("theta");
+        let mut gradings = HashMap::new();
+        gradings.insert(theta, ax_ir::Grading::Odd);
+
+        let expr = Expr::mul(vec![Expr::Sym(theta), Expr::Sym(theta)]);
+        let result = grassmann_simplify(&expr, &gradings, &interner);
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn grassmann_anticommutation() {
+        let interner = ax_ir::Interner::new();
+        let t1 = interner.get_or_intern("theta1");
+        let t2 = interner.get_or_intern("theta2");
+        let mut gradings = HashMap::new();
+        gradings.insert(t1, ax_ir::Grading::Odd);
+        gradings.insert(t2, ax_ir::Grading::Odd);
+
+        let a = Expr::mul(vec![Expr::Sym(t1), Expr::Sym(t2)]);
+        let b = Expr::mul(vec![Expr::Sym(t2), Expr::Sym(t1)]);
+        let sum = Expr::add(vec![
+            grassmann_simplify(&a, &gradings, &interner),
+            grassmann_simplify(&b, &gradings, &interner),
+        ]);
+        let result = eval(&sum, &Env::new(), &interner);
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn grassmann_canonical_order() {
+        let interner = ax_ir::Interner::new();
+        let t1 = interner.get_or_intern("theta1");
+        let t2 = interner.get_or_intern("theta2");
+        let mut gradings = HashMap::new();
+        gradings.insert(t1, ax_ir::Grading::Odd);
+        gradings.insert(t2, ax_ir::Grading::Odd);
+
+        let expr = Expr::mul(vec![Expr::Sym(t2), Expr::Sym(t1)]);
+        let result = grassmann_simplify(&expr, &gradings, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            pp.contains('-') && pp.contains("theta1") && pp.contains("theta2"),
+            "got: {}",
+            pp
+        );
+    }
+
+    #[test]
+    fn imaginary_unit_squared() {
+        let interner = ax_ir::Interner::new();
+        let result = ax_core_ir::lower("i^2", &interner);
+        let expr = result.expr.unwrap();
+        let evaled = eval(&expr, &Env::new(), &interner);
+        assert_eq!(evaled, Expr::Int((-1).into()));
+    }
+
+    #[test]
+    fn euler_formula() {
+        let interner = ax_ir::Interner::new();
+        let result = ax_core_ir::lower("N(exp(i * pi))", &interner);
+        let expr = result.expr.unwrap();
+        let evaled = eval(&expr, &Env::new(), &interner);
+        match evaled {
+            Expr::Complex(_, _) | Expr::Float(_) => {}
+            other => panic!("expected numeric, got {:?}", other),
+        }
     }
 
     #[test]

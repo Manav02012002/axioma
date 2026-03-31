@@ -2,11 +2,11 @@ use crate::expr::{Assumption, Condition, Expr, Index, Variance};
 use crate::intern::Interner;
 
 fn needs_parens_in_pow_base(expr: &Expr) -> bool {
-    matches!(expr, Expr::Add(_) | Expr::Mul(_))
+    matches!(expr, Expr::Add(_) | Expr::Mul(_) | Expr::Complex(_, _))
 }
 
 fn needs_parens_in_neg(expr: &Expr) -> bool {
-    matches!(expr, Expr::Add(_))
+    matches!(expr, Expr::Add(_) | Expr::Complex(_, _))
 }
 
 fn render_index(index: &Index, interner: &Interner) -> String {
@@ -27,6 +27,10 @@ fn render_assumption(assumption: &Assumption) -> &'static str {
         Assumption::Even => "even",
         Assumption::Odd => "odd",
     }
+}
+
+fn render_convention_value(value: &str) -> &str {
+    value
 }
 
 fn render_condition(condition: &Condition, interner: &Interner) -> String {
@@ -58,6 +62,7 @@ fn render(expr: &Expr, interner: &Interner) -> String {
         Expr::Int(n) => n.to_string(),
         Expr::Rational(r) => format!("{}/{}", r.numer(), r.denom()),
         Expr::Float(f) => format!("{f:?}"),
+        Expr::Complex(re, im) => format!("{} + {}*i", render(re, interner), render(im, interner)),
         Expr::Sym(s) => interner.resolve(*s).to_string(),
         Expr::Add(terms) => {
             let mut out = String::new();
@@ -128,7 +133,9 @@ fn render(expr: &Expr, interner: &Interner) -> String {
                 .join(", "),
             render(body, interner)
         ),
-        Expr::Rule(lhs, rhs) => format!("{} => {}", render(lhs, interner), render(rhs, interner)),
+        Expr::Rule(lhs, rhs, _) => {
+            format!("{} => {}", render(lhs, interner), render(rhs, interner))
+        }
         Expr::Import(path) => format!(
             "import {}",
             path.iter()
@@ -151,6 +158,11 @@ fn render(expr: &Expr, interner: &Interner) -> String {
                         .join(" ")
                 )
             }
+        ),
+        Expr::SetConvention(field, value) => format!(
+            "convention {} {}",
+            field,
+            render_convention_value(value)
         ),
         Expr::Piecewise(cases) => format!(
             "piecewise({})",

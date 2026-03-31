@@ -75,6 +75,10 @@ fn substitute_symbol(expr: &Expr, from: lasso::Spur, to: &Expr) -> Expr {
         Expr::Int(n) => Expr::Int(n.clone()),
         Expr::Rational(r) => Expr::Rational(r.clone()),
         Expr::Float(f) => Expr::Float(*f),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(substitute_symbol(re, from, to)),
+            Box::new(substitute_symbol(im, from, to)),
+        ),
         Expr::Sym(sym) => {
             if *sym == from {
                 to.clone()
@@ -110,12 +114,14 @@ fn substitute_symbol(expr: &Expr, from: lasso::Spur, to: &Expr) -> Expr {
             params.clone(),
             Box::new(substitute_symbol(body, from, to)),
         ),
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(substitute_symbol(lhs, from, to)),
             Box::new(substitute_symbol(rhs, from, to)),
+            *trust,
         ),
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases.iter()
                 .map(|(value, condition)| (substitute_symbol(value, from, to), condition.clone()))
@@ -150,6 +156,9 @@ fn substitute_symbol(expr: &Expr, from: lasso::Spur, to: &Expr) -> Expr {
 fn is_unevaluated_integrate(expr: &Expr, interner: &ax_ir::Interner) -> bool {
     match expr {
         Expr::Call(f, _) => interner.resolve(*f) == "integrate",
+        Expr::Complex(re, im) => {
+            is_unevaluated_integrate(re, interner) || is_unevaluated_integrate(im, interner)
+        }
         Expr::Add(terms) => terms.iter().any(|t| is_unevaluated_integrate(t, interner)),
         Expr::Mul(factors) => factors
             .iter()
@@ -537,12 +546,14 @@ pub fn integrate(expr: &ax_ir::Expr, var: lasso::Spur, interner: &ax_ir::Interne
             params.clone(),
             Box::new(integrate(body, var, interner)),
         ),
-        Expr::Rule(lhs, rhs) => Expr::Rule(
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(integrate(lhs, var, interner)),
             Box::new(integrate(rhs, var, interner)),
+            *trust,
         ),
         Expr::Import(path) => Expr::Import(path.clone()),
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases.iter()
                 .map(|(value, condition)| (integrate(value, var, interner), condition.clone()))

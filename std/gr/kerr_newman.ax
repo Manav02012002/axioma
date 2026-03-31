@@ -1,0 +1,20 @@
+// Kerr-Newman metric (charged rotating black hole)
+// Parameters: M (mass), a (angular momentum per mass), Q (charge)
+// Boyer-Lindquist coordinates: [t, r, theta, phi]
+// Σ = r^2 + a^2 cos^2(θ)
+// Δ = r^2 - 2Mr + a^2 + Q^2
+let Sigma_expr = r^2 + a^2 * cos(theta)^2
+let Delta_expr = r^2 - 2Mr + a^2 + Q^2
+// This metric is NOT diagonal, so the full inverse computation
+// would require general symbolic matrix inverse.
+// For now, define the metric components symbolically.
+// g_tt = -(1 - (2Mr - Q^2)/Sigma)
+let g_tt = -(1 - (2Mr - Q^2) / Sigma_expr)
+// g_rr = Sigma / Delta
+let g_rr = Sigma_expr / Delta_expr
+// g_theta_theta = Sigma
+let g_theta_theta = Sigma_expr
+// g_phi_phi = (r^2 + a^2 + (2Mr - Q^2)a^2sin^2(θ)/Sigma) * sin^2(θ)
+let g_phi_phi = (r^2 + a^2 + (2Mr - Q^2) * a^2 * sin(theta)^2 / Sigma_expr) * sin(theta)^2
+// g_t_phi = -(2Mr - Q^2) * a * sin^2(θ) / Sigma (off-diagonal!)
+let g_t_phi = -(2Mr - Q^2) * a * sin(theta)^2 / Sigma_expr

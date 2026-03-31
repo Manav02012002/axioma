@@ -373,6 +373,24 @@ fn render(expr: &Expr, parent_prec: u8, interner: &ax_ir::Interner) -> String {
             }
         }
         Expr::Float(f) => format_float(*f),
+        Expr::Complex(re, im) => {
+            let re_s = render(re, PREC_ADD_SUB, interner);
+            if matches!(im.as_ref(), Expr::Int(n) if *n == 0.into()) {
+                re_s
+            } else if matches!(re.as_ref(), Expr::Int(n) if *n == 0.into())
+                && matches!(im.as_ref(), Expr::Int(n) if *n == 1.into())
+            {
+                "i".to_string()
+            } else if matches!(re.as_ref(), Expr::Int(n) if *n == 0.into()) {
+                format!("{}i", render(im, PREC_MUL_DIV, interner))
+            } else if matches!(im.as_ref(), Expr::Int(n) if *n == 1.into()) {
+                format!("{re_s} + i")
+            } else if let Expr::Neg(inner) = im.as_ref() {
+                format!("{re_s} - {}i", render(inner, PREC_MUL_DIV, interner))
+            } else {
+                format!("{re_s} + {}i", render(im, PREC_MUL_DIV, interner))
+            }
+        }
         Expr::Sym(s) => symbol_to_latex(*s, interner),
         Expr::Add(terms) => render_add(terms, parent_prec, interner),
         Expr::Mul(factors) => render_mul(factors, parent_prec, interner),
@@ -393,7 +411,7 @@ fn render(expr: &Expr, parent_prec: u8, interner: &ax_ir::Interner) -> String {
                 .join(", "),
             render(body, PREC_TOP, interner)
         ),
-        Expr::Rule(lhs, rhs) => format!(
+        Expr::Rule(lhs, rhs, _) => format!(
             "{} \\Rightarrow {}",
             render(lhs, PREC_TOP, interner),
             render(rhs, PREC_TOP, interner)
@@ -421,6 +439,9 @@ fn render(expr: &Expr, parent_prec: u8, interner: &ax_ir::Interner) -> String {
                 )
             }
         ),
+        Expr::SetConvention(field, value) => {
+            format!("\\text{{convention }} {}\\;{}", field, value)
+        }
         Expr::Piecewise(cases) => {
             let body = cases
                 .iter()

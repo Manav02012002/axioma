@@ -1,0 +1,21 @@
+// General Relativity Tutorial with Axioma
+// ========================================
+// Step 1: Set conventions
+import std.conventions.mtw
+// Step 2: Define the Schwarzschild metric
+let g = metric(diag(-(1 - 2M/r), 1/(1 - 2M/r), r^2, r^2 * sin(theta)^2))
+let coords = [t, r, theta, phi]
+// Step 3: Compute Christoffel symbols
+let Gamma = christoffel(g, coords)
+// Step 4: Compute curvature tensors
+let R = riemann(Gamma, coords)
+let Ric = ricci(R)
+// Step 5: Verify vacuum solution (all Ricci components = 0)
+Ric
+// Step 6: Compute the Kretschner scalar
+// K = R_{abcd} R^{abcd} = 48 M^2 / r^6
+let K = kretschner(R, g)
+K
+// Step 7: Geodesic equations
+let geod = geodesic(Gamma, coords)
+geod

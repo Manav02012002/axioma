@@ -1,0 +1,4 @@
+// Maxwell's equations from Lagrangian
+// L = -(1/4) F_{μν} F^{μν}
+// where F_{μν} = ∂_μ A_ν - ∂_ν A_μ
+// This is more complex — just set up the structure

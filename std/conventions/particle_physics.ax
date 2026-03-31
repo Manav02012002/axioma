@@ -1,0 +1,4 @@
+// Particle physics conventions (Peskin & Schroeder)
+convention metric_signature mostly_plus
+convention riemann_sign mtw
+convention fourier_sign minus_i

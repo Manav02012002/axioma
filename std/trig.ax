@@ -1,0 +1,6 @@
+// Trigonometric identities as rewrite rules
+rule [exact] pythag: sin(x_)^2 + cos(x_)^2 => 1
+rule [exact] pythag_alt1: 1 - sin(x_)^2 => cos(x_)^2
+rule [exact] pythag_alt2: 1 - cos(x_)^2 => sin(x_)^2
+rule [exact] double_sin: sin(2x_) => 2sin(x_)cos(x_)
+rule [exact] double_cos: cos(2x_) => cos(x_)^2 - sin(x_)^2
