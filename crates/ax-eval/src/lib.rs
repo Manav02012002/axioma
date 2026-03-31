@@ -339,6 +339,65 @@ pub fn apply_operator_declaration(
     }
 }
 
+pub fn apply_index_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "__declare_indices" || args.len() < 2 {
+        return None;
+    }
+
+    let (Expr::Sym(family_name), Expr::List(index_syms)) = (&args[0], &args[1]) else {
+        return None;
+    };
+
+    let mut dim = None;
+    let mut values = Vec::new();
+    for arg in args.iter().skip(2).take(args.len().saturating_sub(3)) {
+        match arg {
+            Expr::Int(n) => dim = n.to_usize(),
+            Expr::List(items) => {
+                values = items
+                    .iter()
+                    .filter_map(|item| match item {
+                        Expr::Sym(sym) => Some(*sym),
+                        _ => None,
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    let position = match args.last() {
+        Some(Expr::Sym(sym)) if interner.resolve(*sym) == "fixed" => ax_ir::IndexPosition::Fixed,
+        _ => ax_ir::IndexPosition::Free,
+    };
+
+    env.index_families.insert(
+        *family_name,
+        ax_ir::IndexFamily {
+            name: *family_name,
+            values,
+            position,
+            dimension: dim,
+            parent: None,
+        },
+    );
+    for index_expr in index_syms {
+        if let Expr::Sym(sym) = index_expr {
+            env.index_to_family.insert(*sym, *family_name);
+        }
+    }
+    Some(format!(
+        "declared index family: {}",
+        interner.resolve(*family_name)
+    ))
+}
+
 fn parse_metric_signature(value: &str) -> Option<ax_ir::MetricSignature> {
     match value {
         "mostly_plus" => Some(ax_ir::MetricSignature::MostlyPlus),
@@ -1677,6 +1736,7 @@ fn builtin_call(
         "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => {
             Expr::Call(f, args)
         }
+        "__declare_indices" => Expr::Call(f, args),
         "grassmann" => Expr::Call(f, args),
         "expand" => {
             if args.len() == 1 {
@@ -2805,7 +2865,15 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
             eval(body, &child, interner)
         }
         Expr::Indexed(base, indices) => {
-            let indexed = Expr::Indexed(Box::new(eval(base, env, interner)), indices.clone());
+            let typed_indices = indices
+                .iter()
+                .map(|idx| ax_ir::Index {
+                    name: idx.name,
+                    variance: idx.variance.clone(),
+                    index_type: env.index_to_family.get(&idx.name).copied(),
+                })
+                .collect::<Vec<_>>();
+            let indexed = Expr::Indexed(Box::new(eval(base, env, interner)), typed_indices);
             let canonical = ax_tensor::canonicalize_indices(&indexed, &env.tensor_properties, interner);
             let _ = if let Expr::Indexed(_, idxs) = &canonical {
                 ax_tensor::detect_contractions(idxs)
@@ -3004,6 +3072,23 @@ mod tests {
         env.index_to_family.insert(mu, spacetime);
         env.index_to_family.insert(nu, spacetime);
         assert_eq!(env.index_to_family[&mu], spacetime);
+    }
+
+    #[test]
+    fn index_family_registered() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+
+        let decl = ax_core_ir::lower("indices spacetime [mu, nu, rho, sigma] dim=4", &interner);
+        let expr = decl.expr.unwrap();
+        let result = eval(&expr, &env, &interner);
+
+        if let ax_ir::Expr::Call(f, args) = &result {
+            assert_eq!(interner.resolve(*f), "__declare_indices");
+            assert!(args.len() >= 2);
+        } else {
+            panic!("expected __declare_indices call");
+        }
     }
 
     #[test]

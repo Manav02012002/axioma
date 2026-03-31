@@ -102,6 +102,7 @@ pub fn handle_import(
             Expr::SetConvention(_, _) => {
                 let _ = ax_eval::apply_set_convention(&expr, env);
             }
+            _ if ax_eval::apply_index_declaration(&expr, env, interner).is_some() => {}
             _ => {
                 let result = ax_eval::eval(&expr, env, interner);
                 let _ = ax_eval::apply_grassmann_declaration(&result, env, interner);
@@ -139,6 +140,9 @@ pub fn execute_expr(
 
     if let Some(description) = ax_eval::apply_set_convention(expr, env) {
         return Ok(Some(format!("active convention: {description}")));
+    }
+    if let Some(message) = ax_eval::apply_index_declaration(expr, env, interner) {
+        return Ok(Some(message));
     }
 
     if let Expr::Let(name, val, body) = expr {

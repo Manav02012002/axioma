@@ -262,6 +262,101 @@ impl<'a> Cursor<'a> {
             ));
         }
 
+        if self.consume_keyword("indices") {
+            let family = self.parse_ident()?;
+            self.skip_ws();
+            if !self.eat_if('[') {
+                return Err(self.error("expected '[' after family name"));
+            }
+
+            let mut index_names = Vec::new();
+            self.skip_ws();
+            if !self.eat_if(']') {
+                loop {
+                    index_names.push(self.parse_ident()?);
+                    self.skip_ws();
+                    if self.eat_if(',') {
+                        self.skip_ws();
+                        continue;
+                    }
+                    if self.eat_if(']') {
+                        break;
+                    }
+                    return Err(self.error("expected ',' or ']'"));
+                }
+            }
+
+            let mut dim = None;
+            let mut values = Vec::new();
+            let mut position = String::from("free");
+
+            loop {
+                self.skip_ws();
+                if self.is_eof() || self.peek_char() == Some(';') {
+                    break;
+                }
+                if self.consume_keyword("dim") {
+                    self.skip_ws();
+                    let _ = self.eat_if('=');
+                    self.skip_ws();
+                    let parsed = self.parse_number()?;
+                    if let Expr::Int(n) = parsed {
+                        dim = Some(n);
+                    } else {
+                        return Err(self.error("expected integer dimension"));
+                    }
+                } else if self.consume_keyword("values") {
+                    self.skip_ws();
+                    let _ = self.eat_if('=');
+                    self.skip_ws();
+                    if !self.eat_if('[') {
+                        return Err(self.error("expected '[' after values="));
+                    }
+                    self.skip_ws();
+                    if !self.eat_if(']') {
+                        loop {
+                            values.push(self.parse_ident()?);
+                            self.skip_ws();
+                            if self.eat_if(',') {
+                                self.skip_ws();
+                                continue;
+                            }
+                            if self.eat_if(']') {
+                                break;
+                            }
+                            return Err(self.error("expected ',' or ']'"));
+                        }
+                    }
+                } else if self.consume_keyword("position") {
+                    self.skip_ws();
+                    let _ = self.eat_if('=');
+                    self.skip_ws();
+                    if self.consume_keyword("fixed") {
+                        position = "fixed".to_string();
+                    } else {
+                        let _ = self.consume_keyword("free");
+                        position = "free".to_string();
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            let declare_sym = self.interner.get_or_intern("__declare_indices");
+            let mut args = vec![
+                Expr::Sym(family),
+                Expr::List(index_names.into_iter().map(Expr::Sym).collect()),
+            ];
+            if let Some(d) = dim {
+                args.push(Expr::Int(d));
+            }
+            if !values.is_empty() {
+                args.push(Expr::List(values.into_iter().map(Expr::Sym).collect()));
+            }
+            args.push(Expr::Sym(self.interner.get_or_intern(&position)));
+            return Ok(Expr::Call(declare_sym, args));
+        }
+
         if self.consume_keyword("convention") {
             let field = self.parse_ident()?;
             self.skip_ws();
@@ -945,6 +1040,13 @@ mod tests {
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let expr = result.expr.unwrap();
         assert!(matches!(expr, ax_ir::Expr::Rule(_, _, _)));
+    }
+
+    #[test]
+    fn parse_index_declaration() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("indices spacetime [mu, nu, rho, sigma] dim=4", &interner);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
     }
 
     #[test]
