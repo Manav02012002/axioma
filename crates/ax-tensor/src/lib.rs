@@ -411,6 +411,133 @@ pub fn rename_dummy_indices(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> a
     replace(expr, &mapping)
 }
 
+fn contains_index(expr: &Expr, idx: lasso::Spur) -> bool {
+    match expr {
+        Expr::Indexed(_, indices) => indices.iter().any(|i| i.name == idx),
+        Expr::Mul(factors) => factors.iter().any(|f| contains_index(f, idx)),
+        Expr::Add(terms) => terms.iter().any(|t| contains_index(t, idx)),
+        Expr::Neg(e) => contains_index(e, idx),
+        _ => false,
+    }
+}
+
+fn replace_index(expr: &Expr, from: lasso::Spur, to: lasso::Spur) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let new_indices: Vec<ax_ir::Index> = indices
+                .iter()
+                .map(|idx| {
+                    if idx.name == from {
+                        ax_ir::Index {
+                            name: to,
+                            variance: idx.variance.clone(),
+                            index_type: idx.index_type,
+                        }
+                    } else {
+                        idx.clone()
+                    }
+                })
+                .collect();
+            Expr::Indexed(base.clone(), new_indices)
+        }
+        Expr::Mul(factors) => {
+            Expr::mul(factors.iter().map(|f| replace_index(f, from, to)).collect())
+        }
+        Expr::Add(terms) => Expr::add(terms.iter().map(|t| replace_index(t, from, to)).collect()),
+        Expr::Neg(e) => Expr::neg(replace_index(e, from, to)),
+        _ => expr.clone(),
+    }
+}
+
+pub fn eliminate_kronecker(
+    expr: &ax_ir::Expr,
+    delta_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut remaining = factors.clone();
+            let mut changed = true;
+            while changed {
+                changed = false;
+                for i in 0..remaining.len() {
+                    let delta_info = match &remaining[i] {
+                        Expr::Indexed(base, indices) => match base.as_ref() {
+                            Expr::Sym(s) if *s == delta_sym && indices.len() == 2 => Some((
+                                indices[0].name,
+                                indices[0].variance.clone(),
+                                indices[1].name,
+                                indices[1].variance.clone(),
+                            )),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let Some((left_name, left_var, right_name, right_var)) = delta_info else {
+                        continue;
+                    };
+
+                    let (from, to) = if left_var == ax_ir::Variance::Up
+                        && right_var == ax_ir::Variance::Down
+                    {
+                        (right_name, left_name)
+                    } else if left_var == ax_ir::Variance::Down
+                        && right_var == ax_ir::Variance::Up
+                    {
+                        (left_name, right_name)
+                    } else {
+                        continue;
+                    };
+
+                    let mut found = false;
+                    for j in 0..remaining.len() {
+                        if i == j {
+                            continue;
+                        }
+                        if contains_index(&remaining[j], from) {
+                            remaining[j] = replace_index(&remaining[j], from, to);
+                            found = true;
+                        }
+                    }
+                    if found {
+                        remaining.remove(i);
+                        changed = true;
+                        break;
+                    }
+
+                    if left_name == right_name {
+                        remaining[i] = Expr::Sym(interner.get_or_intern("dim"));
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            Expr::mul(
+                remaining
+                    .into_iter()
+                    .map(|f| eliminate_kronecker(&f, delta_sym, interner))
+                    .collect(),
+            )
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| eliminate_kronecker(t, delta_sym, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(eliminate_kronecker(e, delta_sym, interner)),
+        Expr::Indexed(base, indices) => {
+            if let Expr::Sym(s) = base.as_ref() {
+                if *s == delta_sym && indices.len() == 2 && indices[0].name == indices[1].name {
+                    return Expr::Sym(interner.get_or_intern("dim"));
+                }
+            }
+            expr.clone()
+        }
+        _ => expr.clone(),
+    }
+}
+
 pub fn diff_component(
     expr: &ax_ir::Expr,
     coord: lasso::Spur,
@@ -1669,5 +1796,82 @@ mod tests {
         );
         let result = canonicalize_indices(&expr, &properties, &interner);
         assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn kronecker_eliminates_in_product() {
+        let interner = ax_ir::Interner::new();
+        let delta = interner.get_or_intern("delta");
+        let a_sym = interner.get_or_intern("A");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+        let rho = interner.get_or_intern("rho");
+
+        let delta_expr = Expr::Indexed(
+            Box::new(Expr::Sym(delta)),
+            vec![
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: nu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let a_expr = Expr::Indexed(
+            Box::new(Expr::Sym(a_sym)),
+            vec![
+                ax_ir::Index {
+                    name: nu,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: rho,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let product = Expr::mul(vec![delta_expr, a_expr]);
+        let result = eliminate_kronecker(&product, delta, &interner);
+
+        if let Expr::Indexed(_, indices) = &result {
+            assert_eq!(indices.len(), 2);
+            assert_eq!(indices[0].name, mu);
+            assert_eq!(indices[1].name, rho);
+        } else {
+            panic!("expected Indexed, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn kronecker_trace_gives_dim() {
+        let interner = ax_ir::Interner::new();
+        let delta = interner.get_or_intern("delta");
+        let mu = interner.get_or_intern("mu");
+        let dim = interner.get_or_intern("dim");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(delta)),
+            vec![
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let result = eliminate_kronecker(&expr, delta, &interner);
+        assert_eq!(result, Expr::Sym(dim));
     }
 }

@@ -1824,6 +1824,22 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "eliminate_kronecker" => {
+            if !args.is_empty() {
+                let delta = if args.len() >= 2 {
+                    if let Expr::Sym(s) = &args[1] {
+                        *s
+                    } else {
+                        interner.get_or_intern("delta")
+                    }
+                } else {
+                    interner.get_or_intern("delta")
+                };
+                ax_tensor::eliminate_kronecker(&args[0], delta, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "dim" => {
             if args.len() == 1 {
                 let mut units = ax_units::si_units(interner);
