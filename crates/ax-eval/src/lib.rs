@@ -1414,6 +1414,13 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "rationalize" => {
+            if args.len() == 1 {
+                simplify::rationalize(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "grassmann_simplify" => {
             if args.len() == 1 {
                 grassmann_simplify(&args[0], &env.gradings, interner)

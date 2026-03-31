@@ -2,6 +2,7 @@ use crate::{eval, Env};
 use ax_ir::Expr;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+use std::collections::BTreeSet;
 
 fn square(expr: Expr) -> Expr {
     Expr::pow(expr, Expr::Int(2.into()))
@@ -615,11 +616,293 @@ pub fn collect_terms(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
     }
 }
 
+fn trim_poly(coeffs: &mut Vec<Expr>) {
+    while coeffs.len() > 1
+        && coeffs.last().is_some_and(|coeff| {
+            matches!(coeff, Expr::Int(n) if n.is_zero())
+                || matches!(coeff, Expr::Rational(r) if r.is_zero())
+        })
+    {
+        coeffs.pop();
+    }
+}
+
+fn poly_degree(coeffs: &[Expr]) -> Option<usize> {
+    coeffs
+        .iter()
+        .rposition(|coeff| !matches!(coeff, Expr::Int(n) if n.is_zero()) && !matches!(coeff, Expr::Rational(r) if r.is_zero()))
+}
+
+fn collect_syms(expr: &Expr, out: &mut BTreeSet<lasso::Spur>) {
+    match expr {
+        Expr::Sym(sym) => {
+            out.insert(*sym);
+        }
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            for term in terms {
+                collect_syms(term, out);
+            }
+        }
+        Expr::Pow(base, exp) => {
+            collect_syms(base, out);
+            collect_syms(exp, out);
+        }
+        Expr::Neg(inner) => collect_syms(inner, out),
+        Expr::Call(_, args) => {
+            for arg in args {
+                collect_syms(arg, out);
+            }
+        }
+        Expr::Complex(re, im) => {
+            collect_syms(re, out);
+            collect_syms(im, out);
+        }
+        Expr::FnDef(_, _, body) => collect_syms(body, out),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_syms(lhs, out);
+            collect_syms(rhs, out);
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                collect_syms(value, out);
+            }
+        }
+        Expr::Indexed(base, _) => collect_syms(base, out),
+        Expr::Let(_, value, body) => {
+            collect_syms(value, out);
+            collect_syms(body, out);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_syms(cell, out);
+                }
+            }
+        }
+        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) | Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => {}
+    }
+}
+
+fn poly_from_coeffs(coeffs: &[Expr], var: lasso::Spur) -> Expr {
+    let terms = coeffs
+        .iter()
+        .enumerate()
+        .filter_map(|(degree, coeff)| {
+            if matches!(coeff, Expr::Int(n) if n.is_zero()) || matches!(coeff, Expr::Rational(r) if r.is_zero()) {
+                return None;
+            }
+            let term = match degree {
+                0 => coeff.clone(),
+                1 => Expr::mul(vec![coeff.clone(), Expr::Sym(var)]),
+                _ => Expr::mul(vec![
+                    coeff.clone(),
+                    Expr::pow(Expr::Sym(var), Expr::Int((degree as i64).into())),
+                ]),
+            };
+            Some(term)
+        })
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        Expr::zero()
+    } else {
+        Expr::add(terms)
+    }
+}
+
+fn extract_numer_denom(expr: &Expr) -> (Expr, Expr) {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut numer = Vec::new();
+            let mut denom = Vec::new();
+            for factor in factors {
+                match factor {
+                    Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if n.is_negative()) => {
+                        let n = if let Expr::Int(n) = exp.as_ref() { n } else { unreachable!() };
+                        denom.push(Expr::pow((**base).clone(), Expr::Int((-n).clone())));
+                    }
+                    Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Neg(_)) => {
+                        if let Expr::Neg(inner) = exp.as_ref() {
+                            denom.push(Expr::pow((**base).clone(), (**inner).clone()));
+                        }
+                    }
+                    _ => numer.push(factor.clone()),
+                }
+            }
+            (Expr::mul(numer), Expr::mul(denom))
+        }
+        Expr::Add(terms) => {
+            let extracted = terms.iter().map(extract_numer_denom).collect::<Vec<_>>();
+            let common_denom = Expr::mul(extracted.iter().map(|(_, denom)| denom.clone()).collect());
+            let combined_numer = Expr::add(
+                extracted
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, (numer, _))| {
+                        let others = extracted
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(j, (_, denom))| if idx == j { None } else { Some(denom.clone()) })
+                            .collect::<Vec<_>>();
+                        Expr::mul(
+                            std::iter::once(numer.clone())
+                                .chain(others)
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            );
+            (combined_numer, common_denom)
+        }
+        Expr::Neg(inner) => {
+            let (numer, denom) = extract_numer_denom(inner);
+            (Expr::neg(numer), denom)
+        }
+        _ => (expr.clone(), Expr::one()),
+    }
+}
+
+fn poly_div_rem(
+    dividend: &[Expr],
+    divisor: &[Expr],
+    interner: &ax_ir::Interner,
+) -> (Vec<Expr>, Vec<Expr>) {
+    let mut remainder = dividend.to_vec();
+    trim_poly(&mut remainder);
+    let mut quotient = vec![Expr::zero(); remainder.len().saturating_sub(divisor.len()) + 1];
+    let Some(divisor_degree) = poly_degree(divisor) else {
+        return (Vec::new(), remainder);
+    };
+    let divisor_lead = divisor[divisor_degree].clone();
+
+    while let (Some(rem_degree), true) = (poly_degree(&remainder), poly_degree(&remainder).unwrap_or(0) >= divisor_degree) {
+        let degree_diff = rem_degree - divisor_degree;
+        let lead_factor = eval(
+            &Expr::mul(vec![
+                remainder[rem_degree].clone(),
+                Expr::pow(divisor_lead.clone(), Expr::Int((-1).into())),
+            ]),
+            &Env::new(),
+            interner,
+        );
+        quotient[degree_diff] = Expr::add(vec![quotient[degree_diff].clone(), lead_factor.clone()]);
+
+        let mut subtraction = vec![Expr::zero(); degree_diff + divisor.len()];
+        for (idx, coeff) in divisor.iter().enumerate() {
+            subtraction[degree_diff + idx] = Expr::mul(vec![lead_factor.clone(), coeff.clone()]);
+        }
+        if remainder.len() < subtraction.len() {
+            remainder.resize(subtraction.len(), Expr::zero());
+        }
+        for i in 0..subtraction.len() {
+            remainder[i] = eval(
+                &Expr::add(vec![remainder[i].clone(), Expr::neg(subtraction[i].clone())]),
+                &Env::new(),
+                interner,
+            );
+        }
+        trim_poly(&mut remainder);
+    }
+
+    trim_poly(&mut quotient);
+    trim_poly(&mut remainder);
+    (quotient, remainder)
+}
+
+fn poly_gcd(a: &Expr, b: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Expr {
+    let Some(mut lhs) = ax_solve::extract_polynomial(a, var, interner) else {
+        return Expr::one();
+    };
+    let Some(mut rhs) = ax_solve::extract_polynomial(b, var, interner) else {
+        return Expr::one();
+    };
+    trim_poly(&mut lhs);
+    trim_poly(&mut rhs);
+
+    while poly_degree(&rhs)
+        .is_some_and(|deg| deg > 0 || !matches!(&rhs[0], Expr::Int(n) if n.is_zero()))
+    {
+        let (_, mut remainder) = poly_div_rem(&lhs, &rhs, interner);
+        trim_poly(&mut remainder);
+        if poly_degree(&remainder).is_none() && matches!(remainder.first(), Some(Expr::Int(n)) if n.is_zero()) {
+            lhs = rhs;
+            break;
+        }
+        lhs = rhs;
+        rhs = remainder;
+    }
+
+    if let Some(deg) = poly_degree(&lhs) {
+        let lead = lhs[deg].clone();
+        let normalized = lhs
+            .into_iter()
+            .map(|coeff| {
+                eval(
+                    &Expr::mul(vec![coeff, Expr::pow(lead.clone(), Expr::Int((-1).into()))]),
+                    &Env::new(),
+                    interner,
+                )
+            })
+            .collect::<Vec<_>>();
+        poly_from_coeffs(&normalized, var)
+    } else {
+        Expr::one()
+    }
+}
+
+fn cancel_common(numer: &Expr, denom: &Expr, interner: &ax_ir::Interner) -> (Expr, Expr) {
+    let mut syms = BTreeSet::new();
+    collect_syms(numer, &mut syms);
+    collect_syms(denom, &mut syms);
+
+    for sym in syms {
+        let gcd = poly_gcd(numer, denom, sym, interner);
+        if gcd != Expr::one() {
+            let Some(n_coeffs) = ax_solve::extract_polynomial(numer, sym, interner) else {
+                continue;
+            };
+            let Some(d_coeffs) = ax_solve::extract_polynomial(denom, sym, interner) else {
+                continue;
+            };
+            let Some(g_coeffs) = ax_solve::extract_polynomial(&gcd, sym, interner) else {
+                continue;
+            };
+            if poly_degree(&g_coeffs).unwrap_or(0) == 0 {
+                continue;
+            }
+            let (qn, rn) = poly_div_rem(&n_coeffs, &g_coeffs, interner);
+            let (qd, rd) = poly_div_rem(&d_coeffs, &g_coeffs, interner);
+            let zero_rem = |coeffs: &[Expr]| {
+                coeffs.iter().all(|c| matches!(c, Expr::Int(n) if n.is_zero()) || matches!(c, Expr::Rational(r) if r.is_zero()))
+            };
+            if zero_rem(&rn) && zero_rem(&rd) {
+                return (poly_from_coeffs(&qn, sym), poly_from_coeffs(&qd, sym));
+            }
+        }
+    }
+
+    (numer.clone(), denom.clone())
+}
+
+pub fn rationalize(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
+    let (numer, denom) = extract_numer_denom(expr);
+    let numer = eval(&numer, &Env::new(), interner);
+    let denom = eval(&denom, &Env::new(), interner);
+    let (numer_s, denom_s) = cancel_common(&numer, &denom, interner);
+    let numer_s = eval(&numer_s, &Env::new(), interner);
+    let denom_s = eval(&denom_s, &Env::new(), interner);
+    if denom_s == Expr::one() {
+        numer_s
+    } else {
+        Expr::mul(vec![numer_s, Expr::pow(denom_s, Expr::Int((-1).into()))])
+    }
+}
+
 pub fn simplify(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
     let e1 = expand(expr, interner);
     let e2 = collect_terms(&e1, interner);
-    let e3 = trig_simplify(&e2, interner);
-    eval(&e3, &Env::new(), interner)
+    let e3 = rationalize(&e2, interner);
+    let e4 = trig_simplify(&e3, interner);
+    eval(&e4, &Env::new(), interner)
 }
 
 pub fn trig_simplify(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
@@ -709,5 +992,38 @@ mod tests {
         let result = trig_simplify(&expr, &interner);
         let expected = Expr::pow(Expr::Call(cos_sym, vec![Expr::Sym(x)]), Expr::Int(2.into()));
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn rationalize_cancels_common_factor() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+
+        let numer = Expr::add(vec![
+            Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+            Expr::neg(Expr::one()),
+        ]);
+        let denom = Expr::add(vec![Expr::Sym(x), Expr::neg(Expr::one())]);
+        let expr = Expr::mul(vec![numer, Expr::pow(denom, Expr::Int((-1).into()))]);
+
+        let result = rationalize(&expr, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(!pp.contains("^"), "still has powers: {}", pp);
+        assert!(pp.contains("x") && pp.contains("1"), "got: {}", pp);
+    }
+
+    #[test]
+    fn rationalize_common_denominator() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+
+        let expr = Expr::add(vec![
+            Expr::pow(Expr::Sym(x), Expr::Int((-1).into())),
+            Expr::pow(Expr::Sym(x), Expr::Int((-2).into())),
+        ]);
+
+        let result = rationalize(&expr, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("x"), "got: {}", pp);
     }
 }
