@@ -1893,6 +1893,13 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "meld" => {
+            if args.len() == 1 {
+                ax_tensor::meld(&args[0], &env.tensor_properties, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "rename_dummies" => {
             if args.len() == 1 {
                 ax_tensor::rename_dummies(&args[0], env, interner)

@@ -311,6 +311,199 @@ pub fn canonicalise(
     }
 }
 
+/// Simplify a sum of tensor monomials using multi-term symmetry information.
+pub fn meld(
+    expr: &ax_ir::Expr,
+    tensor_properties: &std::collections::HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Add(terms) => {
+            let mut groups: Vec<(String, Vec<Expr>)> = Vec::new();
+            for term in terms {
+                let simplified = meld(term, tensor_properties, interner);
+                let structure = tensor_structure_key(&simplified, interner);
+                if let Some((_, bucket)) = groups.iter_mut().find(|(key, _)| *key == structure) {
+                    bucket.push(simplified);
+                } else {
+                    groups.push((structure, vec![simplified]));
+                }
+            }
+
+            let mut simplified_terms = Vec::new();
+            for (_, group_terms) in groups {
+                if group_terms.len() == 1 {
+                    simplified_terms.push(group_terms.into_iter().next().unwrap());
+                    continue;
+                }
+
+                let factor_info =
+                    extract_factor_info_from_term(&group_terms[0], tensor_properties, interner);
+                let mut projected = adjform::ProjectedAdjform::new();
+                let mut canonical_terms: Vec<(Expr, Expr)> = Vec::new();
+
+                for term in group_terms {
+                    let canonical = canonicalise(&term, tensor_properties, interner);
+                    let (scalar, indices) = extract_scalar_and_indices(&canonical);
+                    let adj = adjform::Adjform::from_indices(&indices);
+                    projected.add(adj, scalar_to_i32(&scalar));
+                    canonical_terms.push((canonical.clone(), scalar_free_tensor_part(&canonical)));
+                }
+
+                for info in &factor_info {
+                    for prop in &info.properties {
+                        match prop {
+                            ax_ir::TensorProperty::Symmetric(positions) => {
+                                let abs_positions: Vec<usize> =
+                                    positions.iter().map(|p| info.start_position + p).collect();
+                                projected.symmetrize(&abs_positions);
+                            }
+                            ax_ir::TensorProperty::AntiSymmetric(positions) => {
+                                let abs_positions: Vec<usize> =
+                                    positions.iter().map(|p| info.start_position + p).collect();
+                                projected.antisymmetrize(&abs_positions);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                let mut combined: Vec<(Expr, i32)> = Vec::new();
+                for (canonical, tensor_part) in canonical_terms {
+                    let coeff = scalar_to_i32(&extract_scalar_and_indices(&canonical).0);
+                    if let Some((_, acc)) =
+                        combined.iter_mut().find(|(existing, _)| *existing == tensor_part)
+                    {
+                        *acc += coeff;
+                    } else {
+                        combined.push((tensor_part, coeff));
+                    }
+                }
+
+                if combined.iter().all(|(_, coeff)| *coeff == 0) || projected.is_empty() {
+                    continue;
+                }
+
+                for (tensor_part, coeff) in combined {
+                    if coeff == 0 {
+                        continue;
+                    }
+                    let term = match coeff {
+                        1 => tensor_part,
+                        -1 => Expr::neg(tensor_part),
+                        _ => Expr::mul(vec![Expr::Int(coeff.into()), tensor_part]),
+                    };
+                    simplified_terms.push(term);
+                }
+            }
+
+            if simplified_terms.is_empty() {
+                Expr::zero()
+            } else {
+                Expr::add(simplified_terms)
+            }
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| meld(factor, tensor_properties, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(meld(inner, tensor_properties, interner)),
+        _ => expr.clone(),
+    }
+}
+
+fn tensor_structure_key(expr: &Expr, interner: &ax_ir::Interner) -> String {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            if let Expr::Sym(s) = base.as_ref() {
+                format!("{}:{}", interner.resolve(*s), indices.len())
+            } else {
+                format!("{base:?}:{}", indices.len())
+            }
+        }
+        Expr::Mul(factors) => {
+            let mut parts: Vec<String> = factors
+                .iter()
+                .map(|factor| tensor_structure_key(factor, interner))
+                .filter(|part| !part.is_empty())
+                .collect();
+            parts.sort();
+            parts.join("*")
+        }
+        Expr::Neg(inner) => tensor_structure_key(inner, interner),
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => String::new(),
+        _ => format!("{expr:?}"),
+    }
+}
+
+fn extract_scalar_and_indices(expr: &Expr) -> (Expr, Vec<ax_ir::Index>) {
+    match expr {
+        Expr::Indexed(_, indices) => (Expr::one(), indices.clone()),
+        Expr::Mul(factors) => {
+            let mut scalar_parts = Vec::new();
+            let mut all_indices = Vec::new();
+            for factor in factors {
+                match factor {
+                    Expr::Indexed(_, indices) => all_indices.extend(indices.iter().cloned()),
+                    other => scalar_parts.push(other.clone()),
+                }
+            }
+            let scalar = if scalar_parts.is_empty() {
+                Expr::one()
+            } else {
+                Expr::mul(scalar_parts)
+            };
+            (scalar, all_indices)
+        }
+        Expr::Neg(inner) => {
+            let (scalar, indices) = extract_scalar_and_indices(inner);
+            (Expr::neg(scalar), indices)
+        }
+        _ => (expr.clone(), vec![]),
+    }
+}
+
+fn scalar_to_i32(expr: &Expr) -> i32 {
+    match expr {
+        Expr::Int(n) => n.to_str_radix(10).parse().unwrap_or(1),
+        Expr::Neg(inner) => -scalar_to_i32(inner),
+        _ => 1,
+    }
+}
+
+fn scalar_free_tensor_part(expr: &Expr) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let tensor_factors: Vec<Expr> = factors
+                .iter()
+                .filter(|factor| !matches!(factor, Expr::Int(_) | Expr::Rational(_) | Expr::Float(_)))
+                .cloned()
+                .collect();
+            match tensor_factors.len() {
+                0 => Expr::one(),
+                1 => tensor_factors.into_iter().next().unwrap(),
+                _ => Expr::mul(tensor_factors),
+            }
+        }
+        Expr::Neg(inner) => scalar_free_tensor_part(inner),
+        _ => expr.clone(),
+    }
+}
+
+fn extract_factor_info_from_term(
+    expr: &Expr,
+    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &ax_ir::Interner,
+) -> Vec<TensorFactorInfo> {
+    let wrapped = match expr {
+        Expr::Mul(_) => expr.clone(),
+        _ => Expr::Mul(vec![expr.clone()]),
+    };
+    extract_factor_info(&wrapped, tensor_properties, interner)
+}
+
 fn count_index_occurrences(expr: &Expr, counts: &mut HashMap<lasso::Spur, usize>) {
     match expr {
         Expr::Indexed(base, indices) => {
@@ -3078,6 +3271,7 @@ pub fn lie_derivative_vector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_ir::{Index, Variance};
     use std::collections::HashMap;
 
     #[test]
@@ -3802,6 +3996,56 @@ mod tests {
         );
         let result = canonicalise(&expr, &props, &interner);
         assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn meld_detects_cancellation() {
+        let interner = ax_ir::Interner::new();
+        let f_sym = interner.get_or_intern("F");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let mut props = HashMap::new();
+        props.insert(f_sym, vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])]);
+
+        let t1 = Expr::Indexed(
+            Box::new(Expr::Sym(f_sym)),
+            vec![
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let t2 = Expr::Indexed(
+            Box::new(Expr::Sym(f_sym)),
+            vec![
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let sum = Expr::add(vec![t1, t2]);
+        let result = meld(&sum, &props, &interner);
+        assert_eq!(
+            result,
+            Expr::zero(),
+            "F[ab] + F[ba] should cancel for antisymmetric F"
+        );
     }
 
     #[test]
