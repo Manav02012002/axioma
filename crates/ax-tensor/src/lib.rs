@@ -11,6 +11,11 @@ pub trait DummyRenameEnv {
     fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur>;
 }
 
+pub trait ComponentEvalEnv {
+    fn coordinates(&self) -> &HashSet<lasso::Spur>;
+    fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur>;
+}
+
 /// Information about a tensor factor in a product, extracted from Expr.
 #[derive(Clone, Debug)]
 pub struct TensorFactorInfo {
@@ -18,6 +23,14 @@ pub struct TensorFactorInfo {
     pub n_indices: usize,
     pub start_position: usize,
     pub properties: Vec<ax_ir::TensorProperty>,
+}
+
+/// Component substitution rule: maps index value combinations to scalar values.
+#[derive(Clone, Debug)]
+pub struct ComponentRule {
+    pub tensor: lasso::Spur,
+    pub indices: Vec<(lasso::Spur, ax_ir::Variance)>,
+    pub value: ax_ir::Expr,
 }
 
 /// Build the generating set for the symmetry group of a tensor product expression.
@@ -294,6 +307,397 @@ pub fn canonicalise(
         }
         _ => expr.clone(),
     }
+}
+
+fn count_index_occurrences(expr: &Expr, counts: &mut HashMap<lasso::Spur, usize>) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            count_index_occurrences(base, counts);
+            for idx in indices {
+                *counts.entry(idx.name).or_default() += 1;
+            }
+        }
+        Expr::Mul(factors) | Expr::Add(factors) | Expr::List(factors) => {
+            for factor in factors {
+                count_index_occurrences(factor, counts);
+            }
+        }
+        Expr::Neg(inner) => count_index_occurrences(inner, counts),
+        Expr::Pow(base, exp) => {
+            count_index_occurrences(base, counts);
+            count_index_occurrences(exp, counts);
+        }
+        Expr::Call(_, args) => {
+            for arg in args {
+                count_index_occurrences(arg, counts);
+            }
+        }
+        Expr::Complex(re, im) => {
+            count_index_occurrences(re, counts);
+            count_index_occurrences(im, counts);
+        }
+        Expr::FnDef(_, _, body) => count_index_occurrences(body, counts),
+        Expr::Rule(lhs, rhs, _) => {
+            count_index_occurrences(lhs, counts);
+            count_index_occurrences(rhs, counts);
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                count_index_occurrences(value, counts);
+            }
+        }
+        Expr::Let(_, value, body) => {
+            count_index_occurrences(value, counts);
+            count_index_occurrences(body, counts);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    count_index_occurrences(cell, counts);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn substitute_indices(
+    expr: &Expr,
+    assignment: &HashMap<lasso::Spur, lasso::Spur>,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let new_indices: Vec<ax_ir::Index> = indices
+                .iter()
+                .map(|idx| ax_ir::Index {
+                    name: assignment.get(&idx.name).copied().unwrap_or(idx.name),
+                    variance: idx.variance.clone(),
+                    index_type: idx.index_type,
+                })
+                .collect();
+            Expr::Indexed(Box::new(substitute_indices(base, assignment)), new_indices)
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| substitute_indices(factor, assignment))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| substitute_indices(term, assignment))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(substitute_indices(inner, assignment)),
+        Expr::Pow(base, exp) => Expr::pow(
+            substitute_indices(base, assignment),
+            substitute_indices(exp, assignment),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| substitute_indices(arg, assignment))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(substitute_indices(re, assignment)),
+            Box::new(substitute_indices(im, assignment)),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(substitute_indices(body, assignment)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(substitute_indices(lhs, assignment)),
+            Box::new(substitute_indices(rhs, assignment)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| (substitute_indices(value, assignment), cond.clone()))
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(substitute_indices(value, assignment)),
+            Box::new(substitute_indices(body, assignment)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| substitute_indices(item, assignment))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| row.iter().map(|cell| substitute_indices(cell, assignment)).collect())
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+fn evaluate_with_rules(
+    expr: &Expr,
+    rules: &[ComponentRule],
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            if let Expr::Sym(tensor_name) = base.as_ref() {
+                for rule in rules {
+                    if rule.tensor == *tensor_name && rule.indices.len() == indices.len() {
+                        let exact = rule
+                            .indices
+                            .iter()
+                            .zip(indices.iter())
+                            .all(|((rv, rvar), idx)| *rv == idx.name && *rvar == idx.variance);
+                        if exact {
+                            return rule.value.clone();
+                        }
+                        let names_only = rule
+                            .indices
+                            .iter()
+                            .zip(indices.iter())
+                            .all(|((rv, _), idx)| *rv == idx.name);
+                        if names_only {
+                            return rule.value.clone();
+                        }
+                    }
+                }
+                Expr::zero()
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| evaluate_with_rules(factor, rules))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| evaluate_with_rules(term, rules))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(evaluate_with_rules(inner, rules)),
+        Expr::Pow(base, exp) => Expr::pow(evaluate_with_rules(base, rules), evaluate_with_rules(exp, rules)),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| evaluate_with_rules(arg, rules))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(evaluate_with_rules(re, rules)),
+            Box::new(evaluate_with_rules(im, rules)),
+        ),
+        Expr::FnDef(_, _, _) => expr.clone(),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(evaluate_with_rules(lhs, rules)),
+            Box::new(evaluate_with_rules(rhs, rules)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| (evaluate_with_rules(value, rules), cond.clone()))
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(evaluate_with_rules(value, rules)),
+            Box::new(evaluate_with_rules(body, rules)),
+        ),
+        Expr::List(items) => Expr::List(items.iter().map(|item| evaluate_with_rules(item, rules)).collect()),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| row.iter().map(|cell| evaluate_with_rules(cell, rules)).collect())
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+fn values_for_index<E: ComponentEvalEnv>(
+    idx: lasso::Spur,
+    index_values: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
+    env: &E,
+    interner: &ax_ir::Interner,
+) -> Vec<lasso::Spur> {
+    if let Some(family) = env.index_to_family().get(&idx) {
+        if let Some(values) = index_values.get(family) {
+            return values.clone();
+        }
+    }
+    let mut defaults: Vec<lasso::Spur> = env.coordinates().iter().copied().collect();
+    defaults.sort_by_key(|sym| interner.resolve(*sym).to_string());
+    defaults
+}
+
+fn sum_over_dummies<E: ComponentEvalEnv>(
+    expr: &Expr,
+    dummy_indices: &[lasso::Spur],
+    rules: &[ComponentRule],
+    index_values: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
+    env: &E,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    if dummy_indices.is_empty() {
+        return evaluate_with_rules(expr, rules);
+    }
+
+    fn recurse<E: ComponentEvalEnv>(
+        pos: usize,
+        expr: &Expr,
+        dummy_indices: &[lasso::Spur],
+        rules: &[ComponentRule],
+        index_values: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
+        env: &E,
+        interner: &ax_ir::Interner,
+        assignment: &mut HashMap<lasso::Spur, lasso::Spur>,
+        acc: &mut Vec<Expr>,
+    ) {
+        if pos == dummy_indices.len() {
+            let specialized = substitute_indices(expr, assignment);
+            acc.push(simplify_expr(
+                evaluate_with_rules(&specialized, rules),
+                interner,
+            ));
+            return;
+        }
+
+        let idx = dummy_indices[pos];
+        for value in values_for_index(idx, index_values, env, interner) {
+            assignment.insert(idx, value);
+            recurse(
+                pos + 1,
+                expr,
+                dummy_indices,
+                rules,
+                index_values,
+                env,
+                interner,
+                assignment,
+                acc,
+            );
+        }
+    }
+
+    let mut terms = Vec::new();
+    let mut assignment = HashMap::new();
+    recurse(
+        0,
+        expr,
+        dummy_indices,
+        rules,
+        index_values,
+        env,
+        interner,
+        &mut assignment,
+        &mut terms,
+    );
+    simplify_expr(Expr::add(terms), interner)
+}
+
+pub fn evaluate_components<E: ComponentEvalEnv>(
+    expr: &ax_ir::Expr,
+    rules: &[ComponentRule],
+    index_values: &std::collections::HashMap<lasso::Spur, Vec<lasso::Spur>>,
+    env: &E,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let mut index_count = HashMap::new();
+    count_index_occurrences(expr, &mut index_count);
+
+    let mut free_indices: Vec<lasso::Spur> = index_count
+        .iter()
+        .filter(|(_, count)| **count == 1)
+        .map(|(name, _)| *name)
+        .collect();
+    free_indices.sort_by_key(|sym| interner.resolve(*sym).to_string());
+
+    let mut dummy_indices: Vec<lasso::Spur> = index_count
+        .iter()
+        .filter(|(_, count)| **count == 2)
+        .map(|(name, _)| *name)
+        .collect();
+    dummy_indices.sort_by_key(|sym| interner.resolve(*sym).to_string());
+
+    if free_indices.is_empty() {
+        return sum_over_dummies(expr, &dummy_indices, rules, index_values, env, interner);
+    }
+
+    fn recurse_free<E: ComponentEvalEnv>(
+        pos: usize,
+        expr: &Expr,
+        free_indices: &[lasso::Spur],
+        dummy_indices: &[lasso::Spur],
+        rules: &[ComponentRule],
+        index_values: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
+        env: &E,
+        interner: &ax_ir::Interner,
+        assignment: &mut HashMap<lasso::Spur, lasso::Spur>,
+        rows: &mut Vec<Expr>,
+    ) {
+        if pos == free_indices.len() {
+            let specialized = substitute_indices(expr, assignment);
+            let value = sum_over_dummies(
+                &specialized,
+                dummy_indices,
+                rules,
+                index_values,
+                env,
+                interner,
+            );
+            let simplified = simplify_expr(value, interner);
+
+            let mut row = Vec::new();
+            for fi in free_indices {
+                row.push(Expr::Sym(*assignment.get(fi).unwrap()));
+            }
+            row.push(simplified);
+            rows.push(Expr::List(row));
+            return;
+        }
+
+        let idx = free_indices[pos];
+        for value in values_for_index(idx, index_values, env, interner) {
+            assignment.insert(idx, value);
+            recurse_free(
+                pos + 1,
+                expr,
+                free_indices,
+                dummy_indices,
+                rules,
+                index_values,
+                env,
+                interner,
+                assignment,
+                rows,
+            );
+        }
+    }
+
+    let mut rows = Vec::new();
+    let mut assignment = HashMap::new();
+    recurse_free(
+        0,
+        expr,
+        &free_indices,
+        &dummy_indices,
+        rules,
+        index_values,
+        env,
+        interner,
+        &mut assignment,
+        &mut rows,
+    );
+    Expr::List(rows)
 }
 
 #[derive(Clone, Debug)]
@@ -3247,6 +3651,68 @@ mod tests {
         let result = epsilon_to_delta(&product, eps, delta, 4, &interner);
         let simplified = ax_eval::eval(&result, &ax_eval::Env::new(), &interner);
         assert_eq!(simplified, Expr::Int(24.into()));
+    }
+
+    #[test]
+    fn evaluate_simple_contraction() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let t_val = interner.get_or_intern("t");
+        let x_val = interner.get_or_intern("x");
+
+        struct TestEnv {
+            coordinates: HashSet<lasso::Spur>,
+            index_to_family: HashMap<lasso::Spur, lasso::Spur>,
+        }
+
+        impl ComponentEvalEnv for TestEnv {
+            fn coordinates(&self) -> &HashSet<lasso::Spur> {
+                &self.coordinates
+            }
+
+            fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
+                &self.index_to_family
+            }
+        }
+
+        let rules = vec![
+            ComponentRule {
+                tensor: t_sym,
+                indices: vec![
+                    (t_val, ax_ir::Variance::Down),
+                    (t_val, ax_ir::Variance::Down),
+                ],
+                value: Expr::Int(1.into()),
+            },
+            ComponentRule {
+                tensor: t_sym,
+                indices: vec![
+                    (x_val, ax_ir::Variance::Down),
+                    (x_val, ax_ir::Variance::Down),
+                ],
+                value: Expr::Int(2.into()),
+            },
+        ];
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![
+                ax_ir::Index { name: mu, variance: ax_ir::Variance::Up, index_type: None },
+                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
+            ],
+        );
+
+        let mut env = TestEnv {
+            coordinates: HashSet::new(),
+            index_to_family: HashMap::new(),
+        };
+        env.coordinates.insert(t_val);
+        env.coordinates.insert(x_val);
+
+        let result = evaluate_components(&expr, &rules, &HashMap::new(), &env, &interner);
+        let simplified = simplify_expr(result, &interner);
+        assert_eq!(simplified, Expr::Int(3.into()));
     }
 
     #[test]

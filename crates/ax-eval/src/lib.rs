@@ -80,6 +80,63 @@ impl ax_tensor::DummyRenameEnv for Env {
     }
 }
 
+impl ax_tensor::ComponentEvalEnv for Env {
+    fn coordinates(&self) -> &HashSet<lasso::Spur> {
+        &self.coordinates
+    }
+
+    fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
+        &self.index_to_family
+    }
+}
+
+fn parse_component_rules(
+    rule_exprs: &[Expr],
+) -> Vec<ax_tensor::ComponentRule> {
+    let mut rules = Vec::new();
+    for rule_expr in rule_exprs {
+        let Expr::List(items) = rule_expr else {
+            continue;
+        };
+        if items.len() != 3 {
+            continue;
+        }
+        let Expr::Sym(tensor) = items[0] else {
+            continue;
+        };
+        let Expr::List(index_exprs) = &items[1] else {
+            continue;
+        };
+
+        let mut indices = Vec::new();
+        let mut valid = true;
+        for item in index_exprs {
+            match item {
+                Expr::Indexed(_, concrete_indices) if concrete_indices.len() == 1 => {
+                    indices.push((concrete_indices[0].name, concrete_indices[0].variance.clone()));
+                }
+                Expr::Sym(sym) => {
+                    indices.push((*sym, ax_ir::Variance::Down));
+                }
+                _ => {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        if !valid {
+            continue;
+        }
+
+        rules.push(ax_tensor::ComponentRule {
+            tensor,
+            indices,
+            value: items[2].clone(),
+        });
+    }
+    rules
+}
+
 fn grading_rank(grading: Grading) -> usize {
     match grading {
         Grading::Even => 0,
@@ -1916,6 +1973,19 @@ fn builtin_call(
                     })
                     .unwrap_or(4);
                 ax_tensor::epsilon_to_delta(&args[0], eps, delta, dim, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "evaluate" | "eval_components" => {
+            if args.len() >= 2 {
+                if let Expr::List(rule_exprs) = &args[1] {
+                    let rules = parse_component_rules(rule_exprs);
+                    let index_vals = HashMap::new();
+                    ax_tensor::evaluate_components(&args[0], &rules, &index_vals, env, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
             } else {
                 Expr::Call(f, args)
             }
