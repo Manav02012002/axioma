@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Axioma Notebook</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8f9fa; color: #1a1a1a; }
+.container { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { font-size: 24px; font-weight: 500; margin-bottom: 20px; color: #333; }
+.cell { background: white; border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 12px; overflow: hidden; transition: border-color 0.2s; }
+.cell:focus-within { border-color: #4a90d9; }
+.cell-input { display: flex; align-items: stretch; }
+.cell-label { background: #f5f5f5; padding: 8px 12px; font-size: 12px; color: #888; display: flex; align-items: center; min-width: 50px; justify-content: center; border-right: 1px solid #e0e0e0; user-select: none; }
+.cell-editor { flex: 1; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 14px; line-height: 1.6; border: none; outline: none; resize: none; min-height: 40px; background: white; }
+.cell-output { padding: 10px 14px 10px 62px; border-top: 1px solid #f0f0f0; background: #fafbfc; min-height: 30px; }
+.cell-output .latex-output { font-size: 18px; }
+.cell-output .unicode-output { font-family: monospace; font-size: 13px; color: #666; margin-top: 4px; }
+.cell-output .error { color: #d32f2f; font-family: monospace; font-size: 13px; }
+.cell-output .svg-output { margin-top: 8px; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
+.toolbar button { padding: 6px 16px; border: 1px solid #d0d0d0; border-radius: 6px; background: white; cursor: pointer; font-size: 13px; }
+.toolbar button:hover { background: #f0f0f0; }
+.add-cell { text-align: center; padding: 8px; cursor: pointer; color: #999; font-size: 13px; border-radius: 6px; }
+.add-cell:hover { background: #eee; color: #666; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Axioma Notebook</h1>
+<div class="toolbar">
+  <button onclick="addCell()">+ New cell</button>
+  <button onclick="runAll()">Run all</button>
+  <button onclick="resetKernel()">Reset kernel</button>
+</div>
+<div id="cells"></div>
+<div class="add-cell" onclick="addCell()">+ Add cell</div>
+</div>
+<script>
+let cellCount = 0;
+
+function addCell() {
+  cellCount++;
+  const id = 'cell-' + cellCount;
+  const div = document.createElement('div');
+  div.className = 'cell';
+  div.id = id;
+  div.innerHTML = `
+    <div class="cell-input">
+      <div class="cell-label">In [${cellCount}]</div>
+      <textarea class="cell-editor" rows="1" placeholder="Type Axioma expression..."
+        onkeydown="handleKey(event, '${id}')"
+        oninput="autoResize(this)"></textarea>
+    </div>
+    <div class="cell-output" id="${id}-output"></div>
+  `;
+  document.getElementById('cells').appendChild(div);
+  div.querySelector('textarea').focus();
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+}
+
+function handleKey(e, cellId) {
+  if (e.key === 'Enter' && e.shiftKey) {
+    e.preventDefault();
+    runCell(cellId);
+  }
+}
+
+async function runCell(cellId) {
+  const cell = document.getElementById(cellId);
+  const textarea = cell.querySelector('.cell-editor');
+  const output = document.getElementById(cellId + '-output');
+  const source = textarea.value.trim();
+  if (!source) return;
+
+  output.innerHTML = '<span style="color:#999">evaluating...</span>';
+
+  try {
+    const resp = await fetch('/eval', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source })
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      output.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
+    } else {
+      let html = '';
+      if (data.latex) {
+        html += '<div class="latex-output" id="' + cellId + '-katex"></div>';
+      }
+      if (data.unicode) {
+        html += `<div class="unicode-output">${escapeHtml(data.unicode)}</div>`;
+      }
+      if (data.svg) {
+        html += `<div class="svg-output">${data.svg}</div>`;
+      }
+      output.innerHTML = html;
+
+      if (data.latex) {
+        try {
+          katex.render(data.latex, document.getElementById(cellId + '-katex'), {
+            displayMode: true, throwOnError: false
+          });
+        } catch(err) {
+          document.getElementById(cellId + '-katex').textContent = data.latex;
+        }
+      }
+    }
+  } catch (err) {
+    output.innerHTML = `<div class="error">Connection error: ${err.message}</div>`;
+  }
+
+  const cells = document.querySelectorAll('.cell');
+  if (cells[cells.length - 1].id === cellId) {
+    addCell();
+  }
+}
+
+async function runAll() {
+  const cells = document.querySelectorAll('.cell');
+  for (const cell of cells) {
+    await runCell(cell.id);
+  }
+}
+
+async function resetKernel() {
+  await fetch('/reset', { method: 'POST' });
+  document.querySelectorAll('.cell-output').forEach(el => el.innerHTML = '');
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+addCell();
+</script>
+</body>
+</html>

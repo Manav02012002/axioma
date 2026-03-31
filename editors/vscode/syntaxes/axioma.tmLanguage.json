@@ -1,0 +1,13 @@
+{
+  "scopeName": "source.axioma",
+  "patterns": [
+    { "match": "//.*$", "name": "comment.line.double-slash.axioma" },
+    { "match": "\\b(let|in|rule|import|module|assume|if|then|else|true|false)\\b", "name": "keyword.control.axioma" },
+    { "match": "\\b(sin|cos|tan|exp|log|sqrt|abs|diff|integrate|series|solve|expand|simplify|det|inv|transpose|christoffel|riemann|ricci|einstein|metric|diag|plot|dsolve|rk4|rewrite|commutator|ket|bra|pauli_x|pauli_y|pauli_z)\\b", "name": "entity.name.function.axioma" },
+    { "match": "\\b(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|mu|nu|xi|pi|rho|sigma|tau|phi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Sigma|Phi|Psi|Omega)\\b", "name": "constant.language.greek.axioma" },
+    { "match": "\\b\\d+(\\.\\d+)?\\b", "name": "constant.numeric.axioma" },
+    { "match": "[+\\-*/^=<>!]|=>", "name": "keyword.operator.axioma" },
+    { "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*_\\b", "name": "variable.parameter.pattern.axioma" },
+    { "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b", "name": "variable.other.axioma" }
+  ]
+}

@@ -25,6 +25,9 @@ pub struct AxiomaConfig {
     #[serde(default)]
     pub paths: PathsSection,
 
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, DependencyConfig>,
+
     /// `[plugins.<id>]` tables
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginConfig>,
@@ -41,6 +44,13 @@ pub struct PathsSection {
     pub spec_dir: String,
     #[serde(default = "default_build_dir")]
     pub build_dir: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DependencyConfig {
+    pub version: Option<String>,
+    pub path: Option<String>,
+    pub git: Option<String>,
 }
 
 fn default_spec_dir() -> String {
@@ -103,5 +113,29 @@ fn find_root(start: PathBuf) -> Result<PathBuf> {
         if !cur.pop() {
             bail!("could not find axioma.toml by walking up directories");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_config_with_dependencies() {
+        let toml_str = r#"
+[axioma]
+version = "0.1.0"
+
+[paths]
+spec_dir = "spec"
+build_dir = "build"
+
+[dependencies]
+my-rules = { path = "../my-rules" }
+gr-utils = { version = "0.2" }
+"#;
+        let cfg: AxiomaConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.dependencies.contains_key("my-rules"));
+        assert_eq!(cfg.dependencies["my-rules"].path.as_deref(), Some("../my-rules"));
     }
 }

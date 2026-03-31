@@ -725,6 +725,13 @@ fn collect_terms_expr(expr: &Expr, interner: &Interner) -> Expr {
             Box::new(collect_terms_expr(lhs, interner)),
             Box::new(collect_terms_expr(rhs, interner)),
         ),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases.iter()
+                .map(|(value, condition)| (collect_terms_expr(value, interner), condition.clone()))
+                .collect(),
+        ),
         Expr::Indexed(base, indices) => Expr::Indexed(
             Box::new(collect_terms_expr(base, interner)),
             indices.clone(),
@@ -918,6 +925,156 @@ pub fn kretschner_scalar(
     simplify_expr(Expr::add(terms), interner)
 }
 
+pub fn covariant_derivative_vector(
+    v: &[ax_ir::Expr],
+    gamma: &[Vec<Vec<ax_ir::Expr>>],
+    coord_index: usize,
+    coords: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Vec<ax_ir::Expr> {
+    let n = v.len();
+    let mut out = vec![Expr::zero(); n];
+
+    for i in 0..n {
+        let mut terms = vec![diff_component(&v[i], coords[coord_index], interner)];
+        for (j, vj) in v.iter().enumerate() {
+            terms.push(Expr::mul(vec![
+                gamma[i][coord_index][j].clone(),
+                vj.clone(),
+            ]));
+        }
+        out[i] = simplify_expr(Expr::add(terms), interner);
+    }
+
+    out
+}
+
+pub fn covariant_derivative_covector(
+    w: &[ax_ir::Expr],
+    gamma: &[Vec<Vec<ax_ir::Expr>>],
+    coord_index: usize,
+    coords: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Vec<ax_ir::Expr> {
+    let n = w.len();
+    let mut out = vec![Expr::zero(); n];
+
+    for i in 0..n {
+        let mut terms = vec![diff_component(&w[i], coords[coord_index], interner)];
+        for (j, wj) in w.iter().enumerate() {
+            terms.push(Expr::neg(Expr::mul(vec![
+                gamma[j][coord_index][i].clone(),
+                wj.clone(),
+            ])));
+        }
+        out[i] = simplify_expr(Expr::add(terms), interner);
+    }
+
+    out
+}
+
+pub fn covariant_derivative_tensor2(
+    t: &[Vec<ax_ir::Expr>],
+    gamma: &[Vec<Vec<ax_ir::Expr>>],
+    coord_index: usize,
+    coords: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Vec<Vec<ax_ir::Expr>> {
+    let n = t.len();
+    let mut out = vec![vec![Expr::zero(); n]; n];
+
+    for i in 0..n {
+        for j in 0..n {
+            let mut terms = vec![diff_component(&t[i][j], coords[coord_index], interner)];
+            for m in 0..n {
+                terms.push(Expr::mul(vec![
+                    gamma[i][coord_index][m].clone(),
+                    t[m][j].clone(),
+                ]));
+                terms.push(Expr::mul(vec![
+                    gamma[j][coord_index][m].clone(),
+                    t[i][m].clone(),
+                ]));
+            }
+            out[i][j] = simplify_expr(Expr::add(terms), interner);
+        }
+    }
+
+    out
+}
+
+pub fn geodesic_equations(
+    gamma: &[Vec<Vec<ax_ir::Expr>>],
+    coords: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Vec<ax_ir::Expr> {
+    let n = coords.len();
+    let mut out = vec![Expr::zero(); n];
+
+    for i in 0..n {
+        let mut terms = Vec::new();
+        for j in 0..n {
+            for k in 0..n {
+                let dot_j = Expr::Sym(
+                    interner.get_or_intern(&format!("dot_{}", interner.resolve(coords[j]))),
+                );
+                let dot_k = Expr::Sym(
+                    interner.get_or_intern(&format!("dot_{}", interner.resolve(coords[k]))),
+                );
+                terms.push(Expr::mul(vec![
+                    gamma[i][j][k].clone(),
+                    dot_j,
+                    dot_k,
+                ]));
+            }
+        }
+        out[i] = simplify_expr(Expr::neg(Expr::add(terms)), interner);
+    }
+
+    out
+}
+
+pub fn lie_derivative_scalar(
+    f: &ax_ir::Expr,
+    v: &[ax_ir::Expr],
+    coords: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let terms = v
+        .iter()
+        .enumerate()
+        .map(|(i, vi)| Expr::mul(vec![vi.clone(), diff_component(f, coords[i], interner)]))
+        .collect::<Vec<_>>();
+    simplify_expr(Expr::add(terms), interner)
+}
+
+pub fn lie_derivative_vector(
+    w: &[ax_ir::Expr],
+    v: &[ax_ir::Expr],
+    coords: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Vec<ax_ir::Expr> {
+    let n = w.len();
+    let mut out = vec![Expr::zero(); n];
+
+    for i in 0..n {
+        let mut terms = Vec::new();
+        for j in 0..n {
+            terms.push(Expr::mul(vec![
+                v[j].clone(),
+                diff_component(&w[i], coords[j], interner),
+            ]));
+            terms.push(Expr::neg(Expr::mul(vec![
+                w[j].clone(),
+                diff_component(&v[i], coords[j], interner),
+            ])));
+        }
+        out[i] = simplify_expr(Expr::add(terms), interner);
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1004,5 +1161,27 @@ mod tests {
         let riemann = riemann_from_christoffel(&gamma, &coords, &interner);
         let k = kretschner_scalar(&riemann, &g, &interner);
         assert_eq!(k, Expr::zero());
+    }
+
+    #[test]
+    fn minkowski_geodesic_is_zero() {
+        let interner = Interner::new();
+        let t = interner.get_or_intern("t");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let z = interner.get_or_intern("z");
+        let coords = vec![t, x, y, z];
+
+        let g = SymbolicMatrix::from_diagonal(vec![
+            Expr::Int((-1).into()),
+            Expr::one(),
+            Expr::one(),
+            Expr::one(),
+        ]);
+        let gamma = christoffel_from_metric(&g, &coords, &interner);
+        let geod = geodesic_equations(&gamma, &coords, &interner);
+        for (i, eq) in geod.iter().enumerate() {
+            assert_eq!(*eq, Expr::zero(), "geodesic[{}] = {:?}", i, eq);
+        }
     }
 }

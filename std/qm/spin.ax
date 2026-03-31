@@ -1,0 +1,8 @@
+// Spin-1/2 algebra
+let sigma_x = pauli_x()
+let sigma_y = pauli_y()
+let sigma_z = pauli_z()
+// Verify Pauli algebra: [sigma_i, sigma_j] = 2i * epsilon_ijk * sigma_k
+let comm_xy = commutator(sigma_x, sigma_y)
+// Should equal 2i * sigma_z
+comm_xy

@@ -1,0 +1,11 @@
+// Bell states
+let up = ket(0)
+let down = ket(1)
+// |Φ+⟩ = (|00⟩ + |11⟩) / sqrt(2)
+// In the computational basis: [1/sqrt(2), 0, 0, 1/sqrt(2)]
+let phi_plus = [1/sqrt(2), 0, 0, 1/sqrt(2)]
+let rho = density(phi_plus)
+// Partial trace over second qubit → maximally mixed state
+let rho_A = partial_trace(rho, 2, 2, A)
+rho_A
+// Should be [[1/2, 0], [0, 1/2]]

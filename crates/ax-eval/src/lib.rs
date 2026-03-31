@@ -333,6 +333,42 @@ pub fn resolve_import(
                 return Some(candidate);
             }
         }
+
+        let config_path = root.join("axioma.toml");
+        if config_path.is_file() {
+            if let Ok(text) = std::fs::read_to_string(&config_path) {
+                if let Ok(cfg) = toml::from_str::<ax_context::AxiomaConfig>(&text) {
+                    if let Some(dep_name) = parts.first() {
+                        if let Some(dep) = cfg.dependencies.get(dep_name) {
+                            if let Some(dep_path) = &dep.path {
+                                let dep_root = if PathBuf::from(dep_path).is_absolute() {
+                                    PathBuf::from(dep_path)
+                                } else {
+                                    root.join(dep_path)
+                                };
+                                let dep_rel = if parts.len() > 1 {
+                                    let mut p = PathBuf::new();
+                                    for part in &parts[1..] {
+                                        p.push(part);
+                                    }
+                                    p.set_extension("ax");
+                                    p
+                                } else {
+                                    let mut p = PathBuf::new();
+                                    p.push(dep_name);
+                                    p.set_extension("ax");
+                                    p
+                                };
+                                let candidate = dep_root.join(&dep_rel);
+                                if candidate.is_file() {
+                                    return Some(candidate);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     None
@@ -714,6 +750,265 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "pauli_x" | "sigma_x" => {
+            if args.is_empty() {
+                Expr::Matrix(ax_qm::pauli_x(interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "pauli_y" | "sigma_y" => {
+            if args.is_empty() {
+                Expr::Matrix(ax_qm::pauli_y(interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "pauli_z" | "sigma_z" => {
+            if args.is_empty() {
+                Expr::Matrix(ax_qm::pauli_z(interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "commutator" => {
+            if args.len() == 2 {
+                match (&args[0], &args[1]) {
+                    (Expr::Matrix(a), Expr::Matrix(b)) => {
+                        Expr::Matrix(ax_qm::commutator(a, b, interner))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "anticommutator" => {
+            if args.len() == 2 {
+                match (&args[0], &args[1]) {
+                    (Expr::Matrix(a), Expr::Matrix(b)) => {
+                        Expr::Matrix(ax_qm::anticommutator(a, b, interner))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "ket" => {
+            match args.as_slice() {
+                [Expr::Int(n)] => {
+                    if let Some(index) = n.to_usize() {
+                        Expr::List(ax_qm::ket(index, 2))
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                }
+                [Expr::Int(n), Expr::Int(d)] => {
+                    match (n.to_usize(), d.to_usize()) {
+                        (Some(index), Some(dim)) => Expr::List(ax_qm::ket(index, dim)),
+                        _ => Expr::Call(f, args),
+                    }
+                }
+                _ => Expr::Call(f, args),
+            }
+        }
+        "bra" => {
+            match args.as_slice() {
+                [Expr::Int(n)] => {
+                    if let Some(index) = n.to_usize() {
+                        Expr::List(ax_qm::bra(index, 2))
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                }
+                [Expr::Int(n), Expr::Int(d)] => {
+                    match (n.to_usize(), d.to_usize()) {
+                        (Some(index), Some(dim)) => Expr::List(ax_qm::bra(index, dim)),
+                        _ => Expr::Call(f, args),
+                    }
+                }
+                _ => Expr::Call(f, args),
+            }
+        }
+        "braket" => {
+            if args.len() == 2 {
+                match (&args[0], &args[1]) {
+                    (Expr::List(a), Expr::List(b)) => ax_qm::braket(a, b),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "outer" => {
+            if args.len() == 2 {
+                match (&args[0], &args[1]) {
+                    (Expr::List(a), Expr::List(b)) => Expr::Matrix(ax_qm::outer(a, b)),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "density" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::List(state) => Expr::Matrix(ax_qm::density_matrix(state)),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "partial_trace" => {
+            if args.len() == 4 {
+                match (&args[0], &args[1], &args[2], &args[3]) {
+                    (Expr::Matrix(rho), Expr::Int(dim_a), Expr::Int(dim_b), Expr::Sym(which)) => {
+                        match (dim_a.to_usize(), dim_b.to_usize(), interner.resolve(*which)) {
+                            (Some(dim_a), Some(dim_b), "A") => {
+                                Expr::Matrix(ax_qm::partial_trace(rho, dim_a, dim_b, 'A', interner))
+                            }
+                            (Some(dim_a), Some(dim_b), "B") => {
+                                Expr::Matrix(ax_qm::partial_trace(rho, dim_a, dim_b, 'B', interner))
+                            }
+                            _ => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "dsolve" => {
+            if args.len() == 3 {
+                match (&args[0], &args[1], &args[2]) {
+                    (equation, Expr::Sym(y), Expr::Sym(x)) => {
+                        ax_ode::solve_ode(equation, *y, *x, interner)
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "rk4" => {
+            let parse_steps = |expr: &Expr| -> Option<usize> {
+                match expr {
+                    Expr::Int(n) => n.to_usize(),
+                    _ => None,
+                }
+            };
+            match args.as_slice() {
+                [expr, Expr::Sym(x), Expr::Sym(y), x0, y0, x_end] => {
+                    match (to_f64(x0), to_f64(y0), to_f64(x_end)) {
+                        (Some(x0), Some(y0), Some(x_end)) => Expr::List(
+                            ax_ode::rk4(expr, *x, *y, x0, y0, x_end, 1000, interner)
+                                .into_iter()
+                                .map(|(xv, yv)| Expr::List(vec![Expr::Float(xv), Expr::Float(yv)]))
+                                .collect(),
+                        ),
+                        _ => Expr::Call(f, args),
+                    }
+                }
+                [expr, Expr::Sym(x), Expr::Sym(y), x0, y0, x_end, steps] => {
+                    match (to_f64(x0), to_f64(y0), to_f64(x_end), parse_steps(steps)) {
+                        (Some(x0), Some(y0), Some(x_end), Some(steps)) => Expr::List(
+                            ax_ode::rk4(expr, *x, *y, x0, y0, x_end, steps, interner)
+                                .into_iter()
+                                .map(|(xv, yv)| Expr::List(vec![Expr::Float(xv), Expr::Float(yv)]))
+                                .collect(),
+                        ),
+                        _ => Expr::Call(f, args),
+                    }
+                }
+                _ => Expr::Call(f, args),
+            }
+        }
+        "plot" => {
+            if args.len() == 4 {
+                match (&args[1], to_f64(&args[2]), to_f64(&args[3])) {
+                    (Expr::Sym(var), Some(x_min), Some(x_max)) => {
+                        let svg = ax_plot::plot_2d(&args[0], *var, x_min, x_max, interner);
+                        match std::fs::write("axioma_plot.svg", svg) {
+                            Ok(()) => {
+                                println!("Plot saved to axioma_plot.svg");
+                                Expr::zero()
+                            }
+                            Err(_) => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "wedge_1_1" => {
+            if args.len() == 2 {
+                match (
+                    ax_forms::one_form_from_expr(&args[0]),
+                    ax_forms::one_form_from_expr(&args[1]),
+                ) {
+                    (Some(a), Some(b)) => ax_forms::form_to_expr(&ax_forms::wedge(&a, &b, interner)),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "exterior_d" | "d" => {
+            if args.len() == 2 {
+                match (&args[0], &args[1]) {
+                    (field, Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let Some(coords) = coords {
+                            let form = if let Some(one_form) = ax_forms::one_form_from_expr(field) {
+                                one_form
+                            } else {
+                                ax_forms::scalar_form(field, coords.len())
+                            };
+                            ax_forms::form_to_expr(&ax_forms::exterior_derivative(
+                                &form,
+                                &coords,
+                                interner,
+                            ))
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "hodge_star" => {
+            if args.len() == 2 {
+                match (&args[0], matrix_to_symbolic(&args[1])) {
+                    (field, Some(metric)) => {
+                        let form = if let Some(one_form) = ax_forms::one_form_from_expr(field) {
+                            one_form
+                        } else if let Some(two_form) = ax_forms::two_form_from_expr(field) {
+                            two_form
+                        } else {
+                            ax_forms::scalar_form(field, metric.dim)
+                        };
+                        ax_forms::form_to_expr(&ax_forms::hodge_dual(&form, &metric, interner))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "diff" => {
             if args.len() == 2 {
                 if let Expr::Sym(var_sym) = args[1] {
@@ -844,6 +1139,113 @@ fn builtin_call(
                     (Some(riemann), metric_expr) => {
                         if let Some(metric) = matrix_to_symbolic(metric_expr) {
                             ax_tensor::kretschner_scalar(&riemann, &metric, interner)
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "covariant_diff" => {
+            if args.len() == 4 {
+                match (&args[0], expr_to_3d(&args[1]), &args[2], &args[3]) {
+                    (Expr::List(v), Some(gamma), Expr::Int(coord_index), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let coord_index = coord_index.to_usize();
+                        match (coords, coord_index) {
+                            (Some(coords), Some(coord_index)) if coord_index < coords.len() => {
+                                Expr::List(ax_tensor::covariant_derivative_vector(
+                                    v,
+                                    &gamma,
+                                    coord_index,
+                                    &coords,
+                                    interner,
+                                ))
+                            }
+                            _ => Expr::Call(f, args),
+                        }
+                    }
+                    (Expr::Matrix(t), Some(gamma), Expr::Int(coord_index), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let coord_index = coord_index.to_usize();
+                        match (coords, coord_index) {
+                            (Some(coords), Some(coord_index)) if coord_index < coords.len() => {
+                                Expr::Matrix(ax_tensor::covariant_derivative_tensor2(
+                                    t,
+                                    &gamma,
+                                    coord_index,
+                                    &coords,
+                                    interner,
+                                ))
+                            }
+                            _ => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "geodesic" => {
+            if args.len() == 2 {
+                match (expr_to_3d(&args[0]), &args[1]) {
+                    (Some(gamma), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let Some(coords) = coords {
+                            Expr::List(ax_tensor::geodesic_equations(&gamma, &coords, interner))
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "lie_derivative" => {
+            if args.len() == 3 {
+                match (&args[0], &args[1], &args[2]) {
+                    (field, Expr::List(v), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let Some(coords) = coords {
+                            match field {
+                                Expr::List(w) => Expr::List(ax_tensor::lie_derivative_vector(
+                                    w,
+                                    v,
+                                    &coords,
+                                    interner,
+                                )),
+                                _ => ax_tensor::lie_derivative_scalar(field, v, &coords, interner),
+                            }
                         } else {
                             Expr::Call(f, args)
                         }

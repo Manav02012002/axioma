@@ -4,6 +4,7 @@ mod cmd_ai_apply;
 mod cmd_ai_pack;
 
 mod cmd_fix;
+mod cmd_install;
 mod cmd_parse;
 mod cmd_render;
 mod cmd_repl;
@@ -78,8 +79,21 @@ enum Command {
         #[arg(long, default_value = "latex")]
         format: String,
     },
+    Install {
+        /// Package name or path
+        package: String,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        git: Option<String>,
+    },
+    Init,
     Run {
         file: std::path::PathBuf,
+    },
+    Notebook {
+        #[arg(long, default_value_t = 8888)]
+        port: u16,
     },
     Repl,
     /// Validate an Axioma ActionScript (AAS) JSON file against the schema.
@@ -271,9 +285,29 @@ fn real_main() -> Result<()> {
             let code = cmd_render::run(&file, &format)?;
             std::process::exit(code);
         }
+        Command::Install { package, path, git } => {
+            cmd_install::run(&package, path.as_deref(), git.as_deref())?;
+            Ok(())
+        }
+        Command::Init => {
+            let config_path = std::env::current_dir()?.join("axioma.toml");
+            if config_path.exists() {
+                bail!("axioma.toml already exists at {}", config_path.display());
+            }
+            std::fs::write(
+                &config_path,
+                "[axioma]\nversion = \"0.1.0\"\n\n[paths]\nspec_dir = \"spec\"\nbuild_dir = \"build\"\n",
+            )?;
+            println!("created {}", config_path.display());
+            Ok(())
+        }
         Command::Run { file } => {
             let code = cmd_run::run(&file)?;
             std::process::exit(code);
+        }
+        Command::Notebook { port } => {
+            ax_notebook::start_server(port)?;
+            Ok(())
         }
         Command::Repl => {
             cmd_repl::run()?;

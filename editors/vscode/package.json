@@ -1,0 +1,22 @@
+{
+  "name": "axioma",
+  "displayName": "Axioma",
+  "description": "Axioma scientific computing language support",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [{
+      "id": "axioma",
+      "aliases": ["Axioma", "axioma"],
+      "extensions": [".ax"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "axioma",
+      "scopeName": "source.axioma",
+      "path": "./syntaxes/axioma.tmLanguage.json"
+    }]
+  },
+  "main": "./extension.js"
+}

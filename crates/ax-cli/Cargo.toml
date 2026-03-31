@@ -16,6 +16,7 @@ clap = { version = "4.5", features = ["derive"] }
 
 ax-context = { path = "../ax-context" }
 ax-diagnostics = { path = "../ax-diagnostics" }
+ax-notebook = { path = "../ax-notebook" }
 ax-trace = { path = "../ax-trace" }
 ax-plugin-api = { path = "../ax-plugin-api" }
 ax-plugin-host = { path = "../ax-plugin-host" }
@@ -27,6 +28,7 @@ ax-core-ir = { path = "../ax-core-ir" }
 ax-eval = { path = "../ax-eval" }
 ax-render = { path = "../ax-render" }
 rustyline = "15"
+toml = "0.8"
 
 [dev-dependencies]
 wat = "1.0"
