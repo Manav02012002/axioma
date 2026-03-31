@@ -547,6 +547,284 @@ fn collapse_duplicate_sum_terms(terms: Vec<Expr>) -> Expr {
     )
 }
 
+fn substitute_condition(
+    condition: &Condition,
+    target: &Expr,
+    replacement: &Expr,
+    interner: &ax_ir::Interner,
+) -> Condition {
+    match condition {
+        Condition::Gt(a, b) => Condition::Gt(
+            symbolic_substitute(a, target, replacement, interner),
+            symbolic_substitute(b, target, replacement, interner),
+        ),
+        Condition::Lt(a, b) => Condition::Lt(
+            symbolic_substitute(a, target, replacement, interner),
+            symbolic_substitute(b, target, replacement, interner),
+        ),
+        Condition::Ge(a, b) => Condition::Ge(
+            symbolic_substitute(a, target, replacement, interner),
+            symbolic_substitute(b, target, replacement, interner),
+        ),
+        Condition::Le(a, b) => Condition::Le(
+            symbolic_substitute(a, target, replacement, interner),
+            symbolic_substitute(b, target, replacement, interner),
+        ),
+        Condition::Eq(a, b) => Condition::Eq(
+            symbolic_substitute(a, target, replacement, interner),
+            symbolic_substitute(b, target, replacement, interner),
+        ),
+        Condition::Ne(a, b) => Condition::Ne(
+            symbolic_substitute(a, target, replacement, interner),
+            symbolic_substitute(b, target, replacement, interner),
+        ),
+        Condition::And(a, b) => Condition::And(
+            Box::new(substitute_condition(a, target, replacement, interner)),
+            Box::new(substitute_condition(b, target, replacement, interner)),
+        ),
+        Condition::Or(a, b) => Condition::Or(
+            Box::new(substitute_condition(a, target, replacement, interner)),
+            Box::new(substitute_condition(b, target, replacement, interner)),
+        ),
+        Condition::Not(c) => {
+            Condition::Not(Box::new(substitute_condition(c, target, replacement, interner)))
+        }
+        Condition::True => Condition::True,
+        Condition::False => Condition::False,
+    }
+}
+
+fn multi_substitute_condition(
+    condition: &Condition,
+    substitutions: &[(Expr, Expr)],
+    interner: &ax_ir::Interner,
+) -> Condition {
+    match condition {
+        Condition::Gt(a, b) => Condition::Gt(
+            multi_substitute(a, substitutions, interner),
+            multi_substitute(b, substitutions, interner),
+        ),
+        Condition::Lt(a, b) => Condition::Lt(
+            multi_substitute(a, substitutions, interner),
+            multi_substitute(b, substitutions, interner),
+        ),
+        Condition::Ge(a, b) => Condition::Ge(
+            multi_substitute(a, substitutions, interner),
+            multi_substitute(b, substitutions, interner),
+        ),
+        Condition::Le(a, b) => Condition::Le(
+            multi_substitute(a, substitutions, interner),
+            multi_substitute(b, substitutions, interner),
+        ),
+        Condition::Eq(a, b) => Condition::Eq(
+            multi_substitute(a, substitutions, interner),
+            multi_substitute(b, substitutions, interner),
+        ),
+        Condition::Ne(a, b) => Condition::Ne(
+            multi_substitute(a, substitutions, interner),
+            multi_substitute(b, substitutions, interner),
+        ),
+        Condition::And(a, b) => Condition::And(
+            Box::new(multi_substitute_condition(a, substitutions, interner)),
+            Box::new(multi_substitute_condition(b, substitutions, interner)),
+        ),
+        Condition::Or(a, b) => Condition::Or(
+            Box::new(multi_substitute_condition(a, substitutions, interner)),
+            Box::new(multi_substitute_condition(b, substitutions, interner)),
+        ),
+        Condition::Not(c) => {
+            Condition::Not(Box::new(multi_substitute_condition(c, substitutions, interner)))
+        }
+        Condition::True => Condition::True,
+        Condition::False => Condition::False,
+    }
+}
+
+pub fn symbolic_substitute(
+    expr: &Expr,
+    target: &Expr,
+    replacement: &Expr,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    if expr == target {
+        return replacement.clone();
+    }
+
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms.iter()
+                .map(|term| symbolic_substitute(term, target, replacement, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| symbolic_substitute(factor, target, replacement, interner))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            symbolic_substitute(base, target, replacement, interner),
+            symbolic_substitute(exp, target, replacement, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(symbolic_substitute(inner, target, replacement, interner)),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| symbolic_substitute(arg, target, replacement, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(symbolic_substitute(re, target, replacement, interner)),
+            Box::new(symbolic_substitute(im, target, replacement, interner)),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(symbolic_substitute(base, target, replacement, interner)),
+            indices.clone(),
+        ),
+        Expr::Let(name, val, body) => Expr::Let(
+            *name,
+            Box::new(symbolic_substitute(val, target, replacement, interner)),
+            Box::new(symbolic_substitute(body, target, replacement, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| symbolic_substitute(item, target, replacement, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| symbolic_substitute(cell, target, replacement, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(symbolic_substitute(body, target, replacement, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(symbolic_substitute(lhs, target, replacement, interner)),
+            Box::new(symbolic_substitute(rhs, target, replacement, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (
+                        symbolic_substitute(value, target, replacement, interner),
+                        substitute_condition(condition, target, replacement, interner),
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_)
+        | Expr::Sym(_)
+        | Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _) => expr.clone(),
+    }
+}
+
+pub fn multi_substitute(
+    expr: &Expr,
+    substitutions: &[(Expr, Expr)],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    for (target, replacement) in substitutions {
+        if expr == target {
+            return replacement.clone();
+        }
+    }
+
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms.iter()
+                .map(|term| multi_substitute(term, substitutions, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| multi_substitute(factor, substitutions, interner))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            multi_substitute(base, substitutions, interner),
+            multi_substitute(exp, substitutions, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(multi_substitute(inner, substitutions, interner)),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| multi_substitute(arg, substitutions, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(multi_substitute(re, substitutions, interner)),
+            Box::new(multi_substitute(im, substitutions, interner)),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(multi_substitute(base, substitutions, interner)),
+            indices.clone(),
+        ),
+        Expr::Let(name, val, body) => Expr::Let(
+            *name,
+            Box::new(multi_substitute(val, substitutions, interner)),
+            Box::new(multi_substitute(body, substitutions, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| multi_substitute(item, substitutions, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| multi_substitute(cell, substitutions, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(multi_substitute(body, substitutions, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(multi_substitute(lhs, substitutions, interner)),
+            Box::new(multi_substitute(rhs, substitutions, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (
+                        multi_substitute(value, substitutions, interner),
+                        multi_substitute_condition(condition, substitutions, interner),
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_)
+        | Expr::Sym(_)
+        | Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _) => expr.clone(),
+    }
+}
+
 fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
@@ -1431,6 +1709,25 @@ fn builtin_call(
         "trig_simplify" => {
             if args.len() == 1 {
                 simplify::trig_simplify(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "subs" => {
+            if args.len() == 3 {
+                match (&args[1], &args[2]) {
+                    (Expr::List(targets), Expr::List(replacements))
+                        if targets.len() == replacements.len() =>
+                    {
+                        let substitutions = targets
+                            .iter()
+                            .cloned()
+                            .zip(replacements.iter().cloned())
+                            .collect::<Vec<_>>();
+                        multi_substitute(&args[0], &substitutions, interner)
+                    }
+                    _ => symbolic_substitute(&args[0], &args[1], &args[2], interner),
+                }
             } else {
                 Expr::Call(f, args)
             }
@@ -2974,5 +3271,31 @@ mod tests {
     fn eval_if_symbolic() {
         let (e, _) = eval_src("if x > 0 then x else -x");
         assert!(matches!(e, Expr::Piecewise(_)));
+    }
+
+    #[test]
+    fn subs_symbol() {
+        let (e, _) = eval_src("subs(x^2 + x + 1, x, 3)");
+        assert_eq!(e, Expr::Int(13.into()));
+    }
+
+    #[test]
+    fn subs_expression() {
+        let (e, int) = eval_src("subs(sin(x)^2 + 1, sin(x), y)");
+        let pp = ax_ir::pretty_print(&e, &int);
+        assert!(pp.contains("y") && !pp.contains("sin"), "got: {}", pp);
+    }
+
+    #[test]
+    fn subs_multiple() {
+        let (e, _) = eval_src("subs(x + y, [x, y], [1, 2])");
+        assert_eq!(e, Expr::Int(3.into()));
+    }
+
+    #[test]
+    fn subs_nested() {
+        let (e, int) = eval_src("subs(diff(f(x), x), x, 0)");
+        let pp = ax_ir::pretty_print(&e, &int);
+        assert!(!pp.contains("(x") && !pp.contains(" x"), "got: {}", pp);
     }
 }
