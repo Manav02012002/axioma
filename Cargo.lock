@@ -365,6 +365,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-perm"
+version = "0.1.0"
+
+[[package]]
 name = "ax-plot"
 version = "0.1.0"
 dependencies = [

@@ -16,6 +16,7 @@ members = [
   "crates/ax-jupyter",
   "crates/ax-notebook",
   "crates/ax-ode",
+  "crates/ax-perm",
   "crates/ax-plot",
   "crates/ax-qm",
   "crates/ax-render",
