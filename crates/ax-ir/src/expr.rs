@@ -5,6 +5,7 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 
 pub type Sym = lasso::Spur;
+pub type IndexType = Option<Sym>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Variance {
@@ -16,6 +17,7 @@ pub enum Variance {
 pub struct Index {
     pub name: Sym,
     pub variance: Variance,
+    pub index_type: IndexType,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

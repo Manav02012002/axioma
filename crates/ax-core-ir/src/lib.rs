@@ -512,7 +512,11 @@ impl<'a> Cursor<'a> {
                                 return Err(self.error("expected '+' or '-' after index name"));
                             };
 
-                            indices.push(Index { name, variance });
+                            indices.push(Index {
+                                name,
+                                variance,
+                                index_type: None,
+                            });
                             self.skip_ws();
                             if self.eat_if(',') {
                                 continue;

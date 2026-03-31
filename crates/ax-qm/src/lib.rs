@@ -306,10 +306,12 @@ pub fn gamma_trace_recursive(
                     ax_ir::Index {
                         name: indices[0],
                         variance: ax_ir::Variance::Up,
+                        index_type: None,
                     },
                     ax_ir::Index {
                         name: indices[1],
                         variance: ax_ir::Variance::Up,
+                        index_type: None,
                     },
                 ],
             ),
@@ -330,10 +332,12 @@ pub fn gamma_trace_recursive(
                 ax_ir::Index {
                     name: a1,
                     variance: ax_ir::Variance::Up,
+                    index_type: None,
                 },
                 ax_ir::Index {
                     name: indices[k],
                     variance: ax_ir::Variance::Up,
+                    index_type: None,
                 },
             ],
         );
@@ -385,6 +389,7 @@ pub fn gamma_trace(
                         .map(|sym| ax_ir::Index {
                             name: *sym,
                             variance: ax_ir::Variance::Up,
+                            index_type: None,
                         })
                         .collect(),
                 ),

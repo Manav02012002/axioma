@@ -77,7 +77,12 @@ pub fn detect_contractions(indices: &[ax_ir::Index]) -> Vec<(usize, usize)> {
             if used.contains(&j) {
                 continue;
             }
-            if indices[i].name == indices[j].name && indices[i].variance != indices[j].variance {
+            if indices[i].name == indices[j].name
+                && indices[i].variance != indices[j].variance
+                && (indices[i].index_type == indices[j].index_type
+                    || indices[i].index_type.is_none()
+                    || indices[j].index_type.is_none())
+            {
                 used.insert(i);
                 used.insert(j);
                 pairs.push((i, j));
@@ -349,6 +354,7 @@ pub fn rename_dummy_indices(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> a
                     .map(|index| ax_ir::Index {
                         name: mapping.get(&index.name).copied().unwrap_or(index.name),
                         variance: index.variance.clone(),
+                        index_type: index.index_type,
                     })
                     .collect(),
             ),
@@ -1496,10 +1502,12 @@ mod tests {
             ax_ir::Index {
                 name: mu,
                 variance: ax_ir::Variance::Up,
+                index_type: None,
             },
             ax_ir::Index {
                 name: mu,
                 variance: ax_ir::Variance::Down,
+                index_type: None,
             },
         ];
         let pairs = detect_contractions(&indices);
@@ -1606,10 +1614,12 @@ mod tests {
                 ax_ir::Index {
                     name: nu,
                     variance: ax_ir::Variance::Down,
+                    index_type: None,
                 },
                 ax_ir::Index {
                     name: mu,
                     variance: ax_ir::Variance::Down,
+                    index_type: None,
                 },
             ],
         );
@@ -1640,10 +1650,12 @@ mod tests {
                 ax_ir::Index {
                     name: mu,
                     variance: ax_ir::Variance::Down,
+                    index_type: None,
                 },
                 ax_ir::Index {
                     name: mu,
                     variance: ax_ir::Variance::Down,
+                    index_type: None,
                 },
             ],
         );
