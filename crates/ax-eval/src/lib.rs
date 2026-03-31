@@ -367,6 +367,115 @@ pub fn apply_coordinate_declaration(
     }
 }
 
+pub fn apply_property_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "__declare_property" || args.len() != 2 {
+        return None;
+    }
+    let (Expr::Sym(tensor), Expr::Sym(prop)) = (&args[0], &args[1]) else {
+        return None;
+    };
+    let prop_name = interner.resolve(*prop);
+    let entry = env.tensor_properties.entry(*tensor).or_default();
+    match prop_name {
+        "metric" => {
+            entry.push(ax_ir::TensorProperty::Metric);
+            entry.push(ax_ir::TensorProperty::Symmetric(vec![0, 1]));
+            Some(format!(
+                "attached property metric (symmetric) to {}",
+                interner.resolve(*tensor)
+            ))
+        }
+        "symmetric" => {
+            entry.push(ax_ir::TensorProperty::Symmetric(vec![0, 1]));
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "antisymmetric" => {
+            entry.push(ax_ir::TensorProperty::AntiSymmetric(vec![0, 1]));
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "inverse_metric" => {
+            entry.push(ax_ir::TensorProperty::InverseMetric);
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "kronecker_delta" | "kronecker" => {
+            entry.push(ax_ir::TensorProperty::KroneckerDelta);
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "epsilon" | "epsilon_tensor" => {
+            entry.push(ax_ir::TensorProperty::EpsilonTensor);
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "riemann" | "riemann_symmetry" => {
+            entry.push(ax_ir::TensorProperty::RiemannSymmetry);
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "traceless" => {
+            entry.push(ax_ir::TensorProperty::Traceless);
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "derivative" => {
+            entry.push(ax_ir::TensorProperty::Derivative);
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "partial_derivative" => {
+            entry.push(ax_ir::TensorProperty::PartialDerivative);
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        "covariant_derivative" => {
+            entry.push(ax_ir::TensorProperty::CovariantDerivative);
+            Some(format!(
+                "attached property {} to {}",
+                interner.resolve(*prop),
+                interner.resolve(*tensor)
+            ))
+        }
+        _ => None,
+    }
+}
+
 pub fn apply_index_declaration(
     expr: &Expr,
     env: &mut Env,
@@ -1764,7 +1873,7 @@ fn builtin_call(
         "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => {
             Expr::Call(f, args)
         }
-        "__declare_indices" | "__declare_coordinates" => Expr::Call(f, args),
+        "__declare_indices" | "__declare_coordinates" | "__declare_property" => Expr::Call(f, args),
         "grassmann" => Expr::Call(f, args),
         "expand" => {
             if args.len() == 1 {

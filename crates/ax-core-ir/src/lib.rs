@@ -385,6 +385,17 @@ impl<'a> Cursor<'a> {
             ));
         }
 
+        if self.consume_keyword("property") {
+            let tensor = self.parse_ident()?;
+            self.skip_ws();
+            let prop_name = self.parse_ident()?;
+            let declare_sym = self.interner.get_or_intern("__declare_property");
+            return Ok(ax_ir::Expr::Call(
+                declare_sym,
+                vec![ax_ir::Expr::Sym(tensor), ax_ir::Expr::Sym(prop_name)],
+            ));
+        }
+
         if self.consume_keyword("convention") {
             let field = self.parse_ident()?;
             self.skip_ws();
@@ -1081,6 +1092,20 @@ mod tests {
     fn parse_coordinates() {
         let interner = ax_ir::Interner::new();
         let result = lower("coordinates [t, r, theta, phi]", &interner);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_property_metric() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("property g metric", &interner);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_property_antisymmetric() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("property F antisymmetric", &interner);
         assert!(result.errors.is_empty(), "{:?}", result.errors);
     }
 

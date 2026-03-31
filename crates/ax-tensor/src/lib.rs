@@ -214,7 +214,15 @@ pub fn canonicalize_indices(
                                     }
                                 }
                             }
-                            ax_ir::TensorProperty::Traceless | ax_ir::TensorProperty::Metric => {}
+                            ax_ir::TensorProperty::Traceless
+                            | ax_ir::TensorProperty::Metric
+                            | ax_ir::TensorProperty::InverseMetric
+                            | ax_ir::TensorProperty::KroneckerDelta
+                            | ax_ir::TensorProperty::EpsilonTensor
+                            | ax_ir::TensorProperty::Derivative
+                            | ax_ir::TensorProperty::PartialDerivative
+                            | ax_ir::TensorProperty::CovariantDerivative
+                            | ax_ir::TensorProperty::Depends(_) => {}
                         }
                     }
                 }

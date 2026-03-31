@@ -59,6 +59,13 @@ pub enum TensorProperty {
     RiemannSymmetry,
     Traceless,
     Metric,
+    InverseMetric,
+    KroneckerDelta,
+    EpsilonTensor,
+    Derivative,
+    PartialDerivative,
+    CovariantDerivative,
+    Depends(Vec<Sym>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
