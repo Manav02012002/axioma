@@ -35,6 +35,8 @@ h1 { font-size: 24px; font-weight: 500; margin-bottom: 20px; color: #333; }
   <button onclick="addCell()">+ New cell</button>
   <button onclick="runAll()">Run all</button>
   <button onclick="resetKernel()">Reset kernel</button>
+  <button onclick="exportLatex()">Export LaTeX</button>
+  <button onclick="exportHTML()">Export HTML</button>
 </div>
 <div id="cells"></div>
 <div class="add-cell" onclick="addCell()">+ Add cell</div>
@@ -107,9 +109,11 @@ async function runCell(cellId) {
 
       if (data.latex) {
         try {
-          katex.render(data.latex, document.getElementById(cellId + '-katex'), {
+          const katexEl = document.getElementById(cellId + '-katex');
+          katex.render(data.latex, katexEl, {
             displayMode: true, throwOnError: false
           });
+          katexEl.setAttribute('data-latex', data.latex);
         } catch(err) {
           document.getElementById(cellId + '-katex').textContent = data.latex;
         }
@@ -135,6 +139,52 @@ async function runAll() {
 async function resetKernel() {
   await fetch('/reset', { method: 'POST' });
   document.querySelectorAll('.cell-output').forEach(el => el.innerHTML = '');
+}
+
+async function exportLatex() {
+  const cells = collectCells();
+  const resp = await fetch('/export/latex', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cells, title: 'Axioma Notebook', author: '' })
+  });
+  const text = await resp.text();
+  download('notebook.tex', text);
+}
+
+async function exportHTML() {
+  const cells = collectCells();
+  const resp = await fetch('/export/html', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cells, title: 'Axioma Notebook', author: '' })
+  });
+  const text = await resp.text();
+  download('notebook.html', text);
+}
+
+function collectCells() {
+  const cells = [];
+  document.querySelectorAll('.cell').forEach(cell => {
+    const textarea = cell.querySelector('.cell-editor');
+    const output = cell.querySelector('.cell-output');
+    const katexEl = output?.querySelector('.latex-output');
+    const unicodeEl = output?.querySelector('.unicode-output');
+    cells.push({
+      source: textarea?.value || '',
+      output_latex: katexEl?.getAttribute('data-latex') || null,
+      output_unicode: unicodeEl?.textContent || null,
+      cell_type: 'code'
+    });
+  });
+  return cells;
+}
+
+function download(filename, text) {
+  const a = document.createElement('a');
+  a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
+  a.download = filename;
+  a.click();
 }
 
 function escapeHtml(text) {

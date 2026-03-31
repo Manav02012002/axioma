@@ -13,6 +13,171 @@ pub struct EvalResponse {
     pub svg: Option<String>,
 }
 
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct CellData {
+    pub source: String,
+    pub output_latex: Option<String>,
+    pub output_unicode: Option<String>,
+    pub cell_type: String,
+}
+
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+struct ExportRequest {
+    cells: Vec<CellData>,
+    title: Option<String>,
+    author: Option<String>,
+}
+
+fn escape_latex_metadata(text: &str) -> String {
+    text.chars()
+        .map(|ch| match ch {
+            '\\' => "\\textbackslash{}".to_string(),
+            '{' => "\\{".to_string(),
+            '}' => "\\}".to_string(),
+            '$' => "\\$".to_string(),
+            '&' => "\\&".to_string(),
+            '%' => "\\%".to_string(),
+            '#' => "\\#".to_string(),
+            '_' => "\\_".to_string(),
+            '^' => "\\^{}".to_string(),
+            '~' => "\\~{}".to_string(),
+            _ => ch.to_string(),
+        })
+        .collect()
+}
+
+fn escape_html(text: &str) -> String {
+    text.chars()
+        .map(|ch| match ch {
+            '&' => "&amp;".to_string(),
+            '<' => "&lt;".to_string(),
+            '>' => "&gt;".to_string(),
+            '"' => "&quot;".to_string(),
+            '\'' => "&#39;".to_string(),
+            _ => ch.to_string(),
+        })
+        .collect()
+}
+
+fn export_latex_with_meta(cells: &[CellData], title: Option<&str>, author: Option<&str>) -> String {
+    let mut out = String::from(
+        "\\documentclass[11pt]{article}\n\
+\\usepackage{amsmath,amssymb,amsfonts}\n\
+\\usepackage{listings}\n\
+\\usepackage[margin=1in]{geometry}\n\n\
+\\lstset{\n\
+  basicstyle=\\ttfamily\\small,\n\
+  frame=single,\n\
+  breaklines=true,\n\
+  columns=fullflexible\n\
+}\n\n",
+    );
+    out.push_str(&format!(
+        "\\title{{{}}}\n",
+        escape_latex_metadata(title.unwrap_or("Axioma Notebook"))
+    ));
+    out.push_str(&format!(
+        "\\author{{{}}}\n",
+        escape_latex_metadata(author.unwrap_or(""))
+    ));
+    out.push_str("\\date{\\today}\n\n\\begin{document}\n\\maketitle\n\n");
+
+    for cell in cells {
+        if cell.cell_type == "markdown" {
+            if !cell.source.trim().is_empty() {
+                out.push_str(&cell.source);
+                out.push_str("\n\n");
+            }
+            continue;
+        }
+
+        out.push_str("\\begin{lstlisting}\n");
+        out.push_str(&cell.source);
+        if !cell.source.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("\\end{lstlisting}\n");
+        if let Some(latex) = cell.output_latex.as_deref() {
+            if !latex.trim().is_empty() {
+                out.push_str("\\[\n");
+                out.push_str(latex);
+                out.push_str("\n\\]\n");
+            }
+        } else if let Some(unicode) = cell.output_unicode.as_deref() {
+            if !unicode.trim().is_empty() {
+                out.push_str("\\begin{verbatim}\n");
+                out.push_str(unicode);
+                out.push_str("\n\\end{verbatim}\n");
+            }
+        }
+        out.push('\n');
+    }
+
+    out.push_str("\\end{document}\n");
+    out
+}
+
+pub fn export_latex(cells: &[CellData]) -> String {
+    export_latex_with_meta(cells, Some("Axioma Notebook"), Some(""))
+}
+
+fn export_html_with_title(cells: &[CellData], title: Option<&str>) -> String {
+    let title = title.unwrap_or("Axioma Export");
+    let mut out = String::from(
+        "<!DOCTYPE html>\n\
+<html>\n\
+<head>\n\
+<meta charset=\"UTF-8\">\n",
+    );
+    out.push_str(&format!("<title>{}</title>\n", escape_html(title)));
+    out.push_str(
+        "<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css\">\n\
+<script src=\"https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js\"></script>\n\
+<script src=\"https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js\"></script>\n\
+<style>\n\
+body { max-width: 800px; margin: 0 auto; padding: 20px; font-family: serif; line-height: 1.6; }\n\
+pre { background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; }\n\
+.output { margin: 16px 0; font-size: 1.2em; }\n\
+</style>\n\
+</head>\n\
+<body>\n",
+    );
+    out.push_str(&format!("<h1>{}</h1>\n\n", escape_html(title)));
+
+    for cell in cells {
+        if cell.cell_type == "markdown" {
+            out.push_str("<div class=\"prose\">");
+            out.push_str(&cell.source);
+            out.push_str("</div>\n\n");
+            continue;
+        }
+
+        out.push_str("<pre><code>");
+        out.push_str(&escape_html(&cell.source));
+        out.push_str("</code></pre>\n");
+        if let Some(latex) = cell.output_latex.as_deref() {
+            if !latex.trim().is_empty() {
+                out.push_str("<div class=\"output\">$$");
+                out.push_str(latex);
+                out.push_str("$$</div>\n\n");
+            }
+        } else if let Some(unicode) = cell.output_unicode.as_deref() {
+            if !unicode.trim().is_empty() {
+                out.push_str("<div class=\"output\"><pre><code>");
+                out.push_str(&escape_html(unicode));
+                out.push_str("</code></pre></div>\n\n");
+            }
+        }
+    }
+
+    out.push_str("<script>renderMathInElement(document.body);</script>\n</body>\n</html>\n");
+    out
+}
+
+pub fn export_html(cells: &[CellData]) -> String {
+    export_html_with_title(cells, Some("Axioma Export"))
+}
+
 fn default_search_paths() -> Vec<PathBuf> {
     let mut search_paths = Vec::new();
 
@@ -297,6 +462,27 @@ pub fn start_server(port: u16) -> Result<()> {
                 );
                 let _ = request.respond(response);
             }
+            (Method::Post, "/export/latex") => {
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap_or(0);
+                let req = serde_json::from_str::<ExportRequest>(&body).unwrap_or_default();
+                let latex =
+                    export_latex_with_meta(&req.cells, req.title.as_deref(), req.author.as_deref());
+                let response = Response::from_string(latex)
+                    .with_header(Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap())
+                    .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+                let _ = request.respond(response);
+            }
+            (Method::Post, "/export/html") => {
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap_or(0);
+                let req = serde_json::from_str::<ExportRequest>(&body).unwrap_or_default();
+                let html = export_html_with_title(&req.cells, req.title.as_deref());
+                let response = Response::from_string(html)
+                    .with_header(Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap())
+                    .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+                let _ = request.respond(response);
+            }
             (Method::Post, "/eval") => {
                 let mut body = String::new();
                 request.as_reader().read_to_string(&mut body).unwrap_or(0);
@@ -345,5 +531,33 @@ mod tests {
         let search_paths = vec![];
         let result = handle_eval(r#"{"source": "$$$"}"#, &mut env, &interner, &search_paths);
         assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn latex_export_basic() {
+        let cells = vec![CellData {
+            source: "1 + 1".into(),
+            output_latex: Some("2".into()),
+            output_unicode: Some("2".into()),
+            cell_type: "code".into(),
+        }];
+        let latex = export_latex(&cells);
+        assert!(latex.contains("\\documentclass"));
+        assert!(latex.contains("1 + 1"));
+        assert!(latex.contains("2"));
+    }
+
+    #[test]
+    fn html_export_basic() {
+        let cells = vec![CellData {
+            source: "x^2".into(),
+            output_latex: Some("x^{2}".into()),
+            output_unicode: Some("x²".into()),
+            cell_type: "code".into(),
+        }];
+        let html = export_html(&cells);
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("x^{2}"));
+        assert!(html.contains("katex"));
     }
 }
