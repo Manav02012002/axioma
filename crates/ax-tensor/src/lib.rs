@@ -448,6 +448,166 @@ pub fn tensor_distribute(
     }
 }
 
+fn factorial(n: usize) -> num_bigint::BigInt {
+    (1..=n).fold(num_bigint::BigInt::from(1), |acc, i| {
+        acc * num_bigint::BigInt::from(i)
+    })
+}
+
+pub fn epsilon_to_delta(
+    expr: &ax_ir::Expr,
+    epsilon_sym: lasso::Spur,
+    delta_sym: lasso::Spur,
+    dim: usize,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut eps_indices: Vec<(usize, Vec<ax_ir::Index>)> = Vec::new();
+            for (i, factor) in factors.iter().enumerate() {
+                if let Expr::Indexed(base, indices) = factor {
+                    if let Expr::Sym(sym) = base.as_ref() {
+                        if *sym == epsilon_sym && indices.len() == dim {
+                            eps_indices.push((i, indices.clone()));
+                        }
+                    }
+                }
+            }
+
+            if eps_indices.len() < 2 {
+                return Expr::mul(
+                    factors
+                        .iter()
+                        .map(|factor| epsilon_to_delta(factor, epsilon_sym, delta_sym, dim, interner))
+                        .collect(),
+                );
+            }
+
+            let (i1, idx1) = &eps_indices[0];
+            let (i2, idx2) = &eps_indices[1];
+
+            let mut contracted = Vec::new();
+            let mut free1 = Vec::new();
+            let mut free2 = Vec::new();
+
+            for a in idx1 {
+                let mut found = false;
+                for b in idx2 {
+                    if a.name == b.name && a.variance != b.variance {
+                        contracted.push(a.name);
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    free1.push(a.clone());
+                }
+            }
+            for b in idx2 {
+                if !contracted.contains(&b.name) {
+                    free2.push(b.clone());
+                }
+            }
+
+            let coeff = Expr::Int(factorial(contracted.len()));
+            let delta_product = if free1.is_empty() {
+                Expr::one()
+            } else {
+                let deltas: Vec<Expr> = free1
+                    .iter()
+                    .zip(free2.iter())
+                    .map(|(a, b)| {
+                        Expr::Indexed(Box::new(Expr::Sym(delta_sym)), vec![a.clone(), b.clone()])
+                    })
+                    .collect();
+                if deltas.len() == 1 {
+                    deltas[0].clone()
+                } else {
+                    Expr::mul(deltas)
+                }
+            };
+
+            let mut remaining: Vec<Expr> = factors
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != *i1 && *j != *i2)
+                .map(|(_, factor)| {
+                    epsilon_to_delta(factor, epsilon_sym, delta_sym, dim, interner)
+                })
+                .collect();
+            remaining.push(coeff);
+            remaining.push(delta_product);
+            Expr::mul(remaining)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| epsilon_to_delta(term, epsilon_sym, delta_sym, dim, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(epsilon_to_delta(
+            inner,
+            epsilon_sym,
+            delta_sym,
+            dim,
+            interner,
+        )),
+        Expr::Pow(base, exp) => Expr::pow(
+            epsilon_to_delta(base, epsilon_sym, delta_sym, dim, interner),
+            epsilon_to_delta(exp, epsilon_sym, delta_sym, dim, interner),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| epsilon_to_delta(arg, epsilon_sym, delta_sym, dim, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(epsilon_to_delta(re, epsilon_sym, delta_sym, dim, interner)),
+            Box::new(epsilon_to_delta(im, epsilon_sym, delta_sym, dim, interner)),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(epsilon_to_delta(body, epsilon_sym, delta_sym, dim, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(epsilon_to_delta(lhs, epsilon_sym, delta_sym, dim, interner)),
+            Box::new(epsilon_to_delta(rhs, epsilon_sym, delta_sym, dim, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| {
+                    (epsilon_to_delta(value, epsilon_sym, delta_sym, dim, interner), cond.clone())
+                })
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(epsilon_to_delta(value, epsilon_sym, delta_sym, dim, interner)),
+            Box::new(epsilon_to_delta(body, epsilon_sym, delta_sym, dim, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| epsilon_to_delta(item, epsilon_sym, delta_sym, dim, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| epsilon_to_delta(cell, epsilon_sym, delta_sym, dim, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
 pub fn canonicalize_indices(
     expr: &ax_ir::Expr,
     properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
@@ -2767,5 +2927,39 @@ mod tests {
         } else {
             panic!("expected Add, got {:?}", result);
         }
+    }
+
+    #[test]
+    fn epsilon_fully_contracted_4d() {
+        let interner = ax_ir::Interner::new();
+        let eps = interner.get_or_intern("epsilon");
+        let delta = interner.get_or_intern("delta");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+
+        let e1 = Expr::Indexed(
+            Box::new(Expr::Sym(eps)),
+            vec![
+                ax_ir::Index { name: a, variance: ax_ir::Variance::Up, index_type: None },
+                ax_ir::Index { name: b, variance: ax_ir::Variance::Up, index_type: None },
+                ax_ir::Index { name: c, variance: ax_ir::Variance::Up, index_type: None },
+                ax_ir::Index { name: d, variance: ax_ir::Variance::Up, index_type: None },
+            ],
+        );
+        let e2 = Expr::Indexed(
+            Box::new(Expr::Sym(eps)),
+            vec![
+                ax_ir::Index { name: a, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index { name: b, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index { name: c, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index { name: d, variance: ax_ir::Variance::Down, index_type: None },
+            ],
+        );
+        let product = Expr::mul(vec![e1, e2]);
+        let result = epsilon_to_delta(&product, eps, delta, 4, &interner);
+        let simplified = ax_eval::eval(&result, &ax_eval::Env::new(), &interner);
+        assert_eq!(simplified, Expr::Int(24.into()));
     }
 }

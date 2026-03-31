@@ -1904,6 +1904,22 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "epsilon_to_delta" => {
+            if !args.is_empty() {
+                let eps = interner.get_or_intern("epsilon");
+                let delta = interner.get_or_intern("delta");
+                let dim = args
+                    .get(1)
+                    .and_then(|expr| match expr {
+                        Expr::Int(n) => n.to_usize(),
+                        _ => None,
+                    })
+                    .unwrap_or(4);
+                ax_tensor::epsilon_to_delta(&args[0], eps, delta, dim, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "dim" => {
             if args.len() == 1 {
                 let mut units = ax_units::si_units(interner);
