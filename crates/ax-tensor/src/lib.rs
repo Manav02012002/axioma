@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod adjform;
+
 use ax_perm::{Perm, SGS};
 use ax_ir::{Expr, Interner};
 use num_rational::BigRational;

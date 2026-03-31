@@ -9,6 +9,7 @@ rust-version.workspace = true
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
 ax-perm = { path = "../ax-perm" }
+ax-young = { path = "../ax-young" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }
