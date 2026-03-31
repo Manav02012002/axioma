@@ -24,6 +24,7 @@ members = [
   "crates/ax-tensor",
   "crates/ax-units",
   "crates/ax-variational",
+  "crates/ax-young",
   "crates/ax-plugin-host",
   "crates/ax-plugin-api",
   "plugins/axp-echo", "crates/ax-ir", "crates/ax-syntax", "crates/ax-ai-proto",
