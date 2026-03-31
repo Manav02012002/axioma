@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/ax-core-ir",
   "crates/ax-context",
+  "crates/ax-codegen",
   "crates/ax-rewrite",
   "crates/ax-trace",
   "crates/ax-diagnostics",

@@ -105,6 +105,7 @@ pub fn handle_import(
             _ => {
                 let result = ax_eval::eval(&expr, env, interner);
                 let _ = ax_eval::apply_grassmann_declaration(&result, env, interner);
+                let _ = ax_eval::apply_operator_declaration(&result, env, interner);
             }
         }
     }
@@ -170,6 +171,9 @@ pub fn execute_expr(
         return Ok(Some(format!("defined {}", interner.resolve(*name))));
     }
     if let Some(message) = ax_eval::apply_grassmann_declaration(&result, env, interner) {
+        return Ok(Some(message));
+    }
+    if let Some(message) = ax_eval::apply_operator_declaration(&result, env, interner) {
         return Ok(Some(message));
     }
 

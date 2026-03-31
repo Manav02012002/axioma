@@ -180,6 +180,7 @@ fn apply_result_side_effects(
     }
 
     let _ = ax_eval::apply_grassmann_declaration(result, env, interner);
+    let _ = ax_eval::apply_operator_declaration(result, env, interner);
 
     let _ = ax_eval::apply_set_convention(result, env);
 }

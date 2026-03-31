@@ -1,0 +1,8 @@
+// Normal ordering for quantum field theory
+// Declare operators:
+//   creation a_dag
+//   annihilation a
+//
+// Then: normal_order(a * a_dag) → a_dag * a
+// Wick's theorem: wick(T(phi_1 * phi_2 * phi_3 * phi_4)) expands into
+// normal-ordered terms plus contractions

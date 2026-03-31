@@ -15,6 +15,7 @@ blake3.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 
 ax-context = { path = "../ax-context" }
+ax-codegen = { path = "../ax-codegen" }
 ax-diagnostics = { path = "../ax-diagnostics" }
 ax-notebook = { path = "../ax-notebook" }
 ax-trace = { path = "../ax-trace" }

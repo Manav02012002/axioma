@@ -244,6 +244,11 @@ pub fn handle_eval(
             last_latex = None;
             continue;
         }
+        if let Some(message) = ax_eval::apply_operator_declaration(&result, env, interner) {
+            last_unicode = Some(message);
+            last_latex = None;
+            continue;
+        }
 
         if is_plot_call(expr, interner) {
             last_svg = std::fs::read_to_string("axioma_plot.svg").ok();

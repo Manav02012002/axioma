@@ -20,6 +20,7 @@ pub struct Env {
     pub rules: Vec<ax_rewrite::RewriteRule>,
     pub assumptions: HashMap<lasso::Spur, Vec<Assumption>>,
     pub gradings: HashMap<lasso::Spur, Grading>,
+    pub operators: HashMap<lasso::Spur, ax_qm::OperatorKind>,
     pub tensor_properties: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
     pub convention: ax_ir::Convention,
 }
@@ -32,6 +33,7 @@ impl Env {
             rules: Vec::new(),
             assumptions: HashMap::new(),
             gradings: HashMap::new(),
+            operators: HashMap::new(),
             tensor_properties: HashMap::new(),
             convention: ax_ir::Convention::default(),
         }
@@ -52,6 +54,7 @@ impl Env {
             rules: self.rules.clone(),
             assumptions: self.assumptions.clone(),
             gradings: self.gradings.clone(),
+            operators: self.operators.clone(),
             tensor_properties: self.tensor_properties.clone(),
             convention: self.convention.clone(),
         }
@@ -296,6 +299,37 @@ pub fn apply_grassmann_declaration(
         None
     } else {
         Some(format!("declared Grassmann variables: {}", declared.join(", ")))
+    }
+}
+
+pub fn apply_operator_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    let kind = match interner.resolve(*f) {
+        "creation" => ax_qm::OperatorKind::Creation,
+        "annihilation" => ax_qm::OperatorKind::Annihilation,
+        _ => return None,
+    };
+    let mut declared = Vec::new();
+    for arg in args {
+        if let Expr::Sym(sym) = arg {
+            env.operators.insert(*sym, kind);
+            declared.push(interner.resolve(*sym).to_string());
+        }
+    }
+    if declared.is_empty() {
+        None
+    } else {
+        let kind_name = match kind {
+            ax_qm::OperatorKind::Creation => "creation",
+            ax_qm::OperatorKind::Annihilation => "annihilation",
+        };
+        Some(format!("declared {kind_name} operators: {}", declared.join(", ")))
     }
 }
 
@@ -1416,6 +1450,30 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "to_python" => {
+            if args.len() == 1 {
+                println!("{}", ax_codegen::generate(&args[0], ax_codegen::Target::Python, interner, None, &[]));
+                Expr::zero()
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "to_rust" => {
+            if args.len() == 1 {
+                println!("{}", ax_codegen::generate(&args[0], ax_codegen::Target::Rust, interner, None, &[]));
+                Expr::zero()
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "to_cpp" => {
+            if args.len() == 1 {
+                println!("{}", ax_codegen::generate(&args[0], ax_codegen::Target::Cpp, interner, None, &[]));
+                Expr::zero()
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "solve" => {
             if args.len() == 2 {
                 match (&args[0], &args[1]) {
@@ -1697,6 +1755,22 @@ fn builtin_call(
                     }
                     _ => Expr::Call(f, args),
                 }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "creation" | "annihilation" => Expr::Call(f, args),
+        "normal_order" => {
+            if args.len() == 1 {
+                ax_qm::normal_order(&args[0], &env.operators, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "wick" => {
+            if args.len() == 1 {
+                let contractions = HashMap::new();
+                ax_qm::wick_expand(&args[0], &env.operators, &contractions, interner)
             } else {
                 Expr::Call(f, args)
             }

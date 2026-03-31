@@ -3,6 +3,7 @@ mod cmd_ai;
 mod cmd_ai_apply;
 mod cmd_ai_pack;
 
+mod cmd_codegen;
 mod cmd_fix;
 mod cmd_install;
 mod cmd_parse;
@@ -78,6 +79,13 @@ enum Command {
         file: std::path::PathBuf,
         #[arg(long, default_value = "latex")]
         format: String,
+    },
+    Codegen {
+        file: std::path::PathBuf,
+        #[arg(long, default_value = "python")]
+        target: String,
+        #[arg(long)]
+        fn_name: Option<String>,
     },
     Install {
         /// Package name or path
@@ -283,6 +291,14 @@ fn real_main() -> Result<()> {
         }
         Command::Render { file, format } => {
             let code = cmd_render::run(&file, &format)?;
+            std::process::exit(code);
+        }
+        Command::Codegen {
+            file,
+            target,
+            fn_name,
+        } => {
+            let code = cmd_codegen::run(&file, &target, fn_name.as_deref())?;
             std::process::exit(code);
         }
         Command::Install { package, path, git } => {

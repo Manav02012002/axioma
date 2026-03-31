@@ -161,6 +161,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ax-ai-proto",
+ "ax-codegen",
  "ax-context",
  "ax-core-ir",
  "ax-diagnostics",
@@ -180,6 +181,17 @@ dependencies = [
  "serde_json",
  "toml",
  "wat",
+]
+
+[[package]]
+name = "ax-codegen"
+version = "0.1.0"
+dependencies = [
+ "ax-ir",
+ "lasso",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
 ]
 
 [[package]]
@@ -226,6 +238,7 @@ dependencies = [
 name = "ax-eval"
 version = "0.1.0"
 dependencies = [
+ "ax-codegen",
  "ax-context",
  "ax-core-ir",
  "ax-forms",
@@ -454,6 +467,7 @@ dependencies = [
  "ax-core-ir",
  "ax-eval",
  "ax-ir",
+ "ax-linalg",
  "lasso",
  "num-bigint",
  "num-rational",

@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ax-codegen = { path = "../ax-codegen" }
 ax-context = { path = "../ax-context" }
 ax-forms = { path = "../ax-forms" }
 ax-ir = { path = "../ax-ir" }

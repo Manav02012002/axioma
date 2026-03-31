@@ -37,26 +37,31 @@ impl SymbolicMatrix {
     }
 
     pub fn symbolic_inverse(&self, interner: &ax_ir::Interner) -> Self {
-        let _ = interner;
-        for row in 0..self.dim {
-            for col in 0..self.dim {
-                if row != col && self.data[row][col] != Expr::zero() {
-                    panic!("symbolic inverse of non-diagonal matrices not yet implemented");
-                }
+        let is_diagonal = (0..self.dim).all(|row| {
+            (0..self.dim).all(|col| row == col || self.data[row][col] == Expr::zero())
+        });
+
+        if is_diagonal {
+            let mut inverse = Self::new(self.dim);
+            for i in 0..self.dim {
+                inverse.data[i][i] =
+                    simplify_expr(Expr::pow(self.data[i][i].clone(), Expr::Int((-1).into())), interner);
             }
+            return inverse;
         }
 
-        let mut inverse = Self::new(self.dim);
-        for i in 0..self.dim {
-            inverse.data[i][i] = match &self.data[i][i] {
-                Expr::Int(n) => Expr::Rational(BigRational::new(1.into(), n.clone())),
-                Expr::Rational(r) => {
-                    Expr::Rational(BigRational::new(r.denom().clone(), r.numer().clone()))
+        match ax_linalg::inverse(&self.data, interner) {
+            Some(inv_data) => {
+                let mut result = Self::new(self.dim);
+                for (i, row) in inv_data.iter().enumerate().take(self.dim) {
+                    for (j, cell) in row.iter().enumerate().take(self.dim) {
+                        result.data[i][j] = simplify_expr(cell.clone(), interner);
+                    }
                 }
-                other => Expr::pow(other.clone(), Expr::Int((-1).into())),
-            };
+                result
+            }
+            None => panic!("metric tensor is singular (determinant is zero)"),
         }
-        inverse
     }
 }
 
@@ -1429,6 +1434,58 @@ mod tests {
         let ginv = g.symbolic_inverse(&interner);
         let expected = Expr::Rational(num_rational::BigRational::new(1.into(), 2.into()));
         assert_eq!(*ginv.get(0, 0), expected);
+    }
+
+    #[test]
+    fn non_diagonal_metric_inverse() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+
+        let mut g = SymbolicMatrix::new(2);
+        g.set(0, 0, Expr::Sym(a));
+        g.set(0, 1, Expr::Sym(b));
+        g.set(1, 0, Expr::Sym(b));
+        g.set(1, 1, Expr::Sym(c));
+
+        let ginv = g.symbolic_inverse(&interner);
+
+        assert!(
+            ginv.get(0, 0) != &Expr::zero(),
+            "ginv[0][0] should not be zero for general metric"
+        );
+        assert!(
+            ginv.get(0, 1) != &Expr::zero(),
+            "ginv[0][1] should not be zero for off-diagonal metric"
+        );
+    }
+
+    #[test]
+    fn non_diagonal_inverse_times_original_is_identity() {
+        let interner = ax_ir::Interner::new();
+        let mut g = SymbolicMatrix::new(2);
+        g.set(0, 0, Expr::Int(2.into()));
+        g.set(0, 1, Expr::Int(1.into()));
+        g.set(1, 0, Expr::Int(1.into()));
+        g.set(1, 1, Expr::Int(3.into()));
+
+        let ginv = g.symbolic_inverse(&interner);
+
+        let product = ax_linalg::mat_mul(&g.data, &ginv.data, &interner);
+        let product_simplified: Vec<Vec<Expr>> = product
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|e| simplify_expr(e.clone(), &interner))
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(product_simplified[0][0], Expr::one());
+        assert_eq!(product_simplified[0][1], Expr::zero());
+        assert_eq!(product_simplified[1][0], Expr::zero());
+        assert_eq!(product_simplified[1][1], Expr::one());
     }
 
     #[test]

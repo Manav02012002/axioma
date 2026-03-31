@@ -1,12 +1,179 @@
 #![forbid(unsafe_code)]
 
 use ax_ir::Expr;
+use std::collections::HashMap;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperatorKind {
+    Creation,
+    Annihilation,
+}
 
 #[derive(Clone, Debug)]
 pub enum GammaEntry {
     Gamma(lasso::Spur),
     Gamma5,
     Identity,
+}
+
+fn operator_kind(expr: &Expr, operators: &HashMap<lasso::Spur, OperatorKind>) -> Option<OperatorKind> {
+    match expr {
+        Expr::Sym(sym) => operators.get(sym).copied(),
+        _ => None,
+    }
+}
+
+pub fn normal_order_simple(
+    expr: &ax_ir::Expr,
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let _ = interner;
+    match expr {
+        Expr::Mul(factors) => {
+            let mut other = Vec::new();
+            let mut creation = Vec::new();
+            let mut annihilation = Vec::new();
+            for factor in factors {
+                let simplified = normal_order_simple(factor, operators, interner);
+                match operator_kind(&simplified, operators) {
+                    Some(OperatorKind::Creation) => creation.push(simplified),
+                    Some(OperatorKind::Annihilation) => annihilation.push(simplified),
+                    None => other.push(simplified),
+                }
+            }
+            other.extend(creation);
+            other.extend(annihilation);
+            Expr::mul(other)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms.iter()
+                .map(|term| normal_order_simple(term, operators, interner))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            normal_order_simple(base, operators, interner),
+            normal_order_simple(exp, operators, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(normal_order_simple(inner, operators, interner)),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(normal_order_simple(re, operators, interner)),
+            Box::new(normal_order_simple(im, operators, interner)),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| normal_order_simple(arg, operators, interner))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(normal_order_simple(body, operators, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(normal_order_simple(lhs, operators, interner)),
+            Box::new(normal_order_simple(rhs, operators, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (normal_order_simple(value, operators, interner), condition.clone())
+                })
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(normal_order_simple(base, operators, interner)),
+            indices.clone(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(normal_order_simple(value, operators, interner)),
+            Box::new(normal_order_simple(body, operators, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items.iter()
+                .map(|item| normal_order_simple(item, operators, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| normal_order_simple(cell, operators, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+pub fn normal_order(
+    expr: &ax_ir::Expr,
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    normal_order_simple(expr, operators, interner)
+}
+
+pub fn wick_expand_single(
+    factors: &[ax_ir::Expr],
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+    contractions: &HashMap<(lasso::Spur, lasso::Spur), ax_ir::Expr>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let mut terms = vec![normal_order_simple(&Expr::mul(factors.to_vec()), operators, interner)];
+
+    for i in 0..factors.len() {
+        for j in (i + 1)..factors.len() {
+            let (Expr::Sym(lhs), Expr::Sym(rhs)) = (&factors[i], &factors[j]) else {
+                continue;
+            };
+            if let Some(contraction) = contractions.get(&(*lhs, *rhs)) {
+                let remaining = factors
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, factor)| {
+                        if idx == i || idx == j {
+                            None
+                        } else {
+                            Some(factor.clone())
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let ordered_remaining =
+                    normal_order_simple(&Expr::mul(remaining), operators, interner);
+                terms.push(Expr::mul(vec![contraction.clone(), ordered_remaining]));
+            }
+        }
+    }
+
+    simplify_expr(Expr::add(terms))
+}
+
+pub fn wick_expand(
+    expr: &ax_ir::Expr,
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+    contractions: &HashMap<(lasso::Spur, lasso::Spur), ax_ir::Expr>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Mul(factors) => wick_expand_single(factors, operators, contractions, interner),
+        Expr::Add(terms) => Expr::add(
+            terms.iter()
+                .map(|term| wick_expand(term, operators, contractions, interner))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            wick_expand(base, operators, contractions, interner),
+            wick_expand(exp, operators, contractions, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(wick_expand(inner, operators, contractions, interner)),
+        _ => normal_order_simple(expr, operators, interner),
+    }
 }
 
 fn simplify_expr(expr: Expr) -> Expr {
@@ -450,5 +617,42 @@ mod tests {
         let rho = interner.get_or_intern("rho");
         let result = gamma_trace_recursive(&[mu, nu, rho], g, &interner);
         assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn normal_order_puts_creation_first() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let a_dag = interner.get_or_intern("a_dag");
+
+        let mut operators = HashMap::new();
+        operators.insert(a, OperatorKind::Annihilation);
+        operators.insert(a_dag, OperatorKind::Creation);
+
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(a_dag)]);
+        let result = normal_order_simple(&expr, &operators, &interner);
+        if let Expr::Mul(factors) = &result {
+            assert_eq!(factors.len(), 2);
+            assert_eq!(factors[0], Expr::Sym(a_dag));
+            assert_eq!(factors[1], Expr::Sym(a));
+        } else {
+            panic!("expected Mul");
+        }
+    }
+
+    #[test]
+    fn normal_order_preserves_scalars() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let a_dag = interner.get_or_intern("a_dag");
+
+        let mut operators = HashMap::new();
+        operators.insert(a, OperatorKind::Annihilation);
+        operators.insert(a_dag, OperatorKind::Creation);
+
+        let expr = Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(a), Expr::Sym(a_dag)]);
+        let result = normal_order_simple(&expr, &operators, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("3"), "got: {}", pp);
     }
 }
