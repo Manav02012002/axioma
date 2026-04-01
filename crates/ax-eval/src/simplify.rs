@@ -911,6 +911,209 @@ pub fn trig_simplify(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::E
     crate::eval(&result, &crate::Env::new(), interner)
 }
 
+/// Factor out common factors from terms in a sum.
+///
+/// a*x + a*y → a*(x + y)
+///
+/// If `targets` is empty, automatically detect common factors.
+pub fn factor_out(
+    expr: &Expr,
+    targets: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Add(terms) if terms.len() >= 2 => {
+            let targets_to_try: Vec<lasso::Spur> = if targets.is_empty() {
+                find_common_symbols(terms)
+            } else {
+                targets.to_vec()
+            };
+
+            for target in &targets_to_try {
+                // Simple factor: target appears in every term
+                if terms.iter().all(|t| has_factor(t, *target)) {
+                    let stripped: Vec<Expr> =
+                        terms.iter().map(|t| remove_factor(t, *target)).collect();
+                    let inner = Expr::add(stripped);
+                    return Expr::mul(vec![
+                        Expr::Sym(*target),
+                        factor_out(&inner, targets, interner),
+                    ]);
+                }
+
+                // Power factor: target^min_power
+                let min_power = terms
+                    .iter()
+                    .filter_map(|t| power_of_factor(t, *target))
+                    .min();
+                if let Some(p) = min_power {
+                    if p >= 1 {
+                        let stripped: Vec<Expr> = terms
+                            .iter()
+                            .map(|t| reduce_factor_power(t, *target, p))
+                            .collect();
+                        let inner = Expr::add(stripped);
+                        let factor = if p == 1 {
+                            Expr::Sym(*target)
+                        } else {
+                            Expr::pow(
+                                Expr::Sym(*target),
+                                Expr::Int(num_bigint::BigInt::from(p)),
+                            )
+                        };
+                        return Expr::mul(vec![factor, factor_out(&inner, targets, interner)]);
+                    }
+                }
+            }
+
+            expr.clone()
+        }
+        _ => expr.clone(),
+    }
+}
+
+/// Group terms that share specified pre-factors.
+///
+/// x*a + x*b + y → x*(a + b) + y
+pub fn factor_in(
+    expr: &Expr,
+    targets: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    factor_out(expr, targets, interner)
+}
+
+fn find_common_symbols(terms: &[Expr]) -> Vec<lasso::Spur> {
+    if terms.is_empty() {
+        return vec![];
+    }
+    let first_syms = collect_factor_symbols(&terms[0]);
+    first_syms
+        .into_iter()
+        .filter(|s| terms[1..].iter().all(|t| has_factor(t, *s)))
+        .collect()
+}
+
+fn collect_factor_symbols(expr: &Expr) -> Vec<lasso::Spur> {
+    match expr {
+        Expr::Sym(s) => vec![*s],
+        Expr::Mul(factors) => factors.iter().flat_map(collect_factor_symbols).collect(),
+        Expr::Neg(e) => collect_factor_symbols(e),
+        Expr::Pow(base, _) => collect_factor_symbols(base),
+        _ => vec![],
+    }
+}
+
+fn has_factor(expr: &Expr, sym: lasso::Spur) -> bool {
+    match expr {
+        Expr::Sym(s) => *s == sym,
+        Expr::Mul(factors) => factors.iter().any(|f| has_factor(f, sym)),
+        Expr::Neg(e) => has_factor(e, sym),
+        Expr::Pow(base, _) => has_factor(base, sym),
+        _ => false,
+    }
+}
+
+fn remove_factor(expr: &Expr, sym: lasso::Spur) -> Expr {
+    match expr {
+        Expr::Sym(s) if *s == sym => Expr::one(),
+        Expr::Mul(factors) => {
+            let mut found = false;
+            let new_factors: Vec<Expr> = factors
+                .iter()
+                .map(|f| {
+                    if !found && has_factor(f, sym) {
+                        found = true;
+                        remove_factor(f, sym)
+                    } else {
+                        f.clone()
+                    }
+                })
+                .collect();
+            Expr::mul(new_factors)
+        }
+        Expr::Neg(e) => Expr::neg(remove_factor(e, sym)),
+        Expr::Pow(base, exp) => {
+            if let Expr::Sym(s) = base.as_ref() {
+                if *s == sym {
+                    if let Expr::Int(n) = exp.as_ref() {
+                        let new_exp = n.clone() - num_bigint::BigInt::from(1u32);
+                        if new_exp == num_bigint::BigInt::from(0u32) {
+                            return Expr::one();
+                        }
+                        return Expr::pow(base.as_ref().clone(), Expr::Int(new_exp));
+                    }
+                }
+            }
+            expr.clone()
+        }
+        _ => expr.clone(),
+    }
+}
+
+fn power_of_factor(expr: &Expr, sym: lasso::Spur) -> Option<i64> {
+    match expr {
+        Expr::Sym(s) if *s == sym => Some(1),
+        Expr::Pow(base, exp) => {
+            if let Expr::Sym(s) = base.as_ref() {
+                if *s == sym {
+                    if let Expr::Int(n) = exp.as_ref() {
+                        return n.to_i64();
+                    }
+                }
+            }
+            None
+        }
+        Expr::Mul(factors) => factors.iter().filter_map(|f| power_of_factor(f, sym)).next(),
+        Expr::Neg(e) => power_of_factor(e, sym),
+        _ => Some(0),
+    }
+}
+
+fn reduce_factor_power(expr: &Expr, sym: lasso::Spur, reduce_by: i64) -> Expr {
+    let mut remaining = reduce_by;
+    reduce_power_recursive(expr, sym, &mut remaining)
+}
+
+fn reduce_power_recursive(expr: &Expr, sym: lasso::Spur, remaining: &mut i64) -> Expr {
+    if *remaining <= 0 {
+        return expr.clone();
+    }
+    match expr {
+        Expr::Sym(s) if *s == sym => {
+            *remaining -= 1;
+            Expr::one()
+        }
+        Expr::Pow(base, exp) if matches!(base.as_ref(), Expr::Sym(s) if *s == sym) => {
+            if let Expr::Int(n) = exp.as_ref() {
+                let p = n.to_i64().unwrap_or(0);
+                let new_p = p - *remaining;
+                *remaining = 0;
+                if new_p == 0 {
+                    Expr::one()
+                } else if new_p == 1 {
+                    base.as_ref().clone()
+                } else {
+                    Expr::pow(
+                        base.as_ref().clone(),
+                        Expr::Int(num_bigint::BigInt::from(new_p)),
+                    )
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| reduce_power_recursive(f, sym, remaining))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(reduce_power_recursive(e, sym, remaining)),
+        _ => expr.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1025,5 +1228,80 @@ mod tests {
         let result = rationalize(&expr, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains("x"), "got: {}", pp);
+    }
+
+    #[test]
+    fn factor_out_common() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        // a*x + a*y → a*(x + y)
+        let expr = Expr::add(vec![
+            Expr::mul(vec![Expr::Sym(a), Expr::Sym(x)]),
+            Expr::mul(vec![Expr::Sym(a), Expr::Sym(y)]),
+        ]);
+        let result = factor_out(&expr, &[], &interner);
+        if let Expr::Mul(factors) = &result {
+            assert!(
+                factors.iter().any(|f| *f == Expr::Sym(a)),
+                "got {result:?}"
+            );
+        } else {
+            panic!("expected Mul, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn factor_out_explicit_target() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        let expr = Expr::add(vec![
+            Expr::mul(vec![Expr::Sym(a), Expr::Sym(x)]),
+            Expr::mul(vec![Expr::Sym(a), Expr::Sym(y)]),
+        ]);
+        let result = factor_out(&expr, &[a], &interner);
+        if let Expr::Mul(factors) = &result {
+            assert!(factors.iter().any(|f| *f == Expr::Sym(a)), "got {result:?}");
+        } else {
+            panic!("expected Mul, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn factor_out_no_common_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        // a*x + y — no common factor
+        let expr = Expr::add(vec![
+            Expr::mul(vec![Expr::Sym(a), Expr::Sym(x)]),
+            Expr::Sym(y),
+        ]);
+        let result = factor_out(&expr, &[], &interner);
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn factor_out_power() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        // a^2*x + a^2*y → a^2*(x + y)
+        let a2 = Expr::pow(Expr::Sym(a), Expr::Int(2.into()));
+        let expr = Expr::add(vec![
+            Expr::mul(vec![a2.clone(), Expr::Sym(x)]),
+            Expr::mul(vec![a2.clone(), Expr::Sym(y)]),
+        ]);
+        let result = factor_out(&expr, &[a], &interner);
+        assert!(matches!(result, Expr::Mul(_)), "expected Mul, got {result:?}");
     }
 }

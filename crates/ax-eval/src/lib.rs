@@ -2139,6 +2139,18 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "einsteinify" => {
+            if !args.is_empty() {
+                let metric = if args.len() >= 2 {
+                    if let Expr::Sym(s) = &args[1] { Some(*s) } else { None }
+                } else {
+                    None
+                };
+                ax_tensor::einsteinify(&args[0], metric, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "split_index" => {
             if args.len() == 4 {
                 let parents = extract_sym_list(&args[1]);
@@ -2169,6 +2181,22 @@ fn builtin_call(
             if !args.is_empty() {
                 let delta = interner.get_or_intern("delta");
                 ax_tensor::expand_delta(&args[0], delta, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "reduce_delta" => {
+            if !args.is_empty() {
+                let delta = interner.get_or_intern("delta");
+                let dim = interner.get_or_intern("dim");
+                ax_tensor::reduce_delta(&args[0], delta, dim, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "young_project" => {
+            if !args.is_empty() {
+                ax_tensor::young_project_tensor(&args[0], &env.tensor_properties, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -2341,6 +2369,44 @@ fn builtin_call(
         "trig_simplify" => {
             if args.len() == 1 {
                 simplify::trig_simplify(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "factor_out" => {
+            if !args.is_empty() {
+                let targets: Vec<lasso::Spur> = if args.len() >= 2 {
+                    match &args[1] {
+                        Expr::List(syms) => syms
+                            .iter()
+                            .filter_map(|e| if let Expr::Sym(s) = e { Some(*s) } else { None })
+                            .collect(),
+                        Expr::Sym(s) => vec![*s],
+                        _ => vec![],
+                    }
+                } else {
+                    vec![]
+                };
+                simplify::factor_out(&args[0], &targets, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "factor_in" => {
+            if !args.is_empty() {
+                let targets: Vec<lasso::Spur> = if args.len() >= 2 {
+                    match &args[1] {
+                        Expr::List(syms) => syms
+                            .iter()
+                            .filter_map(|e| if let Expr::Sym(s) = e { Some(*s) } else { None })
+                            .collect(),
+                        Expr::Sym(s) => vec![*s],
+                        _ => vec![],
+                    }
+                } else {
+                    vec![]
+                };
+                simplify::factor_in(&args[0], &targets, interner)
             } else {
                 Expr::Call(f, args)
             }

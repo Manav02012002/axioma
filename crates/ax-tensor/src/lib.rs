@@ -2406,6 +2406,237 @@ fn replace_index_with_variance(
     }
 }
 
+/// Simplify products of Kronecker deltas by performing contractions.
+///
+/// δ^a_b δ^b_c → δ^a_c
+/// δ^a_a → dim
+/// Apply a Young projector to a tensor expression.
+///
+/// Antisymmetrises over columns, then symmetrises over rows.
+pub fn young_project(
+    expr: &Expr,
+    tableau: &ax_young::YoungTableau,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    // Build column groups (for antisymmetrisation)
+    let n_cols = tableau.cells.first().map_or(0, |r| r.len());
+    let mut col_groups: Vec<Vec<usize>> = Vec::new();
+    for col in 0..n_cols {
+        let group: Vec<usize> = tableau
+            .cells
+            .iter()
+            .filter_map(|row| row.get(col).copied())
+            .collect();
+        if group.len() > 1 {
+            col_groups.push(group);
+        }
+    }
+
+    // Build row groups (for symmetrisation)
+    let mut row_groups: Vec<Vec<usize>> = Vec::new();
+    for row in &tableau.cells {
+        if row.len() > 1 {
+            row_groups.push(row.clone());
+        }
+    }
+
+    // Apply column antisymmetrisation, then row symmetrisation
+    let antisymmed = antisymmetrise_groups(expr, &col_groups, interner);
+    symmetrise_groups(&antisymmed, &row_groups, interner)
+}
+
+fn antisymmetrise_groups(expr: &Expr, groups: &[Vec<usize>], interner: &ax_ir::Interner) -> Expr {
+    let mut result = expr.clone();
+    for group in groups {
+        result = symmetrise(&result, group, true, interner);
+    }
+    result
+}
+
+fn symmetrise_groups(expr: &Expr, groups: &[Vec<usize>], interner: &ax_ir::Interner) -> Expr {
+    let mut result = expr.clone();
+    for group in groups {
+        result = symmetrise(&result, group, false, interner);
+    }
+    result
+}
+
+/// Apply Young projection to a tensor based on its declared `TableauSymmetry` property.
+pub fn young_project_tensor(
+    expr: &Expr,
+    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, _) => {
+            if let Expr::Sym(name) = base.as_ref() {
+                if let Some(props) = tensor_properties.get(name) {
+                    for prop in props {
+                        if let ax_ir::TensorProperty::TableauSymmetry {
+                            shape,
+                            indices: tab_indices,
+                        } = prop
+                        {
+                            let mut cells: Vec<Vec<usize>> = Vec::new();
+                            let mut cursor = 0;
+                            for &row_len in shape {
+                                let mut row = Vec::new();
+                                for _ in 0..row_len {
+                                    if cursor < tab_indices.len() {
+                                        row.push(tab_indices[cursor]);
+                                        cursor += 1;
+                                    }
+                                }
+                                cells.push(row);
+                            }
+                            let tableau = ax_young::YoungTableau { cells };
+                            return young_project(expr, &tableau, interner);
+                        }
+                    }
+                }
+            }
+            expr.clone()
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| young_project_tensor(t, tensor_properties, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| young_project_tensor(f, tensor_properties, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(young_project_tensor(e, tensor_properties, interner)),
+        _ => expr.clone(),
+    }
+}
+
+pub fn reduce_delta(
+    expr: &Expr,
+    delta_sym: lasso::Spur,
+    dim_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let mut current = expr.clone();
+    for _ in 0..20 {
+        let next = reduce_delta_once(&current, delta_sym, dim_sym, interner);
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+fn reduce_delta_once(
+    expr: &Expr,
+    delta_sym: lasso::Spur,
+    dim_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            // Check trace first: δ^a_a → dim
+            for i in 0..factors.len() {
+                let idx_i = match &factors[i] {
+                    Expr::Indexed(b, idx)
+                        if matches!(b.as_ref(), Expr::Sym(s) if *s == delta_sym)
+                            && idx.len() == 2 =>
+                    {
+                        idx
+                    }
+                    _ => continue,
+                };
+                if idx_i[0].name == idx_i[1].name && idx_i[0].variance != idx_i[1].variance {
+                    let mut new_factors: Vec<Expr> = factors
+                        .iter()
+                        .enumerate()
+                        .filter(|(k, _)| *k != i)
+                        .map(|(_, f)| f.clone())
+                        .collect();
+                    new_factors.push(Expr::Sym(dim_sym));
+                    return Expr::mul(new_factors);
+                }
+            }
+
+            // Find two deltas that share a contracted index
+            for i in 0..factors.len() {
+                let idx_i = match &factors[i] {
+                    Expr::Indexed(b, idx)
+                        if matches!(b.as_ref(), Expr::Sym(s) if *s == delta_sym)
+                            && idx.len() == 2 =>
+                    {
+                        idx
+                    }
+                    _ => continue,
+                };
+                for j in (i + 1)..factors.len() {
+                    let idx_j = match &factors[j] {
+                        Expr::Indexed(b, idx)
+                            if matches!(b.as_ref(), Expr::Sym(s) if *s == delta_sym)
+                                && idx.len() == 2 =>
+                        {
+                            idx
+                        }
+                        _ => continue,
+                    };
+                    for ii in 0..2 {
+                        for jj in 0..2 {
+                            if idx_i[ii].name == idx_j[jj].name
+                                && idx_i[ii].variance != idx_j[jj].variance
+                            {
+                                // Contracted: δ^a_X δ^X_b → δ^a_b
+                                let remaining_i = idx_i[1 - ii].clone();
+                                let remaining_j = idx_j[1 - jj].clone();
+                                let new_delta = Expr::Indexed(
+                                    Box::new(Expr::Sym(delta_sym)),
+                                    vec![remaining_i, remaining_j],
+                                );
+                                let mut new_factors: Vec<Expr> = factors
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(k, _)| *k != i && *k != j)
+                                    .map(|(_, f)| f.clone())
+                                    .collect();
+                                new_factors.push(new_delta);
+                                return Expr::mul(new_factors);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // No simplification found at this level — recurse into sub-expressions
+            Expr::mul(
+                factors
+                    .iter()
+                    .map(|f| reduce_delta_once(f, delta_sym, dim_sym, interner))
+                    .collect(),
+            )
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| reduce_delta_once(t, delta_sym, dim_sym, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(reduce_delta_once(e, delta_sym, dim_sym, interner)),
+        // Bare delta trace: δ^a_a → dim
+        Expr::Indexed(base, idx)
+            if matches!(base.as_ref(), Expr::Sym(s) if *s == delta_sym)
+                && idx.len() == 2
+                && idx[0].name == idx[1].name
+                && idx[0].variance != idx[1].variance =>
+        {
+            Expr::Sym(dim_sym)
+        }
+        _ => expr.clone(),
+    }
+}
+
 pub fn eliminate_kronecker(
     expr: &ax_ir::Expr,
     delta_sym: lasso::Spur,
@@ -3965,6 +4196,87 @@ pub fn complete_inverse_metric(
     result
 }
 
+/// Fix index positions on dummy pairs.
+///
+/// If two contracted indices share a name but both have the same variance,
+/// flip one of them so the pair has opposing variances (one up, one down).
+pub fn einsteinify(
+    expr: &Expr,
+    metric_sym: Option<lasso::Spur>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            // Collect (factor_idx, index_idx, index) for all indexed factors
+            let mut all_indices: Vec<(usize, usize, ax_ir::Index)> = Vec::new();
+            for (fi, factor) in factors.iter().enumerate() {
+                if let Expr::Indexed(_, indices) = factor {
+                    for (ii, idx) in indices.iter().enumerate() {
+                        all_indices.push((fi, ii, idx.clone()));
+                    }
+                }
+            }
+
+            // Find pairs: same name, same variance
+            let mut fixes: Vec<(usize, usize)> = Vec::new();
+            let mut used = std::collections::HashSet::new();
+
+            for i in 0..all_indices.len() {
+                if used.contains(&i) { continue; }
+                for j in (i + 1)..all_indices.len() {
+                    if used.contains(&j) { continue; }
+                    if all_indices[i].2.name == all_indices[j].2.name
+                        && all_indices[i].2.variance == all_indices[j].2.variance
+                    {
+                        fixes.push((i, j));
+                        used.insert(i);
+                        used.insert(j);
+                        break;
+                    }
+                }
+            }
+
+            if fixes.is_empty() {
+                return Expr::mul(
+                    factors
+                        .iter()
+                        .map(|f| einsteinify(f, metric_sym, interner))
+                        .collect(),
+                );
+            }
+
+            // Flip the second index in each offending pair
+            let mut new_factors = factors.clone();
+            for (_, j) in &fixes {
+                let (fi, ii, ref idx) = all_indices[*j];
+                if let Expr::Indexed(base, indices) = &new_factors[fi].clone() {
+                    let new_var = match &idx.variance {
+                        ax_ir::Variance::Up => ax_ir::Variance::Down,
+                        ax_ir::Variance::Down => ax_ir::Variance::Up,
+                    };
+                    let mut new_indices = indices.clone();
+                    new_indices[ii] = ax_ir::Index {
+                        name: idx.name,
+                        variance: new_var,
+                        index_type: idx.index_type,
+                    };
+                    new_factors[fi] = Expr::Indexed(base.clone(), new_indices);
+                }
+            }
+
+            Expr::mul(new_factors)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| einsteinify(t, metric_sym, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(einsteinify(e, metric_sym, interner)),
+        _ => expr.clone(),
+    }
+}
+
 /// Split indices of a given family into two sub-families.
 ///
 /// Every occurrence of an index whose name is in `parent_indices` is replaced
@@ -5294,6 +5606,227 @@ mod tests {
         // A * B (no derivative) → unchanged
         let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
         let result = integrate_by_parts(&expr, a, &derivs, &interner);
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn young_project_antisymmetric_pair() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        // Column tableau with 2 rows: antisymmetrise in positions (0, 1)
+        let tableau = ax_young::YoungTableau { cells: vec![vec![0], vec![1]] };
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index { name: a, variance: Variance::Down, index_type: None },
+                Index { name: b, variance: Variance::Down, index_type: None },
+            ],
+        );
+
+        let result = young_project(&expr, &tableau, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("T"), "got: {pp}");
+    }
+
+    #[test]
+    fn young_project_symmetric_pair() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        // Row tableau with 1 row: symmetrise in positions (0, 1)
+        let tableau = ax_young::YoungTableau { cells: vec![vec![0, 1]] };
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index { name: a, variance: Variance::Down, index_type: None },
+                Index { name: b, variance: Variance::Down, index_type: None },
+            ],
+        );
+
+        let result = young_project(&expr, &tableau, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("T"), "got: {pp}");
+        // Symmetric result should contain both orderings summed
+        assert!(matches!(result, Expr::Add(_) | Expr::Mul(_)), "got: {result:?}");
+    }
+
+    #[test]
+    fn reduce_delta_chain() {
+        let interner = ax_ir::Interner::new();
+        let delta = interner.get_or_intern("delta");
+        let dim = interner.get_or_intern("dim");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+
+        // δ^a_b δ^b_c → δ^a_c
+        let d1 = Expr::Indexed(
+            Box::new(Expr::Sym(delta)),
+            vec![
+                Index { name: a, variance: Variance::Up, index_type: None },
+                Index { name: b, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let d2 = Expr::Indexed(
+            Box::new(Expr::Sym(delta)),
+            vec![
+                Index { name: b, variance: Variance::Up, index_type: None },
+                Index { name: c, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let expr = Expr::mul(vec![d1, d2]);
+        let result = reduce_delta(&expr, delta, dim, &interner);
+
+        match &result {
+            Expr::Indexed(_, indices) => {
+                assert_eq!(indices.len(), 2, "expected 2 indices");
+                assert_eq!(indices[0].name, a);
+                assert_eq!(indices[1].name, c);
+            }
+            Expr::Mul(factors) => {
+                let indexed: Vec<_> = factors
+                    .iter()
+                    .filter(|f| matches!(f, Expr::Indexed(_, _)))
+                    .collect();
+                assert_eq!(indexed.len(), 1, "expected 1 delta factor, got {factors:?}");
+                if let Expr::Indexed(_, indices) = indexed[0] {
+                    assert_eq!(indices[0].name, a);
+                    assert_eq!(indices[1].name, c);
+                }
+            }
+            _ => panic!("expected Indexed or Mul, got {result:?}"),
+        }
+    }
+
+    #[test]
+    fn reduce_delta_trace_gives_dim() {
+        let interner = ax_ir::Interner::new();
+        let delta = interner.get_or_intern("delta");
+        let dim = interner.get_or_intern("dim");
+        let a = interner.get_or_intern("a");
+
+        // δ^a_a → dim
+        let d = Expr::Indexed(
+            Box::new(Expr::Sym(delta)),
+            vec![
+                Index { name: a, variance: Variance::Up, index_type: None },
+                Index { name: a, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let result = reduce_delta(&d, delta, dim, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("dim"), "expected dim, got: {pp}");
+    }
+
+    #[test]
+    fn einsteinify_fixes_both_up() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let s = interner.get_or_intern("S");
+        let a = interner.get_or_intern("a");
+
+        // T[a+] * S[a+] → T[a+] * S[a-]
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![Index { name: a, variance: Variance::Up, index_type: None }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(s)),
+                vec![Index { name: a, variance: Variance::Up, index_type: None }],
+            ),
+        ]);
+        let result = einsteinify(&expr, None, &interner);
+        if let Expr::Mul(factors) = &result {
+            let mut ups = 0usize;
+            let mut downs = 0usize;
+            for f in factors {
+                if let Expr::Indexed(_, indices) = f {
+                    for idx in indices {
+                        if idx.name == a {
+                            match idx.variance {
+                                Variance::Up => ups += 1,
+                                Variance::Down => downs += 1,
+                            }
+                        }
+                    }
+                }
+            }
+            assert_eq!(ups, 1, "expected 1 up index");
+            assert_eq!(downs, 1, "expected 1 down index");
+        } else {
+            panic!("expected Mul, got: {result:?}");
+        }
+    }
+
+    #[test]
+    fn einsteinify_both_down_fixed() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let s = interner.get_or_intern("S");
+        let a = interner.get_or_intern("a");
+
+        // T[a-] * S[a-] → one up, one down
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![Index { name: a, variance: Variance::Down, index_type: None }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(s)),
+                vec![Index { name: a, variance: Variance::Down, index_type: None }],
+            ),
+        ]);
+        let result = einsteinify(&expr, None, &interner);
+        if let Expr::Mul(factors) = &result {
+            let mut ups = 0usize;
+            let mut downs = 0usize;
+            for f in factors {
+                if let Expr::Indexed(_, indices) = f {
+                    for idx in indices {
+                        if idx.name == a {
+                            match idx.variance {
+                                Variance::Up => ups += 1,
+                                Variance::Down => downs += 1,
+                            }
+                        }
+                    }
+                }
+            }
+            assert_eq!(ups + downs, 2);
+            assert_eq!(ups, 1);
+            assert_eq!(downs, 1);
+        } else {
+            panic!("expected Mul, got: {result:?}");
+        }
+    }
+
+    #[test]
+    fn einsteinify_already_correct_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let s = interner.get_or_intern("S");
+        let a = interner.get_or_intern("a");
+
+        // T[a+] * S[a-] is already correct — unchanged
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![Index { name: a, variance: Variance::Up, index_type: None }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(s)),
+                vec![Index { name: a, variance: Variance::Down, index_type: None }],
+            ),
+        ]);
+        let result = einsteinify(&expr, None, &interner);
         assert_eq!(result, expr);
     }
 
