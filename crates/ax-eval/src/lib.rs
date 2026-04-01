@@ -1893,6 +1893,30 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "lower_free_indices" | "lower_indices" => {
+            if args.len() == 1 {
+                ax_tensor::lower_free_indices(
+                    &args[0],
+                    &env.index_to_family,
+                    &env.index_families,
+                    interner,
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "raise_free_indices" | "raise_indices" => {
+            if args.len() == 1 {
+                ax_tensor::raise_free_indices(
+                    &args[0],
+                    &env.index_to_family,
+                    &env.index_families,
+                    interner,
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "meld" => {
             if args.len() == 1 {
                 ax_tensor::meld(&args[0], &env.tensor_properties, interner)

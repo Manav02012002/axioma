@@ -177,6 +177,178 @@ fn detect_dummy_pairs(indices: &[ax_ir::Index]) -> Vec<(usize, usize)> {
     pairs
 }
 
+/// Lower all free (non-contracted) upper indices in an expression.
+/// Does not insert a metric; it only flips the variance.
+/// Only affects indices whose family has `position = Free`.
+pub fn lower_free_indices(
+    expr: &ax_ir::Expr,
+    index_to_family: &HashMap<lasso::Spur, lasso::Spur>,
+    index_families: &HashMap<lasso::Spur, ax_ir::IndexFamily>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let _ = interner;
+
+    let mut index_count: HashMap<lasso::Spur, usize> = HashMap::new();
+    count_all_index_names(expr, &mut index_count);
+
+    let free: HashSet<lasso::Spur> = index_count
+        .iter()
+        .filter(|(_, count)| **count == 1)
+        .map(|(name, _)| *name)
+        .collect();
+
+    flip_free_indices(
+        expr,
+        &free,
+        ax_ir::Variance::Up,
+        ax_ir::Variance::Down,
+        index_to_family,
+        index_families,
+    )
+}
+
+/// Raise all free (non-contracted) lower indices in an expression.
+/// Does not insert a metric; it only flips the variance.
+/// Only affects indices whose family has `position = Free`.
+pub fn raise_free_indices(
+    expr: &ax_ir::Expr,
+    index_to_family: &HashMap<lasso::Spur, lasso::Spur>,
+    index_families: &HashMap<lasso::Spur, ax_ir::IndexFamily>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let _ = interner;
+
+    let mut index_count: HashMap<lasso::Spur, usize> = HashMap::new();
+    count_all_index_names(expr, &mut index_count);
+
+    let free: HashSet<lasso::Spur> = index_count
+        .iter()
+        .filter(|(_, count)| **count == 1)
+        .map(|(name, _)| *name)
+        .collect();
+
+    flip_free_indices(
+        expr,
+        &free,
+        ax_ir::Variance::Down,
+        ax_ir::Variance::Up,
+        index_to_family,
+        index_families,
+    )
+}
+
+fn count_all_index_names(expr: &Expr, counts: &mut HashMap<lasso::Spur, usize>) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            count_all_index_names(base, counts);
+            for idx in indices {
+                *counts.entry(idx.name).or_default() += 1;
+            }
+        }
+        Expr::Mul(factors) => {
+            for factor in factors {
+                count_all_index_names(factor, counts);
+            }
+        }
+        Expr::Add(terms) => {
+            for term in terms {
+                count_all_index_names(term, counts);
+            }
+        }
+        Expr::Neg(expr) => count_all_index_names(expr, counts),
+        _ => {}
+    }
+}
+
+fn flip_free_indices(
+    expr: &Expr,
+    free: &HashSet<lasso::Spur>,
+    from_var: ax_ir::Variance,
+    to_var: ax_ir::Variance,
+    index_to_family: &HashMap<lasso::Spur, lasso::Spur>,
+    index_families: &HashMap<lasso::Spur, ax_ir::IndexFamily>,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let new_indices = indices
+                .iter()
+                .map(|idx| {
+                    if free.contains(&idx.name) && idx.variance == from_var {
+                        let allow = index_to_family
+                            .get(&idx.name)
+                            .and_then(|family| index_families.get(family))
+                            .map(|family| family.position == ax_ir::IndexPosition::Free)
+                            .unwrap_or(true);
+
+                        if allow {
+                            ax_ir::Index {
+                                name: idx.name,
+                                variance: to_var.clone(),
+                                index_type: idx.index_type,
+                            }
+                        } else {
+                            idx.clone()
+                        }
+                    } else {
+                        idx.clone()
+                    }
+                })
+                .collect();
+
+            Expr::Indexed(
+                Box::new(flip_free_indices(
+                    base,
+                    free,
+                    from_var.clone(),
+                    to_var.clone(),
+                    index_to_family,
+                    index_families,
+                )),
+                new_indices,
+            )
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| {
+                    flip_free_indices(
+                        factor,
+                        free,
+                        from_var.clone(),
+                        to_var.clone(),
+                        index_to_family,
+                        index_families,
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| {
+                    flip_free_indices(
+                        term,
+                        free,
+                        from_var.clone(),
+                        to_var.clone(),
+                        index_to_family,
+                        index_families,
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(flip_free_indices(
+            inner,
+            free,
+            from_var,
+            to_var,
+            index_to_family,
+            index_families,
+        )),
+        _ => expr.clone(),
+    }
+}
+
 fn canonicalise_product(
     expr: &Expr,
     tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
@@ -4088,5 +4260,112 @@ mod tests {
         assert_eq!(gens.len(), 1);
         assert_eq!(gens[0][0], 1);
         assert_eq!(gens[0][1], 0);
+    }
+
+    #[test]
+    fn lower_free_flips_variance() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![Index {
+                name: mu,
+                variance: Variance::Up,
+                index_type: None,
+            }],
+        );
+
+        let result = lower_free_indices(&expr, &HashMap::new(), &HashMap::new(), &interner);
+        if let Expr::Indexed(_, indices) = &result {
+            assert_eq!(indices[0].variance, Variance::Down);
+        } else {
+            panic!("expected Indexed");
+        }
+    }
+
+    #[test]
+    fn raise_free_flips_variance() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![Index {
+                name: mu,
+                variance: Variance::Down,
+                index_type: None,
+            }],
+        );
+
+        let result = raise_free_indices(&expr, &HashMap::new(), &HashMap::new(), &interner);
+        if let Expr::Indexed(_, indices) = &result {
+            assert_eq!(indices[0].variance, Variance::Up);
+        } else {
+            panic!("expected Indexed");
+        }
+    }
+
+    #[test]
+    fn lower_free_does_not_flip_contracted_index() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: mu,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let result = lower_free_indices(&expr, &HashMap::new(), &HashMap::new(), &interner);
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn lower_free_respects_non_free_family_position() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let spacetime = interner.get_or_intern("spacetime");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![Index {
+                name: mu,
+                variance: Variance::Up,
+                index_type: None,
+            }],
+        );
+
+        let mut index_to_family = HashMap::new();
+        index_to_family.insert(mu, spacetime);
+
+        let mut index_families = HashMap::new();
+        index_families.insert(
+            spacetime,
+            ax_ir::IndexFamily {
+                name: spacetime,
+                values: vec![],
+                position: ax_ir::IndexPosition::Fixed,
+                dimension: None,
+                parent: None,
+            },
+        );
+
+        let result = lower_free_indices(&expr, &index_to_family, &index_families, &interner);
+        assert_eq!(result, expr);
     }
 }
