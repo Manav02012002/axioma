@@ -1665,6 +1665,102 @@ pub fn epsilon_to_delta(
     }
 }
 
+/// Expand a generalised Kronecker delta (more than 2 indices) into a sum
+/// of products of ordinary 2-index deltas.
+pub fn expand_delta(expr: &Expr, delta_sym: lasso::Spur, interner: &ax_ir::Interner) -> Expr {
+    let _ = interner;
+
+    match expr {
+        Expr::Indexed(base, indices) => {
+            if let Expr::Sym(sym) = base.as_ref() {
+                if *sym == delta_sym && indices.len() > 2 && indices.len() % 2 == 0 {
+                    let n = indices.len() / 2;
+                    let upper: Vec<&ax_ir::Index> = indices
+                        .iter()
+                        .filter(|idx| idx.variance == ax_ir::Variance::Up)
+                        .collect();
+                    let lower: Vec<&ax_ir::Index> = indices
+                        .iter()
+                        .filter(|idx| idx.variance == ax_ir::Variance::Down)
+                        .collect();
+
+                    if upper.len() != n || lower.len() != n {
+                        return expr.clone();
+                    }
+
+                    let mut perm: Vec<usize> = (0..n).collect();
+                    let mut terms = Vec::new();
+
+                    loop {
+                        let sign = ax_perm::sign(&perm);
+                        let mut deltas = Vec::with_capacity(n);
+                        for i in 0..n {
+                            deltas.push(Expr::Indexed(
+                                Box::new(Expr::Sym(delta_sym)),
+                                vec![upper[i].clone(), lower[perm[i]].clone()],
+                            ));
+                        }
+
+                        let product = Expr::mul(deltas);
+                        if sign == -1 {
+                            terms.push(Expr::neg(product));
+                        } else {
+                            terms.push(product);
+                        }
+
+                        if !next_permutation_usize(&mut perm) {
+                            break;
+                        }
+                    }
+
+                    return Expr::add(terms);
+                }
+            }
+            expr.clone()
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| expand_delta(factor, delta_sym, interner))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| expand_delta(term, delta_sym, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(expand_delta(inner, delta_sym, interner)),
+        _ => expr.clone(),
+    }
+}
+
+fn next_permutation_usize(arr: &mut [usize]) -> bool {
+    let n = arr.len();
+    if n <= 1 {
+        return false;
+    }
+
+    let mut i = n - 2;
+    loop {
+        if arr[i] < arr[i + 1] {
+            break;
+        }
+        if i == 0 {
+            return false;
+        }
+        i -= 1;
+    }
+
+    let mut j = n - 1;
+    while arr[j] <= arr[i] {
+        j -= 1;
+    }
+    arr.swap(i, j);
+    arr[i + 1..].reverse();
+    true
+}
+
 pub fn canonicalize_indices(
     expr: &ax_ir::Expr,
     properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
@@ -3751,6 +3847,49 @@ mod tests {
         );
         let result = eliminate_kronecker(&expr, delta, &interner);
         assert_eq!(result, Expr::Sym(dim));
+    }
+
+    #[test]
+    fn expand_delta_4_indices() {
+        let interner = ax_ir::Interner::new();
+        let delta = interner.get_or_intern("delta");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(delta)),
+            vec![
+                Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: c,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: d,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let result = expand_delta(&expr, delta, &interner);
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2, "expected 2 terms for 2x2 delta expansion");
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
     }
 
     #[test]

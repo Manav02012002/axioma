@@ -1983,6 +1983,14 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "expand_delta" => {
+            if !args.is_empty() {
+                let delta = interner.get_or_intern("delta");
+                ax_tensor::expand_delta(&args[0], delta, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "eliminate_metric" => {
             if !args.is_empty() {
                 let metric = interner.get_or_intern("g");
