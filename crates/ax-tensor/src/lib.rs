@@ -1944,7 +1944,18 @@ pub fn canonicalize_indices(
                             | ax_ir::TensorProperty::Derivative
                             | ax_ir::TensorProperty::PartialDerivative
                             | ax_ir::TensorProperty::CovariantDerivative
-                            | ax_ir::TensorProperty::Depends(_) => {}
+                            | ax_ir::TensorProperty::Depends(_)
+                            | ax_ir::TensorProperty::Spinor
+                            | ax_ir::TensorProperty::DiracBar
+                            | ax_ir::TensorProperty::GammaMatrixProp
+                            | ax_ir::TensorProperty::Commuting
+                            | ax_ir::TensorProperty::AntiCommuting
+                            | ax_ir::TensorProperty::NonCommuting
+                            | ax_ir::TensorProperty::SortOrder(_)
+                            | ax_ir::TensorProperty::TableauSymmetry { .. }
+                            | ax_ir::TensorProperty::SatisfiesBianchi
+                            | ax_ir::TensorProperty::WeylTensor
+                            | ax_ir::TensorProperty::DifferentialFormDegree(_) => {}
                         }
                     }
                 }

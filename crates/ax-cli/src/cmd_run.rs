@@ -154,6 +154,25 @@ pub fn execute_expr(
     }
 
     if let Expr::Call(f, args) = expr {
+        if interner.resolve(*f) == "__declare_depends" && args.len() == 2 {
+            if let (Expr::Sym(tensor), Expr::List(dep_list)) = (&args[0], &args[1]) {
+                let deps: Vec<_> = dep_list
+                    .iter()
+                    .filter_map(|e| if let Expr::Sym(s) = e { Some(*s) } else { None })
+                    .collect();
+                env.tensor_properties
+                    .entry(*tensor)
+                    .or_default()
+                    .push(ax_ir::TensorProperty::Depends(deps));
+                return Ok(Some(format!(
+                    "attached Depends to {}",
+                    interner.resolve(*tensor)
+                )));
+            }
+        }
+    }
+
+    if let Expr::Call(f, args) = expr {
         if interner.resolve(*f) == "__declare_weight" && args.len() >= 2 {
             if let (Expr::Sym(sym), Expr::Int(w)) = (&args[0], &args[1]) {
                 let label = args.get(2)

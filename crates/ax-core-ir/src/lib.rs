@@ -415,6 +415,35 @@ impl<'a> Cursor<'a> {
             return Ok(Expr::Call(declare_sym, args));
         }
 
+        if self.consume_keyword("depends") {
+            let tensor = self.parse_ident()?;
+            self.skip_ws();
+            let mut deps = Vec::new();
+            if self.eat_if('[') {
+                self.skip_ws();
+                if !self.eat_if(']') {
+                    loop {
+                        deps.push(self.parse_ident()?);
+                        self.skip_ws();
+                        if self.eat_if(',') {
+                            self.skip_ws();
+                            continue;
+                        }
+                        if self.eat_if(']') {
+                            break;
+                        }
+                        return Err(self.error("expected ',' or ']'"));
+                    }
+                }
+            } else {
+                deps.push(self.parse_ident()?);
+            }
+            let declare_sym = self.interner.get_or_intern("__declare_depends");
+            let mut args = vec![Expr::Sym(tensor)];
+            args.push(Expr::List(deps.into_iter().map(Expr::Sym).collect()));
+            return Ok(Expr::Call(declare_sym, args));
+        }
+
         if self.consume_keyword("convention") {
             let field = self.parse_ident()?;
             self.skip_ws();
@@ -1154,5 +1183,37 @@ mod tests {
         let result = lower("import std.gr.schwarzschild", &interner);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         assert!(matches!(result.expr.unwrap(), ax_ir::Expr::Import(_)));
+    }
+
+    #[test]
+    fn parse_spinor_property() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("property psi spinor", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_depends() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("depends A [x, t]", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Some(ax_ir::Expr::Call(f, args)) = result.expr {
+            assert_eq!(interner.resolve(f), "__declare_depends");
+            assert_eq!(args.len(), 2);
+        } else {
+            panic!("expected __declare_depends call");
+        }
+    }
+
+    #[test]
+    fn parse_depends_single() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("depends phi x", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        if let Some(ax_ir::Expr::Call(f, _)) = result.expr {
+            assert_eq!(interner.resolve(f), "__declare_depends");
+        } else {
+            panic!("expected __declare_depends call");
+        }
     }
 }

@@ -555,6 +555,42 @@ pub fn apply_property_declaration(
                 interner.resolve(*tensor)
             ))
         }
+        "spinor" => {
+            entry.push(ax_ir::TensorProperty::Spinor);
+            Some(format!("attached property spinor to {}", interner.resolve(*tensor)))
+        }
+        "dirac_bar" | "diracbar" => {
+            entry.push(ax_ir::TensorProperty::DiracBar);
+            Some(format!("attached property dirac_bar to {}", interner.resolve(*tensor)))
+        }
+        "gamma_matrix" => {
+            entry.push(ax_ir::TensorProperty::GammaMatrixProp);
+            Some(format!("attached property gamma_matrix to {}", interner.resolve(*tensor)))
+        }
+        "commuting" => {
+            entry.push(ax_ir::TensorProperty::Commuting);
+            Some(format!("attached property commuting to {}", interner.resolve(*tensor)))
+        }
+        "anticommuting" | "anti_commuting" => {
+            entry.push(ax_ir::TensorProperty::AntiCommuting);
+            Some(format!("attached property anticommuting to {}", interner.resolve(*tensor)))
+        }
+        "noncommuting" | "non_commuting" => {
+            entry.push(ax_ir::TensorProperty::NonCommuting);
+            Some(format!("attached property noncommuting to {}", interner.resolve(*tensor)))
+        }
+        "bianchi" | "satisfies_bianchi" => {
+            entry.push(ax_ir::TensorProperty::SatisfiesBianchi);
+            Some(format!("attached property satisfies_bianchi to {}", interner.resolve(*tensor)))
+        }
+        "weyl" | "weyl_tensor" => {
+            entry.push(ax_ir::TensorProperty::WeylTensor);
+            Some(format!("attached property weyl_tensor to {}", interner.resolve(*tensor)))
+        }
+        "tableau_symmetry" => {
+            entry.push(ax_ir::TensorProperty::RiemannSymmetry);
+            Some(format!("attached property tableau_symmetry to {}", interner.resolve(*tensor)))
+        }
         _ => None,
     }
 }
@@ -2266,7 +2302,7 @@ fn builtin_call(
         "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => {
             Expr::Call(f, args)
         }
-        "__declare_indices" | "__declare_coordinates" | "__declare_property" | "__declare_weight" => Expr::Call(f, args),
+        "__declare_indices" | "__declare_coordinates" | "__declare_property" | "__declare_weight" | "__declare_depends" => Expr::Call(f, args),
         "grassmann" => Expr::Call(f, args),
         "expand" => {
             if args.len() == 1 {

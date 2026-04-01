@@ -66,6 +66,17 @@ pub enum TensorProperty {
     PartialDerivative,
     CovariantDerivative,
     Depends(Vec<Sym>),
+    Spinor,
+    DiracBar,
+    GammaMatrixProp,
+    Commuting,
+    AntiCommuting,
+    NonCommuting,
+    SortOrder(Vec<Sym>),
+    TableauSymmetry { shape: Vec<usize>, indices: Vec<usize> },
+    SatisfiesBianchi,
+    WeylTensor,
+    DifferentialFormDegree(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
