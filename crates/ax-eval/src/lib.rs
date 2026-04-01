@@ -26,6 +26,9 @@ pub struct Env {
     pub index_to_family: HashMap<lasso::Spur, lasso::Spur>,
     pub tensor_properties: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
     pub convention: ax_ir::Convention,
+    /// Weights assigned to symbols. Map from (symbol, label) to weight value.
+    /// Example: x::Weight(value=1, label=field) → weights[(x, "field")] = 1
+    pub weights: HashMap<(lasso::Spur, String), i64>,
 }
 
 impl Env {
@@ -42,6 +45,7 @@ impl Env {
             index_to_family: HashMap::new(),
             tensor_properties: HashMap::new(),
             convention: ax_ir::Convention::default(),
+            weights: HashMap::new(),
         }
     }
 
@@ -66,6 +70,7 @@ impl Env {
             index_to_family: self.index_to_family.clone(),
             tensor_properties: self.tensor_properties.clone(),
             convention: self.convention.clone(),
+            weights: self.weights.clone(),
         }
     }
 }
@@ -87,6 +92,17 @@ impl ax_tensor::ComponentEvalEnv for Env {
 
     fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
         &self.index_to_family
+    }
+}
+
+fn extract_sym_list(expr: &Expr) -> Vec<lasso::Spur> {
+    match expr {
+        Expr::List(items) => items
+            .iter()
+            .filter_map(|e| if let Expr::Sym(s) = e { Some(*s) } else { None })
+            .collect(),
+        Expr::Sym(s) => vec![*s],
+        _ => vec![],
     }
 }
 
@@ -1960,9 +1976,139 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "unwrap" => {
+            if args.len() == 1 {
+                let deriv_syms: HashSet<lasso::Spur> = env
+                    .tensor_properties
+                    .iter()
+                    .filter(|(_, props)| {
+                        props.iter().any(|p| {
+                            matches!(
+                                p,
+                                ax_ir::TensorProperty::Derivative
+                                    | ax_ir::TensorProperty::PartialDerivative
+                                    | ax_ir::TensorProperty::CovariantDerivative
+                            )
+                        })
+                    })
+                    .map(|(sym, _)| *sym)
+                    .collect();
+                let depends: HashMap<lasso::Spur, Vec<lasso::Spur>> = env
+                    .tensor_properties
+                    .iter()
+                    .filter_map(|(sym, props)| {
+                        for p in props {
+                            if let ax_ir::TensorProperty::Depends(deps) = p {
+                                return Some((*sym, deps.clone()));
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                ax_tensor::unwrap_derivatives(&args[0], &deriv_syms, &depends, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "integrate_by_parts" | "ibp" => {
+            if args.len() >= 2 {
+                if let Expr::Sym(away) = &args[1] {
+                    let deriv_syms: HashSet<lasso::Spur> = env
+                        .tensor_properties
+                        .iter()
+                        .filter(|(_, props)| {
+                            props.iter().any(|p| {
+                                matches!(
+                                    p,
+                                    ax_ir::TensorProperty::Derivative
+                                        | ax_ir::TensorProperty::PartialDerivative
+                                        | ax_ir::TensorProperty::CovariantDerivative
+                                )
+                            })
+                        })
+                        .map(|(sym, _)| *sym)
+                        .collect();
+                    ax_tensor::integrate_by_parts(&args[0], *away, &deriv_syms, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "tensor_distribute" | "tdistribute" => {
             if args.len() == 1 {
                 ax_tensor::tensor_distribute(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "zoom" => {
+            if args.len() == 2 {
+                let (zoomed, remainder) = zoom(&args[0], &args[1], interner);
+                Expr::List(vec![zoomed, remainder])
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "unzoom" => {
+            if args.len() == 2 {
+                unzoom(&args[0], &args[1])
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "take_match" => {
+            if args.len() == 2 {
+                take_match(&args[0], &args[1], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "keep_weight" => {
+            if args.len() >= 2 {
+                if let Expr::Int(w) = &args[1] {
+                    let target = num_traits::ToPrimitive::to_i64(w).unwrap_or(0);
+                    let label = args.get(2)
+                        .and_then(|e| if let Expr::Sym(s) = e {
+                            Some(interner.resolve(*s).to_string())
+                        } else {
+                            None
+                        })
+                        .unwrap_or_default();
+                    ax_tensor::keep_weight(&args[0], target, &env.weights, &label, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "drop_weight" => {
+            if args.len() >= 2 {
+                if let Expr::Int(w) = &args[1] {
+                    let target = num_traits::ToPrimitive::to_i64(w).unwrap_or(0);
+                    let label = args.get(2)
+                        .and_then(|e| if let Expr::Sym(s) = e {
+                            Some(interner.resolve(*s).to_string())
+                        } else {
+                            None
+                        })
+                        .unwrap_or_default();
+                    ax_tensor::drop_weight(&args[0], target, &env.weights, &label, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "split_index" => {
+            if args.len() == 4 {
+                let parents = extract_sym_list(&args[1]);
+                let sub1 = extract_sym_list(&args[2]);
+                let sub2 = extract_sym_list(&args[3]);
+                ax_tensor::split_index(&args[0], &parents, &sub1, &sub2, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -1987,6 +2133,48 @@ fn builtin_call(
             if !args.is_empty() {
                 let delta = interner.get_or_intern("delta");
                 ax_tensor::expand_delta(&args[0], delta, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "symmetrise" | "symmetrize" | "sym" => {
+            if args.len() >= 2 {
+                if let Expr::List(pos_list) = &args[1] {
+                    let positions: Vec<usize> = pos_list
+                        .iter()
+                        .filter_map(|expr| {
+                            if let Expr::Int(n) = expr {
+                                n.to_usize()
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    ax_tensor::symmetrise(&args[0], &positions, false, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "antisymmetrise" | "antisymmetrize" | "asym" => {
+            if args.len() >= 2 {
+                if let Expr::List(pos_list) = &args[1] {
+                    let positions: Vec<usize> = pos_list
+                        .iter()
+                        .filter_map(|expr| {
+                            if let Expr::Int(n) = expr {
+                                n.to_usize()
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    ax_tensor::symmetrise(&args[0], &positions, true, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
             } else {
                 Expr::Call(f, args)
             }
@@ -2078,7 +2266,7 @@ fn builtin_call(
         "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => {
             Expr::Call(f, args)
         }
-        "__declare_indices" | "__declare_coordinates" | "__declare_property" => Expr::Call(f, args),
+        "__declare_indices" | "__declare_coordinates" | "__declare_property" | "__declare_weight" => Expr::Call(f, args),
         "grassmann" => Expr::Call(f, args),
         "expand" => {
             if args.len() == 1 {
@@ -2483,6 +2671,15 @@ fn builtin_call(
             if args.len() == 1 {
                 let contractions = HashMap::new();
                 ax_qm::wick_expand(&args[0], &env.operators, &contractions, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "join_gamma" => {
+            if args.len() == 1 {
+                let gamma_sym = interner.get_or_intern("gamma");
+                let metric_sym = interner.get_or_intern("g");
+                ax_qm::join_gammas_in_expr(&args[0], gamma_sym, metric_sym, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -3089,6 +3286,80 @@ fn builtin_call(
             }
         }
         _ => Expr::Call(f, args),
+    }
+}
+
+/// Focus on sub-expressions matching a pattern.
+/// Returns (matching_terms, remainder) from the top-level sum.
+pub fn zoom(expr: &Expr, pattern: &Expr, interner: &ax_ir::Interner) -> (Expr, Expr) {
+    match expr {
+        Expr::Add(terms) => {
+            let mut matching = Vec::new();
+            let mut non_matching = Vec::new();
+
+            for term in terms {
+                if structurally_contains(term, pattern) {
+                    matching.push(term.clone());
+                } else {
+                    non_matching.push(term.clone());
+                }
+            }
+
+            let zoomed = match matching.len() {
+                0 => Expr::zero(),
+                1 => matching.into_iter().next().unwrap(),
+                _ => Expr::add(matching),
+            };
+            let remainder = match non_matching.len() {
+                0 => Expr::zero(),
+                1 => non_matching.into_iter().next().unwrap(),
+                _ => Expr::add(non_matching),
+            };
+
+            (zoomed, remainder)
+        }
+        _ => (expr.clone(), Expr::zero()),
+    }
+}
+
+/// Restore an expression after zoom by combining zoomed part with remainder.
+pub fn unzoom(zoomed: &Expr, remainder: &Expr) -> Expr {
+    if *remainder == Expr::zero() {
+        zoomed.clone()
+    } else {
+        Expr::add(vec![zoomed.clone(), remainder.clone()])
+    }
+}
+
+/// Keep only terms in a sum that match the given pattern. Discard non-matching terms.
+pub fn take_match(expr: &Expr, pattern: &Expr, interner: &ax_ir::Interner) -> Expr {
+    let (matched, _) = zoom(expr, pattern, interner);
+    matched
+}
+
+fn structurally_contains(expr: &Expr, pattern: &Expr) -> bool {
+    if structurally_matches(expr, pattern) {
+        return true;
+    }
+    match expr {
+        Expr::Mul(factors) => factors.iter().any(|f| structurally_contains(f, pattern)),
+        Expr::Add(terms) => terms.iter().any(|t| structurally_contains(t, pattern)),
+        Expr::Neg(e) => structurally_contains(e, pattern),
+        Expr::Indexed(base, _) => structurally_contains(base, pattern),
+        Expr::Call(_, args) => args.iter().any(|a| structurally_contains(a, pattern)),
+        _ => false,
+    }
+}
+
+fn structurally_matches(expr: &Expr, pattern: &Expr) -> bool {
+    match (expr, pattern) {
+        (Expr::Sym(a), Expr::Sym(b)) => a == b,
+        (Expr::Indexed(base_e, _), Expr::Sym(s)) => {
+            if let Expr::Sym(base_s) = base_e.as_ref() { base_s == s } else { false }
+        }
+        (Expr::Call(f1, _), Expr::Sym(s)) => f1 == s,
+        (Expr::Call(f1, _), Expr::Call(f2, _)) => f1 == f2,
+        _ => false,
     }
 }
 
@@ -3750,5 +4021,69 @@ mod tests {
         let (e, int) = eval_src("subs(diff(f(x), x), x, 0)");
         let pp = ax_ir::pretty_print(&e, &int);
         assert!(!pp.contains("(x") && !pp.contains(" x"), "got: {}", pp);
+    }
+
+    #[test]
+    fn zoom_selects_matching_terms() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+
+        // A + B + C, zoom on B → (B, A + C)
+        let expr = Expr::add(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let (zoomed, remainder) = zoom(&expr, &Expr::Sym(b), &interner);
+        assert_eq!(zoomed, Expr::Sym(b));
+        assert!(
+            matches!(&remainder, Expr::Add(terms) if terms.len() == 2),
+            "expected Add of 2, got: {remainder:?}"
+        );
+    }
+
+    #[test]
+    fn unzoom_restores() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+
+        let result = unzoom(&Expr::Sym(a), &Expr::Sym(b));
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2);
+        } else {
+            panic!("expected Add, got: {result:?}");
+        }
+    }
+
+    #[test]
+    fn take_match_discards_non_matching() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+
+        // A + B + C, take_match on A → A
+        let expr = Expr::add(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let result = take_match(&expr, &Expr::Sym(a), &interner);
+        assert_eq!(result, Expr::Sym(a));
+    }
+
+    #[test]
+    fn zoom_non_sum_returns_whole() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+
+        let expr = Expr::Sym(a);
+        let (zoomed, remainder) = zoom(&expr, &Expr::Sym(a), &interner);
+        assert_eq!(zoomed, expr);
+        assert_eq!(remainder, Expr::zero());
+    }
+
+    #[test]
+    fn unzoom_with_zero_remainder() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+
+        let result = unzoom(&Expr::Sym(a), &Expr::zero());
+        assert_eq!(result, Expr::Sym(a));
     }
 }

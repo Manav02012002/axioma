@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use ax_ir::Expr;
+use ax_ir::{Expr, Index, Variance};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -546,6 +546,218 @@ pub fn outer(a: &[ax_ir::Expr], b: &[ax_ir::Expr]) -> Vec<Vec<ax_ir::Expr>> {
         .collect()
 }
 
+/// Join (contract) a product of gamma matrices.
+///
+/// gamma(a) * gamma(b) → gamma(a, b) + g(a+, b+)
+/// gamma(a) * gamma(b, c) → gamma(a, b, c) + g(a+, b+) * gamma(c) - g(a+, c+) * gamma(b)
+///
+/// Uses the recursive contraction identity.
+pub fn join_gamma_pair(
+    indices1: &[lasso::Spur],
+    indices2: &[lasso::Spur],
+    gamma_sym: lasso::Spur,
+    metric_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    if indices1.is_empty() {
+        return make_gamma(indices2, gamma_sym);
+    }
+    if indices2.is_empty() {
+        return make_gamma(indices1, gamma_sym);
+    }
+
+    let a1 = indices1[0];
+    let rest1 = &indices1[1..];
+
+    if rest1.is_empty() {
+        join_single_with_multi(a1, indices2, gamma_sym, metric_sym, interner)
+    } else {
+        let inner = join_gamma_pair(rest1, indices2, gamma_sym, metric_sym, interner);
+        join_single_with_expr(a1, &inner, gamma_sym, metric_sym, interner)
+    }
+}
+
+fn join_single_with_multi(
+    a: lasso::Spur,
+    bs: &[lasso::Spur],
+    gamma_sym: lasso::Spur,
+    metric_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let mut terms = Vec::new();
+
+    // First term: gamma with all indices combined
+    let mut all = vec![a];
+    all.extend_from_slice(bs);
+    terms.push(make_gamma(&all, gamma_sym));
+
+    // Contraction terms: Σ_k (-1)^k g^{a b_k} γ^{bs \ b_k}
+    for k in 0..bs.len() {
+        let metric = Expr::Indexed(
+            Box::new(Expr::Sym(metric_sym)),
+            vec![
+                Index { name: a, variance: Variance::Up, index_type: None },
+                Index { name: bs[k], variance: Variance::Up, index_type: None },
+            ],
+        );
+
+        let remaining: Vec<lasso::Spur> = bs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != k)
+            .map(|(_, &b)| b)
+            .collect();
+
+        let gamma_part = if remaining.is_empty() {
+            Expr::one()
+        } else {
+            make_gamma(&remaining, gamma_sym)
+        };
+
+        let term = Expr::mul(vec![metric, gamma_part]);
+        if k % 2 == 0 {
+            terms.push(term);
+        } else {
+            terms.push(Expr::neg(term));
+        }
+    }
+
+    Expr::add(terms)
+}
+
+fn join_single_with_expr(
+    a: lasso::Spur,
+    expr: &Expr,
+    gamma_sym: lasso::Spur,
+    metric_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| join_single_with_expr(a, t, gamma_sym, metric_sym, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => {
+            // Find the first gamma factor and join with it
+            for (i, factor) in factors.iter().enumerate() {
+                if let Expr::Call(f, args) = factor {
+                    if *f == gamma_sym {
+                        let gamma_indices: Vec<lasso::Spur> = args
+                            .iter()
+                            .filter_map(|arg| if let Expr::Sym(s) = arg { Some(*s) } else { None })
+                            .collect();
+                        let joined =
+                            join_single_with_multi(a, &gamma_indices, gamma_sym, metric_sym, interner);
+                        let mut rest: Vec<Expr> = factors
+                            .iter()
+                            .enumerate()
+                            .filter(|(j, _)| *j != i)
+                            .map(|(_, f)| f.clone())
+                            .collect();
+                        rest.push(joined);
+                        return Expr::mul(rest);
+                    }
+                }
+            }
+            // No gamma factor found — prepend a single-index gamma
+            let mut new_factors = vec![make_gamma(&[a], gamma_sym)];
+            new_factors.extend(factors.iter().cloned());
+            Expr::mul(new_factors)
+        }
+        Expr::Neg(e) => {
+            Expr::neg(join_single_with_expr(a, e, gamma_sym, metric_sym, interner))
+        }
+        _ => {
+            // Check if expr itself is a gamma call
+            if let Expr::Call(f, args) = expr {
+                if *f == gamma_sym {
+                    let gamma_indices: Vec<lasso::Spur> = args
+                        .iter()
+                        .filter_map(|arg| if let Expr::Sym(s) = arg { Some(*s) } else { None })
+                        .collect();
+                    return join_single_with_multi(
+                        a,
+                        &gamma_indices,
+                        gamma_sym,
+                        metric_sym,
+                        interner,
+                    );
+                }
+            }
+            Expr::mul(vec![make_gamma(&[a], gamma_sym), expr.clone()])
+        }
+    }
+}
+
+fn make_gamma(indices: &[lasso::Spur], gamma_sym: lasso::Spur) -> Expr {
+    Expr::Call(gamma_sym, indices.iter().map(|&i| Expr::Sym(i)).collect())
+}
+
+/// Extract gamma indices from a `gamma(a, b, ...)` Call expression.
+fn gamma_indices(args: &[Expr]) -> Vec<lasso::Spur> {
+    args.iter()
+        .filter_map(|arg| if let Expr::Sym(s) = arg { Some(*s) } else { None })
+        .collect()
+}
+
+/// Walk an expression and join all adjacent gamma-matrix Call nodes in products.
+pub fn join_gammas_in_expr(
+    expr: &Expr,
+    gamma_sym: lasso::Spur,
+    metric_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            // Recursively process each factor first
+            let factors: Vec<Expr> = factors
+                .iter()
+                .map(|f| join_gammas_in_expr(f, gamma_sym, metric_sym, interner))
+                .collect();
+
+            // Now fold adjacent gamma pairs left-to-right
+            let mut result: Vec<Expr> = Vec::new();
+            for factor in factors {
+                if let Some(last) = result.last() {
+                    if let (Expr::Call(f1, a1), Expr::Call(f2, a2)) = (last, &factor) {
+                        if *f1 == gamma_sym && *f2 == gamma_sym {
+                            let i1 = gamma_indices(a1);
+                            let i2 = gamma_indices(a2);
+                            let joined =
+                                join_gamma_pair(&i1, &i2, gamma_sym, metric_sym, interner);
+                            result.pop();
+                            // The joined expression may be an Add — wrap in a group
+                            // by pushing the whole joined expression, then distributing
+                            // remaining factors over it at the end.
+                            result.push(joined);
+                            continue;
+                        }
+                    }
+                }
+                result.push(factor);
+            }
+
+            if result.len() == 1 {
+                result.remove(0)
+            } else {
+                Expr::mul(result)
+            }
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| join_gammas_in_expr(t, gamma_sym, metric_sym, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => {
+            Expr::neg(join_gammas_in_expr(e, gamma_sym, metric_sym, interner))
+        }
+        _ => expr.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,5 +871,69 @@ mod tests {
         let result = normal_order_simple(&expr, &operators, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains("3"), "got: {}", pp);
+    }
+
+    #[test]
+    fn join_two_gammas() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        // γ^a γ^b = γ^{ab} + g^{ab}
+        let result = join_gamma_pair(&[a], &[b], gamma, g, &interner);
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2, "expected γ^{{ab}} + g^{{ab}}, got {terms:?}");
+        } else {
+            panic!("expected Add, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn join_three_gammas() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+
+        // γ^a γ^{bc} = γ^{abc} + g^{ab} γ^c - g^{ac} γ^b
+        let result = join_gamma_pair(&[a], &[b, c], gamma, g, &interner);
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 3, "expected 3 terms, got {terms:?}");
+        } else {
+            panic!("expected Add, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn join_empty_left_is_identity() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+
+        // Identity * γ^a = γ^a
+        let result = join_gamma_pair(&[], &[a], gamma, g, &interner);
+        assert_eq!(result, Expr::Call(gamma, vec![Expr::Sym(a)]));
+    }
+
+    #[test]
+    fn join_gammas_in_product() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        // join_gammas_in_expr(gamma(a) * gamma(b)) → Add(...)
+        let expr = Expr::mul(vec![
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+            Expr::Call(gamma, vec![Expr::Sym(b)]),
+        ]);
+        let result = join_gammas_in_expr(&expr, gamma, g, &interner);
+        assert!(matches!(result, Expr::Add(_)), "expected Add, got {result:?}");
     }
 }

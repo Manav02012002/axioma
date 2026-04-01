@@ -153,6 +153,28 @@ pub fn execute_expr(
         return Ok(Some(message));
     }
 
+    if let Expr::Call(f, args) = expr {
+        if interner.resolve(*f) == "__declare_weight" && args.len() >= 2 {
+            if let (Expr::Sym(sym), Expr::Int(w)) = (&args[0], &args[1]) {
+                let label = args.get(2)
+                    .and_then(|e| if let Expr::Sym(s) = e {
+                        Some(interner.resolve(*s).to_string())
+                    } else {
+                        None
+                    })
+                    .unwrap_or_default();
+                // Convert BigInt to i64 via string parse
+                let weight_val: i64 = w.to_string().parse().unwrap_or(0);
+                env.weights.insert((*sym, label), weight_val);
+                return Ok(Some(format!(
+                    "attached weight {} to {}",
+                    weight_val,
+                    interner.resolve(*sym)
+                )));
+            }
+        }
+    }
+
     if let Expr::Let(name, val, body) = expr {
         let evaled_val = ax_eval::eval(val, env, interner);
         env.bindings.insert(*name, evaled_val.clone());

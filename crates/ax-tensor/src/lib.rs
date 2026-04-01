@@ -1735,6 +1735,96 @@ pub fn expand_delta(expr: &Expr, delta_sym: lasso::Spur, interner: &ax_ir::Inter
     }
 }
 
+/// Symmetrise or antisymmetrise an expression over the given index positions.
+/// Returns the sum over all permutations of those indices, divided by n!.
+pub fn symmetrise(
+    expr: &Expr,
+    positions: &[usize],
+    antisymmetric: bool,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let _ = interner;
+
+    let n = positions.len();
+    if n <= 1 {
+        return expr.clone();
+    }
+
+    let mut perm: Vec<usize> = (0..n).collect();
+    let mut terms = Vec::new();
+    let factorial = (1..=n).product::<usize>();
+
+    loop {
+        let sign = if antisymmetric {
+            ax_perm::sign(&perm)
+        } else {
+            1
+        };
+        let permuted = permute_indices_at_positions(expr, positions, &perm);
+        if sign == -1 {
+            terms.push(Expr::neg(permuted));
+        } else {
+            terms.push(permuted);
+        }
+
+        if !next_permutation_usize(&mut perm) {
+            break;
+        }
+    }
+
+    Expr::mul(vec![
+        Expr::Rational(BigRational::new(
+            1.into(),
+            num_bigint::BigInt::from(factorial),
+        )),
+        Expr::add(terms),
+    ])
+}
+
+fn permute_indices_at_positions(expr: &Expr, positions: &[usize], perm: &[usize]) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let mut new_indices = indices.clone();
+            for (i, &pos) in positions.iter().enumerate() {
+                if pos < indices.len() && perm[i] < positions.len() {
+                    let source_pos = positions[perm[i]];
+                    if source_pos < indices.len() {
+                        new_indices[pos] = ax_ir::Index {
+                            name: indices[source_pos].name,
+                            variance: indices[pos].variance.clone(),
+                            index_type: indices[pos].index_type,
+                        };
+                    }
+                }
+            }
+            Expr::Indexed(base.clone(), new_indices)
+        }
+        Expr::Mul(factors) => {
+            let mut result = factors.clone();
+            let mut idx_offset = 0usize;
+
+            for factor in &mut result {
+                if let Expr::Indexed(_, indices) = factor {
+                    let n_idx = indices.len();
+                    let local_positions: Vec<usize> = positions
+                        .iter()
+                        .copied()
+                        .filter(|pos| *pos >= idx_offset && *pos < idx_offset + n_idx)
+                        .map(|pos| pos - idx_offset)
+                        .collect();
+                    if !local_positions.is_empty() {
+                        *factor = permute_indices_at_positions(factor, &local_positions, perm);
+                    }
+                    idx_offset += n_idx;
+                }
+            }
+
+            Expr::mul(result)
+        }
+        _ => expr.clone(),
+    }
+}
+
 fn next_permutation_usize(arr: &mut [usize]) -> bool {
     let n = arr.len();
     if n <= 1 {
@@ -3536,6 +3626,438 @@ pub fn lie_derivative_vector(
     out
 }
 
+/// Pull non-dependent factors out of derivative operators.
+///
+/// D(a * f(x)) → a * D(f(x))  when a is a constant (not in Depends set).
+///
+/// Also handles:
+/// D(scalar) → 0  when scalar has no indices and is not in the Depends set.
+pub fn unwrap_derivatives(
+    expr: &Expr,
+    derivative_syms: &HashSet<lasso::Spur>,
+    depends: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
+    interner: &Interner,
+) -> Expr {
+    match expr {
+        Expr::Call(f, args) if derivative_syms.contains(f) && args.len() == 1 => {
+            match &args[0] {
+                Expr::Mul(factors) => {
+                    let mut inside = Vec::new();
+                    let mut outside = Vec::new();
+
+                    for factor in factors {
+                        if depends_on_anything(factor, depends) {
+                            inside.push(factor.clone());
+                        } else {
+                            outside.push(factor.clone());
+                        }
+                    }
+
+                    if outside.is_empty() {
+                        // Everything depends, can't unwrap — recurse into factors
+                        Expr::Call(
+                            *f,
+                            vec![Expr::mul(
+                                factors
+                                    .iter()
+                                    .map(|fac| {
+                                        unwrap_derivatives(fac, derivative_syms, depends, interner)
+                                    })
+                                    .collect(),
+                            )],
+                        )
+                    } else if inside.is_empty() {
+                        // Nothing depends — derivative of constant is zero
+                        Expr::zero()
+                    } else {
+                        // Pull out the non-dependent factors
+                        let deriv_part = Expr::Call(*f, vec![Expr::mul(inside)]);
+                        outside.push(deriv_part);
+                        Expr::mul(outside)
+                    }
+                }
+                // Derivative of a non-dependent symbol
+                Expr::Sym(s) if !depends.contains_key(s) => Expr::zero(),
+                // Derivative of a numeric literal
+                Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Expr::zero(),
+                // Recurse into anything else
+                other => {
+                    let inner =
+                        unwrap_derivatives(other, derivative_syms, depends, interner);
+                    Expr::Call(*f, vec![inner])
+                }
+            }
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| unwrap_derivatives(t, derivative_syms, depends, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|fac| unwrap_derivatives(fac, derivative_syms, depends, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => {
+            Expr::neg(unwrap_derivatives(e, derivative_syms, depends, interner))
+        }
+        _ => expr.clone(),
+    }
+}
+
+fn depends_on_anything(
+    expr: &Expr,
+    depends: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
+) -> bool {
+    match expr {
+        Expr::Sym(s) => depends.contains_key(s),
+        Expr::Indexed(base, _) => {
+            if let Expr::Sym(s) = base.as_ref() {
+                depends.contains_key(s)
+            } else {
+                true
+            }
+        }
+        Expr::Call(_, args) => args.iter().any(|a| depends_on_anything(a, depends)),
+        Expr::Mul(factors) => factors.iter().any(|f| depends_on_anything(f, depends)),
+        Expr::Add(terms) => terms.iter().any(|t| depends_on_anything(t, depends)),
+        Expr::Neg(e) => depends_on_anything(e, depends),
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
+        _ => true, // conservative: assume it depends
+    }
+}
+
+/// Perform integration by parts on a product inside an integral.
+/// Moves derivatives away from `away_from` and onto other factors.
+///
+/// D(A) * B * C → -A * D(B) * C - A * B * D(C)
+///
+/// The `integral` wrapper is not represented explicitly — we assume the whole expression
+/// is inside an integral and boundary terms vanish.
+pub fn integrate_by_parts(
+    expr: &Expr,
+    away_from: lasso::Spur,
+    derivative_syms: &HashSet<lasso::Spur>,
+    interner: &Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            // Find the first derivative acting on a term that contains `away_from`
+            for (i, factor) in factors.iter().enumerate() {
+                if let Expr::Call(d, args) = factor {
+                    if derivative_syms.contains(d) && args.len() == 1 {
+                        if contains_sym(&args[0], away_from) {
+                            let inner = args[0].clone();
+                            let other_factors: Vec<Expr> = factors
+                                .iter()
+                                .enumerate()
+                                .filter(|(j, _)| *j != i)
+                                .map(|(_, f)| f.clone())
+                                .collect();
+
+                            let mut ibp_terms = Vec::new();
+                            for k in 0..other_factors.len() {
+                                let mut new_factors = vec![inner.clone()];
+                                for (l, f) in other_factors.iter().enumerate() {
+                                    if l == k {
+                                        new_factors.push(Expr::Call(*d, vec![f.clone()]));
+                                    } else {
+                                        new_factors.push(f.clone());
+                                    }
+                                }
+                                ibp_terms.push(Expr::neg(Expr::mul(new_factors)));
+                            }
+
+                            return Expr::add(ibp_terms);
+                        }
+                    }
+                }
+            }
+            expr.clone()
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| integrate_by_parts(t, away_from, derivative_syms, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => {
+            Expr::neg(integrate_by_parts(e, away_from, derivative_syms, interner))
+        }
+        _ => expr.clone(),
+    }
+}
+
+/// Compute the total weight of an expression under the given label.
+///
+/// - Sym: look up (s, label) in weights; default 0 if absent.
+/// - Numeric literals: weight 0.
+/// - Mul: sum of factor weights.
+/// - Pow(base, Int(n)): weight(base) * n.
+/// - Add: all terms must share the same weight; returns None if they differ.
+/// - Neg: same weight as inner.
+/// - Indexed: weight of the base symbol.
+pub fn compute_weight(
+    expr: &Expr,
+    weights: &HashMap<(lasso::Spur, String), i64>,
+    label: &str,
+    interner: &Interner,
+) -> Option<i64> {
+    match expr {
+        Expr::Sym(s) => Some(weights.get(&(*s, label.to_string())).copied().unwrap_or(0)),
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Some(0),
+        Expr::Neg(e) => compute_weight(e, weights, label, interner),
+        Expr::Indexed(base, _) => compute_weight(base, weights, label, interner),
+        Expr::Mul(factors) => {
+            let mut total = 0i64;
+            for f in factors {
+                total += compute_weight(f, weights, label, interner)?;
+            }
+            Some(total)
+        }
+        Expr::Pow(base, exp) => {
+            let base_w = compute_weight(base, weights, label, interner)?;
+            if let Expr::Int(n) = exp.as_ref() {
+                use num_traits::ToPrimitive;
+                let n = n.to_i64()?;
+                Some(base_w * n)
+            } else {
+                // Non-integer exponent: can't determine weight statically
+                None
+            }
+        }
+        Expr::Add(terms) => {
+            let mut common: Option<i64> = None;
+            for t in terms {
+                let w = compute_weight(t, weights, label, interner)?;
+                match common {
+                    None => common = Some(w),
+                    Some(c) if c == w => {}
+                    _ => return None,
+                }
+            }
+            common.or(Some(0))
+        }
+        // For anything else (Call, etc.) conservatively return None
+        _ => None,
+    }
+}
+
+/// Keep only terms with the specified weight.
+pub fn keep_weight(
+    expr: &Expr,
+    target_weight: i64,
+    weights: &HashMap<(lasso::Spur, String), i64>,
+    label: &str,
+    interner: &Interner,
+) -> Expr {
+    match expr {
+        Expr::Add(terms) => {
+            let kept: Vec<Expr> = terms
+                .iter()
+                .filter(|t| {
+                    compute_weight(t, weights, label, interner) == Some(target_weight)
+                })
+                .cloned()
+                .collect();
+            if kept.is_empty() { Expr::zero() } else { Expr::add(kept) }
+        }
+        _ => {
+            if compute_weight(expr, weights, label, interner) == Some(target_weight) {
+                expr.clone()
+            } else {
+                Expr::zero()
+            }
+        }
+    }
+}
+
+/// Drop terms with the specified weight.
+pub fn drop_weight(
+    expr: &Expr,
+    target_weight: i64,
+    weights: &HashMap<(lasso::Spur, String), i64>,
+    label: &str,
+    interner: &Interner,
+) -> Expr {
+    match expr {
+        Expr::Add(terms) => {
+            let kept: Vec<Expr> = terms
+                .iter()
+                .filter(|t| {
+                    compute_weight(t, weights, label, interner) != Some(target_weight)
+                })
+                .cloned()
+                .collect();
+            if kept.is_empty() { Expr::zero() } else { Expr::add(kept) }
+        }
+        _ => {
+            if compute_weight(expr, weights, label, interner) == Some(target_weight) {
+                Expr::zero()
+            } else {
+                expr.clone()
+            }
+        }
+    }
+}
+
+/// Given component rules for a metric, compute component rules for its inverse.
+///
+/// Input: rules for g_{ij} components.
+/// Output: additional rules for g^{ij} (inverse metric components).
+pub fn complete_inverse_metric(
+    metric_rules: &[ComponentRule],
+    metric_sym: lasso::Spur,
+    inv_metric_sym: lasso::Spur,
+    coordinates: &[lasso::Spur],
+    interner: &Interner,
+) -> Vec<ComponentRule> {
+    let dim = coordinates.len();
+
+    let mut g = SymbolicMatrix::new(dim);
+    for rule in metric_rules {
+        if rule.tensor != metric_sym { continue; }
+        if rule.indices.len() != 2 { continue; }
+
+        let i = coordinates.iter().position(|c| *c == rule.indices[0].0);
+        let j = coordinates.iter().position(|c| *c == rule.indices[1].0);
+
+        if let (Some(i), Some(j)) = (i, j) {
+            g.set(i, j, rule.value.clone());
+            if i != j {
+                g.set(j, i, rule.value.clone());
+            }
+        }
+    }
+
+    let ginv = g.symbolic_inverse(interner);
+
+    let mut result = Vec::new();
+    for i in 0..dim {
+        for j in 0..dim {
+            let value = simplify_expr(ginv.get(i, j).clone(), interner);
+            if value != Expr::zero() {
+                result.push(ComponentRule {
+                    tensor: inv_metric_sym,
+                    indices: vec![
+                        (coordinates[i], ax_ir::Variance::Up),
+                        (coordinates[j], ax_ir::Variance::Up),
+                    ],
+                    value,
+                });
+            }
+        }
+    }
+
+    result
+}
+
+/// Split indices of a given family into two sub-families.
+///
+/// Every occurrence of an index whose name is in `parent_indices` is replaced
+/// by a sum over terms using `sub1_indices` and `sub2_indices`.
+///
+/// For a single free index position carrying a parent index, two terms are
+/// produced: one with the sub1 replacement, one with sub2.  For n positions,
+/// 2^n terms are produced (all combinations).
+pub fn split_index(
+    expr: &Expr,
+    parent_indices: &[lasso::Spur],
+    sub1_indices: &[lasso::Spur],
+    sub2_indices: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let split_positions: Vec<usize> = indices
+                .iter()
+                .enumerate()
+                .filter(|(_, idx)| parent_indices.contains(&idx.name))
+                .map(|(i, _)| i)
+                .collect();
+
+            if split_positions.is_empty() {
+                return Expr::Indexed(
+                    Box::new(split_index(
+                        base,
+                        parent_indices,
+                        sub1_indices,
+                        sub2_indices,
+                        interner,
+                    )),
+                    indices.clone(),
+                );
+            }
+
+            let n = split_positions.len();
+            let total = 1usize << n;
+            let mut terms = Vec::new();
+
+            for combo in 0..total {
+                let mut new_indices = indices.clone();
+                let mut valid = true;
+                for (bit, &pos) in split_positions.iter().enumerate() {
+                    let sub = if (combo >> bit) & 1 == 0 {
+                        sub1_indices
+                    } else {
+                        sub2_indices
+                    };
+                    if sub.is_empty() {
+                        valid = false;
+                        break;
+                    }
+                    // Cycle through sub-indices if there are fewer than positions
+                    let sub_name = sub[bit % sub.len()];
+                    new_indices[pos] = ax_ir::Index {
+                        name: sub_name,
+                        variance: indices[pos].variance.clone(),
+                        index_type: indices[pos].index_type,
+                    };
+                }
+                if valid {
+                    terms.push(Expr::Indexed(base.clone(), new_indices));
+                }
+            }
+
+            Expr::add(terms)
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| split_index(f, parent_indices, sub1_indices, sub2_indices, interner))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| split_index(t, parent_indices, sub1_indices, sub2_indices, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(split_index(
+            e,
+            parent_indices,
+            sub1_indices,
+            sub2_indices,
+            interner,
+        )),
+        _ => expr.clone(),
+    }
+}
+
+fn contains_sym(expr: &Expr, sym: lasso::Spur) -> bool {
+    match expr {
+        Expr::Sym(s) => *s == sym,
+        Expr::Indexed(base, _) => contains_sym(base, sym),
+        Expr::Call(f, args) => *f == sym || args.iter().any(|a| contains_sym(a, sym)),
+        Expr::Mul(factors) => factors.iter().any(|f| contains_sym(f, sym)),
+        Expr::Add(terms) => terms.iter().any(|t| contains_sym(t, sym)),
+        Expr::Neg(e) => contains_sym(e, sym),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3890,6 +4412,59 @@ mod tests {
         } else {
             panic!("expected Add, got {:?}", result);
         }
+    }
+
+    #[test]
+    fn symmetrise_2_tensor() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let result = symmetrise(&expr, &[0, 1], false, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("T"), "got: {}", pp);
+    }
+
+    #[test]
+    fn antisymmetrise_gives_zero_for_symmetric() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let t = interner.get_or_intern("T");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let result = symmetrise(&expr, &[0, 1], true, &interner);
+        let simplified = ax_eval::eval(&result, &ax_eval::Env::new(), &interner);
+        assert_eq!(simplified, Expr::zero());
     }
 
     #[test]
@@ -4505,6 +5080,273 @@ mod tests {
         );
 
         let result = lower_free_indices(&expr, &index_to_family, &index_families, &interner);
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn unwrap_pulls_constant_out() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("D");
+        let a = interner.get_or_intern("a");
+        let phi = interner.get_or_intern("phi");
+
+        let mut derivs = HashSet::new();
+        derivs.insert(d);
+        let mut depends = HashMap::new();
+        depends.insert(phi, vec![]); // phi is in the depends map → it depends on something
+        // a is NOT in depends → it's a constant
+
+        // D(a * phi) → a * D(phi)
+        let expr = Expr::Call(
+            d,
+            vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(phi)])],
+        );
+        let result = unwrap_derivatives(&expr, &derivs, &depends, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        // a should be outside the derivative
+        assert!(pp.contains('a'), "got: {pp}");
+    }
+
+    #[test]
+    fn unwrap_constant_gives_zero() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("D");
+
+        let mut derivs = HashSet::new();
+        derivs.insert(d);
+        let depends = HashMap::new();
+
+        // D(5) → 0
+        let expr = Expr::Call(d, vec![Expr::Int(5.into())]);
+        let result = unwrap_derivatives(&expr, &derivs, &depends, &interner);
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn ibp_moves_derivative() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("D");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+
+        let mut derivs = HashSet::new();
+        derivs.insert(d);
+
+        // D(A) * B → -A * D(B)
+        let expr = Expr::mul(vec![
+            Expr::Call(d, vec![Expr::Sym(a)]),
+            Expr::Sym(b),
+        ]);
+        let result = integrate_by_parts(&expr, a, &derivs, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains('B') && pp.contains('A'), "got: {pp}");
+    }
+
+    #[test]
+    fn ibp_three_factor_product() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("D");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+
+        let mut derivs = HashSet::new();
+        derivs.insert(d);
+
+        // D(A) * B * C → -A * D(B) * C - A * B * D(C)
+        let expr = Expr::mul(vec![
+            Expr::Call(d, vec![Expr::Sym(a)]),
+            Expr::Sym(b),
+            Expr::Sym(c),
+        ]);
+        let result = integrate_by_parts(&expr, a, &derivs, &interner);
+        // Result should be a sum of two negated terms
+        assert!(matches!(result, Expr::Add(_)), "expected Add, got: {result:?}");
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains('B') && pp.contains('C'), "got: {pp}");
+    }
+
+    #[test]
+    fn weight_computation() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        let mut weights = HashMap::new();
+        weights.insert((x, String::new()), 1i64);
+        weights.insert((y, String::new()), 2i64);
+
+        // x * y has weight 3
+        let expr = Expr::mul(vec![Expr::Sym(x), Expr::Sym(y)]);
+        assert_eq!(compute_weight(&expr, &weights, "", &interner), Some(3));
+
+        // x^2 has weight 2
+        let expr2 = Expr::pow(Expr::Sym(x), Expr::Int(2.into()));
+        assert_eq!(compute_weight(&expr2, &weights, "", &interner), Some(2));
+    }
+
+    #[test]
+    fn keep_weight_filters() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        let mut weights = HashMap::new();
+        weights.insert((x, String::new()), 1i64);
+        weights.insert((y, String::new()), 2i64);
+
+        // x + y: keep weight=1 → x only
+        let expr = Expr::add(vec![Expr::Sym(x), Expr::Sym(y)]);
+        let result = keep_weight(&expr, 1, &weights, "", &interner);
+        assert_eq!(result, Expr::Sym(x));
+    }
+
+    #[test]
+    fn drop_weight_filters() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        let mut weights = HashMap::new();
+        weights.insert((x, String::new()), 1i64);
+        weights.insert((y, String::new()), 2i64);
+
+        // x + y: drop weight=1 → y only
+        let expr = Expr::add(vec![Expr::Sym(x), Expr::Sym(y)]);
+        let result = drop_weight(&expr, 1, &weights, "", &interner);
+        assert_eq!(result, Expr::Sym(y));
+    }
+
+    #[test]
+    fn weight_add_mixed_returns_none() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        let mut weights = HashMap::new();
+        weights.insert((x, String::new()), 1i64);
+        weights.insert((y, String::new()), 2i64);
+
+        // x + y has no single weight
+        let expr = Expr::add(vec![Expr::Sym(x), Expr::Sym(y)]);
+        assert_eq!(compute_weight(&expr, &weights, "", &interner), None);
+    }
+
+    #[test]
+    fn complete_diagonal_metric() {
+        let interner = ax_ir::Interner::new();
+        let g_sym = interner.get_or_intern("g");
+        let ginv_sym = interner.get_or_intern("ginv");
+        let t = interner.get_or_intern("t");
+        let r = interner.get_or_intern("r");
+
+        let rules = vec![
+            ComponentRule {
+                tensor: g_sym,
+                indices: vec![(t, ax_ir::Variance::Down), (t, ax_ir::Variance::Down)],
+                value: Expr::Int((-1).into()),
+            },
+            ComponentRule {
+                tensor: g_sym,
+                indices: vec![(r, ax_ir::Variance::Down), (r, ax_ir::Variance::Down)],
+                value: Expr::Int(1.into()),
+            },
+        ];
+
+        let inv_rules = complete_inverse_metric(&rules, g_sym, ginv_sym, &[t, r], &interner);
+
+        // g^{tt} = -1, g^{rr} = 1
+        assert!(
+            inv_rules.iter().any(|rule| rule.indices
+                == vec![(t, ax_ir::Variance::Up), (t, ax_ir::Variance::Up)]
+                && rule.value == Expr::Int((-1).into())),
+            "missing g^tt = -1, got: {inv_rules:?}"
+        );
+        assert!(
+            inv_rules.iter().any(|rule| rule.indices
+                == vec![(r, ax_ir::Variance::Up), (r, ax_ir::Variance::Up)]
+                && rule.value == Expr::Int(1.into())),
+            "missing g^rr = 1, got: {inv_rules:?}"
+        );
+    }
+
+    #[test]
+    fn ibp_no_derivative_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("D");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+
+        let mut derivs = HashSet::new();
+        derivs.insert(d);
+
+        // A * B (no derivative) → unchanged
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
+        let result = integrate_by_parts(&expr, a, &derivs, &interner);
+        assert_eq!(result, expr);
+    }
+
+    #[test]
+    fn split_single_index() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let t0 = interner.get_or_intern("0");
+        let i = interner.get_or_intern("i");
+
+        // T[mu-] split mu → {0} + {i}  gives T[0-] + T[i-]
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![Index { name: mu, variance: Variance::Down, index_type: None }],
+        );
+        let result = split_index(&expr, &[mu], &[t0], &[i], &interner);
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2, "expected 2 terms, got: {terms:?}");
+        } else {
+            panic!("expected Add, got: {result:?}");
+        }
+    }
+
+    #[test]
+    fn split_two_indices() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+        let t0 = interner.get_or_intern("t0");
+        let i = interner.get_or_intern("i");
+
+        // T[mu- nu-] with both mu and nu split → 4 terms
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![
+                Index { name: mu, variance: Variance::Down, index_type: None },
+                Index { name: nu, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let result = split_index(&expr, &[mu, nu], &[t0], &[i], &interner);
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 4, "expected 4 terms, got: {terms:?}");
+        } else {
+            panic!("expected Add, got: {result:?}");
+        }
+    }
+
+    #[test]
+    fn split_no_matching_index_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+        let t0 = interner.get_or_intern("t0");
+        let i = interner.get_or_intern("i");
+
+        // T[nu-] doesn't contain mu — unchanged
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![Index { name: nu, variance: Variance::Down, index_type: None }],
+        );
+        let result = split_index(&expr, &[mu], &[t0], &[i], &interner);
         assert_eq!(result, expr);
     }
 }

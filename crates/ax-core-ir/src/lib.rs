@@ -396,6 +396,25 @@ impl<'a> Cursor<'a> {
             ));
         }
 
+        if self.consume_keyword("weight") {
+            let sym = self.parse_ident()?;
+            self.skip_ws();
+            // Parse optional leading minus for negative weights
+            let neg = self.eat_if('-');
+            let num_expr = self.parse_number()?;
+            let weight_expr = if neg { Expr::neg(num_expr) } else { num_expr };
+            self.skip_ws();
+            // Optional label=name
+            let mut args = vec![Expr::Sym(sym), weight_expr];
+            if self.rest().starts_with("label=") {
+                self.pos += "label=".len();
+                let label = self.parse_ident()?;
+                args.push(Expr::Sym(label));
+            }
+            let declare_sym = self.interner.get_or_intern("__declare_weight");
+            return Ok(Expr::Call(declare_sym, args));
+        }
+
         if self.consume_keyword("convention") {
             let field = self.parse_ident()?;
             self.skip_ws();
