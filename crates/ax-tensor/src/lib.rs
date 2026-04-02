@@ -2843,6 +2843,88 @@ pub fn eliminate_metric(
     }
 }
 
+/// Eliminate vielbein objects by performing index contractions.
+///
+/// `e^{a}_{μ} * T^{μ}` → `T^{a}`
+///
+/// Structurally identical to `eliminate_metric` but operates on vielbein
+/// (and inverse-vielbein) symbols that convert between two index families,
+/// e.g. tangent-space index `a` and spacetime index `μ`.
+pub fn eliminate_vielbein(
+    expr: &Expr,
+    vielbein_sym: lasso::Spur,
+    inv_vielbein_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut remaining = factors.clone();
+            let mut changed = true;
+            while changed {
+                changed = false;
+                'outer: for i in 0..remaining.len() {
+                    if let Expr::Indexed(base, indices) = &remaining[i].clone() {
+                        if let Expr::Sym(s) = base.as_ref() {
+                            let is_vb = *s == vielbein_sym || *s == inv_vielbein_sym;
+                            if !is_vb || indices.len() != 2 {
+                                continue;
+                            }
+
+                            for idx_pos in 0..2 {
+                                let contract_idx = &indices[idx_pos];
+                                let replace_idx = &indices[1 - idx_pos];
+                                let target_var = match contract_idx.variance {
+                                    ax_ir::Variance::Up => ax_ir::Variance::Down,
+                                    ax_ir::Variance::Down => ax_ir::Variance::Up,
+                                };
+
+                                for j in 0..remaining.len() {
+                                    if i == j {
+                                        continue;
+                                    }
+                                    if has_index_with_variance(
+                                        &remaining[j],
+                                        contract_idx.name,
+                                        &target_var,
+                                    ) {
+                                        remaining[j] = replace_index_with_variance(
+                                            &remaining[j],
+                                            contract_idx.name,
+                                            &target_var,
+                                            replace_idx.name,
+                                            &replace_idx.variance,
+                                        );
+                                        remaining.remove(i);
+                                        changed = true;
+                                        break 'outer;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Expr::mul(
+                remaining
+                    .into_iter()
+                    .map(|f| eliminate_vielbein(&f, vielbein_sym, inv_vielbein_sym, interner))
+                    .collect(),
+            )
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| eliminate_vielbein(t, vielbein_sym, inv_vielbein_sym, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => {
+            Expr::neg(eliminate_vielbein(e, vielbein_sym, inv_vielbein_sym, interner))
+        }
+        _ => expr.clone(),
+    }
+}
+
 pub fn diff_component(
     expr: &ax_ir::Expr,
     coord: lasso::Spur,
@@ -6890,6 +6972,174 @@ mod tests {
                 assert!(
                     matches!(term, Expr::Mul(_)),
                     "each sum term should be a Mul after rewriting, got {:?}",
+                    term
+                );
+            }
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    // ── eliminate_vielbein tests ──────────────────────────────────────────────
+
+    #[test]
+    fn vielbein_contracts() {
+        let interner = ax_ir::Interner::new();
+        let e = interner.get_or_intern("e");
+        let einv = interner.get_or_intern("einv");
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let mu = interner.get_or_intern("mu");
+
+        // e[a+, mu-] * T[mu+] → T[a+]
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(e)),
+                vec![
+                    Index { name: a, variance: Variance::Up, index_type: None },
+                    Index { name: mu, variance: Variance::Down, index_type: None },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![Index { name: mu, variance: Variance::Up, index_type: None }],
+            ),
+        ]);
+        let result = eliminate_vielbein(&expr, e, einv, &interner);
+        if let Expr::Indexed(base, indices) = &result {
+            assert_eq!(**base, Expr::Sym(t));
+            assert_eq!(indices[0].name, a);
+            assert_eq!(indices[0].variance, Variance::Up);
+        } else {
+            panic!("expected Indexed, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn inv_vielbein_contracts() {
+        // einv[mu+, a-] * T[a+] → T[mu+]
+        let interner = ax_ir::Interner::new();
+        let e = interner.get_or_intern("e");
+        let einv = interner.get_or_intern("einv");
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let mu = interner.get_or_intern("mu");
+
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(einv)),
+                vec![
+                    Index { name: mu, variance: Variance::Up, index_type: None },
+                    Index { name: a, variance: Variance::Down, index_type: None },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![Index { name: a, variance: Variance::Up, index_type: None }],
+            ),
+        ]);
+        let result = eliminate_vielbein(&expr, e, einv, &interner);
+        if let Expr::Indexed(base, indices) = &result {
+            assert_eq!(**base, Expr::Sym(t));
+            assert_eq!(indices[0].name, mu);
+        } else {
+            panic!("expected Indexed, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn vielbein_two_indices_chained() {
+        // e[a+, mu-] * e[b+, nu-] * T[mu+, nu+] → T[a+, b+]
+        let interner = ax_ir::Interner::new();
+        let e = interner.get_or_intern("e");
+        let einv = interner.get_or_intern("einv");
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+
+        let mk_e = |up, dn| Expr::Indexed(
+            Box::new(Expr::Sym(e)),
+            vec![
+                Index { name: up, variance: Variance::Up, index_type: None },
+                Index { name: dn, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let expr = Expr::mul(vec![
+            mk_e(a, mu),
+            mk_e(b, nu),
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![
+                    Index { name: mu, variance: Variance::Up, index_type: None },
+                    Index { name: nu, variance: Variance::Up, index_type: None },
+                ],
+            ),
+        ]);
+        let result = eliminate_vielbein(&expr, e, einv, &interner);
+        if let Expr::Indexed(base, indices) = &result {
+            assert_eq!(**base, Expr::Sym(t));
+            assert_eq!(indices.len(), 2);
+            let names: Vec<lasso::Spur> = indices.iter().map(|i| i.name).collect();
+            assert!(names.contains(&a) && names.contains(&b), "expected a and b, got {:?}", names);
+        } else {
+            panic!("expected Indexed T[a+,b+], got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn vielbein_no_contraction_unchanged() {
+        // e[a+, mu-] alone — nothing to contract with, unchanged
+        let interner = ax_ir::Interner::new();
+        let e = interner.get_or_intern("e");
+        let einv = interner.get_or_intern("einv");
+        let a = interner.get_or_intern("a");
+        let mu = interner.get_or_intern("mu");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(e)),
+            vec![
+                Index { name: a, variance: Variance::Up, index_type: None },
+                Index { name: mu, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let result = eliminate_vielbein(&expr, e, einv, &interner);
+        assert_eq!(result, expr, "lone vielbein with no contraction partner should be unchanged");
+    }
+
+    #[test]
+    fn vielbein_distributes_over_add() {
+        let interner = ax_ir::Interner::new();
+        let e = interner.get_or_intern("e");
+        let einv = interner.get_or_intern("einv");
+        let t = interner.get_or_intern("T");
+        let s = interner.get_or_intern("S");
+        let a = interner.get_or_intern("a");
+        let mu = interner.get_or_intern("mu");
+
+        let mk_term = |sym| Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(e)),
+                vec![
+                    Index { name: a, variance: Variance::Up, index_type: None },
+                    Index { name: mu, variance: Variance::Down, index_type: None },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(sym)),
+                vec![Index { name: mu, variance: Variance::Up, index_type: None }],
+            ),
+        ]);
+        let expr = Expr::add(vec![mk_term(t), mk_term(s)]);
+        let result = eliminate_vielbein(&expr, e, einv, &interner);
+
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2);
+            for term in terms {
+                assert!(
+                    matches!(term, Expr::Indexed(..)),
+                    "each term should be a contracted T[a+] or S[a+], got {:?}",
                     term
                 );
             }

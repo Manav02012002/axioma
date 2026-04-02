@@ -2312,6 +2312,15 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "eliminate_vielbein" => {
+            if !args.is_empty() {
+                let vb = interner.get_or_intern("e");
+                let ivb = interner.get_or_intern("einv");
+                ax_tensor::eliminate_vielbein(&args[0], vb, ivb, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "epsilon_to_delta" => {
             if !args.is_empty() {
                 let eps = interner.get_or_intern("epsilon");
