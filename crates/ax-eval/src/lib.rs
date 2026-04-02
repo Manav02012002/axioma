@@ -2321,6 +2321,28 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "decompose" => {
+            if args.len() >= 2 {
+                if let Expr::List(basis_exprs) = &args[1] {
+                    ax_tensor::decompose(&args[0], basis_exprs, &env.tensor_properties, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "decompose_product" => {
+            if !args.is_empty() {
+                let dim = args
+                    .get(1)
+                    .and_then(|e| if let Expr::Int(n) = e { n.to_usize() } else { None })
+                    .unwrap_or(4);
+                ax_tensor::decompose_product(&args[0], dim, &env.tensor_properties, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "epsilon_to_delta" => {
             if !args.is_empty() {
                 let eps = interner.get_or_intern("epsilon");

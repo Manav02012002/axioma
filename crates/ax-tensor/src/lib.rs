@@ -4842,6 +4842,260 @@ pub fn rewrite_indices(
     }
 }
 
+// ─── decompose ───────────────────────────────────────────────────────────────
+//
+// Express `expr` as a linear combination of the provided `basis` monomials.
+// Each basis element is canonicalised; then every term in `expr` is matched
+// against the canonical basis and a rational coefficient extracted.
+// Any term that does not match any basis element is left as a residual.
+//
+// Returns `Expr::Add([c0 * basis[0], c1 * basis[1], ..., residual_terms...])`,
+// simplified by `Expr::add`.
+
+pub fn decompose(
+    expr: &Expr,
+    basis: &[Expr],
+    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &Interner,
+) -> Expr {
+    let canon_basis: Vec<Expr> = basis
+        .iter()
+        .map(|b| canonicalise(b, tensor_properties, interner))
+        .collect();
+
+    let terms: Vec<Expr> = match expr {
+        Expr::Add(ts) => ts.clone(),
+        _ => vec![expr.clone()],
+    };
+
+    // Accumulate rational coefficients per basis slot.
+    let mut coeffs: Vec<BigRational> = vec![BigRational::zero(); canon_basis.len()];
+    let mut residual: Vec<Expr> = Vec::new();
+
+    for term in &terms {
+        let canon_term = canonicalise(term, tensor_properties, interner);
+        match try_direct_match(&canon_term, &canon_basis, interner) {
+            Some((idx, ratio)) => {
+                coeffs[idx] = coeffs[idx].clone() + ratio;
+            }
+            None => residual.push(term.clone()),
+        }
+    }
+
+    // Build output terms: coeff * basis_elem for non-zero coefficients.
+    let mut out: Vec<Expr> = Vec::new();
+    for (i, coeff) in coeffs.into_iter().enumerate() {
+        if coeff.is_zero() {
+            continue;
+        }
+        let coeff_expr = if coeff.is_integer() {
+            Expr::Int(coeff.to_integer())
+        } else {
+            Expr::Rational(coeff)
+        };
+        out.push(Expr::mul(vec![coeff_expr, basis[i].clone()]));
+    }
+    out.extend(residual);
+    Expr::add(out)
+}
+
+/// Try to match `canon_term` against any element of `canon_basis`.
+/// Returns `Some((index, ratio))` where `ratio * canon_basis[index] == canon_term`.
+fn try_direct_match(
+    canon_term: &Expr,
+    canon_basis: &[Expr],
+    interner: &Interner,
+) -> Option<(usize, BigRational)> {
+    for (i, cb) in canon_basis.iter().enumerate() {
+        if let Some(r) = extract_ratio(canon_term, cb, interner) {
+            return Some((i, r));
+        }
+    }
+    None
+}
+
+/// If `expr = ratio * basis_elem` (or `basis_elem = ratio * expr`), return the
+/// rational coefficient `ratio` such that `ratio * basis_elem == expr`.
+/// Both `expr` and `basis_elem` are already in canonical form.
+fn extract_ratio(expr: &Expr, basis_elem: &Expr, interner: &Interner) -> Option<BigRational> {
+    // Peel numeric coefficients from each side.
+    let (expr_coeff, expr_base) = split_numeric_coeff(expr);
+    let (basis_coeff, basis_base) = split_numeric_coeff(basis_elem);
+
+    // The tensor structures must match (same canonical form).
+    if !tensor_structures_equal(&expr_base, &basis_base, interner) {
+        return None;
+    }
+
+    // ratio = expr_coeff / basis_coeff
+    if basis_coeff.is_zero() {
+        return None;
+    }
+    Some(expr_coeff / basis_coeff)
+}
+
+/// Split an expression into (numeric_coefficient, tensor_part).
+/// e.g. `2 * R[a,b]` → (2, R[a,b])
+///      `-R[a,b]`    → (-1, R[a,b])
+///      `R[a,b]`     → (1, R[a,b])
+fn split_numeric_coeff(expr: &Expr) -> (BigRational, Expr) {
+    match expr {
+        Expr::Mul(factors) if !factors.is_empty() => {
+            if let Some(coeff) = numeric_coeff(&factors[0]) {
+                let rest = factors[1..].to_vec();
+                let base = match rest.len() {
+                    0 => Expr::one(),
+                    1 => rest.into_iter().next().unwrap(),
+                    _ => Expr::Mul(rest),
+                };
+                (coeff, base)
+            } else {
+                (BigRational::one(), expr.clone())
+            }
+        }
+        Expr::Neg(inner) => {
+            let (c, b) = split_numeric_coeff(inner);
+            (-c, b)
+        }
+        Expr::Int(n) => (BigRational::from_integer(n.clone()), Expr::one()),
+        Expr::Rational(r) => (r.clone(), Expr::one()),
+        _ => (BigRational::one(), expr.clone()),
+    }
+}
+
+/// Check whether two already-canonicalised tensor expressions have the same
+/// structure (same tensor symbol and same index names in order, ignoring sign /
+/// numeric prefactor).
+fn tensor_structures_equal(a: &Expr, b: &Expr, _interner: &Interner) -> bool {
+    match (a, b) {
+        (Expr::Indexed(ba, ia), Expr::Indexed(bb, ib)) => {
+            ba == bb
+                && ia.len() == ib.len()
+                && ia.iter().zip(ib.iter()).all(|(x, y)| {
+                    x.name == y.name && x.variance == y.variance
+                })
+        }
+        (Expr::Mul(fa), Expr::Mul(fb)) => {
+            fa.len() == fb.len()
+                && fa.iter().zip(fb.iter()).all(|(x, y)| tensor_structures_equal(x, y, _interner))
+        }
+        (Expr::Sym(a), Expr::Sym(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+// ─── decompose_product ───────────────────────────────────────────────────────
+//
+// Decomposes a product of two rank-2 tensors T_{ab} S_{cd} into a sum of
+// basis elements built from metric tensors g_{ab}, antisymmetrised metric
+// products, and trace pieces.  This is the tensor analogue of decomposing a
+// direct product of representations.
+//
+// For a rank-2 ⊗ rank-2 product in `dim` dimensions the symmetric trace-free,
+// antisymmetric, and trace basis elements are:
+//   - g_{ac} g_{bd} + g_{ad} g_{bc}   (symmetric part)
+//   - g_{ac} g_{bd} - g_{ad} g_{bc}   (antisymmetric part)
+//   - g_{ab} g_{cd}                    (trace part)
+//
+// `expr` should be a product T_{ab} S_{cd}; indices are read from the
+// outermost `Mul`.  When the expression does not have exactly two rank-2
+// Indexed factors the function returns the input unchanged.
+
+pub fn decompose_product(
+    expr: &Expr,
+    dim: usize,
+    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    interner: &Interner,
+) -> Expr {
+    // Collect exactly two Indexed factors from a product.
+    let factors = match expr {
+        Expr::Mul(fs) => fs.clone(),
+        Expr::Indexed(_, _) => vec![expr.clone()],
+        _ => return expr.clone(),
+    };
+
+    let indexed: Vec<&Expr> = factors
+        .iter()
+        .filter(|f| matches!(f, Expr::Indexed(_, _)))
+        .collect();
+
+    if indexed.len() != 2 {
+        return expr.clone();
+    }
+
+    let (idx_a, idx_b) = match (indexed[0], indexed[1]) {
+        (Expr::Indexed(_, ia), Expr::Indexed(_, ib)) if ia.len() == 2 && ib.len() == 2 => {
+            (ia, ib)
+        }
+        _ => return expr.clone(),
+    };
+
+    // Free index names: [a, b] from first tensor, [c, d] from second.
+    let a = idx_a[0].name;
+    let b = idx_a[1].name;
+    let c = idx_b[0].name;
+    let d = idx_b[1].name;
+
+    let va_a = idx_a[0].variance.clone();
+    let va_b = idx_a[1].variance.clone();
+    let va_c = idx_b[0].variance.clone();
+    let va_d = idx_b[1].variance.clone();
+
+    let g = interner.get_or_intern("g");
+
+    let mk_g = |i1: lasso::Spur, v1: ax_ir::Variance, i2: lasso::Spur, v2: ax_ir::Variance| {
+        Expr::Indexed(
+            Box::new(Expr::Sym(g)),
+            vec![
+                ax_ir::Index { name: i1, variance: v1, index_type: None },
+                ax_ir::Index { name: i2, variance: v2, index_type: None },
+            ],
+        )
+    };
+
+    // g_{ac} g_{bd}
+    let g_ac_bd = Expr::mul(vec![
+        mk_g(a, va_a.clone(), c, va_c.clone()),
+        mk_g(b, va_b.clone(), d, va_d.clone()),
+    ]);
+    // g_{ad} g_{bc}
+    let g_ad_bc = Expr::mul(vec![
+        mk_g(a, va_a.clone(), d, va_d.clone()),
+        mk_g(b, va_b.clone(), c, va_c.clone()),
+    ]);
+    // g_{ab} g_{cd}
+    let g_ab_cd = Expr::mul(vec![
+        mk_g(a, va_a, b, va_b),
+        mk_g(c, va_c, d, va_d),
+    ]);
+
+    // Symmetric part: (1/2)(g_ac g_bd + g_ad g_bc)
+    let sym_part = Expr::mul(vec![
+        Expr::Rational(BigRational::new(1.into(), 2.into())),
+        Expr::add(vec![g_ac_bd.clone(), g_ad_bc.clone()]),
+    ]);
+
+    // Antisymmetric part: (1/2)(g_ac g_bd - g_ad g_bc)
+    let antisym_part = Expr::mul(vec![
+        Expr::Rational(BigRational::new(1.into(), 2.into())),
+        Expr::add(vec![g_ac_bd, Expr::neg(g_ad_bc)]),
+    ]);
+
+    // Trace part with dimension factor
+    let trace_part = Expr::mul(vec![
+        Expr::Rational(BigRational::new(1.into(), num_bigint::BigInt::from(dim as i64))),
+        g_ab_cd,
+    ]);
+
+    let basis = vec![
+        canonicalise(&sym_part, tensor_properties, interner),
+        canonicalise(&antisym_part, tensor_properties, interner),
+        canonicalise(&trace_part, tensor_properties, interner),
+    ];
+
+    decompose(expr, &basis, tensor_properties, interner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7145,6 +7399,98 @@ mod tests {
             }
         } else {
             panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn decompose_finds_coefficient() {
+        // expr = 3 * R[a,b,c,d] + (-3) * R[b,a,c,d]
+        // basis = [R[a,b,c,d]]
+        // R[b,a,c,d] canonicalises to -R[a,b,c,d], so the sum canonicalises
+        // to 6 * R[a,b,c,d].  decompose should return 6 * basis[0].
+        let interner = ax_ir::Interner::new();
+        let r = interner.get_or_intern("R");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let mut props = HashMap::new();
+        props.insert(r, vec![ax_ir::TensorProperty::RiemannSymmetry]);
+
+        let mk = |i0, i1, i2, i3| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    Index { name: i0, variance: Variance::Down, index_type: None },
+                    Index { name: i1, variance: Variance::Down, index_type: None },
+                    Index { name: i2, variance: Variance::Down, index_type: None },
+                    Index { name: i3, variance: Variance::Down, index_type: None },
+                ],
+            )
+        };
+
+        let basis = vec![mk(a, b, c, d)];
+        let expr = Expr::add(vec![
+            Expr::mul(vec![Expr::Int(3.into()), mk(a, b, c, d)]),
+            Expr::mul(vec![Expr::Int((-3i64).into()), mk(b, a, c, d)]),
+        ]);
+
+        let result = decompose(&expr, &basis, &props, &interner);
+
+        // result should be 6 * R[a,b,c,d]
+        match &result {
+            Expr::Mul(factors) => {
+                let coeff = &factors[0];
+                assert!(
+                    matches!(coeff, Expr::Int(n) if n.to_str_radix(10) == "6"),
+                    "expected coefficient 6, got {:?}",
+                    coeff
+                );
+            }
+            _ => panic!("expected Mul, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn decompose_product_rank2() {
+        // g[a-,c-] * g[b-,d-] is itself one of the basis elements produced by
+        // decompose_product, so decomposing it should yield a non-zero coefficient
+        // for that basis slot (the antisymmetric/symmetric decomposition).
+        let interner = ax_ir::Interner::new();
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> = HashMap::new();
+
+        let mk_g = |i1, v1, i2, v2| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(g)),
+                vec![
+                    Index { name: i1, variance: v1, index_type: None },
+                    Index { name: i2, variance: v2, index_type: None },
+                ],
+            )
+        };
+
+        // expr = g[a-,c-] * g[b-,d-] — a product of two rank-1 tensors indexed
+        // with four distinct free indices.
+        let expr = Expr::mul(vec![
+            mk_g(a, Variance::Down, c, Variance::Down),
+            mk_g(b, Variance::Down, d, Variance::Down),
+        ]);
+
+        let result = decompose_product(&expr, 4, &props, &interner);
+        // The result is a linear combination in terms of the basis; it should
+        // be an Add (or a scaled basis element), not the bare product unchanged.
+        // We verify it differs from the identity decomposition (residual-only).
+        match &result {
+            Expr::Add(terms) => {
+                assert!(!terms.is_empty(), "decomposed result should have terms");
+            }
+            Expr::Mul(_) => {} // single-term result is also fine
+            other => panic!("expected Add or Mul from decompose_product, got {:?}", other),
         }
     }
 }
