@@ -2424,7 +2424,22 @@ fn builtin_call(
                             .collect::<Vec<_>>();
                         multi_substitute(&args[0], &substitutions, interner)
                     }
-                    _ => symbolic_substitute(&args[0], &args[1], &args[2], interner),
+                    _ => {
+                        let has_indices = has_any_indices(&args[0])
+                            || has_any_indices(&args[1])
+                            || has_any_indices(&args[2]);
+                        if has_indices {
+                            substitute_with_indices(
+                                &args[0],
+                                &args[1],
+                                &args[2],
+                                env,
+                                interner,
+                            )
+                        } else {
+                            symbolic_substitute(&args[0], &args[1], &args[2], interner)
+                        }
+                    }
                 }
             } else {
                 Expr::Call(f, args)
@@ -3746,6 +3761,315 @@ fn symbolic_to_matrix(m: &ax_tensor::SymbolicMatrix) -> Expr {
     Expr::Matrix(m.data.clone())
 }
 
+// ─── Index-aware substitution ────────────────────────────────────────────────
+
+fn has_any_indices(expr: &Expr) -> bool {
+    match expr {
+        Expr::Indexed(_, indices) => !indices.is_empty(),
+        Expr::Mul(factors) => factors.iter().any(has_any_indices),
+        Expr::Add(terms) => terms.iter().any(has_any_indices),
+        Expr::Neg(e) => has_any_indices(e),
+        Expr::Call(_, args) => args.iter().any(has_any_indices),
+        Expr::Pow(b, e) => has_any_indices(b) || has_any_indices(e),
+        _ => false,
+    }
+}
+
+fn collect_index_names(expr: &Expr, names: &mut HashSet<lasso::Spur>) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            collect_index_names(base, names);
+            for idx in indices {
+                names.insert(idx.name);
+            }
+        }
+        Expr::Mul(factors) => {
+            for f in factors {
+                collect_index_names(f, names);
+            }
+        }
+        Expr::Add(terms) => {
+            for t in terms {
+                collect_index_names(t, names);
+            }
+        }
+        Expr::Neg(e) => collect_index_names(e, names),
+        Expr::Call(_, args) => {
+            for a in args {
+                collect_index_names(a, names);
+            }
+        }
+        Expr::Pow(b, e) => {
+            collect_index_names(b, names);
+            collect_index_names(e, names);
+        }
+        _ => {}
+    }
+}
+
+fn count_index_names_map(expr: &Expr, counts: &mut HashMap<lasso::Spur, usize>) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            count_index_names_map(base, counts);
+            for idx in indices {
+                *counts.entry(idx.name).or_default() += 1;
+            }
+        }
+        Expr::Mul(factors) => {
+            for f in factors {
+                count_index_names_map(f, counts);
+            }
+        }
+        Expr::Add(terms) => {
+            for t in terms {
+                count_index_names_map(t, counts);
+            }
+        }
+        Expr::Neg(e) => count_index_names_map(e, counts),
+        Expr::Call(_, args) => {
+            for a in args {
+                count_index_names_map(a, counts);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn find_dummy_indices(expr: &Expr) -> Vec<lasso::Spur> {
+    let mut counts: HashMap<lasso::Spur, usize> = HashMap::new();
+    count_index_names_map(expr, &mut counts);
+    counts
+        .into_iter()
+        .filter(|(_, c)| *c >= 2)
+        .map(|(n, _)| n)
+        .collect()
+}
+
+fn generate_fresh_index(
+    base: lasso::Spur,
+    used: &HashSet<lasso::Spur>,
+    interner: &ax_ir::Interner,
+) -> lasso::Spur {
+    let base_str = interner.resolve(base);
+    for i in 1..100 {
+        let candidate = format!("{}_{}", base_str, i);
+        let sym = interner.get_or_intern(&candidate);
+        if !used.contains(&sym) {
+            return sym;
+        }
+    }
+    interner.get_or_intern(&format!("{}_fresh", base_str))
+}
+
+fn rename_index_everywhere(expr: &Expr, from: lasso::Spur, to: lasso::Spur) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let new_indices: Vec<ax_ir::Index> = indices
+                .iter()
+                .map(|idx| {
+                    if idx.name == from {
+                        ax_ir::Index {
+                            name: to,
+                            variance: idx.variance.clone(),
+                            index_type: idx.index_type,
+                        }
+                    } else {
+                        idx.clone()
+                    }
+                })
+                .collect();
+            Expr::Indexed(
+                Box::new(rename_index_everywhere(base, from, to)),
+                new_indices,
+            )
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| rename_index_everywhere(f, from, to))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| rename_index_everywhere(t, from, to))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(rename_index_everywhere(e, from, to)),
+        Expr::Sym(s) if *s == from => Expr::Sym(to),
+        _ => expr.clone(),
+    }
+}
+
+fn apply_index_mapping(expr: &Expr, mapping: &HashMap<lasso::Spur, lasso::Spur>) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let new_indices: Vec<ax_ir::Index> = indices
+                .iter()
+                .map(|idx| {
+                    let new_name = mapping.get(&idx.name).copied().unwrap_or(idx.name);
+                    ax_ir::Index {
+                        name: new_name,
+                        variance: idx.variance.clone(),
+                        index_type: idx.index_type,
+                    }
+                })
+                .collect();
+            Expr::Indexed(
+                Box::new(apply_index_mapping(base, mapping)),
+                new_indices,
+            )
+        }
+        Expr::Sym(s) => {
+            let new_s = mapping.get(s).copied().unwrap_or(*s);
+            Expr::Sym(new_s)
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| apply_index_mapping(f, mapping))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| apply_index_mapping(t, mapping))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(apply_index_mapping(e, mapping)),
+        Expr::Call(f, args) => {
+            let new_f = mapping.get(f).copied().unwrap_or(*f);
+            Expr::Call(
+                new_f,
+                args.iter().map(|a| apply_index_mapping(a, mapping)).collect(),
+            )
+        }
+        _ => expr.clone(),
+    }
+}
+
+/// Enhanced substitution that handles index relabeling.
+///
+/// When substituting T_{a b} → A_{a} B_{b}, if the expression already
+/// uses dummy index 'c', and the replacement introduces its own dummy 'c',
+/// the replacement's dummy is renamed to avoid conflict.
+pub fn substitute_with_indices(
+    expr: &Expr,
+    target: &Expr,
+    replacement: &Expr,
+    env: &Env,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let _ = env;
+
+    // Step 1: collect all index names used in expr
+    let mut used_indices: HashSet<lasso::Spur> = HashSet::new();
+    collect_index_names(expr, &mut used_indices);
+
+    // Step 2: collect index names in target (pattern variables)
+    let mut target_indices: HashSet<lasso::Spur> = HashSet::new();
+    collect_index_names(target, &mut target_indices);
+
+    // Step 3: find dummies in replacement that clash with expr
+    let replacement_dummies = find_dummy_indices(replacement);
+    let conflicts: Vec<lasso::Spur> = replacement_dummies
+        .iter()
+        .filter(|d| used_indices.contains(d) && !target_indices.contains(d))
+        .copied()
+        .collect();
+
+    // Step 4: rename conflicting dummies in the replacement
+    let mut renamed_replacement = replacement.clone();
+    for conflict in &conflicts {
+        let new_name = generate_fresh_index(*conflict, &used_indices, interner);
+        renamed_replacement =
+            rename_index_everywhere(&renamed_replacement, *conflict, new_name);
+        used_indices.insert(new_name);
+    }
+
+    substitute_with_indices_inner(expr, target, &renamed_replacement, interner)
+}
+
+fn substitute_with_indices_inner(
+    expr: &Expr,
+    target: &Expr,
+    replacement: &Expr,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match (target, expr) {
+        // Exact match on symbols
+        (Expr::Sym(_), _) if expr == target => replacement.clone(),
+
+        // Indexed tensor: match on base and variance, build index mapping
+        (Expr::Indexed(t_base, t_indices), Expr::Indexed(e_base, e_indices))
+            if t_base == e_base && t_indices.len() == e_indices.len() =>
+        {
+            let mut index_map: HashMap<lasso::Spur, lasso::Spur> = HashMap::new();
+            let mut variance_ok = true;
+            for (ti, ei) in t_indices.iter().zip(e_indices.iter()) {
+                if ti.variance != ei.variance {
+                    variance_ok = false;
+                    break;
+                }
+                index_map.insert(ti.name, ei.name);
+            }
+            if variance_ok {
+                apply_index_mapping(replacement, &index_map)
+            } else {
+                expr.clone()
+            }
+        }
+
+        // Recurse into compound expressions
+        _ => match expr {
+            Expr::Add(terms) => Expr::add(
+                terms
+                    .iter()
+                    .map(|t| substitute_with_indices_inner(t, target, replacement, interner))
+                    .collect(),
+            ),
+            Expr::Mul(factors) => Expr::mul(
+                factors
+                    .iter()
+                    .map(|f| substitute_with_indices_inner(f, target, replacement, interner))
+                    .collect(),
+            ),
+            Expr::Neg(e) => Expr::neg(substitute_with_indices_inner(
+                e,
+                target,
+                replacement,
+                interner,
+            )),
+            Expr::Pow(b, e) => Expr::pow(
+                substitute_with_indices_inner(b, target, replacement, interner),
+                substitute_with_indices_inner(e, target, replacement, interner),
+            ),
+            Expr::Call(f, args) => Expr::Call(
+                *f,
+                args.iter()
+                    .map(|a| substitute_with_indices_inner(a, target, replacement, interner))
+                    .collect(),
+            ),
+            Expr::Indexed(base, indices) => Expr::Indexed(
+                Box::new(substitute_with_indices_inner(
+                    base,
+                    target,
+                    replacement,
+                    interner,
+                )),
+                indices.clone(),
+            ),
+            _ => {
+                if expr == target {
+                    replacement.clone()
+                } else {
+                    expr.clone()
+                }
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4187,5 +4511,120 @@ mod tests {
 
         let result = unzoom(&Expr::Sym(a), &Expr::zero());
         assert_eq!(result, Expr::Sym(a));
+    }
+
+    #[test]
+    fn substitute_with_index_mapping() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let t = interner.get_or_intern("T");
+        let a_sym = interner.get_or_intern("A");
+        let b_sym = interner.get_or_intern("B");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+
+        // Substitute T[a↓, b↓] → A[a↓] * B[b↓]
+        // In expression T[mu↓, nu↓], should give A[mu↓] * B[nu↓]
+        let target = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                ax_ir::Index { name: a, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index { name: b, variance: ax_ir::Variance::Down, index_type: None },
+            ],
+        );
+        let replacement = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a_sym)),
+                vec![ax_ir::Index {
+                    name: a,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(b_sym)),
+                vec![ax_ir::Index {
+                    name: b,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        let expression = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index { name: nu, variance: ax_ir::Variance::Down, index_type: None },
+            ],
+        );
+
+        let result =
+            substitute_with_indices(&expression, &target, &replacement, &env, &interner);
+        // Should be A[mu↓] * B[nu↓]
+        if let Expr::Mul(factors) = &result {
+            assert_eq!(factors.len(), 2);
+            // Check that mu and nu appear as the index names
+            let pp = ax_ir::pretty_print(&result, &interner);
+            assert!(pp.contains("mu"), "expected mu in result, got: {pp}");
+            assert!(pp.contains("nu"), "expected nu in result, got: {pp}");
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn substitute_with_indices_no_conflict() {
+        // When there are no dummy index conflicts, behavior is identical to direct substitution
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let f_sym = interner.get_or_intern("F");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+
+        let target = Expr::Indexed(
+            Box::new(Expr::Sym(f_sym)),
+            vec![ax_ir::Index { name: x, variance: ax_ir::Variance::Up, index_type: None }],
+        );
+        let replacement = Expr::Indexed(
+            Box::new(Expr::Sym(f_sym)),
+            vec![ax_ir::Index { name: x, variance: ax_ir::Variance::Up, index_type: None }],
+        );
+        let expression = Expr::Indexed(
+            Box::new(Expr::Sym(f_sym)),
+            vec![ax_ir::Index { name: y, variance: ax_ir::Variance::Up, index_type: None }],
+        );
+
+        let result =
+            substitute_with_indices(&expression, &target, &replacement, &env, &interner);
+        // F[y↑] substituted by pattern F[x↑] → F[x↑], mapping x→y gives F[y↑]
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("y"), "expected y in result, got: {pp}");
+    }
+
+    #[test]
+    fn substitute_with_indices_variance_mismatch_no_sub() {
+        // T[a↑] should not match T[a↓]
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let x = interner.get_or_intern("x");
+
+        let target = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![ax_ir::Index { name: a, variance: ax_ir::Variance::Up, index_type: None }],
+        );
+        let replacement = Expr::Sym(x);
+        let expression = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![ax_ir::Index { name: a, variance: ax_ir::Variance::Down, index_type: None }],
+        );
+
+        let result =
+            substitute_with_indices(&expression, &target, &replacement, &env, &interner);
+        // Variance mismatch: expression unchanged
+        assert_eq!(result, expression);
     }
 }

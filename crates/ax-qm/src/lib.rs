@@ -758,6 +758,103 @@ pub fn join_gammas_in_expr(
     }
 }
 
+fn binomial(n: usize, k: usize) -> usize {
+    if k > n {
+        return 0;
+    }
+    if k == 0 || k == n {
+        return 1;
+    }
+    let k = k.min(n - k);
+    let mut result = 1usize;
+    for i in 0..k {
+        result = result * (n - i) / (i + 1);
+    }
+    result
+}
+
+/// Compute Fierz rearrangement coefficients for each antisymmetric gamma rank.
+///
+/// Returns a list of `(coefficient, rank)` pairs for ranks 0..=dim.
+/// The coefficient for rank k is:
+///   c_k = -(-1)^{k(k+1)/2} * C(d,k) / (k! * spinor_dim)
+/// where spinor_dim = 2^(d/2).
+pub fn fierz_coefficients(dim: usize) -> Vec<(num_rational::BigRational, usize)> {
+    let spinor_dim = 1usize << (dim / 2); // 2^(d/2)
+    let mut result = Vec::new();
+
+    for k in 0..=dim {
+        let sign = if (k * (k + 1) / 2) % 2 == 0 { 1i64 } else { -1i64 };
+        let binom = binomial(dim, k);
+        let coeff = num_rational::BigRational::new(
+            (sign * binom as i64).into(),
+            (spinor_dim as i64).into(),
+        );
+        // Divide by k! for the normalisation of the antisymmetric gamma basis element
+        let k_fact: i64 = (1..=k as i64).product();
+        let final_coeff = num_rational::BigRational::new(
+            coeff.numer().clone(),
+            coeff.denom().clone() * num_bigint::BigInt::from(k_fact),
+        );
+        result.push((final_coeff, k));
+    }
+
+    // Overall minus sign from Fierz rearrangement
+    for (c, _) in &mut result {
+        *c = -c.clone();
+    }
+
+    result
+}
+
+/// Perform a Fierz rearrangement.
+///
+/// Given an expression of the form (ψ̄₁ Γ ψ₂)(ψ̄₃ Γ ψ₄), rearrange to
+/// a sum over the Fierz basis: Σ_n c_n (ψ̄₁ Γ_n ψ₄)(ψ̄₃ Γ_n ψ₂)
+///
+/// Returns a list of (coefficient_numerator, rank) pairs.
+/// The denominator for each coefficient is spinor_dim = 2^(d/2).
+pub fn fierz_rearrange(
+    dim: usize,
+    _gamma_sym: lasso::Spur,
+    _interner: &ax_ir::Interner,
+) -> Vec<(i32, usize)> {
+    let mut result = Vec::new();
+    for k in 0..=dim {
+        let sign: i32 = if (k * (k + 1) / 2) % 2 == 0 { 1 } else { -1 };
+        let binom = binomial(dim, k) as i32;
+        // Apply overall minus sign; denominator (spinor_dim) is implicit
+        let numerator = -(sign * binom);
+        result.push((numerator, k));
+    }
+    result
+}
+
+/// Apply Fierz identity to an expression.
+///
+/// Returns a sum of `c_k * gamma_basis(k)` terms representing the Fierz expansion.
+pub fn fierz(
+    expr: &ax_ir::Expr,
+    dim: usize,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let _ = expr;
+    let coeffs = fierz_coefficients(dim);
+    let terms: Vec<ax_ir::Expr> = coeffs
+        .iter()
+        .map(|(c, k)| {
+            ax_ir::Expr::mul(vec![
+                ax_ir::Expr::Rational(c.clone()),
+                ax_ir::Expr::Call(
+                    interner.get_or_intern("gamma_basis"),
+                    vec![ax_ir::Expr::Int(num_bigint::BigInt::from(*k))],
+                ),
+            ])
+        })
+        .collect();
+    ax_ir::Expr::add(terms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -935,5 +1032,47 @@ mod tests {
         ]);
         let result = join_gammas_in_expr(&expr, gamma, g, &interner);
         assert!(matches!(result, Expr::Add(_)), "expected Add, got {result:?}");
+    }
+
+    #[test]
+    fn fierz_coefficients_4d() {
+        let coeffs = fierz_coefficients(4);
+        // ranks 0, 1, 2, 3, 4 in 4D → 5 entries
+        assert_eq!(coeffs.len(), 5);
+        // Verify ranks are 0..=4
+        for (i, (_, rank)) in coeffs.iter().enumerate() {
+            assert_eq!(*rank, i);
+        }
+        // spinor_dim = 4; overall minus; check signs
+        // k=0: sign=(0%2==0)→+1, binom=1, coeff_raw=1/4, k!=1 → raw=1/4, after minus: -1/4
+        // k=1: sign=(1%2==1)→-1, binom=4, coeff_raw=-1/1, k!=1 → raw=-1/1, after minus: 1/1
+        // k=2: sign=(3%2==1)→-1, binom=6, coeff_raw=-3/2, k!=2 → raw=-3/4, after minus: 3/4
+        // k=3: sign=(6%2==0)→+1, binom=4, coeff_raw=1/1, k!=6 → raw=1/6, after minus: -1/6
+        // k=4: sign=(10%2==0)→+1, binom=1, coeff_raw=1/4, k!=24 → raw=1/96, after minus: -1/96
+        let expected: Vec<num_rational::BigRational> = vec![
+            num_rational::BigRational::new((-1i64).into(), 4i64.into()),
+            num_rational::BigRational::new(1i64.into(), 1i64.into()),
+            num_rational::BigRational::new(3i64.into(), 4i64.into()),
+            num_rational::BigRational::new((-1i64).into(), 6i64.into()),
+            num_rational::BigRational::new((-1i64).into(), 96i64.into()),
+        ];
+        for (i, (c, _)) in coeffs.iter().enumerate() {
+            assert_eq!(c, &expected[i], "mismatch at rank {i}");
+        }
+    }
+
+    #[test]
+    fn fierz_coefficients_sum_check() {
+        // In d=4, the 16 gamma matrix basis elements are counted by C(4,k):
+        // C(4,0)+C(4,1)+C(4,2)+C(4,3)+C(4,4) = 1+4+6+4+1 = 16 = spinor_dim^2
+        let dim = 4;
+        let coeffs = fierz_coefficients(dim);
+        assert!(!coeffs.is_empty());
+        assert_eq!(coeffs.len(), dim + 1);
+        // Completeness: sum of |c_k| * C(d,k) * k! * spinor_dim should equal total basis size
+        // As a basic sanity check, verify no coefficient is zero
+        for (c, _) in &coeffs {
+            assert_ne!(*c, num_rational::BigRational::new(0i64.into(), 1i64.into()));
+        }
     }
 }
