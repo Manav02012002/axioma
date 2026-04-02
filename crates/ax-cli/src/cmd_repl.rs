@@ -243,7 +243,13 @@ pub fn run() -> Result<()> {
 
         let _ = editor.add_history_entry(trimmed);
 
-        let lowered = ax_core_ir::lower(trimmed, &interner);
+        let effective_input =
+            if trimmed.contains('\\') || trimmed.contains("_{") || trimmed.contains("^{") {
+                ax_core_ir::latex_to_axioma(trimmed)
+            } else {
+                trimmed.to_string()
+            };
+        let lowered = ax_core_ir::lower(&effective_input, &interner);
         if !lowered.errors.is_empty() {
             for error in lowered.errors {
                 eprintln!("{}", error.message);

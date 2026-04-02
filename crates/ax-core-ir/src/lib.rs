@@ -921,6 +921,195 @@ fn line_continues(trimmed: &str) -> bool {
         || trimmed.ends_with('{')
 }
 
+// ─── LaTeX input translation ──────────────────────────────────────────────────
+
+fn skip_whitespace(chars: &[char], i: &mut usize) {
+    while *i < chars.len() && chars[*i].is_whitespace() {
+        *i += 1;
+    }
+}
+
+fn parse_brace_content(chars: &[char], i: &mut usize) -> String {
+    let mut result = String::new();
+    if *i < chars.len() && chars[*i] == '{' {
+        *i += 1;
+        let mut depth = 1;
+        while *i < chars.len() && depth > 0 {
+            if chars[*i] == '{' {
+                depth += 1;
+            }
+            if chars[*i] == '}' {
+                depth -= 1;
+            }
+            if depth > 0 {
+                result.push(chars[*i]);
+            }
+            *i += 1;
+        }
+    }
+    result
+}
+
+fn parse_brace_group(chars: &[char], i: &mut usize) -> String {
+    skip_whitespace(chars, i);
+    if *i < chars.len() && chars[*i] == '{' {
+        parse_brace_content(chars, i)
+    } else if *i < chars.len() {
+        let c = chars[*i];
+        *i += 1;
+        c.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Convert LaTeX-style tensor notation to Axioma notation.
+///
+/// ```text
+/// R_{a b c d}       →  R[a-, b-, c-, d-]
+/// T^{a}_{b}         →  T[a+, b-]
+/// \partial_{a}      →  partial[a-]
+/// \Gamma^{a}_{b c}  →  Gamma[a+, b-, c-]
+/// \frac{a}{b}       →  (a) / (b)
+/// \sqrt{x}          →  sqrt(x)
+/// \mu               →  mu
+/// ```
+pub fn latex_to_axioma(input: &str) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '\\' {
+            // LaTeX command: read alphabetic characters
+            let cmd_start = i + 1;
+            let mut cmd_end = cmd_start;
+            while cmd_end < chars.len() && chars[cmd_end].is_alphabetic() {
+                cmd_end += 1;
+            }
+            let cmd = &input[cmd_start..cmd_end];
+
+            match cmd {
+                "frac" => {
+                    i = cmd_end;
+                    let numer = parse_brace_group(&chars, &mut i);
+                    let denom = parse_brace_group(&chars, &mut i);
+                    result.push_str(&format!("({}) / ({})", numer, denom));
+                }
+                "sqrt" => {
+                    i = cmd_end;
+                    let arg = parse_brace_group(&chars, &mut i);
+                    result.push_str(&format!("sqrt({})", arg));
+                }
+                "bar" => {
+                    i = cmd_end;
+                    let arg = parse_brace_group(&chars, &mut i);
+                    result.push_str(&format!("bar({})", arg));
+                }
+                "cdot" | "times" => {
+                    result.push_str(" * ");
+                    i = cmd_end;
+                }
+                "left" | "right" | "bigl" | "bigr" | "Big" | "big" => {
+                    i = cmd_end;
+                    if i < chars.len()
+                        && (chars[i] == '('
+                            || chars[i] == ')'
+                            || chars[i] == '['
+                            || chars[i] == ']')
+                    {
+                        result.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                "int" => {
+                    result.push_str("integrate");
+                    i = cmd_end;
+                }
+                // Greek letters and named differential operators: pass through as-is
+                "partial" | "nabla" | "Gamma" | "gamma" | "epsilon" | "delta" | "sigma"
+                | "alpha" | "beta" | "mu" | "nu" | "rho" | "lambda" | "theta" | "phi"
+                | "psi" | "chi" | "omega" | "pi" | "tau" | "kappa" | "eta" | "zeta"
+                | "xi" | "Pi" | "Sigma" | "Omega" | "Delta" | "Lambda" | "Theta" | "Phi"
+                | "Psi" | "Xi" => {
+                    result.push_str(cmd);
+                    i = cmd_end;
+                }
+                _ => {
+                    // Unknown command: pass through as identifier
+                    result.push_str(cmd);
+                    i = cmd_end;
+                }
+            }
+        } else if chars[i] == '_' || chars[i] == '^' {
+            let variance = if chars[i] == '_' { '-' } else { '+' };
+            i += 1;
+
+            if i < chars.len() {
+                let index_content = if chars[i] == '{' {
+                    parse_brace_content(&chars, &mut i)
+                } else {
+                    let c = chars[i];
+                    i += 1;
+                    c.to_string()
+                };
+
+                let indices: Vec<&str> = index_content.split_whitespace().collect();
+                if !indices.is_empty() {
+                    let needs_open =
+                        !result.ends_with(']') && !result.ends_with(',');
+                    if needs_open && !result.ends_with('[') {
+                        result.push('[');
+                    } else if result.ends_with(']') {
+                        // Extend existing bracket: remove closing `]`, add separator
+                        result.pop();
+                        result.push_str(", ");
+                    }
+
+                    for (j, idx) in indices.iter().enumerate() {
+                        if j > 0 {
+                            result.push_str(", ");
+                        }
+                        let clean = latex_to_axioma(idx);
+                        result.push_str(&clean);
+                        result.push(variance);
+                    }
+                    result.push(']');
+                }
+            }
+        } else if chars[i] == '{' {
+            // Bare brace group outside index context — pass through contents
+            i += 1;
+            let mut depth = 1;
+            while i < chars.len() && depth > 0 {
+                if chars[i] == '{' {
+                    depth += 1;
+                }
+                if chars[i] == '}' {
+                    depth -= 1;
+                }
+                if depth > 0 {
+                    result.push(chars[i]);
+                }
+                i += 1;
+            }
+        } else if chars[i] == '}' {
+            i += 1; // skip stray closing braces
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Lower a LaTeX string by first converting to Axioma notation, then parsing.
+pub fn lower_latex(input: &str, interner: &Interner) -> LowerResult {
+    let axioma_str = latex_to_axioma(input);
+    lower(&axioma_str, interner)
+}
+
 pub fn lower(source: &str, interner: &Interner) -> LowerResult {
     let mut exprs = Vec::new();
     let mut errors = Vec::new();
@@ -1215,5 +1404,67 @@ mod tests {
         } else {
             panic!("expected __declare_depends call");
         }
+    }
+
+    // ── LaTeX translation tests ───────────────────────────────────────────────
+
+    #[test]
+    fn latex_simple_tensor() {
+        assert_eq!(latex_to_axioma("R_{a b c d}"), "R[a-, b-, c-, d-]");
+    }
+
+    #[test]
+    fn latex_mixed_indices() {
+        let result = latex_to_axioma("T^{a}_{b}");
+        assert!(
+            result.contains("a+") && result.contains("b-"),
+            "got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn latex_frac() {
+        assert_eq!(latex_to_axioma("\\frac{a}{b}"), "(a) / (b)");
+    }
+
+    #[test]
+    fn latex_sqrt() {
+        assert_eq!(latex_to_axioma("\\sqrt{x}"), "sqrt(x)");
+    }
+
+    #[test]
+    fn latex_greek() {
+        let result = latex_to_axioma("\\mu");
+        assert_eq!(result, "mu");
+    }
+
+    #[test]
+    fn latex_partial() {
+        let result = latex_to_axioma("\\partial_{a}");
+        assert!(
+            result.contains("partial") && result.contains("a-"),
+            "got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn latex_gamma_mixed() {
+        // \Gamma^{a}_{b c} → Gamma[a+, b-, c-]
+        let result = latex_to_axioma("\\Gamma^{a}_{b c}");
+        assert!(result.contains("Gamma"), "got: {}", result);
+        assert!(result.contains("a+"), "got: {}", result);
+        assert!(result.contains("b-"), "got: {}", result);
+        assert!(result.contains("c-"), "got: {}", result);
+    }
+
+    #[test]
+    fn latex_lower_latex_roundtrip() {
+        // lower_latex("g_{\\mu \\nu}") should parse without errors
+        let interner = ax_ir::Interner::new();
+        let result = lower_latex("g_{a b}", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert!(result.expr.is_some(), "expected an expression");
     }
 }
