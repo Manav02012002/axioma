@@ -4636,6 +4636,130 @@ pub fn explicit_indices(
     }
 }
 
+// ─── rewrite_indices ──────────────────────────────────────────────────────────
+
+/// Convert indices on tensors between up/down using the metric or inverse metric.
+///
+/// For each index on a registered tensor that does not match its desired
+/// variance, a metric factor is inserted and the original index is replaced by
+/// a fresh dummy:
+///
+/// ```text
+/// T[a+]  with target Down  →  g[a-, _rw0-] * T[_rw0+]   (lower with g)
+/// T[a-]  with target Up    →  ginv[a+, _rw0+] * T[_rw0-] (raise with g^{-1})
+/// ```
+///
+/// Parameters:
+/// - `target_tensors`: map from tensor symbol to the desired `Variance` for each index slot
+/// - `metric_sym`: symbol for the covariant metric g_{ab}
+/// - `inv_metric_sym`: symbol for the contravariant metric g^{ab}
+pub fn rewrite_indices(
+    expr: &Expr,
+    target_tensors: &HashMap<lasso::Spur, Vec<ax_ir::Variance>>,
+    metric_sym: lasso::Spur,
+    inv_metric_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            if let Expr::Sym(name) = base.as_ref() {
+                if let Some(target_variances) = target_tensors.get(name) {
+                    if target_variances.len() == indices.len() {
+                        let mut result_factors: Vec<Expr> = Vec::new();
+                        let mut new_indices = indices.clone();
+                        let mut dummy_counter = 0usize;
+
+                        for (i, (current, target)) in
+                            indices.iter().zip(target_variances.iter()).enumerate()
+                        {
+                            if current.variance == *target {
+                                continue; // already correct variance
+                            }
+
+                            let dummy_name = interner
+                                .get_or_intern(&format!("_rw{}", dummy_counter));
+                            dummy_counter += 1;
+
+                            // Lowering (Up → Down): insert g_{orig, dummy}, tensor gets dummy Up
+                            // Raising (Down → Up): insert ginv^{orig, dummy}, tensor gets dummy Down
+                            let (m_sym, m_v1, m_v2, new_var) =
+                                if current.variance == ax_ir::Variance::Up {
+                                    (
+                                        metric_sym,
+                                        ax_ir::Variance::Down,
+                                        ax_ir::Variance::Down,
+                                        ax_ir::Variance::Up,
+                                    )
+                                } else {
+                                    (
+                                        inv_metric_sym,
+                                        ax_ir::Variance::Up,
+                                        ax_ir::Variance::Up,
+                                        ax_ir::Variance::Down,
+                                    )
+                                };
+
+                            result_factors.push(Expr::Indexed(
+                                Box::new(Expr::Sym(m_sym)),
+                                vec![
+                                    ax_ir::Index {
+                                        name: current.name,
+                                        variance: m_v1,
+                                        index_type: current.index_type,
+                                    },
+                                    ax_ir::Index {
+                                        name: dummy_name,
+                                        variance: m_v2,
+                                        index_type: current.index_type,
+                                    },
+                                ],
+                            ));
+
+                            new_indices[i] = ax_ir::Index {
+                                name: dummy_name,
+                                variance: new_var,
+                                index_type: current.index_type,
+                            };
+                        }
+
+                        if result_factors.is_empty() {
+                            return expr.clone(); // all variances already correct
+                        }
+
+                        result_factors.push(Expr::Indexed(base.clone(), new_indices));
+                        return Expr::mul(result_factors);
+                    }
+                }
+            }
+            expr.clone()
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| {
+                    rewrite_indices(f, target_tensors, metric_sym, inv_metric_sym, interner)
+                })
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| {
+                    rewrite_indices(t, target_tensors, metric_sym, inv_metric_sym, interner)
+                })
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(rewrite_indices(
+            e,
+            target_tensors,
+            metric_sym,
+            inv_metric_sym,
+            interner,
+        )),
+        _ => expr.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6558,6 +6682,219 @@ mod tests {
             assert_ne!(a_up, b_dn, "outer indices should be distinct");
         } else {
             panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    // ── rewrite_indices tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn rewrite_lower_index() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let a = interner.get_or_intern("a");
+
+        // T[a+] with target Down → g[a-, _rw0-] * T[_rw0+]
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![Index { name: a, variance: Variance::Up, index_type: None }],
+        );
+        let mut targets = HashMap::new();
+        targets.insert(t, vec![Variance::Down]);
+
+        let result = rewrite_indices(&expr, &targets, g, ginv, &interner);
+        if let Expr::Mul(factors) = &result {
+            assert_eq!(factors.len(), 2, "expected metric * tensor");
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn rewrite_raise_index() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let a = interner.get_or_intern("a");
+
+        // T[a-] with target Up → ginv[a+, _rw0+] * T[_rw0-]
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![Index { name: a, variance: Variance::Down, index_type: None }],
+        );
+        let mut targets = HashMap::new();
+        targets.insert(t, vec![Variance::Up]);
+
+        let result = rewrite_indices(&expr, &targets, g, ginv, &interner);
+        if let Expr::Mul(factors) = &result {
+            assert_eq!(factors.len(), 2, "expected inv-metric * tensor");
+            // First factor should use ginv
+            if let Expr::Indexed(base, _) = &factors[0] {
+                if let Expr::Sym(s) = base.as_ref() {
+                    assert_eq!(interner.resolve(*s), "ginv", "expected ginv for raising");
+                }
+            }
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn rewrite_two_indices() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        // T[a+, b+] with target [Down, Down] → g[a-, _rw0-] * g[b-, _rw1-] * T[_rw0+, _rw1+]
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index { name: a, variance: Variance::Up, index_type: None },
+                Index { name: b, variance: Variance::Up, index_type: None },
+            ],
+        );
+        let mut targets = HashMap::new();
+        targets.insert(t, vec![Variance::Down, Variance::Down]);
+
+        let result = rewrite_indices(&expr, &targets, g, ginv, &interner);
+        if let Expr::Mul(factors) = &result {
+            assert_eq!(factors.len(), 3, "expected g * g * T for two lowerings");
+            // Two metric factors + the tensor
+            let metric_count = factors.iter().filter(|f| {
+                if let Expr::Indexed(base, _) = f {
+                    if let Expr::Sym(s) = base.as_ref() {
+                        return interner.resolve(*s) == "g";
+                    }
+                }
+                false
+            }).count();
+            assert_eq!(metric_count, 2, "expected two metric factors");
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn rewrite_already_correct_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let a = interner.get_or_intern("a");
+
+        // T[a-] with target Down — already correct, no change
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![Index { name: a, variance: Variance::Down, index_type: None }],
+        );
+        let mut targets = HashMap::new();
+        targets.insert(t, vec![Variance::Down]);
+
+        let result = rewrite_indices(&expr, &targets, g, ginv, &interner);
+        assert_eq!(result, expr, "already-correct expression should be unchanged");
+    }
+
+    #[test]
+    fn rewrite_unregistered_tensor_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let a = interner.get_or_intern("a");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![Index { name: a, variance: Variance::Up, index_type: None }],
+        );
+        // targets is empty — T is not registered
+        let targets = HashMap::new();
+
+        let result = rewrite_indices(&expr, &targets, g, ginv, &interner);
+        assert_eq!(result, expr, "unregistered tensor should be unchanged");
+    }
+
+    #[test]
+    fn rewrite_dummy_indices_are_fresh() {
+        // Two separate rewrites should use distinct dummy names
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index { name: a, variance: Variance::Up, index_type: None },
+                Index { name: b, variance: Variance::Up, index_type: None },
+            ],
+        );
+        let mut targets = HashMap::new();
+        targets.insert(t, vec![Variance::Down, Variance::Down]);
+
+        let result = rewrite_indices(&expr, &targets, g, ginv, &interner);
+        if let Expr::Mul(factors) = &result {
+            // Collect all dummy names used in metric factors
+            let mut dummy_names: Vec<lasso::Spur> = Vec::new();
+            for f in factors {
+                if let Expr::Indexed(base, idxs) = f {
+                    if let Expr::Sym(s) = base.as_ref() {
+                        if interner.resolve(*s) == "g" {
+                            if let Some(dummy_idx) = idxs.get(1) {
+                                dummy_names.push(dummy_idx.name);
+                            }
+                        }
+                    }
+                }
+            }
+            assert_eq!(dummy_names.len(), 2, "expected 2 dummy index names");
+            assert_ne!(
+                dummy_names[0], dummy_names[1],
+                "dummy indices should be distinct: both are '{}'",
+                interner.resolve(dummy_names[0])
+            );
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn rewrite_distributes_over_add() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let s = interner.get_or_intern("S");
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let a = interner.get_or_intern("a");
+
+        let mk = |sym| Expr::Indexed(
+            Box::new(Expr::Sym(sym)),
+            vec![Index { name: a, variance: Variance::Up, index_type: None }],
+        );
+        let mut targets = HashMap::new();
+        targets.insert(t, vec![Variance::Down]);
+        targets.insert(s, vec![Variance::Down]);
+
+        let expr = Expr::add(vec![mk(t), mk(s)]);
+        let result = rewrite_indices(&expr, &targets, g, ginv, &interner);
+
+        // Both terms should now be products (metric * tensor)
+        if let Expr::Add(terms) = &result {
+            for term in terms {
+                assert!(
+                    matches!(term, Expr::Mul(_)),
+                    "each sum term should be a Mul after rewriting, got {:?}",
+                    term
+                );
+            }
+        } else {
+            panic!("expected Add, got {:?}", result);
         }
     }
 }

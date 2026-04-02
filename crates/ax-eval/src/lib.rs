@@ -2215,6 +2215,36 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "rewrite_indices" => {
+            // rewrite_indices(expr, tensor_name, [down, down, ...])
+            if args.len() >= 3 {
+                if let (Expr::Sym(tensor), Expr::List(variances)) = (&args[1], &args[2]) {
+                    let vars: Vec<ax_ir::Variance> = variances
+                        .iter()
+                        .map(|v| {
+                            if let Expr::Sym(s) = v {
+                                if interner.resolve(*s) == "up" {
+                                    ax_ir::Variance::Up
+                                } else {
+                                    ax_ir::Variance::Down
+                                }
+                            } else {
+                                ax_ir::Variance::Down
+                            }
+                        })
+                        .collect();
+                    let mut targets = HashMap::new();
+                    targets.insert(*tensor, vars);
+                    let g = interner.get_or_intern("g");
+                    let ginv = interner.get_or_intern("ginv");
+                    ax_tensor::rewrite_indices(&args[0], &targets, g, ginv, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "reduce_delta" => {
             if !args.is_empty() {
                 let delta = interner.get_or_intern("delta");
