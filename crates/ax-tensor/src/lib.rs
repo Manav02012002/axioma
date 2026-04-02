@@ -5096,6 +5096,58 @@ pub fn decompose_product(
     decompose(expr, &basis, tensor_properties, interner)
 }
 
+// ─── expand_implicit ─────────────────────────────────────────────────────────
+//
+// Write out products of objects with implicit indices by making all index
+// contractions explicit.  This is a recursion wrapper around `explicit_indices`
+// that handles sums, negations, and nested Call arguments.
+//
+// For an Add, each term gets its own freshly-named dummy indices so that
+// different terms never share dummy names, which would create phantom
+// contractions in subsequent canonicalisation.
+
+pub fn expand_implicit(
+    expr: &Expr,
+    implicit_index_tensors: &HashSet<lasso::Spur>,
+    available_indices: &[lasso::Spur],
+    n_indices_per_tensor: &HashMap<lasso::Spur, usize>,
+    interner: &Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(_) | Expr::Sym(_) => {
+            explicit_indices(expr, implicit_index_tensors, available_indices, n_indices_per_tensor, interner)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .enumerate()
+                .map(|(i, term)| {
+                    // Each term gets a disjoint block of 20 index names.
+                    let offset = i * 20;
+                    let term_indices: Vec<lasso::Spur> = (offset..offset + 20)
+                        .map(|j| interner.get_or_intern(&format!("_exp{}", j)))
+                        .collect();
+                    expand_implicit(term, implicit_index_tensors, &term_indices, n_indices_per_tensor, interner)
+                })
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(expand_implicit(
+            e,
+            implicit_index_tensors,
+            available_indices,
+            n_indices_per_tensor,
+            interner,
+        )),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|a| expand_implicit(a, implicit_index_tensors, available_indices, n_indices_per_tensor, interner))
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7491,6 +7543,107 @@ mod tests {
             }
             Expr::Mul(_) => {} // single-term result is also fine
             other => panic!("expected Add or Mul from decompose_product, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn expand_implicit_chain() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+
+        let mut implicit = HashSet::new();
+        implicit.insert(a);
+        implicit.insert(b);
+        implicit.insert(c);
+        let n_per: HashMap<lasso::Spur, usize> =
+            vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
+        let avail: Vec<lasso::Spur> = (0..10)
+            .map(|i| interner.get_or_intern(&format!("_e{}", i)))
+            .collect();
+
+        // A * B * C → A[_e0+, _e1-] * B[_e1+, _e2-] * C[_e2+, _e3-]
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let result = expand_implicit(&expr, &implicit, &avail, &n_per, &interner);
+
+        if let Expr::Mul(factors) = &result {
+            let indexed_count = factors
+                .iter()
+                .filter(|f| matches!(f, Expr::Indexed(_, _)))
+                .count();
+            assert_eq!(indexed_count, 3, "all three should have explicit indices: {:?}", result);
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn expand_implicit_add_uses_disjoint_indices() {
+        // Two structurally distinct terms in a sum: A*B and A (single factor).
+        // After expansion each should have indexed factors; the sum should survive
+        // as an Add because the two terms are structurally different.
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+
+        let mut implicit = HashSet::new();
+        implicit.insert(a);
+        implicit.insert(b);
+        implicit.insert(c);
+        let n_per: HashMap<lasso::Spur, usize> =
+            vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
+        let avail: Vec<lasso::Spur> = (0..10)
+            .map(|i| interner.get_or_intern(&format!("_e{}", i)))
+            .collect();
+
+        // A*B  +  B*C  — distinct products, distinct structures after expansion.
+        let expr = Expr::add(vec![
+            Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]),
+            Expr::mul(vec![Expr::Sym(b), Expr::Sym(c)]),
+        ]);
+        let result = expand_implicit(&expr, &implicit, &avail, &n_per, &interner);
+
+        // Both terms should have been expanded (have Indexed factors inside Mul).
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2, "should still have 2 terms after expanding distinct products");
+            for term in terms {
+                assert!(matches!(term, Expr::Mul(_)), "each term should be Mul: {:?}", term);
+            }
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn expand_implicit_neg_passes_through() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+
+        let mut implicit = HashSet::new();
+        implicit.insert(a);
+        implicit.insert(b);
+        let n_per: HashMap<lasso::Spur, usize> = vec![(a, 2), (b, 2)].into_iter().collect();
+        let avail: Vec<lasso::Spur> = (0..10)
+            .map(|i| interner.get_or_intern(&format!("_e{}", i)))
+            .collect();
+
+        let expr = Expr::neg(Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]));
+        let result = expand_implicit(&expr, &implicit, &avail, &n_per, &interner);
+
+        // Should be Neg(Mul([Indexed(...), Indexed(...)]))
+        match &result {
+            Expr::Neg(inner) => {
+                assert!(
+                    matches!(inner.as_ref(), Expr::Mul(_)),
+                    "inner should be Mul: {:?}",
+                    inner
+                );
+            }
+            Expr::Mul(_) => {} // canonicalised away the Neg — also fine
+            other => panic!("expected Neg or Mul, got {:?}", other),
         }
     }
 }

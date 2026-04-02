@@ -2215,6 +2215,28 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "expand_implicit" => {
+            if !args.is_empty() {
+                let implicit: HashSet<lasso::Spur> = env
+                    .tensor_properties
+                    .iter()
+                    .filter(|(_, props)| {
+                        props
+                            .iter()
+                            .any(|p| matches!(p, ax_ir::TensorProperty::GammaMatrixProp))
+                    })
+                    .map(|(sym, _)| *sym)
+                    .collect();
+                let n_per: HashMap<lasso::Spur, usize> =
+                    implicit.iter().map(|s| (*s, 2)).collect();
+                let avail: Vec<lasso::Spur> = (0..40)
+                    .map(|i| interner.get_or_intern(&format!("_exp{}", i)))
+                    .collect();
+                ax_tensor::expand_implicit(&args[0], &implicit, &avail, &n_per, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "rewrite_indices" => {
             // rewrite_indices(expr, tensor_name, [down, down, ...])
             if args.len() >= 3 {
