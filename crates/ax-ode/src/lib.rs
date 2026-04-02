@@ -389,6 +389,169 @@ pub fn rk4_system(
     out
 }
 
+// ─── first_order_form ────────────────────────────────────────────────────────
+
+/// Convert a second-order (or higher-order) ODE into a system of first-order
+/// ODEs by introducing auxiliary variables.
+///
+/// Given `x'' = f(t, x, x')`, introduce `v = x'` and return:
+///   `{ x' = v,  v' = f(t, x, v) }`
+///
+/// The `ode` argument may be either:
+///   - The full ODE expression containing `diff(...)` calls, in which case the
+///     highest derivative order is detected automatically; or
+///   - Just the right-hand side after isolating the highest derivative
+///     (no `diff` calls present), in which case a 2nd-order system is assumed.
+///
+/// Returns a `Vec<(lhs_var, rhs_expr)>` where `lhs_var` is the symbol whose
+/// derivative equals `rhs_expr`.
+pub fn first_order_form(
+    ode: &Expr,
+    dependent_var: lasso::Spur,
+    independent_var: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Vec<(Expr, Expr)> {
+    let diff_sym = interner.get_or_intern("diff");
+    let detected_order = find_max_derivative_order(ode, dependent_var, independent_var, diff_sym);
+
+    // If no diff() calls are present, treat the expression as the rhs of a
+    // 2nd-order ODE (the most common calling convention for this function).
+    let max_order = if detected_order == 0 { 2 } else { detected_order };
+
+    if max_order <= 1 {
+        // Already first order — nothing to do.
+        return vec![];
+    }
+
+    // Build auxiliary variable names: v0 = x, v1 = x', v2 = x'', …
+    let mut aux_vars: Vec<lasso::Spur> = Vec::new();
+    aux_vars.push(dependent_var);
+    for i in 1..max_order {
+        let name = format!("{}_d{}", interner.resolve(dependent_var), i);
+        aux_vars.push(interner.get_or_intern(&name));
+    }
+
+    // First n-1 equations: v_{i}' = v_{i+1}
+    let mut system: Vec<(Expr, Expr)> = Vec::new();
+    for i in 0..max_order - 1 {
+        system.push((Expr::Sym(aux_vars[i]), Expr::Sym(aux_vars[i + 1])));
+    }
+
+    // Last equation: v_{n-1}' = rhs
+    // Substitute each derivative diff^k(x, t) → aux_vars[k] in the ode,
+    // from the highest order down so inner substitutions don't mis-match.
+    let mut rhs = ode.clone();
+    for i in (1..max_order).rev() {
+        let deriv_expr = make_nth_derivative(dependent_var, independent_var, i, diff_sym);
+        rhs = substitute_expr(&rhs, &deriv_expr, &Expr::Sym(aux_vars[i]));
+    }
+    // Also substitute x itself (order 0) with aux_vars[0] (same symbol, no-op,
+    // but keeps the code uniform if dependent_var appears symbolically).
+    // aux_vars[0] == dependent_var so this is a no-op.
+    system.push((Expr::Sym(aux_vars[max_order - 1]), rhs));
+
+    system
+}
+
+/// Recursively find the maximum derivative order of `var` with respect to
+/// `indep` in `expr`, counting nested `diff()` calls.
+fn find_max_derivative_order(
+    expr: &Expr,
+    var: lasso::Spur,
+    indep: lasso::Spur,
+    diff_sym: lasso::Spur,
+) -> usize {
+    let mut max_order = 0;
+    walk_derivative_order(expr, var, indep, diff_sym, 0, &mut max_order);
+    max_order
+}
+
+fn walk_derivative_order(
+    expr: &Expr,
+    var: lasso::Spur,
+    indep: lasso::Spur,
+    diff_sym: lasso::Spur,
+    depth: usize,
+    max: &mut usize,
+) {
+    match expr {
+        Expr::Call(f, args) if *f == diff_sym => {
+            if args.len() >= 2 {
+                // Check that the second argument is the independent variable.
+                let wrt_matches = matches!(&args[1], Expr::Sym(s) if *s == indep);
+                let new_depth = if wrt_matches { depth + 1 } else { depth };
+                // If the inner expression is the dependent variable, record depth.
+                if let Expr::Sym(s) = &args[0] {
+                    if *s == var && new_depth > *max {
+                        *max = new_depth;
+                    }
+                }
+                // Recurse into the inner expression with the updated depth.
+                walk_derivative_order(&args[0], var, indep, diff_sym, new_depth, max);
+                // Also walk remaining args (e.g. the wrt argument itself) at depth 0.
+                for arg in &args[2..] {
+                    walk_derivative_order(arg, var, indep, diff_sym, 0, max);
+                }
+            }
+        }
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            for t in terms {
+                walk_derivative_order(t, var, indep, diff_sym, 0, max);
+            }
+        }
+        Expr::Neg(e) | Expr::Pow(e, _) => {
+            walk_derivative_order(e, var, indep, diff_sym, 0, max);
+        }
+        Expr::Call(_, args) => {
+            for arg in args {
+                walk_derivative_order(arg, var, indep, diff_sym, 0, max);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build `diff(diff(…diff(var, indep)…, indep), indep)` nested `n` times.
+fn make_nth_derivative(
+    var: lasso::Spur,
+    indep: lasso::Spur,
+    n: usize,
+    diff_sym: lasso::Spur,
+) -> Expr {
+    let mut result = Expr::Sym(var);
+    for _ in 0..n {
+        result = Expr::Call(diff_sym, vec![result, Expr::Sym(indep)]);
+    }
+    result
+}
+
+/// Simple structural substitution: replace every occurrence of `target` in
+/// `expr` with `replacement`.  Does not use ax-eval to avoid a circular
+/// dependency (ax-eval depends on ax-ode via ax-tensor).
+fn substitute_expr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
+    if expr == target {
+        return replacement.clone();
+    }
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms.iter().map(|t| substitute_expr(t, target, replacement)).collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors.iter().map(|f| substitute_expr(f, target, replacement)).collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            substitute_expr(base, target, replacement),
+            substitute_expr(exp, target, replacement),
+        ),
+        Expr::Neg(inner) => Expr::neg(substitute_expr(inner, target, replacement)),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter().map(|a| substitute_expr(a, target, replacement)).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +577,82 @@ mod tests {
         assert!(!result.is_empty());
         let last = result.last().unwrap();
         assert!((last.1 - std::f64::consts::E).abs() < 0.01, "got y(1) = {}", last.1);
+    }
+
+    #[test]
+    fn first_order_simple() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let t = interner.get_or_intern("t");
+
+        // x'' = -x  → system: { x' = x_d1,  x_d1' = -x }
+        // The ode is just the rhs (-x), so first_order_form assumes order 2.
+        let ode = Expr::neg(Expr::Sym(x));
+        let system = first_order_form(&ode, x, t, &interner);
+        assert_eq!(system.len(), 2, "expected 2 first-order equations");
+
+        // First equation: x' = x_d1
+        let x_d1 = interner.get_or_intern("x_d1");
+        assert_eq!(system[0].0, Expr::Sym(x));
+        assert_eq!(system[0].1, Expr::Sym(x_d1));
+
+        // Last equation: x_d1' = -x
+        assert_eq!(system[1].0, Expr::Sym(x_d1));
+        assert_eq!(system[1].1, Expr::neg(Expr::Sym(x)));
+    }
+
+    #[test]
+    fn first_order_with_diff_calls() {
+        // Pass the full ODE: diff(diff(x, t), t) + x = 0,
+        // represented as diff(diff(x,t),t) = -x, i.e. ode = diff^2(x,t) - (-x)
+        // More simply: pass the expression diff(diff(x,t),t) so that
+        // find_max_derivative_order detects order 2.
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let t = interner.get_or_intern("t");
+        let diff_sym = interner.get_or_intern("diff");
+
+        // Represent the full ODE: diff(diff(x,t),t) = -x
+        // Pass as the Add form: diff²(x,t) + x = 0  → ode = diff²(x,t) + x
+        let d1 = Expr::Call(diff_sym, vec![Expr::Sym(x), Expr::Sym(t)]);
+        let d2 = Expr::Call(diff_sym, vec![d1.clone(), Expr::Sym(t)]);
+        let ode = Expr::add(vec![d2, Expr::Sym(x)]);
+
+        let system = first_order_form(&ode, x, t, &interner);
+        assert_eq!(system.len(), 2, "expected 2 first-order equations from diff form");
+
+        let x_d1 = interner.get_or_intern("x_d1");
+        assert_eq!(system[0].0, Expr::Sym(x));
+        assert_eq!(system[0].1, Expr::Sym(x_d1));
+    }
+
+    #[test]
+    fn first_order_already_first_order() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let t = interner.get_or_intern("t");
+        let diff_sym = interner.get_or_intern("diff");
+
+        // diff(x, t) = -x  → max_order = 1 → return empty
+        let ode = Expr::Call(diff_sym, vec![Expr::Sym(x), Expr::Sym(t)]);
+        let system = first_order_form(&ode, x, t, &interner);
+        assert!(system.is_empty(), "first-order ODE should return empty system");
+    }
+
+    #[test]
+    fn first_order_third_order() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let t = interner.get_or_intern("t");
+        let diff_sym = interner.get_or_intern("diff");
+
+        // x''' = x  → 3rd-order → 3 equations
+        let d1 = Expr::Call(diff_sym, vec![Expr::Sym(x), Expr::Sym(t)]);
+        let d2 = Expr::Call(diff_sym, vec![d1, Expr::Sym(t)]);
+        let d3 = Expr::Call(diff_sym, vec![d2, Expr::Sym(t)]);
+        let ode = d3; // full lhs; rhs is x
+
+        let system = first_order_form(&ode, x, t, &interner);
+        assert_eq!(system.len(), 3, "3rd-order ODE should give 3 equations");
     }
 }

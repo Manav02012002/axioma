@@ -3064,6 +3064,23 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "first_order_form" => {
+            if args.len() >= 3 {
+                if let (Expr::Sym(dep), Expr::Sym(indep)) = (&args[1], &args[2]) {
+                    let system = ax_ode::first_order_form(&args[0], *dep, *indep, interner);
+                    Expr::List(
+                        system
+                            .into_iter()
+                            .map(|(lhs, rhs)| Expr::List(vec![lhs, rhs]))
+                            .collect(),
+                    )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "rk4" => {
             let parse_steps = |expr: &Expr| -> Option<usize> {
                 match expr {
