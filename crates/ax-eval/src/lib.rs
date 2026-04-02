@@ -2861,6 +2861,22 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "split_gamma" => {
+            if !args.is_empty() {
+                let gamma = interner.get_or_intern("gamma");
+                let g = interner.get_or_intern("g");
+                let on_back = args.get(1).map(|a| {
+                    if let Expr::Sym(s) = a {
+                        interner.resolve(*s) == "back"
+                    } else {
+                        false
+                    }
+                }).unwrap_or(true);
+                ax_qm::split_gamma(&args[0], gamma, g, on_back, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "euler_lagrange" => {
             if args.len() == 4 {
                 match (&args[0], &args[1], &args[2], &args[3]) {

@@ -855,6 +855,135 @@ pub fn fierz(
     ax_ir::Expr::add(terms)
 }
 
+// ─── split_gamma ──────────────────────────────────────────────────────────────
+
+/// Split one index off a multi-index antisymmetric gamma matrix.
+///
+/// Uses the join identity in reverse:
+/// ```text
+/// γ^{a} γ^{b…z} = γ^{a b…z} + contraction terms
+/// γ^{a b…z} γ^{z} = γ^{a b…} + contraction terms
+/// ```
+/// So:
+/// ```text
+/// γ^{a b…z} = γ^{a b…} γ^{z} − (contraction terms)   [on_back = true]
+/// γ^{a b…z} = γ^{a} γ^{b…z} − (contraction terms)   [on_back = false]
+/// ```
+///
+/// Parameters:
+/// - `gamma_sym`: symbol for the gamma matrix
+/// - `metric_sym`: symbol for the metric used in contractions
+/// - `on_back`: if `true`, split the last index; if `false`, split the first
+pub fn split_gamma(
+    expr: &Expr,
+    gamma_sym: lasso::Spur,
+    metric_sym: lasso::Spur,
+    on_back: bool,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let _ = interner;
+    match expr {
+        Expr::Call(f, args) if *f == gamma_sym && args.len() > 1 => {
+            let indices: Vec<lasso::Spur> = args
+                .iter()
+                .filter_map(|a| if let Expr::Sym(s) = a { Some(*s) } else { None })
+                .collect();
+
+            if indices.len() <= 1 {
+                return expr.clone();
+            }
+
+            // Choose which index to split off and what remains
+            let (split_idx, remaining_indices) = if on_back {
+                let last = *indices.last().unwrap();
+                (last, indices[..indices.len() - 1].to_vec())
+            } else {
+                let first = indices[0];
+                (first, indices[1..].to_vec())
+            };
+
+            // Main term: γ(remaining) * γ(split)  [on_back]
+            //         or γ(split) * γ(remaining)  [on_front]
+            let main = if on_back {
+                Expr::mul(vec![
+                    make_gamma(&remaining_indices, gamma_sym),
+                    make_gamma(&[split_idx], gamma_sym),
+                ])
+            } else {
+                Expr::mul(vec![
+                    make_gamma(&[split_idx], gamma_sym),
+                    make_gamma(&remaining_indices, gamma_sym),
+                ])
+            };
+
+            // Contraction terms come from the join identity:
+            //   γ(remaining) γ(split) = γ(full) + Σ_k (±1) g^{split rem_k} γ(remaining \ rem_k)
+            // Rearranging: γ(full) = main − Σ_k (±1) g^{split rem_k} γ(remaining \ rem_k)
+            //
+            // Signs: k-th contraction gets (-1)^k when splitting from back,
+            //        and (-1)^k when splitting from front (same rule, position counts from 0).
+            let mut all_terms = vec![main];
+
+            for (k, &rem_idx) in remaining_indices.iter().enumerate() {
+                // Sign: (-1)^k  (k is 0-based position in remaining)
+                let negate = k % 2 != 0;
+
+                let metric = Expr::Indexed(
+                    Box::new(Expr::Sym(metric_sym)),
+                    vec![
+                        Index {
+                            name: split_idx,
+                            variance: Variance::Up,
+                            index_type: None,
+                        },
+                        Index {
+                            name: rem_idx,
+                            variance: Variance::Up,
+                            index_type: None,
+                        },
+                    ],
+                );
+
+                // Sub-gamma: remaining indices with rem_idx removed
+                let sub_remaining: Vec<lasso::Spur> = remaining_indices
+                    .iter()
+                    .filter(|&&i| i != rem_idx)
+                    .copied()
+                    .collect();
+
+                let sub_gamma = if sub_remaining.is_empty() {
+                    Expr::one()
+                } else {
+                    make_gamma(&sub_remaining, gamma_sym)
+                };
+
+                let contraction = Expr::mul(vec![metric, sub_gamma]);
+                // Subtract the contraction: − (±contraction)
+                let signed = if negate { contraction } else { Expr::neg(contraction) };
+                all_terms.push(signed);
+            }
+
+            Expr::add(all_terms)
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| split_gamma(f, gamma_sym, metric_sym, on_back, interner))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| split_gamma(t, gamma_sym, metric_sym, on_back, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => {
+            Expr::neg(split_gamma(e, gamma_sym, metric_sym, on_back, interner))
+        }
+        _ => expr.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1074,5 +1203,164 @@ mod tests {
         for (c, _) in &coeffs {
             assert_ne!(*c, num_rational::BigRational::new(0i64.into(), 1i64.into()));
         }
+    }
+
+    // ── split_gamma tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn split_gamma_three_indices() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+
+        // gamma(a, b, c) split from back → gamma(a,b)*gamma(c) + contractions
+        let expr = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let result = split_gamma(&expr, gamma, g, true, &interner);
+
+        if let Expr::Add(terms) = &result {
+            assert!(
+                terms.len() >= 2,
+                "expected main term + contraction terms, got {:?}",
+                result
+            );
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn split_gamma_back_vs_front_differ() {
+        // Splitting from back vs front should produce different expressions
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+
+        let expr = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let back = split_gamma(&expr, gamma, g, true, &interner);
+        let front = split_gamma(&expr, gamma, g, false, &interner);
+
+        assert_ne!(back, front, "splitting from back vs front should differ");
+    }
+
+    #[test]
+    fn split_gamma_two_indices_back() {
+        // gamma(a, b) split from back → gamma(a)*gamma(b) − g^{ba} * 1
+        // (2-index: remaining = [a], split = b, k=0 → sign = +, negate=false → subtract metric)
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]);
+        let result = split_gamma(&expr, gamma, g, true, &interner);
+
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2, "gamma(a,b) split should give 2 terms: main + one contraction");
+            // First term should be a Mul (gamma(a) * gamma(b))
+            assert!(
+                matches!(&terms[0], Expr::Mul(_)),
+                "first term should be a product"
+            );
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn split_gamma_two_indices_front() {
+        // gamma(a, b) split from front → gamma(a)*gamma(b) − g^{ab} * 1
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]);
+        let result = split_gamma(&expr, gamma, g, false, &interner);
+
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2, "gamma(a,b) split-front should give 2 terms");
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn split_gamma_single_index_unchanged() {
+        // gamma(a) has only one index — cannot be split, returned as-is
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+
+        let expr = Expr::Call(gamma, vec![Expr::Sym(a)]);
+        let result = split_gamma(&expr, gamma, g, true, &interner);
+        assert_eq!(result, expr, "single-index gamma should be unchanged");
+    }
+
+    #[test]
+    fn split_gamma_four_indices_term_count() {
+        // gamma(a,b,c,d) split from back has remaining=[a,b,c] → 3 contractions + 1 main = 4 terms
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+
+        let expr = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c), Expr::Sym(d)]);
+        let result = split_gamma(&expr, gamma, g, true, &interner);
+
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 4, "4-index gamma split should give 4 terms (1 main + 3 contractions)");
+        } else {
+            panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn split_gamma_non_gamma_call_unchanged() {
+        // A call to a different function should not be touched
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let f_sym = interner.get_or_intern("f");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::Call(f_sym, vec![Expr::Sym(a), Expr::Sym(b)]);
+        let result = split_gamma(&expr, gamma, g, true, &interner);
+        assert_eq!(result, expr, "non-gamma call should be unchanged");
+    }
+
+    #[test]
+    fn split_gamma_distributes_in_sum() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let g = interner.get_or_intern("g");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+
+        // gamma(a,b,c) + gamma(a,b) → both are processed
+        let g3 = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let g2 = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]);
+        let expr = Expr::add(vec![g3, g2]);
+        let result = split_gamma(&expr, gamma, g, true, &interner);
+
+        // Result should still be an Add (may have more terms after expansion)
+        assert!(
+            matches!(result, Expr::Add(_)),
+            "result of split on a sum should be an Add, got {:?}",
+            result
+        );
     }
 }
