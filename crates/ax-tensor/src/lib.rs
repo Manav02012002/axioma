@@ -4514,6 +4514,128 @@ pub fn expand_dummies(
     }
 }
 
+// ─── explicit_indices ─────────────────────────────────────────────────────────
+
+/// Make implicit indices on matrix-like objects explicit.
+///
+/// In a product `A * B` where both are 2-index implicit-index objects, the
+/// contraction chain is introduced: `A[_i0+, _i1-] * B[_i1+, _i2-]`.
+/// The lower index of each factor contracts with the upper index of the next.
+///
+/// Parameters:
+/// - `implicit_index_tensors`: names of tensors that carry implicit indices
+/// - `available_indices`: pool of fresh index name spurs to draw from
+/// - `n_indices_per_tensor`: how many indices each such tensor has (typically 2)
+pub fn explicit_indices(
+    expr: &Expr,
+    implicit_index_tensors: &HashSet<lasso::Spur>,
+    available_indices: &[lasso::Spur],
+    n_indices_per_tensor: &HashMap<lasso::Spur, usize>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let _ = interner;
+    match expr {
+        Expr::Mul(factors) => {
+            // Identify which factor positions carry implicit indices, and how many
+            let mut implicit_factors: Vec<(usize, lasso::Spur, usize)> = Vec::new();
+            for (i, factor) in factors.iter().enumerate() {
+                let name = match factor {
+                    Expr::Sym(s) => Some(*s),
+                    Expr::Call(f, _) => Some(*f),
+                    Expr::Indexed(base, _) => {
+                        if let Expr::Sym(s) = base.as_ref() { Some(*s) } else { None }
+                    }
+                    _ => None,
+                };
+                if let Some(n) = name {
+                    if implicit_index_tensors.contains(&n) {
+                        let n_idx = n_indices_per_tensor.get(&n).copied().unwrap_or(2);
+                        implicit_factors.push((i, n, n_idx));
+                    }
+                }
+            }
+
+            if implicit_factors.is_empty() {
+                return expr.clone();
+            }
+
+            let mut idx_counter = 0usize;
+            let mut new_factors = factors.clone();
+            let mut prev_lower: Option<lasso::Spur> = None;
+
+            let mut fresh = |counter: &mut usize, interner: &ax_ir::Interner| -> lasso::Spur {
+                let idx = available_indices
+                    .get(*counter)
+                    .copied()
+                    .unwrap_or_else(|| interner.get_or_intern(&format!("_i{}", *counter)));
+                *counter += 1;
+                idx
+            };
+
+            for &(pos, _name, n_idx) in &implicit_factors {
+                if n_idx != 2 {
+                    // Only the standard 2-index (matrix) case is handled here
+                    continue;
+                }
+
+                // Upper index: reuse the previous factor's lower, or allocate fresh
+                let upper_idx = if let Some(prev) = prev_lower.take() {
+                    prev
+                } else {
+                    fresh(&mut idx_counter, interner)
+                };
+
+                let lower_idx = fresh(&mut idx_counter, interner);
+                prev_lower = Some(lower_idx);
+
+                let base = match &new_factors[pos] {
+                    Expr::Indexed(b, _) => *b.clone(),
+                    other => other.clone(),
+                };
+                new_factors[pos] = Expr::Indexed(
+                    Box::new(base),
+                    vec![
+                        ax_ir::Index {
+                            name: upper_idx,
+                            variance: ax_ir::Variance::Up,
+                            index_type: None,
+                        },
+                        ax_ir::Index {
+                            name: lower_idx,
+                            variance: ax_ir::Variance::Down,
+                            index_type: None,
+                        },
+                    ],
+                );
+            }
+
+            Expr::mul(new_factors)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| {
+                    explicit_indices(
+                        t,
+                        implicit_index_tensors,
+                        available_indices,
+                        n_indices_per_tensor,
+                        interner,
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(explicit_indices(
+            e,
+            implicit_index_tensors,
+            available_indices,
+            n_indices_per_tensor,
+            interner,
+        )),
+        _ => expr.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6190,6 +6312,252 @@ mod tests {
         match expr {
             Expr::Add(terms) => terms.iter().map(count_add_terms).sum(),
             _ => 1,
+        }
+    }
+
+    // ── explicit_indices tests ────────────────────────────────────────────────
+
+    #[test]
+    fn explicit_indices_matrix_product() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let i0 = interner.get_or_intern("_i0");
+        let i1 = interner.get_or_intern("_i1");
+        let i2 = interner.get_or_intern("_i2");
+
+        let mut implicit = HashSet::new();
+        implicit.insert(a);
+        implicit.insert(b);
+        let n_per: HashMap<lasso::Spur, usize> =
+            vec![(a, 2), (b, 2)].into_iter().collect();
+        let avail = vec![i0, i1, i2];
+
+        // A * B → A[_i0+, _i1-] * B[_i1+, _i2-]
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
+
+        if let Expr::Mul(factors) = &result {
+            let indexed_count = factors
+                .iter()
+                .filter(|f| matches!(f, Expr::Indexed(_, _)))
+                .count();
+            assert_eq!(
+                indexed_count, 2,
+                "both factors should have explicit indices: {:?}",
+                result
+            );
+
+            let mut all_up = Vec::new();
+            let mut all_down = Vec::new();
+            for f in factors {
+                if let Expr::Indexed(_, indices) = f {
+                    for idx in indices {
+                        match idx.variance {
+                            Variance::Up => all_up.push(idx.name),
+                            Variance::Down => all_down.push(idx.name),
+                        }
+                    }
+                }
+            }
+            // There should be at least one shared contracted index
+            let shared: Vec<_> = all_up.iter().filter(|u| all_down.contains(u)).collect();
+            assert!(
+                !shared.is_empty(),
+                "should have a contracted index between A and B"
+            );
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn explicit_indices_triple_product() {
+        // A * B * C — three chained matrices
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let avail: Vec<lasso::Spur> = (0..6)
+            .map(|i| interner.get_or_intern(&format!("_i{}", i)))
+            .collect();
+
+        let mut implicit = HashSet::new();
+        implicit.insert(a);
+        implicit.insert(b);
+        implicit.insert(c);
+        let n_per: HashMap<lasso::Spur, usize> =
+            vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
+
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
+
+        if let Expr::Mul(factors) = &result {
+            assert_eq!(
+                factors.iter().filter(|f| matches!(f, Expr::Indexed(_, _))).count(),
+                3,
+                "all three factors should be indexed"
+            );
+            // Collect every index name that appears as both up and down
+            let mut up: Vec<lasso::Spur> = Vec::new();
+            let mut down: Vec<lasso::Spur> = Vec::new();
+            for f in factors {
+                if let Expr::Indexed(_, idxs) = f {
+                    for idx in idxs {
+                        match idx.variance {
+                            Variance::Up => up.push(idx.name),
+                            Variance::Down => down.push(idx.name),
+                        }
+                    }
+                }
+            }
+            let contractions: Vec<_> = up.iter().filter(|u| down.contains(u)).collect();
+            // A-B contraction + B-C contraction = 2 contracted pairs
+            assert_eq!(contractions.len(), 2, "expected 2 contracted index pairs for A*B*C");
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn explicit_indices_no_implicit_unchanged() {
+        // A tensor with no implicit-index property should be untouched
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let implicit: HashSet<lasso::Spur> = HashSet::new(); // empty
+        let n_per: HashMap<lasso::Spur, usize> = HashMap::new();
+        let avail: Vec<lasso::Spur> = Vec::new();
+
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
+        assert_eq!(result, expr, "expression without implicit tensors should be unchanged");
+    }
+
+    #[test]
+    fn explicit_indices_scalar_mixed_in_product() {
+        // 3 * A * B — the scalar should be preserved, only A and B get indices
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let avail: Vec<lasso::Spur> = (0..4)
+            .map(|i| interner.get_or_intern(&format!("_i{}", i)))
+            .collect();
+
+        let mut implicit = HashSet::new();
+        implicit.insert(a);
+        implicit.insert(b);
+        let n_per: HashMap<lasso::Spur, usize> =
+            vec![(a, 2), (b, 2)].into_iter().collect();
+
+        let expr = Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(a), Expr::Sym(b)]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
+
+        if let Expr::Mul(factors) = &result {
+            let indexed = factors
+                .iter()
+                .filter(|f| matches!(f, Expr::Indexed(_, _)))
+                .count();
+            assert_eq!(indexed, 2, "only A and B should be indexed");
+            // scalar 3 should still be present
+            assert!(
+                factors.iter().any(|f| *f == Expr::Int(3.into())),
+                "scalar factor 3 should be preserved"
+            );
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn explicit_indices_in_sum() {
+        // (A * B) + (A * B) — distributes over Add
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let avail: Vec<lasso::Spur> = (0..4)
+            .map(|i| interner.get_or_intern(&format!("_i{}", i)))
+            .collect();
+
+        let mut implicit = HashSet::new();
+        implicit.insert(a);
+        implicit.insert(b);
+        let n_per: HashMap<lasso::Spur, usize> =
+            vec![(a, 2), (b, 2)].into_iter().collect();
+
+        let product = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
+        let expr = Expr::add(vec![product.clone(), product]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
+
+        // Each branch of the sum should be a Mul with two Indexed factors
+        let check = |term: &Expr| {
+            if let Expr::Mul(factors) = term {
+                factors.iter().filter(|f| matches!(f, Expr::Indexed(_, _))).count() == 2
+            } else {
+                false
+            }
+        };
+        match &result {
+            Expr::Add(terms) => {
+                for t in terms {
+                    assert!(check(t), "each sum term should have two indexed factors, got {:?}", t);
+                }
+            }
+            // If Expr::add collapsed identical terms into 2*(...), that's fine too
+            Expr::Mul(factors) => {
+                assert!(
+                    factors.iter().any(|f| matches!(f, Expr::Indexed(_, _))),
+                    "expected indexed factors in collapsed sum"
+                );
+            }
+            _ => panic!("expected Add or Mul, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn explicit_indices_contraction_chain_correct() {
+        // Verify A[_i0+, _i1-] * B[_i1+, _i2-]: A's lower == B's upper
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let i0 = interner.get_or_intern("_i0");
+        let i1 = interner.get_or_intern("_i1");
+        let i2 = interner.get_or_intern("_i2");
+
+        let mut implicit = HashSet::new();
+        implicit.insert(a);
+        implicit.insert(b);
+        let n_per: HashMap<lasso::Spur, usize> =
+            vec![(a, 2), (b, 2)].into_iter().collect();
+        let avail = vec![i0, i1, i2];
+
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
+
+        if let Expr::Mul(factors) = &result {
+            let get_idx = |f: &Expr| -> Option<(lasso::Spur, lasso::Spur)> {
+                if let Expr::Indexed(_, idxs) = f {
+                    if idxs.len() == 2 {
+                        let up = idxs.iter().find(|i| i.variance == Variance::Up)?.name;
+                        let dn = idxs.iter().find(|i| i.variance == Variance::Down)?.name;
+                        return Some((up, dn));
+                    }
+                }
+                None
+            };
+            let indexed: Vec<_> = factors.iter().filter_map(get_idx).collect();
+            assert_eq!(indexed.len(), 2, "expected 2 indexed factors");
+            let (a_up, a_dn) = indexed[0];
+            let (b_up, b_dn) = indexed[1];
+            assert_eq!(
+                a_dn, b_up,
+                "A's lower index ({}) should match B's upper index ({})",
+                interner.resolve(a_dn),
+                interner.resolve(b_up)
+            );
+            assert_ne!(a_up, b_dn, "outer indices should be distinct");
+        } else {
+            panic!("expected Mul, got {:?}", result);
         }
     }
 }

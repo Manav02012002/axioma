@@ -2193,6 +2193,28 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "explicit_indices" => {
+            if !args.is_empty() {
+                let implicit: HashSet<lasso::Spur> = env
+                    .tensor_properties
+                    .iter()
+                    .filter(|(_, props)| {
+                        props
+                            .iter()
+                            .any(|p| matches!(p, ax_ir::TensorProperty::GammaMatrixProp))
+                    })
+                    .map(|(sym, _)| *sym)
+                    .collect();
+                let n_per: HashMap<lasso::Spur, usize> =
+                    implicit.iter().map(|s| (*s, 2)).collect();
+                let avail: Vec<lasso::Spur> = (0..20)
+                    .map(|i| interner.get_or_intern(&format!("_impl{}", i)))
+                    .collect();
+                ax_tensor::explicit_indices(&args[0], &implicit, &avail, &n_per, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "reduce_delta" => {
             if !args.is_empty() {
                 let delta = interner.get_or_intern("delta");
