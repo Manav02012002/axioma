@@ -2185,6 +2185,14 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "expand_dummies" => {
+            if !args.is_empty() {
+                let coords: Vec<lasso::Spur> = env.coordinates.iter().copied().collect();
+                ax_tensor::expand_dummies(&args[0], &coords, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "reduce_delta" => {
             if !args.is_empty() {
                 let delta = interner.get_or_intern("delta");

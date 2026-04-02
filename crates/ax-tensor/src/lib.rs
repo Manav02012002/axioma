@@ -4381,6 +4381,139 @@ fn contains_sym(expr: &Expr, sym: lasso::Spur) -> bool {
     }
 }
 
+// ─── expand_dummies ───────────────────────────────────────────────────────────
+
+/// Collect every index name that appears in `expr`, recording all `(position, variance)` occurrences.
+fn collect_index_positions(
+    expr: &Expr,
+    counts: &mut HashMap<lasso::Spur, Vec<(usize, ax_ir::Variance)>>,
+    pos: &mut usize,
+) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            collect_index_positions(base, counts, pos);
+            for idx in indices {
+                counts
+                    .entry(idx.name)
+                    .or_default()
+                    .push((*pos, idx.variance.clone()));
+                *pos += 1;
+            }
+        }
+        Expr::Mul(factors) => {
+            for f in factors {
+                collect_index_positions(f, counts, pos);
+            }
+        }
+        Expr::Neg(e) => collect_index_positions(e, counts, pos),
+        _ => {}
+    }
+}
+
+/// Rename every occurrence of index `from` to `to` throughout `expr`.
+fn replace_index_name_everywhere(expr: &Expr, from: lasso::Spur, to: lasso::Spur) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let new_indices: Vec<ax_ir::Index> = indices
+                .iter()
+                .map(|idx| {
+                    if idx.name == from {
+                        ax_ir::Index {
+                            name: to,
+                            variance: idx.variance.clone(),
+                            index_type: idx.index_type,
+                        }
+                    } else {
+                        idx.clone()
+                    }
+                })
+                .collect();
+            Expr::Indexed(
+                Box::new(replace_index_name_everywhere(base, from, to)),
+                new_indices,
+            )
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| replace_index_name_everywhere(f, from, to))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| replace_index_name_everywhere(t, from, to))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(replace_index_name_everywhere(e, from, to)),
+        _ => expr.clone(),
+    }
+}
+
+/// Expand dummy index contractions into explicit sums over coordinate values.
+///
+/// `T_{mu}^{mu}` with coordinates `[t, r, theta, phi]` becomes
+/// `T_{t}^{t} + T_{r}^{r} + T_{theta}^{theta} + T_{phi}^{phi}`.
+///
+/// Each Einstein-summation dummy pair (one up, one down index with the same name)
+/// is replaced by a sum over all supplied coordinate labels. Multiple dummy pairs
+/// are expanded left-to-right, one at a time.
+pub fn expand_dummies(
+    expr: &Expr,
+    coordinates: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let _ = interner;
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| expand_dummies(t, coordinates, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(expand_dummies(e, coordinates, interner)),
+        _ => {
+            // Collect all index name occurrences in this term
+            let mut index_count: HashMap<lasso::Spur, Vec<(usize, ax_ir::Variance)>> =
+                HashMap::new();
+            collect_index_positions(expr, &mut index_count, &mut 0);
+
+            // A dummy pair: appears exactly twice with opposite variances,
+            // and the name is not a concrete coordinate value (which would
+            // mean the contraction has already been made explicit).
+            let coord_set: HashSet<lasso::Spur> = coordinates.iter().copied().collect();
+            let mut dummy_names: Vec<lasso::Spur> = index_count
+                .iter()
+                .filter(|(name, occs)| {
+                    occs.len() == 2
+                        && occs[0].1 != occs[1].1
+                        && !coord_set.contains(*name)
+                })
+                .map(|(name, _)| *name)
+                .collect();
+
+            if dummy_names.is_empty() {
+                return expr.clone();
+            }
+
+            // Deterministic order so tests are reproducible
+            dummy_names.sort_by_key(|s| s.into_inner());
+
+            let first_dummy = dummy_names[0];
+            let terms: Vec<Expr> = coordinates
+                .iter()
+                .map(|&coord| {
+                    let replaced = replace_index_name_everywhere(expr, first_dummy, coord);
+                    // Recursively expand any remaining dummy pairs
+                    expand_dummies(&replaced, coordinates, interner)
+                })
+                .collect();
+
+            Expr::add(terms)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5892,5 +6025,171 @@ mod tests {
         );
         let result = split_index(&expr, &[mu], &[t0], &[i], &interner);
         assert_eq!(result, expr);
+    }
+
+    // ── expand_dummies tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn expand_dummies_trace() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let t_coord = interner.get_or_intern("t");
+        let r_coord = interner.get_or_intern("r");
+
+        // T[mu+, mu-] with coords [t, r] → T[t+, t-] + T[r+, r-]
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![
+                Index { name: mu, variance: Variance::Up, index_type: None },
+                Index { name: mu, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 2, "expected 2 terms, got {terms:?}");
+        } else {
+            panic!("expected Add with 2 terms, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn expand_dummies_four_coords() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let coords: Vec<lasso::Spur> = ["t", "r", "theta", "phi"]
+            .iter()
+            .map(|s| interner.get_or_intern(s))
+            .collect();
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![
+                Index { name: mu, variance: Variance::Up, index_type: None },
+                Index { name: mu, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let result = expand_dummies(&expr, &coords, &interner);
+        if let Expr::Add(terms) = &result {
+            assert_eq!(terms.len(), 4, "expected 4 terms for 4 coordinates");
+            // Each term should be T[coord+, coord-] for some coord
+            for term in terms {
+                if let Expr::Indexed(_, indices) = term {
+                    assert_eq!(indices.len(), 2);
+                    assert_eq!(indices[0].name, indices[1].name, "both indices should be the same coordinate");
+                    assert_ne!(indices[0].variance, indices[1].variance, "variances should differ");
+                } else {
+                    panic!("expected Indexed term, got {:?}", term);
+                }
+            }
+        } else {
+            panic!("expected Add with 4 terms, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn expand_dummies_no_dummy_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let t_coord = interner.get_or_intern("t");
+        let r_coord = interner.get_or_intern("r");
+
+        // T[a-, b-]: no contraction (both down), should be returned unchanged
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![
+                Index { name: a, variance: Variance::Down, index_type: None },
+                Index { name: b, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
+        assert_eq!(result, expr, "free-index expression should be returned unchanged");
+    }
+
+    #[test]
+    fn expand_dummies_two_contractions() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+        let t_coord = interner.get_or_intern("t");
+        let r_coord = interner.get_or_intern("r");
+
+        // T[mu+, mu-, nu+, nu-] with coords [t, r]
+        // → sum over 2 choices for mu × 2 choices for nu = 4 terms
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t_sym)),
+            vec![
+                Index { name: mu, variance: Variance::Up, index_type: None },
+                Index { name: mu, variance: Variance::Down, index_type: None },
+                Index { name: nu, variance: Variance::Up, index_type: None },
+                Index { name: nu, variance: Variance::Down, index_type: None },
+            ],
+        );
+        let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
+        // Should have 2×2 = 4 terms
+        let count = count_add_terms(&result);
+        assert_eq!(count, 4, "two dummy pairs over 2 coords should give 4 terms, got {count}");
+    }
+
+    #[test]
+    fn expand_dummies_product() {
+        let interner = ax_ir::Interner::new();
+        let a_sym = interner.get_or_intern("A");
+        let b_sym = interner.get_or_intern("B");
+        let mu = interner.get_or_intern("mu");
+        let t_coord = interner.get_or_intern("t");
+        let r_coord = interner.get_or_intern("r");
+
+        // A[mu+] * B[mu-] with coords [t, r] → A[t+]*B[t-] + A[r+]*B[r-]
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a_sym)),
+                vec![Index { name: mu, variance: Variance::Up, index_type: None }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(b_sym)),
+                vec![Index { name: mu, variance: Variance::Down, index_type: None }],
+            ),
+        ]);
+        let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
+        let count = count_add_terms(&result);
+        assert_eq!(count, 2, "A[mu+]*B[mu-] over 2 coords should give 2 terms, got {count}");
+    }
+
+    #[test]
+    fn expand_dummies_add_distributes() {
+        let interner = ax_ir::Interner::new();
+        let t_sym = interner.get_or_intern("T");
+        let s_sym = interner.get_or_intern("S");
+        let mu = interner.get_or_intern("mu");
+        let t_coord = interner.get_or_intern("t");
+        let r_coord = interner.get_or_intern("r");
+
+        let mk = |sym, var: Variance| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(sym)),
+                vec![
+                    Index { name: mu, variance: var.clone(), index_type: None },
+                    Index { name: mu, variance: if var == Variance::Up { Variance::Down } else { Variance::Up }, index_type: None },
+                ],
+            )
+        };
+
+        // (T[mu+,mu-] + S[mu+,mu-]) with 2 coords → 4 terms total
+        let expr = Expr::add(vec![mk(t_sym, Variance::Up), mk(s_sym, Variance::Up)]);
+        let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
+        let count = count_add_terms(&result);
+        assert_eq!(count, 4, "sum of two traces over 2 coords should give 4 terms, got {count}");
+    }
+
+    fn count_add_terms(expr: &Expr) -> usize {
+        match expr {
+            Expr::Add(terms) => terms.iter().map(count_add_terms).sum(),
+            _ => 1,
+        }
     }
 }
