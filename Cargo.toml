@@ -12,8 +12,6 @@ members = [
   "crates/ax-eval",
   "crates/ax-forms",
   "crates/ax-linalg",
-  "crates/ax-lsp",
-  "crates/ax-jupyter",
   "crates/ax-notebook",
   "crates/ax-ode",
   "crates/ax-perm",
@@ -27,7 +25,18 @@ members = [
   "crates/ax-young",
   "crates/ax-plugin-host",
   "crates/ax-plugin-api",
-  "plugins/axp-echo", "crates/ax-ir", "crates/ax-syntax", "crates/ax-ai-proto",
+  "crates/ax-ir",
+  "crates/ax-syntax",
+  "crates/ax-ai-proto",
+]
+# Excluded from default build (require system deps or are optional):
+# - crates/ax-jupyter (requires libzmq)
+# - crates/ax-lsp (standalone binary)
+# - plugins/axp-echo (WASM plugin example)
+exclude = [
+  "crates/ax-jupyter",
+  "crates/ax-lsp",
+  "plugins/axp-echo",
 ]
 
 [workspace.package]

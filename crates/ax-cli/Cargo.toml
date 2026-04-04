@@ -1,11 +1,22 @@
 [package]
-name = "ax-cli"
+name = "axioma"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "A scientific computing language for physicists - tensor algebra, symbolic CAS, and more"
+repository = "https://github.com/manavm12/axioma"
+readme = "../../README.md"
+keywords = ["physics", "tensor", "algebra", "symbolic", "cas"]
+categories = ["science", "mathematics"]
 
 [[bin]]
 name = "axioma"
 path = "src/main.rs"
+
+[features]
+default = ["notebook"]
+notebook = ["dep:ax-notebook"]
+plugins = ["dep:ax-plugin-api", "dep:ax-plugin-host"]
 
 [dependencies]
 anyhow.workspace = true
@@ -17,10 +28,7 @@ clap = { version = "4.5", features = ["derive"] }
 ax-context = { path = "../ax-context" }
 ax-codegen = { path = "../ax-codegen" }
 ax-diagnostics = { path = "../ax-diagnostics" }
-ax-notebook = { path = "../ax-notebook" }
 ax-trace = { path = "../ax-trace" }
-ax-plugin-api = { path = "../ax-plugin-api" }
-ax-plugin-host = { path = "../ax-plugin-host" }
 ax-syntax = { version = "0.1.0", path = "../ax-syntax" }
 serde = { workspace = true, features = ["derive"] }
 ax-ai-proto = { version = "0.1.0", path = "../ax-ai-proto" }
@@ -30,6 +38,11 @@ ax-eval = { path = "../ax-eval" }
 ax-render = { path = "../ax-render" }
 rustyline = "15"
 toml = "0.8"
+
+# Optional dependencies
+ax-notebook = { path = "../ax-notebook", optional = true }
+ax-plugin-api = { path = "../ax-plugin-api", optional = true }
+ax-plugin-host = { path = "../ax-plugin-host", optional = true }
 
 [dev-dependencies]
 wat = "1.0"

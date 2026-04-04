@@ -11,8 +11,12 @@ mod cmd_render;
 mod cmd_repl;
 mod cmd_run;
 use anyhow::{bail, Context, Result};
-use ax_context::{load_config, load_project_paths};
+use ax_context::load_project_paths;
+#[cfg(feature = "plugins")]
+use ax_context::load_config;
+#[cfg(feature = "plugins")]
 use ax_plugin_api::{PluginRequest, PluginResponse};
+#[cfg(feature = "plugins")]
 use ax_plugin_host::WasmPlugin;
 use ax_trace::TraceReport;
 use blake3::Hasher;
@@ -99,6 +103,7 @@ enum Command {
     Run {
         file: std::path::PathBuf,
     },
+    #[cfg(feature = "notebook")]
     Notebook {
         #[arg(long, default_value_t = 8888)]
         port: u16,
@@ -126,12 +131,14 @@ enum Command {
     },
 
     /// WASM plugin operations.
+    #[cfg(feature = "plugins")]
     Plugin {
         #[command(subcommand)]
         cmd: PluginCmd,
     },
 }
 
+#[cfg(feature = "plugins")]
 #[derive(Debug, Subcommand)]
 enum PluginCmd {
     /// List plugins registered in axioma.toml
@@ -321,6 +328,7 @@ fn real_main() -> Result<()> {
             let code = cmd_run::run(&file)?;
             std::process::exit(code);
         }
+        #[cfg(feature = "notebook")]
         Command::Notebook { port } => {
             ax_notebook::start_server(port)?;
             Ok(())
@@ -361,6 +369,7 @@ fn real_main() -> Result<()> {
             }
         },
 
+        #[cfg(feature = "plugins")]
         Command::Plugin { cmd } => match cmd {
             PluginCmd::List { root } => {
                 let paths = load_project_paths(root.as_deref())?;
