@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A permutation in images notation. p[i] = image of i under the permutation.
 /// Indices are 0-based internally. The identity permutation of degree n is [0, 1, 2, ..., n-1].
@@ -12,6 +12,24 @@ pub struct SGS {
     pub base: Vec<usize>,
     pub generators: Vec<Perm>,
     pub n: usize,
+}
+
+/// Description of a set of dummy index pairs.
+#[derive(Clone, Debug)]
+pub struct DummySet {
+    /// Pairs of slot positions that hold dummy indices.
+    /// Each pair (a, b) means slots a and b contain a contracted pair.
+    pub pairs: Vec<(usize, usize)>,
+    /// Metric symmetry: +1 for symmetric metric, -1 for antisymmetric (spinor),
+    /// 0 for no metric (fixed position indices).
+    pub metric_symmetry: i32,
+}
+
+/// Description of repeated (coordinate/integer) indices.
+#[derive(Clone, Debug)]
+pub struct RepeatedSet {
+    /// Positions of the repeated index occurrences.
+    pub positions: Vec<usize>,
 }
 
 /// Create the identity permutation of degree n.
@@ -423,18 +441,14 @@ fn compare_on_free_indices(a: &[usize], b: &[usize], free_indices: &[usize]) -> 
     a.cmp(b)
 }
 
-fn choose_better(
-    candidate: Perm,
-    current_best: Option<Perm>,
-    free_indices: &[usize],
-) -> Option<Perm> {
+fn choose_better(candidate: Perm, current_best: Option<Perm>, slots: &[usize]) -> Option<Perm> {
     match current_best {
         None => Some(candidate),
         Some(best) => {
-            let ordering = if free_indices.is_empty() {
+            let ordering = if slots.is_empty() {
                 candidate.cmp(&best)
             } else {
-                compare_on_free_indices(&candidate, &best, free_indices)
+                compare_on_free_indices(&candidate, &best, slots)
             };
             if ordering == std::cmp::Ordering::Less {
                 Some(candidate)
@@ -443,45 +457,6 @@ fn choose_better(
             }
         }
     }
-}
-
-fn coset_representative_backtrack(
-    current: &[usize],
-    sgs: &SGS,
-    level: usize,
-    free_indices: &[usize],
-) -> Perm {
-    if level >= sgs.base.len() {
-        return current.to_vec();
-    }
-
-    let bp = sgs.base[level];
-    let level_gens = stabilizer_generators_for_level(&sgs.base, level, &sgs.generators);
-    if level_gens.is_empty() {
-        return coset_representative_backtrack(current, sgs, level + 1, free_indices);
-    }
-
-    let schreier_gens = extended_generators(&level_gens);
-    let (nu, w) = schreier_vector(bp, &schreier_gens, sgs.n);
-    let orbit_points = orbit(bp, &level_gens);
-    let min_image = orbit_points
-        .iter()
-        .map(|&pt| current[pt])
-        .min()
-        .unwrap_or(current[bp]);
-
-    let mut best = None;
-    for &pt in &orbit_points {
-        if current[pt] != min_image {
-            continue;
-        }
-        let rep = trace_schreier(pt, bp, &nu, &w, &schreier_gens, sgs.n);
-        let next = apply_group_action(current, &rep);
-        let candidate = coset_representative_backtrack(&next, sgs, level + 1, free_indices);
-        best = choose_better(candidate, best, free_indices);
-    }
-
-    best.unwrap_or_else(|| current.to_vec())
 }
 
 /// Compute the coset representative of a permutation relative to a subgroup.
@@ -493,74 +468,19 @@ pub fn coset_representative(
     sgs: &SGS,
     free_indices: &[usize],
 ) -> Perm {
-    coset_representative_backtrack(perm, sgs, 0, free_indices)
+    coset_rep(perm, sgs.n, &sgs.base, &sgs.generators, free_indices)
 }
 
 fn apply_group_action(perm: &[usize], g: &[usize]) -> Perm {
     (0..perm.len()).map(|i| perm[on_points(i, g)]).collect()
 }
 
-fn extract_sign_from_perm(perm: &[usize], sign_slots: Option<(usize, usize)>) -> i32 {
-    match sign_slots {
-        Some((i, j)) if i < perm.len() && j < perm.len() && perm[i] > perm[j] => -1,
-        _ => 1,
-    }
+fn apply_label_action(perm: &[usize], g: &[usize]) -> Perm {
+    product(perm, g)
 }
 
-fn canonical_perm_backtrack(
-    perm: &[usize],
-    sgs: &SGS,
-    dummy_pairs: &[(usize, usize)],
-) -> (Perm, i32) {
-    fn recurse(
-        current: &[usize],
-        sgs: &SGS,
-        level: usize,
-        dummy_pairs: &[(usize, usize)],
-    ) -> Perm {
-        if level >= sgs.base.len() {
-            let mut leaf = current.to_vec();
-            for &(d1, d2) in dummy_pairs {
-                if d1 < leaf.len() && d2 < leaf.len() && leaf[d1] > leaf[d2] {
-                    leaf.swap(d1, d2);
-                }
-            }
-            return leaf;
-        }
-
-        let bp = sgs.base[level];
-        let level_gens = stabilizer_generators_for_level(&sgs.base, level, &sgs.generators);
-        if level_gens.is_empty() {
-            return recurse(current, sgs, level + 1, dummy_pairs);
-        }
-
-        let schreier_gens = extended_generators(&level_gens);
-        let (nu, w) = schreier_vector(bp, &schreier_gens, sgs.n);
-        let orbit_points = orbit(bp, &level_gens);
-        let min_image = orbit_points
-            .iter()
-            .map(|&pt| current[pt])
-            .min()
-            .unwrap_or(current[bp]);
-
-        let mut best: Option<Perm> = None;
-        for &pt in &orbit_points {
-            if current[pt] != min_image {
-                continue;
-            }
-            let rep = trace_schreier(pt, bp, &nu, &w, &schreier_gens, sgs.n);
-            let next = apply_group_action(current, &rep);
-            let candidate = recurse(&next, sgs, level + 1, dummy_pairs);
-            best = choose_better(candidate, best, &[]);
-        }
-
-        best.unwrap_or_else(|| current.to_vec())
-    }
-
-    let best = recurse(perm, sgs, 0, dummy_pairs);
-    let sign_slots = (sgs.n >= 2).then_some((sgs.n - 2, sgs.n - 1));
-    let sign = extract_sign_from_perm(&best, sign_slots);
-    (best, sign)
+fn has_sign_slots(n: usize) -> bool {
+    n >= 4
 }
 
 /// Find the lexicographically smallest permutation in the orbit of `perm` under the
@@ -574,15 +494,443 @@ pub fn canonical_perm(
     sgs: &SGS,
     dummy_pairs: &[(usize, usize)],
 ) -> (Perm, i32) {
-    if sgs.generators.is_empty() {
+    canonical_perm_ext(perm, sgs, dummy_pairs, &[], 1)
+}
+
+fn perm_sign_state(perm: &[usize], n: usize) -> i32 {
+    if !has_sign_slots(n) {
+        return 1;
+    }
+    let sign_pos = n - 2;
+    let sign_neg = n - 1;
+    if perm[sign_pos] == sign_neg && perm[sign_neg] == sign_pos {
+        -1
+    } else {
+        1
+    }
+}
+
+/// Find the coset representative for free indices.
+/// Given permutation p, stabilizer chain (base, SGS), and free index slots,
+/// find the element s in S such that s·p has the free indices in canonical position.
+pub fn coset_rep(
+    perm: &[usize],
+    n: usize,
+    base: &[usize],
+    generators: &[Perm],
+    free_slots: &[usize],
+) -> Perm {
+    if generators.is_empty() || free_slots.is_empty() {
+        return perm.to_vec();
+    }
+
+    fn recurse(
+        current: &[usize],
+        n: usize,
+        base: &[usize],
+        generators: &[Perm],
+        free_slots: &[usize],
+        level: usize,
+    ) -> Perm {
+        if level >= base.len() {
+            return current.to_vec();
+        }
+
+        let bp = base[level];
+        let level_gens = stabilizer_generators_for_level(base, level, generators);
+        if level_gens.is_empty() {
+            return recurse(current, n, base, generators, free_slots, level + 1);
+        }
+
+        let orbit_points = orbit(bp, &level_gens);
+        let min_image = orbit_points
+            .iter()
+            .map(|&pt| current[pt])
+            .min()
+            .unwrap_or(current[bp]);
+
+        let ext_gens = extended_generators(&level_gens);
+        let (nu, w) = schreier_vector(bp, &ext_gens, n);
+        let mut best: Option<Perm> = None;
+
+        for &pt in &orbit_points {
+            if current[pt] != min_image {
+                continue;
+            }
+            let rep = trace_schreier(pt, bp, &nu, &w, &ext_gens, n);
+            let next = apply_group_action(current, &rep);
+            let candidate = recurse(&next, n, base, generators, free_slots, level + 1);
+            best = choose_better(candidate, best, free_slots);
+        }
+
+        best.unwrap_or_else(|| current.to_vec())
+    }
+
+    recurse(perm, n, base, generators, free_slots, 0)
+}
+
+/// Compute generators for the dummy index symmetry group.
+pub fn dummy_group_generators(
+    dummy_sets: &[DummySet],
+    repeated_sets: &[RepeatedSet],
+    n: usize,
+) -> Vec<Perm> {
+    let sign_pos = if has_sign_slots(n) { n - 2 } else { n };
+    let sign_neg = if has_sign_slots(n) { n - 1 } else { n };
+    let mut gens = Vec::new();
+
+    for dset in dummy_sets {
+        match dset.metric_symmetry {
+            1 => {
+                for &(a, b) in &dset.pairs {
+                    let mut g: Perm = (0..n).collect();
+                    g.swap(a, b);
+                    gens.push(g);
+                }
+                for i in 0..dset.pairs.len() {
+                    for j in (i + 1)..dset.pairs.len() {
+                        let (a1, b1) = dset.pairs[i];
+                        let (a2, b2) = dset.pairs[j];
+                        let mut g: Perm = (0..n).collect();
+                        g.swap(a1, a2);
+                        g.swap(b1, b2);
+                        gens.push(g);
+                    }
+                }
+            }
+            -1 => {
+                for &(a, b) in &dset.pairs {
+                    let mut g: Perm = (0..n).collect();
+                    g.swap(a, b);
+                    if has_sign_slots(n) {
+                        g.swap(sign_pos, sign_neg);
+                    }
+                    gens.push(g);
+                }
+                for i in 0..dset.pairs.len() {
+                    for j in (i + 1)..dset.pairs.len() {
+                        let (a1, b1) = dset.pairs[i];
+                        let (a2, b2) = dset.pairs[j];
+                        let mut g: Perm = (0..n).collect();
+                        g.swap(a1, a2);
+                        g.swap(b1, b2);
+                        gens.push(g);
+                    }
+                }
+            }
+            0 => {
+                for i in 0..dset.pairs.len() {
+                    for j in (i + 1)..dset.pairs.len() {
+                        let (a1, b1) = dset.pairs[i];
+                        let (a2, b2) = dset.pairs[j];
+                        let mut g: Perm = (0..n).collect();
+                        g.swap(a1, a2);
+                        g.swap(b1, b2);
+                        gens.push(g);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for rset in repeated_sets {
+        for i in 0..rset.positions.len().saturating_sub(1) {
+            let mut g: Perm = (0..n).collect();
+            g.swap(rset.positions[i], rset.positions[i + 1]);
+            gens.push(g);
+        }
+    }
+
+    gens
+}
+
+fn project_dummy_sets_to_labels(perm: &[usize], dummy_sets: &[DummySet]) -> Vec<DummySet> {
+    dummy_sets
+        .iter()
+        .map(|set| DummySet {
+            pairs: set
+                .pairs
+                .iter()
+                .map(|&(a, b)| (perm[a], perm[b]))
+                .collect(),
+            metric_symmetry: set.metric_symmetry,
+        })
+        .collect()
+}
+
+fn project_repeated_sets_to_labels(perm: &[usize], repeated_sets: &[RepeatedSet]) -> Vec<RepeatedSet> {
+    repeated_sets
+        .iter()
+        .map(|set| RepeatedSet {
+            positions: set.positions.iter().map(|&p| perm[p]).collect(),
+        })
+        .collect()
+}
+
+/// Find the canonical representative of the double coset S·g·D.
+pub fn double_coset_rep(
+    perm: &[usize],
+    n: usize,
+    _base: &[usize],
+    s_generators: &[Perm],
+    dummy_sets: &[DummySet],
+    repeated_sets: &[RepeatedSet],
+) -> (Perm, bool) {
+    let initial_dummy_sets = project_dummy_sets_to_labels(perm, dummy_sets);
+    let initial_repeated_sets = project_repeated_sets_to_labels(perm, repeated_sets);
+    let initial_d_generators =
+        dummy_group_generators(&initial_dummy_sets, &initial_repeated_sets, n);
+    if s_generators.is_empty() && initial_d_generators.is_empty() {
+        return (perm.to_vec(), false);
+    }
+
+    fn body_key(perm: &[usize], n: usize) -> Vec<usize> {
+        if has_sign_slots(n) {
+            perm[..(n - 2)].to_vec()
+        } else {
+            perm.to_vec()
+        }
+    }
+    let mut best: Option<Perm> = None;
+    let mut sign_by_body: HashMap<Vec<usize>, i32> = HashMap::new();
+    let s_group = if s_generators.is_empty() {
+        vec![identity(n)]
+    } else {
+        generated_group(s_generators, n)
+    };
+
+    for s in &s_group {
+        let left = apply_group_action(perm, s);
+        let label_dummy_sets = project_dummy_sets_to_labels(&left, dummy_sets);
+        let label_repeated_sets = project_repeated_sets_to_labels(&left, repeated_sets);
+        let d_group = {
+            let d_gens = dummy_group_generators(&label_dummy_sets, &label_repeated_sets, n);
+            if d_gens.is_empty() {
+                vec![identity(n)]
+            } else {
+                generated_group(&d_gens, n)
+            }
+        };
+
+        for d in &d_group {
+            let candidate = apply_label_action(&left, d);
+            let body = body_key(&candidate, n);
+            let sign = perm_sign_state(&candidate, n);
+            if let Some(prev_sign) = sign_by_body.get(&body) {
+                if *prev_sign != sign {
+                    return (candidate, true);
+                }
+            } else {
+                sign_by_body.insert(body, sign);
+            }
+            best = choose_better(candidate, best, &[]);
+        }
+    }
+
+    (best.unwrap_or_else(|| perm.to_vec()), false)
+}
+
+/// Extended canonical permutation with full dummy handling.
+pub fn canonical_perm_ext(
+    perm: &[usize],
+    sgs: &SGS,
+    dummy_pairs: &[(usize, usize)],
+    repeated_sets: &[RepeatedSet],
+    metric_symmetry: i32,
+) -> (Perm, i32) {
+    let dummy_sets = if dummy_pairs.is_empty() {
+        Vec::new()
+    } else {
+        vec![DummySet {
+            pairs: dummy_pairs.to_vec(),
+            metric_symmetry,
+        }]
+    };
+    canonical_perm_with_sets(perm, sgs, &dummy_sets, repeated_sets)
+}
+
+/// Extended canonical permutation with multiple dummy sets and repeated-index sets.
+pub fn canonical_perm_with_sets(
+    perm: &[usize],
+    sgs: &SGS,
+    dummy_sets: &[DummySet],
+    repeated_sets: &[RepeatedSet],
+) -> (Perm, i32) {
+    let n = sgs.n;
+    if sgs.generators.is_empty() && dummy_sets.is_empty() && repeated_sets.is_empty() {
         return (perm.to_vec(), 1);
     }
-    canonical_perm_backtrack(perm, sgs, dummy_pairs)
+
+    let sign_pos = if has_sign_slots(n) { n - 2 } else { n };
+    let dummy_slot_set: HashSet<usize> = dummy_sets
+        .iter()
+        .flat_map(|set| set.pairs.iter().flat_map(|&(a, b)| [a, b]))
+        .collect();
+    let repeated_slot_set: HashSet<usize> = repeated_sets
+        .iter()
+        .flat_map(|set| set.positions.iter().copied())
+        .collect();
+    let free_slots: Vec<usize> = (0..sign_pos)
+        .filter(|i| !dummy_slot_set.contains(i) && !repeated_slot_set.contains(i))
+        .collect();
+
+    let after_free = coset_rep(perm, n, &sgs.base, &sgs.generators, &free_slots);
+
+    let mut s_gens = sgs.generators.clone();
+    for &slot in &free_slots {
+        s_gens = stabilizer(&[slot], &s_gens, n);
+    }
+
+    let dummy_base: Vec<usize> = sgs
+        .base
+        .iter()
+        .filter(|b| !free_slots.contains(b))
+        .copied()
+        .collect();
+
+    let (result, is_zero) = double_coset_rep(
+        &after_free,
+        n,
+        &dummy_base,
+        &s_gens,
+        dummy_sets,
+        repeated_sets,
+    );
+
+    if is_zero {
+        return (vec![0usize; n], 0);
+    }
+
+    let sign = if has_sign_slots(n) && result[sign_pos] != sign_pos {
+        -1
+    } else {
+        1
+    };
+    (result, sign)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn all_permutations(n: usize) -> Vec<Perm> {
+        fn rec(start: usize, data: &mut Vec<usize>, out: &mut Vec<Perm>) {
+            if start == data.len() {
+                out.push(data.clone());
+                return;
+            }
+            for i in start..data.len() {
+                data.swap(start, i);
+                rec(start + 1, data, out);
+                data.swap(start, i);
+            }
+        }
+
+        let mut seed: Vec<usize> = (0..n).collect();
+        let mut out = Vec::new();
+        rec(0, &mut seed, &mut out);
+        out
+    }
+
+    fn brute_force_double_coset(
+        perm: &[usize],
+        sgs: &SGS,
+        dummy_sets: &[DummySet],
+        repeated_sets: &[RepeatedSet],
+    ) -> (Perm, i32) {
+        let n = sgs.n;
+        let sign_pos = if has_sign_slots(n) { n - 2 } else { n };
+        let dummy_slot_set: HashSet<usize> = dummy_sets
+            .iter()
+            .flat_map(|set| set.pairs.iter().flat_map(|&(a, b)| [a, b]))
+            .collect();
+        let repeated_slot_set: HashSet<usize> = repeated_sets
+            .iter()
+            .flat_map(|set| set.positions.iter().copied())
+            .collect();
+        let free_slots: Vec<usize> = (0..sign_pos)
+            .filter(|i| !dummy_slot_set.contains(i) && !repeated_slot_set.contains(i))
+            .collect();
+
+        let after_free = {
+            let mut best = perm.to_vec();
+            let s_group = if sgs.generators.is_empty() {
+                vec![identity(n)]
+            } else {
+                generated_group(&sgs.generators, n)
+            };
+            for s in s_group {
+                let candidate = apply_group_action(perm, &s);
+                if compare_on_free_indices(&candidate, &best, &free_slots) == std::cmp::Ordering::Less
+                {
+                    best = candidate;
+                }
+            }
+            best
+        };
+
+        let mut s_gens = sgs.generators.clone();
+        for &slot in &free_slots {
+            s_gens = stabilizer(&[slot], &s_gens, n);
+        }
+
+        let s_group = if s_gens.is_empty() {
+            vec![identity(n)]
+        } else {
+            generated_group(&s_gens, n)
+        };
+
+        let mut best: Option<Perm> = None;
+        let mut sign_by_body: HashMap<Vec<usize>, i32> = HashMap::new();
+        for s in &s_group {
+            let left = apply_group_action(&after_free, s);
+            let label_dummy_sets = project_dummy_sets_to_labels(&left, dummy_sets);
+            let label_repeated_sets = project_repeated_sets_to_labels(&left, repeated_sets);
+            let d_gens = dummy_group_generators(&label_dummy_sets, &label_repeated_sets, n);
+            let d_group = if d_gens.is_empty() {
+                vec![identity(n)]
+            } else {
+                generated_group(&d_gens, n)
+            };
+            for d in &d_group {
+                let candidate = apply_label_action(&left, d);
+                let body = if has_sign_slots(n) {
+                    candidate[..(n - 2)].to_vec()
+                } else {
+                    candidate.clone()
+                };
+                let sign = perm_sign_state(&candidate, n);
+                if let Some(prev_sign) = sign_by_body.get(&body) {
+                    if *prev_sign != sign {
+                        return (vec![0usize; n], 0);
+                    }
+                } else {
+                    sign_by_body.insert(body, sign);
+                }
+                best = choose_better(candidate, best, &[]);
+            }
+        }
+
+        let best = best.unwrap_or_else(|| after_free.clone());
+        let sign = if has_sign_slots(n) && best[n - 2] != n - 2 { -1 } else { 1 };
+        (best, sign)
+    }
+
+    fn assert_matches_oracle(
+        perm: &[usize],
+        sgs: &SGS,
+        dummy_sets: &[DummySet],
+        repeated_sets: &[RepeatedSet],
+    ) {
+        let actual = canonical_perm_with_sets(perm, sgs, dummy_sets, repeated_sets);
+        let oracle = brute_force_double_coset(perm, sgs, dummy_sets, repeated_sets);
+        assert_eq!(
+            actual,
+            oracle,
+            "perm={perm:?} dummy_sets={dummy_sets:?} repeated_sets={repeated_sets:?}"
+        );
+    }
 
     #[test]
     fn identity_is_identity() {
@@ -700,5 +1048,151 @@ mod tests {
 
         let (canon, _s) = canonical_perm(&[1, 0, 2, 3], &sgs, &[]);
         assert!(canon[0] <= canon[1] || (canon[0] == 0 && canon[1] == 1));
+    }
+
+    #[test]
+    fn double_coset_symmetric_metric() {
+        let gens = vec![
+            vec![1, 0, 2, 3, 4, 5],
+            vec![0, 1, 3, 2, 4, 5],
+            vec![2, 3, 0, 1, 4, 5],
+        ];
+        let sgs = schreier_sims(&[], &gens, 6);
+
+        let perm = vec![1, 0, 3, 2, 4, 5];
+        let dummy_pairs = vec![(0, 2), (1, 3)];
+        let (canon, sign) = canonical_perm_ext(&perm, &sgs, &dummy_pairs, &[], 1);
+
+        assert_eq!(canon.len(), 6);
+        assert_ne!(sign, 0);
+    }
+
+    #[test]
+    fn repeated_indices_generate_symmetric_dummy_group() {
+        let perm = vec![2, 1, 0, 3, 4];
+        let sgs = schreier_sims(&[], &[], 5);
+        let repeated_sets = vec![RepeatedSet {
+            positions: vec![0, 1, 2],
+        }];
+
+        let (canon, sign) = canonical_perm_with_sets(&perm, &sgs, &[], &repeated_sets);
+        assert_eq!(canon[..3], [0, 1, 2]);
+        assert_eq!(sign, 1);
+    }
+
+    #[test]
+    fn dummy_group_acts_on_labels_not_slots() {
+        let perm = vec![2, 3, 0, 1, 4, 5];
+        let sgs = schreier_sims(&[], &[], 6);
+        let dummy_sets = vec![DummySet {
+            pairs: vec![(0, 2), (1, 3)],
+            metric_symmetry: 1,
+        }];
+
+        let (canon, sign) = canonical_perm_with_sets(&perm, &sgs, &dummy_sets, &[]);
+        assert_eq!(canon, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(sign, 1);
+    }
+
+    #[test]
+    fn oracle_symmetric_metric_case() {
+        let gens = vec![
+            vec![1, 0, 2, 3, 4, 5],
+            vec![0, 1, 3, 2, 4, 5],
+            vec![2, 3, 0, 1, 4, 5],
+        ];
+        let sgs = schreier_sims(&[], &gens, 6);
+        let dummy_sets = vec![DummySet {
+            pairs: vec![(0, 2), (1, 3)],
+            metric_symmetry: 1,
+        }];
+        assert_matches_oracle(&[1, 0, 3, 2, 4, 5], &sgs, &dummy_sets, &[]);
+    }
+
+    #[test]
+    fn oracle_antisymmetric_metric_case() {
+        let gens = vec![
+            vec![1, 0, 2, 3, 5, 4],
+            vec![0, 1, 3, 2, 5, 4],
+            vec![2, 3, 0, 1, 4, 5],
+        ];
+        let sgs = schreier_sims(&[], &gens, 6);
+        let dummy_sets = vec![DummySet {
+            pairs: vec![(0, 2), (1, 3)],
+            metric_symmetry: -1,
+        }];
+        assert_matches_oracle(&[1, 0, 3, 2, 4, 5], &sgs, &dummy_sets, &[]);
+    }
+
+    #[test]
+    fn oracle_mixed_dummy_sets_and_repeated_indices() {
+        let gens = vec![
+            vec![1, 0, 2, 3, 4, 5, 6, 7],
+            vec![0, 1, 3, 2, 4, 5, 6, 7],
+            vec![0, 1, 2, 3, 5, 4, 6, 7],
+        ];
+        let sgs = schreier_sims(&[], &gens, 8);
+        let dummy_sets = vec![
+            DummySet {
+                pairs: vec![(0, 2)],
+                metric_symmetry: 1,
+            },
+            DummySet {
+                pairs: vec![(1, 3)],
+                metric_symmetry: -1,
+            },
+        ];
+        let repeated_sets = vec![RepeatedSet {
+            positions: vec![4, 5],
+        }];
+        assert_matches_oracle(&[2, 3, 0, 1, 5, 4, 6, 7], &sgs, &dummy_sets, &repeated_sets);
+    }
+
+    #[test]
+    fn exhaustive_oracle_symmetric_metric_degree_6() {
+        let gens = vec![
+            vec![1, 0, 2, 3, 4, 5],
+            vec![0, 1, 3, 2, 4, 5],
+            vec![2, 3, 0, 1, 4, 5],
+        ];
+        let sgs = schreier_sims(&[], &gens, 6);
+        let dummy_sets = vec![DummySet {
+            pairs: vec![(0, 2), (1, 3)],
+            metric_symmetry: 1,
+        }];
+
+        for perm in all_permutations(6) {
+            assert_matches_oracle(&perm, &sgs, &dummy_sets, &[]);
+        }
+    }
+
+    #[test]
+    fn exhaustive_oracle_antisymmetric_metric_degree_6() {
+        let gens = vec![
+            vec![1, 0, 2, 3, 5, 4],
+            vec![0, 1, 3, 2, 5, 4],
+            vec![2, 3, 0, 1, 4, 5],
+        ];
+        let sgs = schreier_sims(&[], &gens, 6);
+        let dummy_sets = vec![DummySet {
+            pairs: vec![(0, 2), (1, 3)],
+            metric_symmetry: -1,
+        }];
+
+        for perm in all_permutations(6) {
+            assert_matches_oracle(&perm, &sgs, &dummy_sets, &[]);
+        }
+    }
+
+    #[test]
+    fn exhaustive_oracle_repeated_indices_degree_5() {
+        let sgs = schreier_sims(&[], &[], 5);
+        let repeated_sets = vec![RepeatedSet {
+            positions: vec![0, 1, 2],
+        }];
+
+        for perm in all_permutations(5) {
+            assert_matches_oracle(&perm, &sgs, &[], &repeated_sets);
+        }
     }
 }

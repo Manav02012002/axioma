@@ -3921,69 +3921,136 @@ fn has_any_indices(expr: &Expr) -> bool {
     }
 }
 
-fn collect_index_names(expr: &Expr, names: &mut HashSet<lasso::Spur>) {
+pub fn match_tensor_pattern(
+    pattern: &Expr,
+    expr: &Expr,
+    env: &Env,
+    _interner: &ax_ir::Interner,
+) -> Option<HashMap<lasso::Spur, lasso::Spur>> {
+    match (pattern, expr) {
+        (Expr::Indexed(p_base, p_indices), Expr::Indexed(e_base, e_indices)) => {
+            if p_base != e_base || p_indices.len() != e_indices.len() {
+                return None;
+            }
+
+            let mut mapping = HashMap::new();
+            for (pi, ei) in p_indices.iter().zip(e_indices.iter()) {
+                if pi.variance != ei.variance {
+                    return None;
+                }
+
+                let p_family = pi
+                    .index_type
+                    .or_else(|| env.index_to_family.get(&pi.name).copied());
+                let e_family = ei
+                    .index_type
+                    .or_else(|| env.index_to_family.get(&ei.name).copied());
+                if let (Some(pf), Some(ef)) = (p_family, e_family) {
+                    if pf != ef {
+                        return None;
+                    }
+                }
+
+                if let Some(&existing) = mapping.get(&pi.name) {
+                    if existing != ei.name {
+                        return None;
+                    }
+                } else {
+                    mapping.insert(pi.name, ei.name);
+                }
+            }
+
+            Some(mapping)
+        }
+        (Expr::Sym(ps), Expr::Sym(es)) if ps == es => Some(HashMap::new()),
+        (Expr::Mul(p_factors), Expr::Mul(e_factors)) => {
+            if p_factors.len() != e_factors.len() {
+                return None;
+            }
+
+            let mut combined_mapping = HashMap::new();
+            for (pf, ef) in p_factors.iter().zip(e_factors.iter()) {
+                let sub_match = match_tensor_pattern(pf, ef, env, _interner)?;
+                for (k, v) in sub_match {
+                    if let Some(&existing) = combined_mapping.get(&k) {
+                        if existing != v {
+                            return None;
+                        }
+                    } else {
+                        combined_mapping.insert(k, v);
+                    }
+                }
+            }
+            Some(combined_mapping)
+        }
+        _ if pattern == expr => Some(HashMap::new()),
+        _ => None,
+    }
+}
+
+fn collect_index_names_set(expr: &Expr, names: &mut HashSet<lasso::Spur>) {
     match expr {
         Expr::Indexed(base, indices) => {
-            collect_index_names(base, names);
+            collect_index_names_set(base, names);
             for idx in indices {
                 names.insert(idx.name);
             }
         }
         Expr::Mul(factors) => {
             for f in factors {
-                collect_index_names(f, names);
+                collect_index_names_set(f, names);
             }
         }
         Expr::Add(terms) => {
             for t in terms {
-                collect_index_names(t, names);
+                collect_index_names_set(t, names);
             }
         }
-        Expr::Neg(e) => collect_index_names(e, names),
+        Expr::Neg(e) => collect_index_names_set(e, names),
         Expr::Call(_, args) => {
             for a in args {
-                collect_index_names(a, names);
+                collect_index_names_set(a, names);
             }
         }
         Expr::Pow(b, e) => {
-            collect_index_names(b, names);
-            collect_index_names(e, names);
+            collect_index_names_set(b, names);
+            collect_index_names_set(e, names);
         }
         _ => {}
     }
 }
 
-fn count_index_names_map(expr: &Expr, counts: &mut HashMap<lasso::Spur, usize>) {
+fn count_index_names_recursive(expr: &Expr, counts: &mut HashMap<lasso::Spur, usize>) {
     match expr {
         Expr::Indexed(base, indices) => {
-            count_index_names_map(base, counts);
+            count_index_names_recursive(base, counts);
             for idx in indices {
                 *counts.entry(idx.name).or_default() += 1;
             }
         }
         Expr::Mul(factors) => {
             for f in factors {
-                count_index_names_map(f, counts);
+                count_index_names_recursive(f, counts);
             }
         }
         Expr::Add(terms) => {
             for t in terms {
-                count_index_names_map(t, counts);
+                count_index_names_recursive(t, counts);
             }
         }
-        Expr::Neg(e) => count_index_names_map(e, counts),
+        Expr::Neg(e) => count_index_names_recursive(e, counts),
         Expr::Call(_, args) => {
             for a in args {
-                count_index_names_map(a, counts);
+                count_index_names_recursive(a, counts);
             }
         }
         _ => {}
     }
 }
 
-fn find_dummy_indices(expr: &Expr) -> Vec<lasso::Spur> {
+fn find_dummy_index_names(expr: &Expr) -> Vec<lasso::Spur> {
     let mut counts: HashMap<lasso::Spur, usize> = HashMap::new();
-    count_index_names_map(expr, &mut counts);
+    count_index_names_recursive(expr, &mut counts);
     counts
         .into_iter()
         .filter(|(_, c)| *c >= 2)
@@ -4106,113 +4173,58 @@ pub fn substitute_with_indices(
     env: &Env,
     interner: &ax_ir::Interner,
 ) -> Expr {
-    let _ = env;
+    if let Some(mapping) = match_tensor_pattern(target, expr, env, interner) {
+        let mut used_indices = HashSet::new();
+        collect_index_names_set(expr, &mut used_indices);
 
-    // Step 1: collect all index names used in expr
-    let mut used_indices: HashSet<lasso::Spur> = HashSet::new();
-    collect_index_names(expr, &mut used_indices);
-
-    // Step 2: collect index names in target (pattern variables)
-    let mut target_indices: HashSet<lasso::Spur> = HashSet::new();
-    collect_index_names(target, &mut target_indices);
-
-    // Step 3: find dummies in replacement that clash with expr
-    let replacement_dummies = find_dummy_indices(replacement);
-    let conflicts: Vec<lasso::Spur> = replacement_dummies
-        .iter()
-        .filter(|d| used_indices.contains(d) && !target_indices.contains(d))
-        .copied()
-        .collect();
-
-    // Step 4: rename conflicting dummies in the replacement
-    let mut renamed_replacement = replacement.clone();
-    for conflict in &conflicts {
-        let new_name = generate_fresh_index(*conflict, &used_indices, interner);
-        renamed_replacement =
-            rename_index_everywhere(&renamed_replacement, *conflict, new_name);
-        used_indices.insert(new_name);
-    }
-
-    substitute_with_indices_inner(expr, target, &renamed_replacement, interner)
-}
-
-fn substitute_with_indices_inner(
-    expr: &Expr,
-    target: &Expr,
-    replacement: &Expr,
-    interner: &ax_ir::Interner,
-) -> Expr {
-    match (target, expr) {
-        // Exact match on symbols
-        (Expr::Sym(_), _) if expr == target => replacement.clone(),
-
-        // Indexed tensor: match on base and variance, build index mapping
-        (Expr::Indexed(t_base, t_indices), Expr::Indexed(e_base, e_indices))
-            if t_base == e_base && t_indices.len() == e_indices.len() =>
-        {
-            let mut index_map: HashMap<lasso::Spur, lasso::Spur> = HashMap::new();
-            let mut variance_ok = true;
-            for (ti, ei) in t_indices.iter().zip(e_indices.iter()) {
-                if ti.variance != ei.variance {
-                    variance_ok = false;
-                    break;
-                }
-                index_map.insert(ti.name, ei.name);
-            }
-            if variance_ok {
-                apply_index_mapping(replacement, &index_map)
-            } else {
-                expr.clone()
+        let mut renamed_replacement = replacement.clone();
+        for dummy in find_dummy_index_names(&renamed_replacement) {
+            if used_indices.contains(&dummy) && !mapping.values().any(|&v| v == dummy) {
+                let fresh = generate_fresh_index(dummy, &used_indices, interner);
+                renamed_replacement =
+                    rename_index_everywhere(&renamed_replacement, dummy, fresh);
+                used_indices.insert(fresh);
             }
         }
 
-        // Recurse into compound expressions
-        _ => match expr {
-            Expr::Add(terms) => Expr::add(
-                terms
-                    .iter()
-                    .map(|t| substitute_with_indices_inner(t, target, replacement, interner))
-                    .collect(),
-            ),
-            Expr::Mul(factors) => Expr::mul(
-                factors
-                    .iter()
-                    .map(|f| substitute_with_indices_inner(f, target, replacement, interner))
-                    .collect(),
-            ),
-            Expr::Neg(e) => Expr::neg(substitute_with_indices_inner(
-                e,
+        return apply_index_mapping(&renamed_replacement, &mapping);
+    }
+
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| substitute_with_indices(t, target, replacement, env, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| substitute_with_indices(f, target, replacement, env, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(substitute_with_indices(e, target, replacement, env, interner)),
+        Expr::Pow(b, e) => Expr::pow(
+            substitute_with_indices(b, target, replacement, env, interner),
+            substitute_with_indices(e, target, replacement, env, interner),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|a| substitute_with_indices(a, target, replacement, env, interner))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(substitute_with_indices(
+                base,
                 target,
                 replacement,
+                env,
                 interner,
             )),
-            Expr::Pow(b, e) => Expr::pow(
-                substitute_with_indices_inner(b, target, replacement, interner),
-                substitute_with_indices_inner(e, target, replacement, interner),
-            ),
-            Expr::Call(f, args) => Expr::Call(
-                *f,
-                args.iter()
-                    .map(|a| substitute_with_indices_inner(a, target, replacement, interner))
-                    .collect(),
-            ),
-            Expr::Indexed(base, indices) => Expr::Indexed(
-                Box::new(substitute_with_indices_inner(
-                    base,
-                    target,
-                    replacement,
-                    interner,
-                )),
-                indices.clone(),
-            ),
-            _ => {
-                if expr == target {
-                    replacement.clone()
-                } else {
-                    expr.clone()
-                }
-            }
-        },
+            indices.clone(),
+        ),
+        _ => expr.clone(),
     }
 }
 
@@ -4715,6 +4727,93 @@ mod tests {
             let pp = ax_ir::pretty_print(&result, &interner);
             assert!(pp.contains("mu"), "expected mu in result, got: {pp}");
             assert!(pp.contains("nu"), "expected nu in result, got: {pp}");
+        } else {
+            panic!("expected Mul, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn substitute_matches_by_family() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+
+        let spacetime = interner.get_or_intern("spacetime");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+        env.index_to_family.insert(a, spacetime);
+        env.index_to_family.insert(b, spacetime);
+        env.index_to_family.insert(mu, spacetime);
+        env.index_to_family.insert(nu, spacetime);
+
+        let t = interner.get_or_intern("T");
+        let a_sym = interner.get_or_intern("A");
+        let b_sym = interner.get_or_intern("B");
+
+        let target = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                ax_ir::Index {
+                    name: a,
+                    variance: ax_ir::Variance::Down,
+                    index_type: Some(spacetime),
+                },
+                ax_ir::Index {
+                    name: b,
+                    variance: ax_ir::Variance::Down,
+                    index_type: Some(spacetime),
+                },
+            ],
+        );
+        let replacement = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a_sym)),
+                vec![ax_ir::Index {
+                    name: a,
+                    variance: ax_ir::Variance::Down,
+                    index_type: Some(spacetime),
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(b_sym)),
+                vec![ax_ir::Index {
+                    name: b,
+                    variance: ax_ir::Variance::Down,
+                    index_type: Some(spacetime),
+                }],
+            ),
+        ]);
+        let expression = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: Some(spacetime),
+                },
+                ax_ir::Index {
+                    name: nu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: Some(spacetime),
+                },
+            ],
+        );
+
+        let result =
+            substitute_with_indices(&expression, &target, &replacement, &env, &interner);
+
+        if let Expr::Mul(factors) = &result {
+            assert_eq!(factors.len(), 2);
+            for factor in factors {
+                if let Expr::Indexed(_, indices) = factor {
+                    assert!(
+                        indices[0].name == mu || indices[0].name == nu,
+                        "expected mu or nu, got {}",
+                        interner.resolve(indices[0].name)
+                    );
+                }
+            }
         } else {
             panic!("expected Mul, got {:?}", result);
         }

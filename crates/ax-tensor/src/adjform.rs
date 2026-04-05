@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use std::collections::BTreeMap;
+
 /// Adjacency-form representation of index contractions in a tensor monomial.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Adjform {
@@ -14,8 +18,27 @@ impl Adjform {
     pub fn from_indices(indices: &[ax_ir::Index]) -> Self {
         let n = indices.len();
         let mut data = vec![0i32; n];
-        let mut free_counter: i32 = -1;
         let mut used = vec![false; n];
+        let mut dummy_names = std::collections::BTreeSet::new();
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if indices[i].name == indices[j].name && indices[i].variance != indices[j].variance
+                {
+                    dummy_names.insert(indices[i].name);
+                }
+            }
+        }
+
+        let free_names: std::collections::BTreeSet<lasso::Spur> = indices
+            .iter()
+            .filter(|idx| !dummy_names.contains(&idx.name))
+            .map(|idx| idx.name)
+            .collect();
+        let mut free_labels: BTreeMap<lasso::Spur, i32> = BTreeMap::new();
+        for (offset, name) in free_names.into_iter().enumerate() {
+            free_labels.insert(name, -((offset as i32) + 1));
+        }
 
         for i in 0..n {
             if used[i] {
@@ -39,8 +62,10 @@ impl Adjform {
             }
 
             if !found_pair {
-                data[i] = free_counter;
-                free_counter -= 1;
+                let label = *free_labels
+                    .get(&indices[i].name)
+                    .unwrap_or(&(-((i as i32) + 1)));
+                data[i] = label;
                 used[i] = true;
             }
         }
@@ -94,10 +119,16 @@ impl Default for Adjform {
     }
 }
 
-/// A projected adjform: a linear combination of Adjforms with integer coefficients.
+#[derive(Clone, Debug)]
+pub struct TableauInfo {
+    pub rows: Vec<Vec<usize>>,
+    pub columns: Vec<Vec<usize>>,
+}
+
+/// A projected adjform: a linear combination of Adjforms with rational coefficients.
 #[derive(Clone, Debug)]
 pub struct ProjectedAdjform {
-    pub terms: std::collections::BTreeMap<Adjform, i32>,
+    pub terms: std::collections::BTreeMap<Adjform, BigRational>,
 }
 
 impl ProjectedAdjform {
@@ -107,20 +138,25 @@ impl ProjectedAdjform {
         }
     }
 
-    pub fn from_adjform(adj: Adjform, coeff: i32) -> Self {
+    pub fn from_adjform(adj: Adjform, coeff: BigRational) -> Self {
         let mut terms = std::collections::BTreeMap::new();
-        if coeff != 0 {
+        if coeff != BigRational::from_integer(BigInt::from(0)) {
             terms.insert(adj, coeff);
         }
         Self { terms }
     }
 
-    pub fn add(&mut self, adj: Adjform, coeff: i32) {
-        if coeff == 0 {
+    pub fn add(&mut self, adj: Adjform, coeff: BigRational) {
+        if coeff == BigRational::from_integer(BigInt::from(0)) {
             return;
         }
-        let new_coeff = self.terms.get(&adj).copied().unwrap_or(0) + coeff;
-        if new_coeff == 0 {
+        let new_coeff = self
+            .terms
+            .get(&adj)
+            .cloned()
+            .unwrap_or_else(|| BigRational::from_integer(BigInt::from(0)))
+            + coeff;
+        if new_coeff == BigRational::from_integer(BigInt::from(0)) {
             self.terms.remove(&adj);
         } else {
             self.terms.insert(adj, new_coeff);
@@ -129,19 +165,20 @@ impl ProjectedAdjform {
 
     pub fn combine(&mut self, other: &ProjectedAdjform) {
         for (adj, coeff) in &other.terms {
-            self.add(adj.clone(), *coeff);
+            self.add(adj.clone(), coeff.clone());
         }
     }
 
-    pub fn multiply(&mut self, factor: i32) {
-        if factor == 0 {
+    pub fn multiply(&mut self, factor: BigRational) {
+        if factor == BigRational::from_integer(BigInt::from(0)) {
             self.terms.clear();
             return;
         }
         for coeff in self.terms.values_mut() {
-            *coeff *= factor;
+            *coeff = coeff.clone() * factor.clone();
         }
-        self.terms.retain(|_, v| *v != 0);
+        self.terms
+            .retain(|_, v| *v != BigRational::from_integer(BigInt::from(0)));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -150,6 +187,13 @@ impl ProjectedAdjform {
 
     pub fn len(&self) -> usize {
         self.terms.len()
+    }
+
+    pub fn get_coeff(&self, adj: &Adjform) -> BigRational {
+        self.terms
+            .get(adj)
+            .cloned()
+            .unwrap_or_else(|| BigRational::from_integer(BigInt::from(0)))
     }
 
     /// Apply symmetrization in the given index positions.
@@ -173,7 +217,7 @@ impl ProjectedAdjform {
 
             for (adj, coeff) in &self.terms {
                 let permuted = adj.permute(&full_perm);
-                new_terms.add(permuted, *coeff);
+                new_terms.add(permuted, coeff.clone());
             }
 
             if !next_permutation(&mut perm_indices) {
@@ -206,7 +250,10 @@ impl ProjectedAdjform {
 
             for (adj, coeff) in &self.terms {
                 let permuted = adj.permute(&full_perm);
-                new_terms.add(permuted, *coeff * s);
+                new_terms.add(
+                    permuted,
+                    coeff.clone() * BigRational::from_integer(BigInt::from(s)),
+                );
             }
 
             if !next_permutation(&mut perm_indices) {
@@ -215,6 +262,22 @@ impl ProjectedAdjform {
         }
 
         *self = new_terms;
+    }
+
+    /// Apply the full Young symmetrizer for a given set of tableaux.
+    pub fn young_project(&mut self, tableaux: &[TableauInfo]) {
+        for tab in tableaux {
+            for col_group in &tab.columns {
+                if col_group.len() > 1 {
+                    self.antisymmetrize(col_group);
+                }
+            }
+            for row_group in &tab.rows {
+                if row_group.len() > 1 {
+                    self.symmetrize(row_group);
+                }
+            }
+        }
     }
 }
 
@@ -292,11 +355,11 @@ mod tests {
         let adj1 = Adjform { data: vec![-1, -2] };
         let adj2 = Adjform { data: vec![-2, -1] };
 
-        let mut pa = ProjectedAdjform::from_adjform(adj1.clone(), 1);
-        pa.add(adj2.clone(), 1);
+        let mut pa = ProjectedAdjform::from_adjform(adj1.clone(), BigRational::from_integer(1.into()));
+        pa.add(adj2.clone(), BigRational::from_integer(1.into()));
         assert_eq!(pa.len(), 2);
 
-        pa.add(adj1, -1);
+        pa.add(adj1, BigRational::from_integer((-1).into()));
         assert_eq!(pa.len(), 1);
     }
 }

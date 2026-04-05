@@ -1,12 +1,15 @@
 #![forbid(unsafe_code)]
 
 pub mod adjform;
+pub mod index_classifier;
 
 use ax_perm::{Perm, SGS};
 use ax_ir::{Expr, Interner};
+use index_classifier::{classify_indices, IndexClassification};
+use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub trait DummyRenameEnv {
     fn index_families(&self) -> &HashMap<lasso::Spur, ax_ir::IndexFamily>;
@@ -16,6 +19,10 @@ pub trait DummyRenameEnv {
 pub trait ComponentEvalEnv {
     fn coordinates(&self) -> &HashSet<lasso::Spur>;
     fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur>;
+
+    fn is_coordinate(&self, s: lasso::Spur) -> bool {
+        self.coordinates().contains(&s)
+    }
 }
 
 /// Information about a tensor factor in a product, extracted from Expr.
@@ -153,28 +160,65 @@ pub fn extract_factor_info(
     result
 }
 
-fn detect_dummy_pairs(indices: &[ax_ir::Index]) -> Vec<(usize, usize)> {
-    let mut pairs = Vec::new();
-    let mut used = HashSet::new();
+fn repeated_sets_from_classification(classification: &IndexClassification) -> Vec<ax_perm::RepeatedSet> {
+    let dummy_slots: HashSet<usize> = classification
+        .dummy
+        .iter()
+        .flat_map(|(_, a, b, _, _)| [*a, *b])
+        .collect();
+    let mut by_key: HashMap<(lasso::Spur, u8, Option<lasso::Spur>), Vec<usize>> = HashMap::new();
 
-    for i in 0..indices.len() {
-        if used.contains(&i) {
+    for (_, pos, idx) in &classification.free {
+        if dummy_slots.contains(pos) {
             continue;
         }
-        for j in (i + 1)..indices.len() {
-            if used.contains(&j) {
-                continue;
+        let variance_key = match idx.variance {
+            ax_ir::Variance::Up => 0,
+            ax_ir::Variance::Down => 1,
+        };
+        by_key
+            .entry((idx.name, variance_key, idx.index_type))
+            .or_default()
+            .push(*pos);
+    }
+
+    by_key
+        .into_values()
+        .filter(|positions| positions.len() > 1)
+        .map(|positions| ax_perm::RepeatedSet { positions })
+        .collect()
+}
+
+fn metric_symmetry_for_slots(
+    positions: &[usize],
+    factor_info: &[TensorFactorInfo],
+) -> i32 {
+    let mut symmetry = 1;
+
+    for &pos in positions {
+        if let Some(factor) = factor_info.iter().find(|factor| {
+            pos >= factor.start_position && pos < factor.start_position + factor.n_indices
+        }) {
+            if factor.properties.iter().any(|prop| {
+                matches!(
+                    prop,
+                    ax_ir::TensorProperty::AntiCommuting | ax_ir::TensorProperty::Spinor
+                )
+            }) {
+                return -1;
             }
-            if indices[i].name == indices[j].name && indices[i].variance != indices[j].variance {
-                pairs.push((i, j));
-                used.insert(i);
-                used.insert(j);
-                break;
+            if factor.properties.iter().any(|prop| {
+                matches!(
+                    prop,
+                    ax_ir::TensorProperty::Metric | ax_ir::TensorProperty::InverseMetric
+                )
+            }) {
+                symmetry = 1;
             }
         }
     }
 
-    pairs
+    symmetry
 }
 
 /// Lower all free (non-contracted) upper indices in an expression.
@@ -373,6 +417,7 @@ fn canonicalise_product(
     if factor_info.is_empty() {
         return expr.clone();
     }
+    let classification = classify_indices(expr_ref);
 
     let generators = build_generating_set(&factor_info, interner);
     let factors = match expr_ref {
@@ -389,7 +434,7 @@ fn canonicalise_product(
         }
     }
 
-    let total_indices = all_indices.len();
+    let total_indices = classification.total;
     if total_indices == 0 {
         return expr.clone();
     }
@@ -410,14 +455,41 @@ fn canonicalise_product(
     extended_perm.push(total_indices);
     extended_perm.push(total_indices + 1);
 
-    let dummy_pairs = detect_dummy_pairs(&all_indices);
+    let dummy_pairs: Vec<(usize, usize)> = classification
+        .dummy
+        .iter()
+        .map(|(_, a, b, _, _)| (*a, *b))
+        .collect();
+    let repeated_sets = repeated_sets_from_classification(&classification);
     let degree = total_indices + 2;
 
-    let (canon_perm, canon_sign) = if generators.is_empty() {
+    let mut pairs_by_type: HashMap<Option<lasso::Spur>, Vec<(usize, usize)>> = HashMap::new();
+    for &(a, b) in &dummy_pairs {
+        let itype = all_indices[a].index_type;
+        pairs_by_type.entry(itype).or_default().push((a, b));
+    }
+
+    let dummy_sets: Vec<ax_perm::DummySet> = pairs_by_type
+        .into_iter()
+        .map(|(_, pairs)| {
+            let slots: Vec<usize> = pairs.iter().flat_map(|&(a, b)| [a, b]).collect();
+            ax_perm::DummySet {
+                pairs,
+                metric_symmetry: metric_symmetry_for_slots(&slots, &factor_info),
+            }
+        })
+        .collect();
+
+    let (canon_perm, canon_sign) = if generators.is_empty() && dummy_sets.is_empty() && repeated_sets.is_empty() {
         (extended_perm.clone(), 1)
     } else {
         let sgs = ax_perm::schreier_sims(&[], &generators, degree);
-        ax_perm::canonical_perm(&extended_perm, &sgs, &dummy_pairs)
+        ax_perm::canonical_perm_with_sets(
+            &extended_perm,
+            &sgs,
+            &dummy_sets,
+            &repeated_sets,
+        )
     };
 
     if canon_sign == -1 && canon_perm[..total_indices] == extended_perm[..total_indices] {
@@ -491,88 +563,158 @@ pub fn meld(
 ) -> ax_ir::Expr {
     match expr {
         Expr::Add(terms) => {
-            let mut groups: Vec<(String, Vec<Expr>)> = Vec::new();
-            for term in terms {
+            let mut groups: Vec<(String, Vec<(Expr, usize)>)> = Vec::new();
+            for (idx, term) in terms.iter().enumerate() {
                 let simplified = meld(term, tensor_properties, interner);
-                let structure = tensor_structure_key(&simplified, interner);
-                if let Some((_, bucket)) = groups.iter_mut().find(|(key, _)| *key == structure) {
-                    bucket.push(simplified);
+                let key = tensor_structure_key(&simplified, interner);
+                if let Some((_, bucket)) = groups.iter_mut().find(|(k, _)| *k == key) {
+                    bucket.push((simplified, idx));
                 } else {
-                    groups.push((structure, vec![simplified]));
+                    groups.push((key, vec![(simplified, idx)]));
                 }
             }
 
-            let mut simplified_terms = Vec::new();
-            for (_, group_terms) in groups {
-                if group_terms.len() == 1 {
-                    simplified_terms.push(group_terms.into_iter().next().unwrap());
+            let mut result_terms: Vec<Expr> = Vec::new();
+
+            for (_, group) in &groups {
+                if group.len() <= 1 {
+                    result_terms.push(group[0].0.clone());
                     continue;
                 }
 
-                let factor_info =
-                    extract_factor_info_from_term(&group_terms[0], tensor_properties, interner);
-                let mut projected = adjform::ProjectedAdjform::new();
-                let mut canonical_terms: Vec<(Expr, Expr)> = Vec::new();
+                let canonical: Vec<Expr> = group
+                    .iter()
+                    .map(|(t, _)| canonicalise(t, tensor_properties, interner))
+                    .collect();
 
-                for term in group_terms {
-                    let canonical = canonicalise(&term, tensor_properties, interner);
-                    let (scalar, indices) = extract_scalar_and_indices(&canonical);
+                let factor_info =
+                    extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
+                let tableaux = tableaux_from_properties(&factor_info);
+
+                let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
+                for (term, _) in group.iter() {
+                    let (scalar, indices) = extract_scalar_and_indices(term);
                     let adj = adjform::Adjform::from_indices(&indices);
-                    projected.add(adj, scalar_to_i32(&scalar));
-                    canonical_terms.push((canonical.clone(), scalar_free_tensor_part(&canonical)));
+                    let coeff = scalar_to_rational(&scalar);
+                    let mut proj = adjform::ProjectedAdjform::from_adjform(adj, coeff);
+                    proj.young_project(&tableaux);
+                    projections.push(proj);
                 }
 
-                for info in &factor_info {
-                    for prop in &info.properties {
-                        match prop {
-                            ax_ir::TensorProperty::Symmetric(positions) => {
-                                let abs_positions: Vec<usize> =
-                                    positions.iter().map(|p| info.start_position + p).collect();
-                                projected.symmetrize(&abs_positions);
+                let mut independent: Vec<usize> = Vec::new();
+                let mut mapping: Vec<adjform::Adjform> = Vec::new();
+
+                for (i, proj) in projections.iter().enumerate() {
+                    if proj.is_empty() {
+                        continue;
+                    }
+
+                    if independent.is_empty() {
+                        independent.push(i);
+                        if let Some((adj, _)) = proj.terms.iter().next() {
+                            mapping.push(adj.clone());
+                        }
+                        continue;
+                    }
+
+                    let mut matrix: Vec<Vec<BigRational>> = Vec::new();
+                    let mut rhs_vec: Vec<BigRational> = Vec::new();
+
+                    for adj in &mapping {
+                        let mut row = Vec::new();
+                        for &ind_idx in &independent {
+                            row.push(projections[ind_idx].get_coeff(adj));
+                        }
+                        matrix.push(row);
+                        rhs_vec.push(proj.get_coeff(adj));
+                    }
+
+                    let mut dependent = false;
+                    if let Some(coeffs) = solve_rational_system(&matrix, &rhs_vec) {
+                        let all_adjforms: BTreeSet<&adjform::Adjform> =
+                            projections[..=i].iter().flat_map(|p| p.terms.keys()).collect();
+
+                        let mut valid = true;
+                        for adj in &all_adjforms {
+                            let mut lhs = BigRational::from_integer(0.into());
+                            for (j, &ind_idx) in independent.iter().enumerate() {
+                                lhs += &coeffs[j] * &projections[ind_idx].get_coeff(adj);
                             }
-                            ax_ir::TensorProperty::AntiSymmetric(positions) => {
-                                let abs_positions: Vec<usize> =
-                                    positions.iter().map(|p| info.start_position + p).collect();
-                                projected.antisymmetrize(&abs_positions);
+                            if lhs != proj.get_coeff(adj) {
+                                valid = false;
+                                break;
                             }
-                            _ => {}
+                        }
+                        if valid {
+                            dependent = true;
+                        }
+                    }
+
+                    if dependent {
+                        continue;
+                    }
+
+                    independent.push(i);
+                    for adj in proj.terms.keys() {
+                        if !mapping.contains(adj) {
+                            mapping.push(adj.clone());
+                            break;
                         }
                     }
                 }
 
-                let mut combined: Vec<(Expr, i32)> = Vec::new();
-                for (canonical, tensor_part) in canonical_terms {
-                    let coeff = scalar_to_i32(&extract_scalar_and_indices(&canonical).0);
-                    if let Some((_, acc)) =
-                        combined.iter_mut().find(|(existing, _)| *existing == tensor_part)
-                    {
-                        *acc += coeff;
-                    } else {
-                        combined.push((tensor_part, coeff));
-                    }
-                }
-
-                if combined.iter().all(|(_, coeff)| *coeff == 0) || projected.is_empty() {
+                if independent.is_empty() {
                     continue;
                 }
 
-                for (tensor_part, coeff) in combined {
-                    if coeff == 0 {
+                let mut total_basis_coeffs =
+                    vec![BigRational::from_integer(0.into()); independent.len()];
+                let basis_adjforms: BTreeSet<&adjform::Adjform> = independent
+                    .iter()
+                    .flat_map(|&idx| projections[idx].terms.keys())
+                    .collect();
+
+                for proj in &projections {
+                    if proj.is_empty() {
                         continue;
                     }
-                    let term = match coeff {
-                        1 => tensor_part,
-                        -1 => Expr::neg(tensor_part),
-                        _ => Expr::mul(vec![Expr::Int(coeff.into()), tensor_part]),
-                    };
-                    simplified_terms.push(term);
+
+                    let mut matrix: Vec<Vec<BigRational>> = Vec::new();
+                    let mut rhs_vec: Vec<BigRational> = Vec::new();
+                    let mut all_adjforms: BTreeSet<&adjform::Adjform> = basis_adjforms.clone();
+                    all_adjforms.extend(proj.terms.keys());
+
+                    for adj in &all_adjforms {
+                        let mut row = Vec::new();
+                        for &ind_idx in &independent {
+                            row.push(projections[ind_idx].get_coeff(adj));
+                        }
+                        matrix.push(row);
+                        rhs_vec.push(proj.get_coeff(adj));
+                    }
+
+                    if let Some(coeffs) = solve_rational_system(&matrix, &rhs_vec) {
+                        for (j, coeff) in coeffs.into_iter().enumerate() {
+                            total_basis_coeffs[j] += coeff;
+                        }
+                    }
+                }
+
+                for (j, &idx) in independent.iter().enumerate() {
+                    if total_basis_coeffs[j] == BigRational::from_integer(0.into()) {
+                        continue;
+                    }
+                    result_terms.push(multiply_expr_by_rational(
+                        canonical[idx].clone(),
+                        total_basis_coeffs[j].clone(),
+                    ));
                 }
             }
 
-            if simplified_terms.is_empty() {
+            if result_terms.is_empty() {
                 Expr::zero()
             } else {
-                Expr::add(simplified_terms)
+                Expr::add(result_terms)
             }
         }
         Expr::Mul(factors) => Expr::mul(
@@ -612,16 +754,27 @@ fn tensor_structure_key(expr: &Expr, interner: &ax_ir::Interner) -> String {
 
 fn extract_scalar_and_indices(expr: &Expr) -> (Expr, Vec<ax_ir::Index>) {
     match expr {
-        Expr::Indexed(_, indices) => (Expr::one(), indices.clone()),
+        Expr::Indexed(_, _) => {
+            let indices = classify_indices(expr)
+                .all
+                .into_iter()
+                .map(|(_, idx)| idx)
+                .collect();
+            (Expr::one(), indices)
+        }
         Expr::Mul(factors) => {
             let mut scalar_parts = Vec::new();
-            let mut all_indices = Vec::new();
             for factor in factors {
                 match factor {
-                    Expr::Indexed(_, indices) => all_indices.extend(indices.iter().cloned()),
+                    Expr::Indexed(_, _) => {}
                     other => scalar_parts.push(other.clone()),
                 }
             }
+            let all_indices = classify_indices(expr)
+                .all
+                .into_iter()
+                .map(|(_, idx)| idx)
+                .collect();
             let scalar = if scalar_parts.is_empty() {
                 Expr::one()
             } else {
@@ -637,31 +790,23 @@ fn extract_scalar_and_indices(expr: &Expr) -> (Expr, Vec<ax_ir::Index>) {
     }
 }
 
-fn scalar_to_i32(expr: &Expr) -> i32 {
+fn scalar_to_rational(expr: &Expr) -> BigRational {
     match expr {
-        Expr::Int(n) => n.to_str_radix(10).parse().unwrap_or(1),
-        Expr::Neg(inner) => -scalar_to_i32(inner),
-        _ => 1,
+        Expr::Int(n) => BigRational::from_integer(n.clone()),
+        Expr::Rational(r) => r.clone(),
+        Expr::Neg(inner) => -scalar_to_rational(inner),
+        _ => BigRational::from_integer(BigInt::from(1)),
     }
 }
 
-fn scalar_free_tensor_part(expr: &Expr) -> Expr {
-    match expr {
-        Expr::Mul(factors) => {
-            let tensor_factors: Vec<Expr> = factors
-                .iter()
-                .filter(|factor| !matches!(factor, Expr::Int(_) | Expr::Rational(_) | Expr::Float(_)))
-                .cloned()
-                .collect();
-            match tensor_factors.len() {
-                0 => Expr::one(),
-                1 => tensor_factors.into_iter().next().unwrap(),
-                _ => Expr::mul(tensor_factors),
-            }
-        }
-        Expr::Neg(inner) => scalar_free_tensor_part(inner),
-        _ => expr.clone(),
+fn multiply_expr_by_rational(expr: Expr, coeff: BigRational) -> Expr {
+    if coeff == BigRational::from_integer(0.into()) {
+        return Expr::zero();
     }
+    if coeff == BigRational::from_integer(1.into()) {
+        return expr;
+    }
+    Expr::mul(vec![Expr::Rational(coeff), expr])
 }
 
 fn extract_factor_info_from_term(
@@ -676,56 +821,128 @@ fn extract_factor_info_from_term(
     extract_factor_info(&wrapped, tensor_properties, interner)
 }
 
-fn count_index_occurrences(expr: &Expr, counts: &mut HashMap<lasso::Spur, usize>) {
-    match expr {
-        Expr::Indexed(base, indices) => {
-            count_index_occurrences(base, counts);
-            for idx in indices {
-                *counts.entry(idx.name).or_default() += 1;
-            }
-        }
-        Expr::Mul(factors) | Expr::Add(factors) | Expr::List(factors) => {
-            for factor in factors {
-                count_index_occurrences(factor, counts);
-            }
-        }
-        Expr::Neg(inner) => count_index_occurrences(inner, counts),
-        Expr::Pow(base, exp) => {
-            count_index_occurrences(base, counts);
-            count_index_occurrences(exp, counts);
-        }
-        Expr::Call(_, args) => {
-            for arg in args {
-                count_index_occurrences(arg, counts);
-            }
-        }
-        Expr::Complex(re, im) => {
-            count_index_occurrences(re, counts);
-            count_index_occurrences(im, counts);
-        }
-        Expr::FnDef(_, _, body) => count_index_occurrences(body, counts),
-        Expr::Rule(lhs, rhs, _) => {
-            count_index_occurrences(lhs, counts);
-            count_index_occurrences(rhs, counts);
-        }
-        Expr::Piecewise(cases) => {
-            for (value, _) in cases {
-                count_index_occurrences(value, counts);
-            }
-        }
-        Expr::Let(_, value, body) => {
-            count_index_occurrences(value, counts);
-            count_index_occurrences(body, counts);
-        }
-        Expr::Matrix(rows) => {
-            for row in rows {
-                for cell in row {
-                    count_index_occurrences(cell, counts);
+pub fn tableaux_from_properties(
+    factor_info: &[TensorFactorInfo],
+) -> Vec<adjform::TableauInfo> {
+    let mut result = Vec::new();
+
+    for info in factor_info {
+        for prop in &info.properties {
+            match prop {
+                ax_ir::TensorProperty::Symmetric(positions) => {
+                    let abs: Vec<usize> =
+                        positions.iter().map(|p| info.start_position + p).collect();
+                    result.push(adjform::TableauInfo {
+                        rows: vec![abs],
+                        columns: vec![],
+                    });
                 }
+                ax_ir::TensorProperty::AntiSymmetric(positions) => {
+                    let abs: Vec<usize> =
+                        positions.iter().map(|p| info.start_position + p).collect();
+                    result.push(adjform::TableauInfo {
+                        rows: vec![],
+                        columns: vec![abs],
+                    });
+                }
+                ax_ir::TensorProperty::RiemannSymmetry => {
+                    if info.n_indices >= 4 {
+                        let s = info.start_position;
+                        result.push(adjform::TableauInfo {
+                            rows: vec![vec![s, s + 2], vec![s + 1, s + 3]],
+                            columns: vec![vec![s, s + 1], vec![s + 2, s + 3]],
+                        });
+                    }
+                }
+                _ => {}
             }
         }
-        _ => {}
     }
+
+    result
+}
+
+pub fn solve_rational_system(
+    matrix: &[Vec<BigRational>],
+    rhs: &[BigRational],
+) -> Option<Vec<BigRational>> {
+    let rows = matrix.len();
+    if rows == 0 {
+        return Some(vec![]);
+    }
+    let cols = matrix[0].len();
+
+    let mut aug: Vec<Vec<BigRational>> = matrix
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let mut r = row.clone();
+            r.push(rhs[i].clone());
+            r
+        })
+        .collect();
+
+    let zero = BigRational::from_integer(0.into());
+    let one = BigRational::from_integer(1.into());
+    let mut pivot_row = 0usize;
+    for col in 0..cols {
+        let mut found = None;
+        for (row, aug_row) in aug.iter().enumerate().skip(pivot_row).take(rows - pivot_row) {
+            if aug_row[col] != zero {
+                found = Some(row);
+                break;
+            }
+        }
+        let Some(pr) = found else { continue };
+
+        aug.swap(pivot_row, pr);
+        let pivot_val = aug[pivot_row][col].clone();
+        for j in 0..=cols {
+            aug[pivot_row][j] = &aug[pivot_row][j] / &pivot_val;
+        }
+
+        for row in 0..rows {
+            if row == pivot_row {
+                continue;
+            }
+            let factor = aug[row][col].clone();
+            if factor == zero {
+                continue;
+            }
+            for j in 0..=cols {
+                let sub = &factor * &aug[pivot_row][j];
+                aug[row][j] = &aug[row][j] - &sub;
+            }
+        }
+
+        pivot_row += 1;
+    }
+
+    let mut x = vec![zero.clone(); cols];
+    for aug_row in aug.iter().take(pivot_row) {
+        let mut pivot_col = None;
+        for (col, val) in aug_row.iter().enumerate().take(cols) {
+            if *val == one {
+                pivot_col = Some(col);
+                break;
+            }
+        }
+        if let Some(col) = pivot_col {
+            x[col] = aug_row[cols].clone();
+        }
+    }
+
+    for (i, row) in matrix.iter().enumerate() {
+        let mut sum = zero.clone();
+        for (j, val) in row.iter().enumerate() {
+            sum += val * &x[j];
+        }
+        if sum != rhs[i] {
+            return None;
+        }
+    }
+
+    Some(x)
 }
 
 fn substitute_indices(
@@ -890,181 +1107,358 @@ fn evaluate_with_rules(
     }
 }
 
-fn values_for_index<E: ComponentEvalEnv>(
-    idx: lasso::Spur,
-    index_values: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
-    env: &E,
-    interner: &ax_ir::Interner,
-) -> Vec<lasso::Spur> {
-    if let Some(family) = env.index_to_family().get(&idx) {
-        if let Some(values) = index_values.get(family) {
-            return values.clone();
-        }
-    }
-    let mut defaults: Vec<lasso::Spur> = env.coordinates().iter().copied().collect();
-    defaults.sort_by_key(|sym| interner.resolve(*sym).to_string());
-    defaults
-}
-
-fn sum_over_dummies<E: ComponentEvalEnv>(
+pub fn evaluate_components_v2(
     expr: &Expr,
-    dummy_indices: &[lasso::Spur],
     rules: &[ComponentRule],
-    index_values: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
-    env: &E,
+    env: &dyn ComponentEvalEnv,
     interner: &ax_ir::Interner,
 ) -> Expr {
-    if dummy_indices.is_empty() {
-        return evaluate_with_rules(expr, rules);
+    evaluate_node(expr, rules, env, interner)
+}
+
+fn evaluate_node(
+    expr: &Expr,
+    rules: &[ComponentRule],
+    env: &dyn ComponentEvalEnv,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Add(terms) => handle_sum(terms, rules, env, interner),
+        Expr::Mul(factors) => handle_prod(factors, rules, env, interner),
+        Expr::Neg(e) => Expr::neg(evaluate_node(e, rules, env, interner)),
+        Expr::Indexed(_, _) => handle_factor(expr, rules, env, interner),
+        Expr::Call(f, args) => {
+            let f_name = interner.resolve(*f);
+            if is_derivative_name(f_name) {
+                handle_derivative(expr, *f, args, rules, env, interner)
+            } else {
+                let evaled_args: Vec<Expr> = args
+                    .iter()
+                    .map(|a| evaluate_node(a, rules, env, interner))
+                    .collect();
+                Expr::Call(*f, evaled_args)
+            }
+        }
+        _ => expr.clone(),
+    }
+}
+
+fn is_derivative_name(name: &str) -> bool {
+    matches!(
+        name,
+        "partial" | "nabla" | "D" | "d" | "diff" | "partial_derivative"
+    )
+}
+
+fn handle_sum(
+    terms: &[Expr],
+    rules: &[ComponentRule],
+    env: &dyn ComponentEvalEnv,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let evaled: Vec<Expr> = terms
+        .iter()
+        .map(|t| evaluate_node(t, rules, env, interner))
+        .collect();
+    let simplified = Expr::add(evaled);
+    simplify_expr(simplified, interner)
+}
+
+fn handle_prod(
+    factors: &[Expr],
+    rules: &[ComponentRule],
+    env: &dyn ComponentEvalEnv,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let evaled: Vec<Expr> = factors
+        .iter()
+        .map(|f| evaluate_node(f, rules, env, interner))
+        .collect();
+
+    let product = Expr::mul(evaled.clone());
+    let ic = index_classifier::classify_indices(&product);
+    if ic.dummy.is_empty() {
+        return Expr::mul(evaled);
     }
 
-    fn recurse<E: ComponentEvalEnv>(
-        pos: usize,
-        expr: &Expr,
-        dummy_indices: &[lasso::Spur],
-        rules: &[ComponentRule],
-        index_values: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
-        env: &E,
-        interner: &ax_ir::Interner,
-        assignment: &mut HashMap<lasso::Spur, lasso::Spur>,
-        acc: &mut Vec<Expr>,
-    ) {
-        if pos == dummy_indices.len() {
-            let specialized = substitute_indices(expr, assignment);
-            acc.push(simplify_expr(
-                evaluate_with_rules(&specialized, rules),
-                interner,
-            ));
-            return;
+    let mut coords: Vec<lasso::Spur> = env.coordinates().iter().copied().collect();
+    coords.sort_by_key(|sym| interner.resolve(*sym).to_string());
+    if coords.is_empty() {
+        return Expr::mul(evaled);
+    }
+
+    let n_dummy = ic.dummy.len();
+    let n_coords = coords.len();
+    let total_combos = n_coords.pow(n_dummy as u32);
+    let mut sum_terms = Vec::new();
+
+    for combo in 0..total_combos {
+        let mut assignment: HashMap<lasso::Spur, lasso::Spur> = HashMap::new();
+        let mut idx = combo;
+        for (name, _, _, _, _) in &ic.dummy {
+            assignment.insert(*name, coords[idx % n_coords]);
+            idx /= n_coords;
         }
 
-        let idx = dummy_indices[pos];
-        for value in values_for_index(idx, index_values, env, interner) {
-            assignment.insert(idx, value);
-            recurse(
-                pos + 1,
-                expr,
-                dummy_indices,
-                rules,
-                index_values,
-                env,
-                interner,
-                assignment,
-                acc,
-            );
+        let mut term_factors = Vec::new();
+        for factor in &evaled {
+            let substituted = substitute_index_values(factor, &assignment, interner);
+            let evaluated = evaluate_with_rules_deep(&substituted, rules, interner);
+            term_factors.push(evaluated);
+        }
+
+        let term = Expr::mul(term_factors);
+        let simplified = simplify_expr(term, interner);
+        if simplified != Expr::zero() {
+            sum_terms.push(simplified);
         }
     }
 
-    let mut terms = Vec::new();
-    let mut assignment = HashMap::new();
-    recurse(
-        0,
-        expr,
-        dummy_indices,
-        rules,
-        index_values,
-        env,
-        interner,
-        &mut assignment,
-        &mut terms,
-    );
-    simplify_expr(Expr::add(terms), interner)
+    if sum_terms.is_empty() {
+        Expr::zero()
+    } else {
+        let result = Expr::add(sum_terms);
+        simplify_expr(result, interner)
+    }
+}
+
+fn handle_derivative(
+    expr: &Expr,
+    deriv_sym: lasso::Spur,
+    args: &[Expr],
+    rules: &[ComponentRule],
+    env: &dyn ComponentEvalEnv,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    if args.is_empty() {
+        return expr.clone();
+    }
+
+    let evaled_arg = evaluate_node(&args[0], rules, env, interner);
+    let deriv_index = if args.len() >= 2 {
+        if let Expr::Sym(idx) = &args[1] {
+            Some(*idx)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    match &evaled_arg {
+        Expr::Indexed(_, _) => {
+            let fully_evaled = handle_factor(&evaled_arg, rules, env, interner);
+            if let Some(idx) = deriv_index {
+                diff_component(&fully_evaled, idx, interner)
+            } else {
+                Expr::Call(deriv_sym, vec![fully_evaled])
+            }
+        }
+        _ => {
+            if let Some(idx) = deriv_index {
+                diff_component(&evaled_arg, idx, interner)
+            } else {
+                Expr::Call(deriv_sym, vec![evaled_arg])
+            }
+        }
+    }
+}
+
+fn handle_factor(
+    expr: &Expr,
+    rules: &[ComponentRule],
+    env: &dyn ComponentEvalEnv,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    if let Expr::Indexed(base, indices) = expr {
+        if let Expr::Sym(tensor_name) = base.as_ref() {
+            let classification = classify_indices(expr);
+            let mut unresolved_names: Vec<lasso::Spur> = classification
+                .all
+                .iter()
+                .filter_map(|(_, idx)| (!env.is_coordinate(idx.name)).then_some(idx.name))
+                .collect();
+            unresolved_names.sort_by_key(|sym| interner.resolve(*sym).to_string());
+            unresolved_names.dedup();
+
+            if !unresolved_names.is_empty() {
+                let mut coords: Vec<lasso::Spur> = env.coordinates().iter().copied().collect();
+                coords.sort_by_key(|sym| interner.resolve(*sym).to_string());
+                if coords.is_empty() {
+                    return expr.clone();
+                }
+
+                fn recurse(
+                    pos: usize,
+                    names: &[lasso::Spur],
+                    coords: &[lasso::Spur],
+                    expr: &Expr,
+                    rules: &[ComponentRule],
+                    interner: &ax_ir::Interner,
+                    assignment: &mut HashMap<lasso::Spur, lasso::Spur>,
+                    out: &mut Vec<Expr>,
+                ) {
+                    if pos == names.len() {
+                        let substituted = substitute_index_values(expr, assignment, interner);
+                        out.push(evaluate_with_rules_deep(&substituted, rules, interner));
+                        return;
+                    }
+
+                    for &coord in coords {
+                        assignment.insert(names[pos], coord);
+                        recurse(pos + 1, names, coords, expr, rules, interner, assignment, out);
+                    }
+                }
+
+                let mut terms = Vec::new();
+                let mut assignment = HashMap::new();
+                recurse(
+                    0,
+                    &unresolved_names,
+                    &coords,
+                    expr,
+                    rules,
+                    interner,
+                    &mut assignment,
+                    &mut terms,
+                );
+                let result = Expr::add(terms);
+                return simplify_expr(result, interner);
+            }
+
+            let all_concrete = indices.iter().all(|idx| env.is_coordinate(idx.name));
+            if all_concrete {
+                for rule in rules {
+                    if rule.tensor == *tensor_name && rule.indices.len() == indices.len() {
+                        let matches = rule
+                            .indices
+                            .iter()
+                            .zip(indices.iter())
+                            .all(|((rv, rvar), idx)| *rv == idx.name && *rvar == idx.variance);
+                        if matches {
+                            return rule.value.clone();
+                        }
+                        let names_only = rule
+                            .indices
+                            .iter()
+                            .zip(indices.iter())
+                            .all(|((rv, _), idx)| *rv == idx.name);
+                        if names_only {
+                            return rule.value.clone();
+                        }
+                    }
+                }
+                return Expr::zero();
+            }
+        }
+    }
+    expr.clone()
+}
+
+fn evaluate_with_rules_deep(
+    expr: &Expr,
+    rules: &[ComponentRule],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            if let Expr::Sym(tensor_name) = base.as_ref() {
+                for rule in rules {
+                    if rule.tensor == *tensor_name && rule.indices.len() == indices.len() {
+                        let matches = rule
+                            .indices
+                            .iter()
+                            .zip(indices.iter())
+                            .all(|((rv, rvar), idx)| *rv == idx.name && *rvar == idx.variance);
+                        if matches {
+                            return rule.value.clone();
+                        }
+                        let names_only = rule
+                            .indices
+                            .iter()
+                            .zip(indices.iter())
+                            .all(|((rv, _), idx)| *rv == idx.name);
+                        if names_only {
+                            return rule.value.clone();
+                        }
+                    }
+                }
+                Expr::zero()
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| evaluate_with_rules_deep(f, rules, interner))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| evaluate_with_rules_deep(t, rules, interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(evaluate_with_rules_deep(e, rules, interner)),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|a| evaluate_with_rules_deep(a, rules, interner))
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+fn substitute_index_values(
+    expr: &Expr,
+    assignment: &HashMap<lasso::Spur, lasso::Spur>,
+    _interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let new_indices: Vec<ax_ir::Index> = indices
+                .iter()
+                .map(|idx| {
+                    let new_name = assignment.get(&idx.name).copied().unwrap_or(idx.name);
+                    ax_ir::Index {
+                        name: new_name,
+                        variance: idx.variance.clone(),
+                        index_type: idx.index_type,
+                    }
+                })
+                .collect();
+            Expr::Indexed(
+                Box::new(substitute_index_values(base, assignment, _interner)),
+                new_indices,
+            )
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|f| substitute_index_values(f, assignment, _interner))
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|t| substitute_index_values(t, assignment, _interner))
+                .collect(),
+        ),
+        Expr::Neg(e) => Expr::neg(substitute_index_values(e, assignment, _interner)),
+        _ => expr.clone(),
+    }
 }
 
 pub fn evaluate_components<E: ComponentEvalEnv>(
     expr: &ax_ir::Expr,
     rules: &[ComponentRule],
-    index_values: &std::collections::HashMap<lasso::Spur, Vec<lasso::Spur>>,
+    _index_values: &std::collections::HashMap<lasso::Spur, Vec<lasso::Spur>>,
     env: &E,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
-    let mut index_count = HashMap::new();
-    count_index_occurrences(expr, &mut index_count);
-
-    let mut free_indices: Vec<lasso::Spur> = index_count
-        .iter()
-        .filter(|(_, count)| **count == 1)
-        .map(|(name, _)| *name)
-        .collect();
-    free_indices.sort_by_key(|sym| interner.resolve(*sym).to_string());
-
-    let mut dummy_indices: Vec<lasso::Spur> = index_count
-        .iter()
-        .filter(|(_, count)| **count == 2)
-        .map(|(name, _)| *name)
-        .collect();
-    dummy_indices.sort_by_key(|sym| interner.resolve(*sym).to_string());
-
-    if free_indices.is_empty() {
-        return sum_over_dummies(expr, &dummy_indices, rules, index_values, env, interner);
-    }
-
-    fn recurse_free<E: ComponentEvalEnv>(
-        pos: usize,
-        expr: &Expr,
-        free_indices: &[lasso::Spur],
-        dummy_indices: &[lasso::Spur],
-        rules: &[ComponentRule],
-        index_values: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
-        env: &E,
-        interner: &ax_ir::Interner,
-        assignment: &mut HashMap<lasso::Spur, lasso::Spur>,
-        rows: &mut Vec<Expr>,
-    ) {
-        if pos == free_indices.len() {
-            let specialized = substitute_indices(expr, assignment);
-            let value = sum_over_dummies(
-                &specialized,
-                dummy_indices,
-                rules,
-                index_values,
-                env,
-                interner,
-            );
-            let simplified = simplify_expr(value, interner);
-
-            let mut row = Vec::new();
-            for fi in free_indices {
-                row.push(Expr::Sym(*assignment.get(fi).unwrap()));
-            }
-            row.push(simplified);
-            rows.push(Expr::List(row));
-            return;
-        }
-
-        let idx = free_indices[pos];
-        for value in values_for_index(idx, index_values, env, interner) {
-            assignment.insert(idx, value);
-            recurse_free(
-                pos + 1,
-                expr,
-                free_indices,
-                dummy_indices,
-                rules,
-                index_values,
-                env,
-                interner,
-                assignment,
-                rows,
-            );
-        }
-    }
-
-    let mut rows = Vec::new();
-    let mut assignment = HashMap::new();
-    recurse_free(
-        0,
-        expr,
-        &free_indices,
-        &dummy_indices,
-        rules,
-        index_values,
-        env,
-        interner,
-        &mut assignment,
-        &mut rows,
-    );
-    Expr::List(rows)
+    evaluate_components_v2(expr, rules, env, interner)
 }
 
 #[derive(Clone, Debug)]
@@ -2030,77 +2424,6 @@ pub fn canonicalize_indices(
     }
 }
 
-fn collect_all_indices(
-    expr: &Expr,
-    counts: &mut HashMap<lasso::Spur, Vec<(ax_ir::Variance, usize)>>,
-    id: &mut usize,
-) {
-    match expr {
-        Expr::Indexed(base, indices) => {
-            collect_all_indices(base, counts, id);
-            for idx in indices {
-                counts
-                    .entry(idx.name)
-                    .or_default()
-                    .push((idx.variance.clone(), *id));
-                *id += 1;
-            }
-        }
-        Expr::Mul(factors) | Expr::List(factors) => {
-            for factor in factors {
-                collect_all_indices(factor, counts, id);
-            }
-        }
-        Expr::Add(terms) => {
-            for term in terms {
-                collect_all_indices(term, counts, id);
-            }
-        }
-        Expr::Neg(inner) => collect_all_indices(inner, counts, id),
-        Expr::Pow(base, exp) => {
-            collect_all_indices(base, counts, id);
-            collect_all_indices(exp, counts, id);
-        }
-        Expr::Call(_, args) => {
-            for arg in args {
-                collect_all_indices(arg, counts, id);
-            }
-        }
-        Expr::Complex(re, im) => {
-            collect_all_indices(re, counts, id);
-            collect_all_indices(im, counts, id);
-        }
-        Expr::FnDef(_, _, body) => collect_all_indices(body, counts, id),
-        Expr::Rule(lhs, rhs, _) => {
-            collect_all_indices(lhs, counts, id);
-            collect_all_indices(rhs, counts, id);
-        }
-        Expr::Piecewise(cases) => {
-            for (value, _) in cases {
-                collect_all_indices(value, counts, id);
-            }
-        }
-        Expr::Let(_, value, body) => {
-            collect_all_indices(value, counts, id);
-            collect_all_indices(body, counts, id);
-        }
-        Expr::Matrix(rows) => {
-            for row in rows {
-                for cell in row {
-                    collect_all_indices(cell, counts, id);
-                }
-            }
-        }
-        Expr::SetConvention(_, _)
-        | Expr::Import(_)
-        | Expr::Assume(_, _)
-        | Expr::Int(_)
-        | Expr::Rational(_)
-        | Expr::Float(_)
-        | Expr::Sym(_) => {}
-    }
-}
-
 fn apply_index_rename(expr: &Expr, rename_map: &HashMap<lasso::Spur, lasso::Spur>) -> Expr {
     match expr {
         Expr::Indexed(base, indices) => Expr::Indexed(
@@ -2268,26 +2591,18 @@ pub fn rename_dummies<E: DummyRenameEnv>(
                 .collect(),
         ),
         _ => {
-            let mut index_count: HashMap<lasso::Spur, Vec<(ax_ir::Variance, usize)>> = HashMap::new();
-            let mut occurrence_id = 0usize;
-            collect_all_indices(expr, &mut index_count, &mut occurrence_id);
-
-            let mut dummy_indices = Vec::new();
-            for (name, occurrences) in &index_count {
-                if occurrences.len() == 2 && occurrences[0].0 != occurrences[1].0 {
-                    dummy_indices.push(*name);
-                }
-            }
-            dummy_indices.sort_by_key(|sym| {
-                let first_occurrence = index_count
-                    .get(sym)
-                    .and_then(|items| items.iter().map(|(_, id)| *id).min())
-                    .unwrap_or(usize::MAX);
-                (family_key(env, *sym, interner), first_occurrence)
+            let classification = classify_indices(expr);
+            let mut dummy_indices: Vec<(lasso::Spur, usize)> = classification
+                .dummy
+                .iter()
+                .map(|(name, pos1, _, _, _)| (*name, *pos1))
+                .collect();
+            dummy_indices.sort_by_key(|(sym, first_occurrence)| {
+                (family_key(env, *sym, interner), *first_occurrence)
             });
 
             let mut rename_map = HashMap::new();
-            for (i, dummy) in dummy_indices.iter().enumerate() {
+            for (i, (dummy, _)) in dummy_indices.iter().enumerate() {
                 rename_map.insert(*dummy, canonical_name(env, *dummy, i, interner));
             }
 
@@ -2320,13 +2635,10 @@ pub fn rename_dummy_indices(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> a
 }
 
 fn contains_index(expr: &Expr, idx: lasso::Spur) -> bool {
-    match expr {
-        Expr::Indexed(_, indices) => indices.iter().any(|i| i.name == idx),
-        Expr::Mul(factors) => factors.iter().any(|f| contains_index(f, idx)),
-        Expr::Add(terms) => terms.iter().any(|t| contains_index(t, idx)),
-        Expr::Neg(e) => contains_index(e, idx),
-        _ => false,
-    }
+    classify_indices(expr)
+        .all
+        .iter()
+        .any(|(_, index)| index.name == idx)
 }
 
 fn replace_index(expr: &Expr, from: lasso::Spur, to: lasso::Spur) -> Expr {
@@ -2358,15 +2670,10 @@ fn replace_index(expr: &Expr, from: lasso::Spur, to: lasso::Spur) -> Expr {
 }
 
 fn has_index_with_variance(expr: &Expr, name: lasso::Spur, variance: &ax_ir::Variance) -> bool {
-    match expr {
-        Expr::Indexed(_, indices) => indices
-            .iter()
-            .any(|index| index.name == name && index.variance == *variance),
-        Expr::Mul(factors) => factors
-            .iter()
-            .any(|factor| has_index_with_variance(factor, name, variance)),
-        _ => false,
-    }
+    classify_indices(expr)
+        .all
+        .iter()
+        .any(|(_, index)| index.name == name && index.variance == *variance)
 }
 
 fn replace_index_with_variance(
@@ -4465,33 +4772,6 @@ fn contains_sym(expr: &Expr, sym: lasso::Spur) -> bool {
 
 // ─── expand_dummies ───────────────────────────────────────────────────────────
 
-/// Collect every index name that appears in `expr`, recording all `(position, variance)` occurrences.
-fn collect_index_positions(
-    expr: &Expr,
-    counts: &mut HashMap<lasso::Spur, Vec<(usize, ax_ir::Variance)>>,
-    pos: &mut usize,
-) {
-    match expr {
-        Expr::Indexed(base, indices) => {
-            collect_index_positions(base, counts, pos);
-            for idx in indices {
-                counts
-                    .entry(idx.name)
-                    .or_default()
-                    .push((*pos, idx.variance.clone()));
-                *pos += 1;
-            }
-        }
-        Expr::Mul(factors) => {
-            for f in factors {
-                collect_index_positions(f, counts, pos);
-            }
-        }
-        Expr::Neg(e) => collect_index_positions(e, counts, pos),
-        _ => {}
-    }
-}
-
 /// Rename every occurrence of index `from` to `to` throughout `expr`.
 fn replace_index_name_everywhere(expr: &Expr, from: lasso::Spur, to: lasso::Spur) -> Expr {
     match expr {
@@ -4555,23 +4835,13 @@ pub fn expand_dummies(
         ),
         Expr::Neg(e) => Expr::neg(expand_dummies(e, coordinates, interner)),
         _ => {
-            // Collect all index name occurrences in this term
-            let mut index_count: HashMap<lasso::Spur, Vec<(usize, ax_ir::Variance)>> =
-                HashMap::new();
-            collect_index_positions(expr, &mut index_count, &mut 0);
-
-            // A dummy pair: appears exactly twice with opposite variances,
-            // and the name is not a concrete coordinate value (which would
-            // mean the contraction has already been made explicit).
+            let classification = classify_indices(expr);
             let coord_set: HashSet<lasso::Spur> = coordinates.iter().copied().collect();
-            let mut dummy_names: Vec<lasso::Spur> = index_count
+            let mut dummy_names: Vec<lasso::Spur> = classification
+                .dummy
                 .iter()
-                .filter(|(name, occs)| {
-                    occs.len() == 2
-                        && occs[0].1 != occs[1].1
-                        && !coord_set.contains(*name)
-                })
-                .map(|(name, _)| *name)
+                .filter(|(name, _, _, _, _)| !coord_set.contains(name))
+                .map(|(name, _, _, _, _)| *name)
                 .collect();
 
             if dummy_names.is_empty() {
@@ -5153,6 +5423,66 @@ mod tests {
     use super::*;
     use ax_ir::{Index, Variance};
     use std::collections::HashMap;
+
+    #[test]
+    fn classify_simple_product() {
+        let interner = ax_ir::Interner::new();
+        let a_sym = interner.get_or_intern("A");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(a_sym)),
+            vec![
+                Index { name: mu, variance: Variance::Down, index_type: None },
+                Index { name: nu, variance: Variance::Up, index_type: None },
+            ],
+        );
+        let ic = index_classifier::classify_indices(&expr);
+        assert_eq!(ic.free.len(), 2);
+        assert_eq!(ic.dummy.len(), 0);
+        assert_eq!(ic.total, 2);
+    }
+
+    #[test]
+    fn classify_contracted_product() {
+        let interner = ax_ir::Interner::new();
+        let a_sym = interner.get_or_intern("A");
+        let b_sym = interner.get_or_intern("B");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a_sym)),
+                vec![Index { name: mu, variance: Variance::Down, index_type: None }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(b_sym)),
+                vec![
+                    Index { name: mu, variance: Variance::Up, index_type: None },
+                    Index { name: nu, variance: Variance::Down, index_type: None },
+                ],
+            ),
+        ]);
+        let ic = index_classifier::classify_indices(&expr);
+        assert_eq!(ic.free.len(), 1);
+        assert_eq!(ic.dummy.len(), 1);
+        assert_eq!(ic.total, 3);
+    }
+
+    #[test]
+    fn fresh_dummy_avoids_existing() {
+        let interner = ax_ir::Interner::new();
+        let mu = interner.get_or_intern("mu");
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(interner.get_or_intern("T"))),
+            vec![Index { name: mu, variance: Variance::Down, index_type: None }],
+        );
+        let ic = index_classifier::classify_indices(&expr);
+        let fresh = index_classifier::get_fresh_dummy(&ic, "d", &interner);
+        assert_ne!(fresh, mu);
+    }
 
     #[test]
     fn diagonal_inverse() {
@@ -5888,6 +6218,59 @@ mod tests {
     }
 
     #[test]
+    fn evaluate_metric_contraction() {
+        let interner = ax_ir::Interner::new();
+        let g = interner.get_or_intern("g");
+        let mu = interner.get_or_intern("mu");
+        let t = interner.get_or_intern("t");
+        let r = interner.get_or_intern("r");
+
+        let rules = vec![
+            ComponentRule {
+                tensor: g,
+                indices: vec![(t, Variance::Down), (t, Variance::Down)],
+                value: Expr::Int((-1).into()),
+            },
+            ComponentRule {
+                tensor: g,
+                indices: vec![(r, Variance::Down), (r, Variance::Down)],
+                value: Expr::Int(1.into()),
+            },
+        ];
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(g)),
+            vec![
+                Index { name: mu, variance: Variance::Down, index_type: None },
+                Index { name: mu, variance: Variance::Down, index_type: None },
+            ],
+        );
+
+        struct TestEnv {
+            coords: HashSet<lasso::Spur>,
+            index_to_family: HashMap<lasso::Spur, lasso::Spur>,
+        }
+
+        impl ComponentEvalEnv for TestEnv {
+            fn coordinates(&self) -> &HashSet<lasso::Spur> {
+                &self.coords
+            }
+
+            fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
+                &self.index_to_family
+            }
+        }
+
+        let env = TestEnv {
+            coords: HashSet::from([t, r]),
+            index_to_family: HashMap::new(),
+        };
+        let result = evaluate_components_v2(&expr, &rules, &env, &interner);
+        let simplified = ax_eval::eval(&result, &ax_eval::Env::new(), &interner);
+        assert_eq!(simplified, Expr::zero());
+    }
+
+    #[test]
     fn generating_set_symmetric_2tensor() {
         let interner = ax_ir::Interner::new();
         let g_sym = interner.get_or_intern("g");
@@ -6021,6 +6404,45 @@ mod tests {
             result,
             Expr::zero(),
             "F[ab] + F[ba] should cancel for antisymmetric F"
+        );
+    }
+
+    #[test]
+    fn meld_bianchi_identity() {
+        let interner = ax_ir::Interner::new();
+        let r = interner.get_or_intern("R");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+
+        let mut props = HashMap::new();
+        props.insert(r, vec![ax_ir::TensorProperty::RiemannSymmetry]);
+
+        let make_r = |i0, i1, i2, i3| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    Index { name: i0, variance: Variance::Down, index_type: None },
+                    Index { name: i1, variance: Variance::Down, index_type: None },
+                    Index { name: i2, variance: Variance::Down, index_type: None },
+                    Index { name: i3, variance: Variance::Down, index_type: None },
+                ],
+            )
+        };
+
+        let bianchi = Expr::add(vec![
+            make_r(a, b, c, d),
+            make_r(a, c, d, b),
+            make_r(a, d, b, c),
+        ]);
+
+        let result = meld(&bianchi, &props, &interner);
+        assert_eq!(
+            result,
+            Expr::zero(),
+            "Bianchi identity should be detected by meld, got: {}",
+            ax_ir::pretty_print(&result, &interner)
         );
     }
 
