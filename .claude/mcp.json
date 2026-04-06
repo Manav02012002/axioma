@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "axioma": {
+      "command": "cargo",
+      "args": ["run", "--release", "-p", "ax-mcp"],
+      "env": {}
+    }
+  }
+}

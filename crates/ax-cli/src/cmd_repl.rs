@@ -68,6 +68,8 @@ fn print_help() {
     println!("  :rules             Show all user-defined rules");
     println!("  :assumptions       Show all assumptions");
     println!("  :convention        Show active convention");
+    println!("  :inspect [expr]    Inspect an expression or the last result");
+    println!("  :suggest [expr]    Suggest algorithms for an expression or the last result");
     println!("  :codegen python    Generate Python for last result");
     println!("  :codegen rust      Generate Rust for last result");
     println!("  :codegen cpp       Generate C++ for last result");
@@ -98,6 +100,103 @@ fn print_assumptions(env: &ax_eval::Env, interner: &ax_ir::Interner) {
             .map(|a| format!("{a:?}").to_lowercase())
             .collect::<Vec<_>>();
         println!("  {} is {}", interner.resolve(*sym), names.join(", "));
+    }
+}
+
+fn inspect_target_expr(
+    text: &str,
+    env: &ax_eval::Env,
+    interner: &ax_ir::Interner,
+) -> Result<Expr> {
+    let effective_input = if text.contains('\\') || text.contains("_{") || text.contains("^{") {
+        ax_core_ir::latex_to_axioma(text)
+    } else {
+        text.to_string()
+    };
+    let lowered = ax_core_ir::lower(&effective_input, interner);
+    if !lowered.errors.is_empty() {
+        return Err(anyhow::anyhow!(
+            lowered
+                .errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    let expr = lowered
+        .expr
+        .ok_or_else(|| anyhow::anyhow!("expected exactly one expression"))?;
+    Ok(ax_eval::eval(&expr, env, interner))
+}
+
+fn variance_arrow(variance: &str) -> &'static str {
+    match variance {
+        "up" => "↑",
+        "down" => "↓",
+        _ => "?",
+    }
+}
+
+fn print_inspect_result(result: &ax_eval::inspect::InspectResult) {
+    println!("Kind: {}", result.kind);
+    if result.free_indices.is_empty() {
+        println!("Free indices: (none)");
+    } else {
+        println!(
+            "Free indices: {}",
+            result
+                .free_indices
+                .iter()
+                .map(|(name, variance)| format!("{name}{}", variance_arrow(variance)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if result.dummy_pairs.is_empty() {
+        println!("Dummy pairs: (none)");
+    } else {
+        println!(
+            "Dummy pairs: {}",
+            result
+                .dummy_pairs
+                .iter()
+                .map(|(a, b)| format!("({a}, {b})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if result.properties.is_empty() {
+        println!("Properties: (none)");
+    } else {
+        println!(
+            "Properties: {}",
+            result
+                .properties
+                .iter()
+                .map(|(symbol, props)| format!("{symbol} → [{}]", props.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
+    println!("Symbols: [{}]", result.symbols.join(", "));
+    println!("Node count: {}", result.node_count);
+}
+
+fn print_suggest_result(result: &ax_eval::suggest::SuggestResult) {
+    println!("Suggested algorithms:");
+    for suggestion in &result.suggestions {
+        println!("  → {}: {}", suggestion.algorithm, suggestion.reason);
+    }
+    if result.missing.is_empty() {
+        println!();
+        println!("Missing properties: (none)");
+    } else {
+        println!();
+        println!("Missing properties:");
+        for missing in &result.missing {
+            println!("  → {} has no declared properties; consider: {}", missing.symbol, missing.suggestion);
+        }
     }
 }
 
@@ -201,6 +300,52 @@ pub fn run() -> Result<()> {
                 for line in convention_lines(&env) {
                     println!("{line}");
                 }
+                continue;
+            }
+            s if s.starts_with(":inspect") => {
+                let arg = s.strip_prefix(":inspect").unwrap_or_default().trim();
+                let expr = if arg.is_empty() {
+                    match &last_result {
+                        Some(expr) => expr.clone(),
+                        None => {
+                            eprintln!("No previous result to inspect.");
+                            continue;
+                        }
+                    }
+                } else {
+                    match inspect_target_expr(arg, &env, &interner) {
+                        Ok(expr) => expr,
+                        Err(err) => {
+                            eprintln!("{err}");
+                            continue;
+                        }
+                    }
+                };
+                let result = ax_eval::inspect::inspect_expr(&expr, &env, &interner);
+                print_inspect_result(&result);
+                continue;
+            }
+            s if s.starts_with(":suggest") => {
+                let arg = s.strip_prefix(":suggest").unwrap_or_default().trim();
+                let expr = if arg.is_empty() {
+                    match &last_result {
+                        Some(expr) => expr.clone(),
+                        None => {
+                            eprintln!("No previous result to analyze.");
+                            continue;
+                        }
+                    }
+                } else {
+                    match inspect_target_expr(arg, &env, &interner) {
+                        Ok(expr) => expr,
+                        Err(err) => {
+                            eprintln!("{err}");
+                            continue;
+                        }
+                    }
+                };
+                let result = ax_eval::suggest::suggest_for_expr(&expr, &env, &interner);
+                print_suggest_result(&result);
                 continue;
             }
             ":reset" => {

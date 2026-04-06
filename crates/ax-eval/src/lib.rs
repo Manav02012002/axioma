@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 
 pub mod integrate;
+pub mod inspect;
 pub mod limits;
 pub mod registry;
 pub mod series;
 pub mod simplify;
+pub mod suggest;
 
 use ax_ir::{Assumption, Condition, Expr, Grading};
 use num_bigint::BigInt;
@@ -15,9 +17,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 pub use registry::{
-    algorithm_entries, assumption_entries, builtin_entries, convention_entries,
-    property_entries, std_modules, syntax_rules, AlgorithmEntry, AssumptionEntry,
-    BuiltinEntry, ConventionEntry, PropertyEntry, StdModule, SyntaxRule,
+    algorithm_entries, assumption_entries, builtin_entries, callable_entries,
+    convention_entries, property_entries, std_modules, syntax_rules, AlgorithmEntry,
+    AssumptionEntry, BuiltinEntry, CallableEntry, ConventionEntry, EvalState, ParamDef,
+    ParamType, PropertyEntry, StdModule, SyntaxRule,
 };
 
 #[derive(Clone, Debug, Default)]
