@@ -234,6 +234,7 @@ dependencies = [
  "ax-perturb",
  "ax-plot",
  "ax-qm",
+ "ax-render",
  "ax-rewrite",
  "ax-solve",
  "ax-spinor",

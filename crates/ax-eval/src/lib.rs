@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod equation;
 pub mod inspect;
 pub mod integrate;
 pub mod limits;
@@ -17,6 +18,12 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+pub use equation::{
+    add_through, apply_through, contract_through, differentiate_equation, equation_to_rule,
+    equation_to_subrule, get_factor, get_lhs, get_rhs, integrate_equation, is_equation, isolate,
+    lower_equation, make_equation, multiply_through, multiply_through_indexed, raise_equation,
+    substitute_equation, swap_sides, to_lhs, to_rhs,
+};
 pub use property_store::{
     property_discriminant_matches, InheritanceRule, PropertyAttachment, PropertyPattern,
     PropertyStore, SlotSpec, WeightCombine,
@@ -253,6 +260,38 @@ fn symbol_from_expr(expr: &Expr) -> Option<lasso::Spur> {
         Expr::Sym(s) => Some(*s),
         _ => None,
     }
+}
+
+fn extract_sym(expr: &Expr, interner: &ax_ir::Interner) -> lasso::Spur {
+    match expr {
+        Expr::Sym(sym) => *sym,
+        other => interner.get_or_intern(&ax_ir::pretty_print(other, interner)),
+    }
+}
+
+fn find_tensor_property_sym(
+    env: &Env,
+    property: fn(&ax_ir::TensorProperty) -> bool,
+) -> Option<lasso::Spur> {
+    env.tensor_properties
+        .iter()
+        .find_map(|(sym, props)| props.iter().any(property).then_some(*sym))
+        .or_else(|| {
+            env.property_store
+                .symbols()
+                .into_iter()
+                .find(|sym| env.property_store.get_all(*sym).into_iter().any(property))
+        })
+}
+
+fn find_metric_sym(env: &Env) -> Option<lasso::Spur> {
+    find_tensor_property_sym(env, |prop| matches!(prop, ax_ir::TensorProperty::Metric))
+}
+
+fn find_inv_metric_sym(env: &Env) -> Option<lasso::Spur> {
+    find_tensor_property_sym(env, |prop| {
+        matches!(prop, ax_ir::TensorProperty::InverseMetric)
+    })
 }
 
 fn symbol_list_from_expr(expr: &Expr) -> Option<Vec<lasso::Spur>> {
@@ -2994,6 +3033,131 @@ fn builtin_call(
     env: &Env,
 ) -> Expr {
     match name {
+        "eq" | "==" => {
+            if args.len() == 2 {
+                equation::make_equation(args[0].clone(), args[1].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "get_lhs" => {
+            if args.len() == 1 {
+                equation::get_lhs(&args[0], interner).unwrap_or_else(Expr::zero)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "get_rhs" => {
+            if args.len() == 1 {
+                equation::get_rhs(&args[0], interner).unwrap_or_else(Expr::zero)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "swap_sides" => {
+            if args.len() == 1 {
+                equation::swap_sides(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "multiply_through" => {
+            if args.len() == 2 {
+                equation::multiply_through(&args[0], &args[1], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "add_through" => {
+            if args.len() == 2 {
+                equation::add_through(&args[0], &args[1], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "to_rhs" => {
+            if args.len() == 2 {
+                equation::to_rhs(&args[0], &args[1], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "to_lhs" => {
+            if args.len() == 2 {
+                equation::to_lhs(&args[0], &args[1], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "isolate" => {
+            if args.len() == 2 {
+                equation::isolate(&args[0], &args[1], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "eq_to_rule" | "eq_to_subrule" => {
+            if args.len() == 1 {
+                equation::equation_to_rule(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "differentiate_eq" => {
+            if args.len() == 2 {
+                let var = extract_sym(&args[1], interner);
+                equation::differentiate_equation(&args[0], var, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "integrate_eq" => {
+            if args.len() == 2 {
+                let var = extract_sym(&args[1], interner);
+                equation::integrate_equation(&args[0], var, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "raise_eq" => {
+            if args.len() == 2 {
+                match (find_metric_sym(env), find_inv_metric_sym(env)) {
+                    (Some(metric), Some(inv_metric)) => equation::raise_equation(
+                        &args[0],
+                        metric,
+                        inv_metric,
+                        extract_sym(&args[1], interner),
+                        interner,
+                    ),
+                    _ => args[0].clone(),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "lower_eq" => {
+            if args.len() == 2 {
+                match (find_metric_sym(env), find_inv_metric_sym(env)) {
+                    (Some(metric), Some(inv_metric)) => equation::lower_equation(
+                        &args[0],
+                        metric,
+                        inv_metric,
+                        extract_sym(&args[1], interner),
+                        interner,
+                    ),
+                    _ => args[0].clone(),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "substitute_eq" => {
+            if args.len() == 3 {
+                equation::substitute_equation(&args[0], &args[1], &args[2], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "angle" => {
             if args.len() == 2 {
                 match (

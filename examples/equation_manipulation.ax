@@ -1,0 +1,22 @@
+// Equation Manipulation Demo
+// ==========================
+// Define an equation
+let eq1 = (2x + 3y == 12)
+// Get sides
+get_lhs(eq1)
+get_rhs(eq1)
+// Move y to the right
+let eq2 = to_rhs(eq1, y)
+eq2
+// Isolate x
+let eq3 = isolate(eq2, x)
+eq3
+// Multiply both sides
+let eq4 = multiply_through(eq3, 2)
+eq4
+// Differentiate both sides with respect to x
+let eq5 = (x^2 + y^2 == r^2)
+differentiate_eq(eq5, x)
+// Convert to a substitution rule
+let rule = eq_to_rule(eq3)
+rule

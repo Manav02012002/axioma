@@ -624,6 +624,118 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "Apply the momentum-twistor Plucker identity.",
             "plucker(expr, 1, 2, 3, 4, 5, 6)",
         ),
+        b(
+            "eq",
+            "equation",
+            "eq(lhs, rhs)",
+            "Create an equation object.",
+            "eq(x + y, 3)",
+        ),
+        b(
+            "get_lhs",
+            "equation",
+            "get_lhs(eq)",
+            "Get the left-hand side of an equation.",
+            "get_lhs(eq1)",
+        ),
+        b(
+            "get_rhs",
+            "equation",
+            "get_rhs(eq)",
+            "Get the right-hand side of an equation.",
+            "get_rhs(eq1)",
+        ),
+        b(
+            "swap_sides",
+            "equation",
+            "swap_sides(eq)",
+            "Swap the left- and right-hand sides of an equation.",
+            "swap_sides(eq1)",
+        ),
+        b(
+            "multiply_through",
+            "equation",
+            "multiply_through(eq, factor)",
+            "Multiply both sides of an equation by a factor.",
+            "multiply_through(eq1, 2)",
+        ),
+        b(
+            "add_through",
+            "equation",
+            "add_through(eq, term)",
+            "Add a term to both sides of an equation.",
+            "add_through(eq1, y)",
+        ),
+        b(
+            "to_rhs",
+            "equation",
+            "to_rhs(eq, target)",
+            "Move terms containing target from the LHS to the RHS.",
+            "to_rhs(eq1, y)",
+        ),
+        b(
+            "to_lhs",
+            "equation",
+            "to_lhs(eq, target)",
+            "Move terms containing target from the RHS to the LHS.",
+            "to_lhs(eq1, x)",
+        ),
+        b(
+            "isolate",
+            "equation",
+            "isolate(eq, target)",
+            "Solve simple equation patterns for target.",
+            "isolate(eq1, x)",
+        ),
+        b(
+            "eq_to_rule",
+            "equation",
+            "eq_to_rule(eq)",
+            "Convert an equation to an exact rewrite rule.",
+            "eq_to_rule(eq1)",
+        ),
+        b(
+            "eq_to_subrule",
+            "equation",
+            "eq_to_subrule(eq)",
+            "Alias for eq_to_rule.",
+            "eq_to_subrule(eq1)",
+        ),
+        b(
+            "differentiate_eq",
+            "equation",
+            "differentiate_eq(eq, var)",
+            "Differentiate both sides of an equation.",
+            "differentiate_eq(eq1, x)",
+        ),
+        b(
+            "integrate_eq",
+            "equation",
+            "integrate_eq(eq, var)",
+            "Integrate both sides of an equation.",
+            "integrate_eq(eq1, x)",
+        ),
+        b(
+            "substitute_eq",
+            "equation",
+            "substitute_eq(eq, target, replacement)",
+            "Substitute in both sides of an equation.",
+            "substitute_eq(eq1, x, y + 1)",
+        ),
+        b(
+            "raise_eq",
+            "equation",
+            "raise_eq(eq, index)",
+            "Raise an index on both sides using the active metric.",
+            "raise_eq(eq1, a)",
+        ),
+        b(
+            "lower_eq",
+            "equation",
+            "lower_eq(eq, index)",
+            "Lower an index on both sides using the active metric.",
+            "lower_eq(eq1, a)",
+        ),
         b("perturb", "perturbation", "perturb(expr, field, background, perturbation, epsilon, order)", "Expand an expression in a metric perturbation series through the requested order.", "perturb(R_ab, g, g0, h, eps, 2)"),
         b("perturb_inverse", "perturbation", "perturb_inverse(field, background, background_inv, perturbation, epsilon, order)", "Expand the inverse metric perturbatively as a geometric series.", "perturb_inverse(g, g0, g0inv, h, eps, 2)"),
         b("perturb_christoffel", "perturbation", "perturb_christoffel(field, background, background_inv, perturbation, epsilon, coords, order)", "Expand the Christoffel symbol order by order in a metric perturbation.", "perturb_christoffel(g, g0, g0inv, h, eps, [t,r,theta,phi], 1)"),
@@ -3157,6 +3269,152 @@ fn binary_named_expr_response(
     expr_or_struct_response(call_named(name, vec![lhs, rhs], state), state)
 }
 
+fn handle_equation_ternary(
+    name: &str,
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "eq", state)?;
+    let target = code_expr(args, 1, "target", state)?;
+    let replacement = code_expr(args, 2, "replacement", state)?;
+    expr_response(
+        call_named(name, vec![expr, target, replacement], state),
+        state,
+    )
+}
+
+fn handle_eq_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("eq", args, state)
+}
+
+fn handle_get_lhs_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("get_lhs", args, state)
+}
+
+fn handle_get_rhs_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("get_rhs", args, state)
+}
+
+fn handle_swap_sides_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("swap_sides", args, state)
+}
+
+fn handle_multiply_through_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("multiply_through", args, state)
+}
+
+fn handle_add_through_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("add_through", args, state)
+}
+
+fn handle_to_rhs_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("to_rhs", args, state)
+}
+
+fn handle_to_lhs_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("to_lhs", args, state)
+}
+
+fn handle_isolate_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("isolate", args, state)
+}
+
+fn handle_eq_to_rule_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("eq_to_rule", args, state)
+}
+
+fn handle_eq_to_subrule_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("eq_to_subrule", args, state)
+}
+
+fn handle_differentiate_eq_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "eq", state)?;
+    let var = symbol_arg(args, 1, "var", state)?;
+    expr_response(
+        call_named("differentiate_eq", vec![expr, ax_ir::Expr::Sym(var)], state),
+        state,
+    )
+}
+
+fn handle_integrate_eq_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "eq", state)?;
+    let var = symbol_arg(args, 1, "var", state)?;
+    expr_response(
+        call_named("integrate_eq", vec![expr, ax_ir::Expr::Sym(var)], state),
+        state,
+    )
+}
+
+fn handle_substitute_eq_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_equation_ternary("substitute_eq", args, state)
+}
+
+fn handle_raise_eq_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "eq", state)?;
+    let index = symbol_arg(args, 1, "index", state)?;
+    expr_response(
+        call_named("raise_eq", vec![expr, ax_ir::Expr::Sym(index)], state),
+        state,
+    )
+}
+
+fn handle_lower_eq_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "eq", state)?;
+    let index = symbol_arg(args, 1, "index", state)?;
+    expr_response(
+        call_named("lower_eq", vec![expr, ax_ir::Expr::Sym(index)], state),
+        state,
+    )
+}
+
 fn list_builtin_response(
     name: &str,
     expr: ax_ir::Expr,
@@ -5403,6 +5661,22 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("trig_simplify", "Exact trigonometric simplification.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_trig_simplify),
         centry("factor_out", "Factor common symbols from a sum.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("targets", ParamType::SymbolList, false, "Optional target symbols to factor.")]), handle_factor_out),
         centry("factor_in", "Group terms with common prefactors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("targets", ParamType::SymbolList, false, "Optional target symbols to factor.")]), handle_factor_in),
+        centry("eq", "Create an equation object.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Left-hand side expression id."), pdef("rhs", ParamType::ExprId, true, "Right-hand side expression id.")]), handle_eq_entry),
+        centry("get_lhs", "Get the left-hand side of an equation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Equation expression id.")]), handle_get_lhs_entry),
+        centry("get_rhs", "Get the right-hand side of an equation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Equation expression id.")]), handle_get_rhs_entry),
+        centry("swap_sides", "Swap the left- and right-hand sides of an equation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Equation expression id.")]), handle_swap_sides_entry),
+        centry("multiply_through", "Multiply both sides of an equation by a factor.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Equation expression id."), pdef("rhs", ParamType::ExprId, true, "Factor expression id.")]), handle_multiply_through_entry),
+        centry("add_through", "Add a term to both sides of an equation.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Equation expression id."), pdef("rhs", ParamType::ExprId, true, "Term expression id.")]), handle_add_through_entry),
+        centry("to_rhs", "Move terms containing target from the LHS to the RHS.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Equation expression id."), pdef("rhs", ParamType::ExprId, true, "Target expression id.")]), handle_to_rhs_entry),
+        centry("to_lhs", "Move terms containing target from the RHS to the LHS.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Equation expression id."), pdef("rhs", ParamType::ExprId, true, "Target expression id.")]), handle_to_lhs_entry),
+        centry("isolate", "Solve simple equation patterns for target.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Equation expression id."), pdef("rhs", ParamType::ExprId, true, "Target expression id.")]), handle_isolate_entry),
+        centry("eq_to_rule", "Convert an equation to an exact rewrite rule.", ps(vec![pdef("expr", ParamType::ExprId, true, "Equation expression id.")]), handle_eq_to_rule_entry),
+        centry("eq_to_subrule", "Alias for eq_to_rule.", ps(vec![pdef("expr", ParamType::ExprId, true, "Equation expression id.")]), handle_eq_to_subrule_entry),
+        centry("differentiate_eq", "Differentiate both sides of an equation.", ps(vec![pdef("eq", ParamType::ExprId, true, "Equation expression id."), pdef("var", ParamType::Symbol, true, "Differentiation variable.")]), handle_differentiate_eq_entry),
+        centry("integrate_eq", "Integrate both sides of an equation.", ps(vec![pdef("eq", ParamType::ExprId, true, "Equation expression id."), pdef("var", ParamType::Symbol, true, "Integration variable.")]), handle_integrate_eq_entry),
+        centry("substitute_eq", "Substitute in both sides of an equation.", ps(vec![pdef("eq", ParamType::ExprId, true, "Equation expression id."), pdef("target", ParamType::Code, true, "Target expression."), pdef("replacement", ParamType::Code, true, "Replacement expression.")]), handle_substitute_eq_entry),
+        centry("raise_eq", "Raise an index on both sides using the active metric.", ps(vec![pdef("eq", ParamType::ExprId, true, "Equation expression id."), pdef("index", ParamType::Symbol, true, "Index to raise.")]), handle_raise_eq_entry),
+        centry("lower_eq", "Lower an index on both sides using the active metric.", ps(vec![pdef("eq", ParamType::ExprId, true, "Equation expression id."), pdef("index", ParamType::Symbol, true, "Index to lower.")]), handle_lower_eq_entry),
         centry("subs", "Symbolic substitution.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("target", ParamType::Code, true, "Target pattern expression."), pdef("replacement", ParamType::Code, true, "Replacement expression.")]), handle_subs),
         centry("symbolic_substitute", "Symbolic substitution.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("target", ParamType::Code, true, "Target pattern expression."), pdef("replacement", ParamType::Code, true, "Replacement expression.")]), handle_subs),
         centry("multi_substitute", "Repeated symbolic substitution via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Substitution expression code.")]), handle_eval_syntax_entry),

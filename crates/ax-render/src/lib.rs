@@ -257,6 +257,7 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
         .collect::<Vec<_>>();
 
     match (name, args.len()) {
+        ("__eq", 2) => format!("{} = {}", rendered_args[0], rendered_args[1]),
         ("__angle", 2) => format!(
             "\\langle {}\\,{} \\rangle",
             spinor_label_latex(&args[0], interner),

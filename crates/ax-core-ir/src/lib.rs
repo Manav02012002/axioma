@@ -97,6 +97,15 @@ impl<'a> Cursor<'a> {
 
     fn consume_keyword(&mut self, kw: &str) -> bool {
         self.skip_ws();
+        if !self.starts_keyword(kw) {
+            return false;
+        }
+
+        self.pos += kw.len();
+        true
+    }
+
+    fn starts_keyword(&self, kw: &str) -> bool {
         if !self.rest().starts_with(kw) {
             return false;
         }
@@ -106,8 +115,6 @@ impl<'a> Cursor<'a> {
         if matches!(boundary, Some(ch) if ch.is_ascii_alphanumeric() || ch == '_') {
             return false;
         }
-
-        self.pos = end;
         true
     }
 
@@ -471,38 +478,43 @@ impl<'a> Cursor<'a> {
             return Ok(Expr::Import(path));
         }
 
+        let rule_start = self.pos;
         if self.consume_keyword("rule") {
-            self.skip_ws();
-            let trust = if self.eat_if('[') {
-                self.skip_ws();
-                let level_name = self.parse_ident()?;
-                self.skip_ws();
-                if !self.eat_if(']') {
-                    return Err(self.error("expected ']'"));
-                }
-                let name = self.interner.resolve(level_name);
-                self.parse_trust_level(name)
+            if !self.rest().contains("=>") {
+                self.pos = rule_start;
             } else {
-                ax_ir::TrustLevel::Unverified
-            };
-            let saved = self.pos;
-            if self.parse_ident().is_ok() {
                 self.skip_ws();
-                if !self.eat_if(':') {
+                let trust = if self.eat_if('[') {
+                    self.skip_ws();
+                    let level_name = self.parse_ident()?;
+                    self.skip_ws();
+                    if !self.eat_if(']') {
+                        return Err(self.error("expected ']'"));
+                    }
+                    let name = self.interner.resolve(level_name);
+                    self.parse_trust_level(name)
+                } else {
+                    ax_ir::TrustLevel::Unverified
+                };
+                let saved = self.pos;
+                if self.parse_ident().is_ok() {
+                    self.skip_ws();
+                    if !self.eat_if(':') {
+                        self.pos = saved;
+                    }
+                } else {
                     self.pos = saved;
                 }
-            } else {
-                self.pos = saved;
+                self.skip_ws();
+                let lhs = self.parse_expr()?;
+                self.skip_ws();
+                if !self.consume_arrow() {
+                    return Err(self.error("expected '=>' in rule"));
+                }
+                self.skip_ws();
+                let rhs = self.parse_expr()?;
+                return Ok(Expr::Rule(Box::new(lhs), Box::new(rhs), trust));
             }
-            self.skip_ws();
-            let lhs = self.parse_expr()?;
-            self.skip_ws();
-            if !self.consume_arrow() {
-                return Err(self.error("expected '=>' in rule"));
-            }
-            self.skip_ws();
-            let rhs = self.parse_expr()?;
-            return Ok(Expr::Rule(Box::new(lhs), Box::new(rhs), trust));
         }
 
         match self.peek_char() {
@@ -757,17 +769,33 @@ impl<'a> Cursor<'a> {
         let mut expr = self.parse_pow()?;
 
         loop {
+            let before_ws = self.pos;
             self.skip_ws();
+            let saw_ws = self.pos != before_ws;
             if self.eat_if('*') {
                 let rhs = self.parse_pow()?;
                 expr = Expr::mul(vec![expr, rhs]);
             } else if self.eat_if('/') {
                 let rhs = self.parse_pow()?;
                 expr = Expr::mul(vec![expr, Expr::pow(rhs, Expr::Int((-1).into()))]);
+            } else if !saw_ws && self.starts_implicit_mul_rhs() {
+                let rhs = self.parse_pow()?;
+                expr = Expr::mul(vec![expr, rhs]);
             } else {
                 return Ok(expr);
             }
         }
+    }
+
+    fn starts_implicit_mul_rhs(&self) -> bool {
+        if self.starts_keyword("then") || self.starts_keyword("else") || self.starts_keyword("in")
+        {
+            return false;
+        }
+        matches!(
+            self.peek_char(),
+            Some(ch) if ch.is_ascii_digit() || ch.is_ascii_alphabetic() || ch == '(' || ch == '[' || ch == '"'
+        )
     }
 
     fn parse_add(&mut self) -> Result<Expr, LowerError> {
@@ -788,7 +816,16 @@ impl<'a> Cursor<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, LowerError> {
-        self.parse_add()
+        let lhs = self.parse_add()?;
+        self.skip_ws();
+        if self.rest().starts_with("==") {
+            self.pos += 2;
+            let rhs = self.parse_add()?;
+            let eq_sym = self.interner.get_or_intern("__eq");
+            Ok(Expr::Call(eq_sym, vec![lhs, rhs]))
+        } else {
+            Ok(lhs)
+        }
     }
 
     fn try_rewrite_as_fn_def(&mut self, expr: Expr) -> Result<Expr, LowerError> {

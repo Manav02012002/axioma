@@ -144,6 +144,7 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
         .collect::<Vec<_>>();
 
     match (name, args.len()) {
+        ("__eq", 2) => format!("{} = {}", rendered_args[0], rendered_args[1]),
         ("__angle", 2) => format!(
             "⟨{}{}⟩",
             spinor_label_unicode(&args[0], interner),

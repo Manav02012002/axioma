@@ -33,4 +33,5 @@ toml = "0.8"
 
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }
+ax-render = { path = "../ax-render" }
 ax-syntax = { path = "../ax-syntax" }
