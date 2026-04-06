@@ -788,8 +788,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn starts_implicit_mul_rhs(&self) -> bool {
-        if self.starts_keyword("then") || self.starts_keyword("else") || self.starts_keyword("in")
-        {
+        if self.starts_keyword("then") || self.starts_keyword("else") || self.starts_keyword("in") {
             return false;
         }
         matches!(

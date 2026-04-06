@@ -1,4 +1,4 @@
-use ax_ir::{Expr, Index, TensorProperty, Variance};
+use ax_ir::{Expr, Index, IndexFamily, TensorProperty, Variance};
 use num_traits::ToPrimitive;
 use std::collections::{HashMap, HashSet};
 
@@ -25,6 +25,7 @@ pub struct PropertyStore {
     attachments: Vec<PropertyAttachment>,
     inheritance_rules: Vec<InheritanceRule>,
     pub index_to_family: HashMap<lasso::Spur, lasso::Spur>,
+    pub index_families: HashMap<lasso::Spur, IndexFamily>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +50,7 @@ impl PropertyStore {
             attachments: Vec::new(),
             inheritance_rules: Vec::new(),
             index_to_family: HashMap::new(),
+            index_families: HashMap::new(),
         }
     }
 
@@ -73,6 +75,10 @@ impl PropertyStore {
 
     pub fn set_index_to_family(&mut self, map: HashMap<lasso::Spur, lasso::Spur>) {
         self.index_to_family = map;
+    }
+
+    pub fn set_index_families(&mut self, map: HashMap<lasso::Spur, IndexFamily>) {
+        self.index_families = map;
     }
 
     pub fn symbols(&self) -> Vec<lasso::Spur> {
@@ -358,5 +364,9 @@ impl ax_tensor::PropertyLookup for PropertyStore {
         self.get_all(name)
             .iter()
             .any(|p| std::mem::discriminant(*p) == std::mem::discriminant(kind))
+    }
+
+    fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
+        Some(&self.index_families)
     }
 }

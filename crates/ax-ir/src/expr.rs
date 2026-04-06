@@ -58,6 +58,8 @@ pub enum TensorProperty {
     AntiSymmetric(Vec<usize>),
     RiemannSymmetry,
     Traceless,
+    Diagonal,
+    Trace,
     Metric,
     InverseMetric,
     KroneckerDelta,

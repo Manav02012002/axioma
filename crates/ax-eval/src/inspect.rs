@@ -169,6 +169,8 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
         ax_ir::TensorProperty::AntiSymmetric(pos) => format!("AntiSymmetric({pos:?})"),
         ax_ir::TensorProperty::RiemannSymmetry => "RiemannSymmetry".to_string(),
         ax_ir::TensorProperty::Traceless => "Traceless".to_string(),
+        ax_ir::TensorProperty::Diagonal => "Diagonal".to_string(),
+        ax_ir::TensorProperty::Trace => "Trace".to_string(),
         ax_ir::TensorProperty::Metric => "Metric".to_string(),
         ax_ir::TensorProperty::InverseMetric => "InverseMetric".to_string(),
         ax_ir::TensorProperty::KroneckerDelta => "KroneckerDelta".to_string(),

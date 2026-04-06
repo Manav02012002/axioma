@@ -1865,6 +1865,8 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("AntiSymmetric", "property T antisymmetric([positions])", "Indices are antisymmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, tableaux_from_properties, handle_factor symmetry lookup", "property F antisymmetric"),
         p("RiemannSymmetry", "property R riemann_symmetry", "Apply the standard pair antisymmetry and pair-exchange symmetry of a Riemann tensor.", "build_generating_set, canonicalize_indices, tableaux_from_properties, handle_factor symmetry lookup", "property R riemann_symmetry"),
         p("Traceless", "property T traceless", "Marks a tensor as traceless.", "stored by ax-tensor metadata; no direct ax-tensor algorithm currently consults it", "property T traceless"),
+        p("Diagonal", "property D diagonal", "Marks a tensor as diagonal in numerical components.", "canonicalise_product diagonal pre-pass", "property D diagonal"),
+        p("Trace", "property Tr trace", "Marks a call symbol as a trace wrapper over implicit-index products.", "explicit_indices trace wrapper handling", "property Tr trace"),
         p("Metric", "property g metric", "Marks a tensor as a metric used to lower indices and define dummy-pair symmetry.", "lower_free_indices, eliminate_metric, metric_symmetry_for_slots", "property g metric"),
         p("InverseMetric", "property g inverse_metric", "Marks a tensor as an inverse metric used to raise indices and define dummy-pair symmetry.", "raise_free_indices, eliminate_metric, metric_symmetry_for_slots", "property g inverse_metric"),
         p("KroneckerDelta", "property d kronecker_delta", "Marks a tensor as a Kronecker delta.", "eliminate_kronecker, expand_delta, reduce_delta", "property delta kronecker_delta"),
@@ -1927,16 +1929,18 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("einsteinify", "tensor", "einsteinify(expr: &Expr, metric_sym: Option<Spur>, interner: &Interner) -> Expr", "Fix repeated-index pairs that have the same variance by flipping one slot so Einstein summation becomes well-formed.", "Useful on products where the same abstract index appears twice with both slots up or both slots down.", "einsteinify(T[mu+,mu+])"),
         a("split_index", "tensor", "split_index(expr: &Expr, parent_indices: &[Spur], sub1_indices: &[Spur], sub2_indices: &[Spur], interner: &Interner) -> Expr", "Replace occurrences of a parent index family by sums over two sub-families.", "The parent index names to split must be listed, and each target subfamily list should be non-empty if it is intended to contribute terms.", "split_index(T[a-], [a], [i], [a0])"),
         a("expand_dummies", "tensor", "expand_dummies(expr: &Expr, coordinates: &[Spur], interner: &Interner) -> Expr", "Replace each dummy index pair by an explicit sum over the supplied coordinate labels.", "A coordinate list must be supplied; abstract dummy names not already in that list are expanded.", "expand_dummies(T[mu-,mu+])"),
-        a("explicit_indices", "tensor", "explicit_indices(expr: &Expr, implicit_index_tensors: &HashSet<Spur>, available_indices: &[Spur], n_indices_per_tensor: &HashMap<Spur, usize>, interner: &Interner) -> Expr", "Insert explicit matrix-style indices for implicit-index tensors inside products.", "Tensor names that should receive implicit indices must be listed, and the current implementation only expands the common two-index case.", "explicit_indices(A * B)"),
+        a("explicit_indices", "tensor", "explicit_indices(expr: &Expr, implicit_index_tensors: &HashSet<Spur>, available_indices: &[Spur], n_indices_per_tensor: &HashMap<Spur, usize>, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Insert explicit chain indices for implicit-index tensors inside products.", "Tensor ranks are read from n_indices_per_tensor or from tensor properties; trace wrappers close the chain.", "explicit_indices(A * B)"),
         a("rewrite_indices", "tensor", "rewrite_indices(expr: &Expr, target_tensors: &HashMap<Spur, Vec<Variance>>, metric_sym: Spur, inv_metric_sym: Spur, interner: &Interner) -> Expr", "Insert metric or inverse-metric factors so selected tensors end up with requested slot variances.", "Each target tensor must have a full desired-variance specification per slot, and metric symbols must be provided.", "rewrite_indices(T[a+], targets)"),
         a("decompose", "tensor", "decompose(expr: &Expr, basis: &[Expr], tensor_properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Express a tensor expression as a rational linear combination of a supplied canonical basis plus any residual unmatched terms.", "The basis should span the intended subspace, and tensor_properties should contain the symmetries needed for canonical matching.", "decompose(expr, [basis1, basis2])"),
         a("decompose_product", "tensor", "decompose_product(expr: &Expr, dim: usize, tensor_properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Decompose a rank-2 tensor product into symmetric, antisymmetric, and trace metric-built pieces.", "The input should be a product of exactly two rank-2 indexed tensors.", "decompose_product(T[a-,b-] * S[c-,d-], 4)"),
-        a("expand_implicit", "tensor", "expand_implicit(expr: &Expr, implicit_index_tensors: &HashSet<Spur>, available_indices: &[Spur], n_indices_per_tensor: &HashMap<Spur, usize>, interner: &Interner) -> Expr", "Recursively make implicit tensor contractions explicit across sums, products, and call arguments.", "Implicit-index tensor names and their slot counts must be declared; disjoint fresh indices should be available.", "expand_implicit(A * B + C * D)"),
+        a("expand_implicit", "tensor", "expand_implicit(expr: &Expr, implicit_index_tensors: &HashSet<Spur>, available_indices: &[Spur], n_indices_per_tensor: &HashMap<Spur, usize>, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Recursively make implicit tensor contractions explicit across sums, products, and call arguments.", "Tensor ranks are read from n_indices_per_tensor or from tensor properties; disjoint fresh indices should be available.", "expand_implicit(A * B + C * D)"),
         a("normal_order", "qm", "normal_order(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, interner: &Interner) -> Expr", "Reorder products of operators into normal order using the declared creation/annihilation kinds.", "Operator kinds must be declared for the symbols that should reorder.", "normal_order(a * creation(a))"),
         a("wick_expand", "qm", "wick_expand(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, contractions: &HashMap<(Spur, Spur), Expr>, interner: &Interner) -> Expr", "Expand operator products into normal-ordered terms plus single contractions.", "Operator kinds and any nonzero contraction values must be provided explicitly.", "wick(psi * psibar)"),
         a("gamma_trace", "qm", "gamma_trace(indices: &[GammaEntry], metric: &SymbolicMatrix, interner: &Interner) -> Expr", "Trace a gamma-matrix chain, including the special gamma5 epsilon-tensor case.", "The input must already be parsed into GammaEntry values; the implementation assumes the standard four-dimensional Dirac trace normalization.", "gamma_trace([gamma(mu), gamma(nu)])"),
         a("join_gammas_in_expr", "qm", "join_gammas_in_expr(expr: &Expr, gamma_sym: Spur, metric_sym: Spur, interner: &Interner) -> Expr", "Join adjacent gamma-matrix factors into antisymmetrized multi-index gamma objects plus metric contractions.", "Gamma factors must be represented as Call(gamma_sym, [...]) nodes and use a compatible metric symbol.", "join_gamma(gamma(mu) * gamma(nu))"),
         a("split_gamma", "qm", "split_gamma(expr: &Expr, gamma_sym: Spur, metric_sym: Spur, on_back: bool, interner: &Interner) -> Expr", "Split a multi-index antisymmetric gamma matrix into a shorter chain plus contraction terms.", "The input must contain gamma_sym calls with more than one index.", "split_gamma(gamma(mu, nu))"),
+        a("expand_diracbar", "qm", "expand_diracbar(expr: &Expr, diracbar_sym: Spur, gamma_sym: Spur, metric_sym: Spur, interner: &Interner) -> Expr", "Expand Dirac bars through gamma-spinor products, reversing gamma chains and applying the Majorana transpose sign.", "The input should use diracbar_sym calls around products of gamma factors followed by a spinor.", "expand_diracbar(bar(gamma(mu) * psi))"),
+        a("diracbar_sort", "qm", "diracbar_sort(expr: &Expr, diracbar_sym: Spur, gamma_sym: Spur, operators: &HashMap<Spur, OperatorKind>, interner: &Interner) -> Expr", "Reorder products into barred-spinor gamma spinor bilinear form.", "The routine groups factors following a DiracBar call into gamma factors and the next spinor-like factor.", "sort_spinors(bar(psi) * chi * gamma(mu))"),
         a("fierz", "qm", "fierz(expr: &Expr, dim: usize, interner: &Interner) -> Expr", "Return the formal Fierz-basis expansion coefficients for the given spacetime dimension.", "The routine currently produces the abstract gamma_basis expansion rather than fully rearranging a concrete spinor expression.", "fierz(expr, 4)"),
         a("commutator", "qm", "commutator(a: &[Vec<Expr>], b: &[Vec<Expr>], interner: &Interner) -> Vec<Vec<Expr>>", "Compute the matrix commutator AB - BA.", "The matrices must be dimensionally compatible for multiplication.", "commutator(pauli_x(), pauli_y())"),
         a("anticommutator", "qm", "anticommutator(a: &[Vec<Expr>], b: &[Vec<Expr>], interner: &Interner) -> Vec<Vec<Expr>>", "Compute the matrix anticommutator AB + BA.", "The matrices must be dimensionally compatible for multiplication.", "anticommutator(pauli_x(), pauli_x())"),
@@ -2468,6 +2472,12 @@ fn parse_property_string(
     }
     if lower == "traceless" {
         return Ok(ax_ir::TensorProperty::Traceless);
+    }
+    if lower == "diagonal" {
+        return Ok(ax_ir::TensorProperty::Diagonal);
+    }
+    if lower == "trace" {
+        return Ok(ax_ir::TensorProperty::Trace);
     }
     if lower == "metric" {
         return Ok(ax_ir::TensorProperty::Metric);
@@ -4124,6 +4134,18 @@ fn handle_split_gamma_qm(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     unary_named_expr_response("split_gamma", args, state)
+}
+fn handle_expand_diracbar_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("expand_diracbar", args, state)
+}
+fn handle_sort_spinors_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("sort_spinors", args, state)
 }
 fn handle_fierz_qm(
     args: &[serde_json::Value],
@@ -5855,6 +5877,10 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("join_gamma", "Join adjacent gamma factors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_join_gamma_qm),
         centry("join_gammas_in_expr", "Join adjacent gamma factors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_join_gamma_qm),
         centry("split_gamma", "Split compact gamma chains.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_split_gamma_qm),
+        centry("expand_diracbar", "Expand Dirac-barred gamma-spinor products.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_expand_diracbar_qm),
+        centry("expand_bar", "Expand Dirac-barred gamma-spinor products.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_expand_diracbar_qm),
+        centry("sort_spinors", "Sort spinor bilinears into Dirac-bar gamma spinor order.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_sort_spinors_qm),
+        centry("diracbar_sort", "Sort spinor bilinears into Dirac-bar gamma spinor order.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_sort_spinors_qm),
         centry("fierz", "Perform a Fierz rearrangement.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_fierz_qm),
         centry("commutator", "Operator commutator.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored expression id."), pdef("rhs", ParamType::ExprId, true, "Stored expression id.")]), handle_commutator_qm),
         centry("anticommutator", "Operator anticommutator.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored expression id."), pdef("rhs", ParamType::ExprId, true, "Stored expression id.")]), handle_anticommutator_qm),

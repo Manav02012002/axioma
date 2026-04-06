@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
-use ax_ir::{Expr, Index, Variance};
+use ax_ir::{Expr, Index, TensorProperty, Variance};
+use num_bigint::BigInt;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +16,17 @@ pub enum GammaEntry {
     Index(usize),
     Gamma5,
     Identity,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BilinearPair {
+    pub psi1: lasso::Spur,
+    pub gamma_a: Vec<lasso::Spur>,
+    pub psi2: lasso::Spur,
+    pub psi3: lasso::Spur,
+    pub gamma_b: Vec<lasso::Spur>,
+    pub psi4: lasso::Spur,
+    pub remaining_factors: Vec<Expr>,
 }
 
 fn operator_kind(
@@ -685,7 +697,7 @@ fn join_single_with_multi(
     bs: &[lasso::Spur],
     gamma_sym: lasso::Spur,
     metric_sym: lasso::Spur,
-    interner: &ax_ir::Interner,
+    _interner: &ax_ir::Interner,
 ) -> Expr {
     let mut terms = Vec::new();
 
@@ -944,30 +956,509 @@ pub fn fierz_coefficients(dim: usize) -> Vec<(num_rational::BigRational, usize)>
 ///
 /// Given an expression of the form (ψ̄₁ Γ ψ₂)(ψ̄₃ Γ ψ₄), rearrange to
 /// a sum over the Fierz basis: Σ_n c_n (ψ̄₁ Γ_n ψ₄)(ψ̄₃ Γ_n ψ₂)
-///
-/// Returns a list of (coefficient_numerator, rank) pairs.
-/// The denominator for each coefficient is spinor_dim = 2^(d/2).
 pub fn fierz_rearrange(
+    expr: &Expr,
     dim: usize,
-    _gamma_sym: lasso::Spur,
-    _interner: &ax_ir::Interner,
-) -> Vec<(i32, usize)> {
-    let mut result = Vec::new();
-    for k in 0..=dim {
-        let sign: i32 = if (k * (k + 1) / 2) % 2 == 0 { 1 } else { -1 };
-        let binom = binomial(dim, k) as i32;
-        // Apply overall minus sign; denominator (spinor_dim) is implicit
-        let numerator = -(sign * binom);
-        result.push((numerator, k));
-    }
-    result
+    spinor_order: [lasso::Spur; 4],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    fierz(expr, dim, spinor_order, interner)
 }
 
-/// Apply Fierz identity to an expression.
-///
-/// Returns a sum of `c_k * gamma_basis(k)` terms representing the Fierz expansion.
-pub fn fierz(expr: &ax_ir::Expr, dim: usize, interner: &ax_ir::Interner) -> ax_ir::Expr {
-    let _ = expr;
+fn is_name(name: &str, candidates: &[&str]) -> bool {
+    candidates.iter().any(|candidate| name == *candidate)
+}
+
+fn has_property(
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    sym: lasso::Spur,
+    property: &TensorProperty,
+) -> bool {
+    properties
+        .map(|props| props.has_property_kind(sym, property))
+        .unwrap_or(false)
+}
+
+fn expr_head_symbol(expr: &Expr) -> Option<lasso::Spur> {
+    match expr {
+        Expr::Sym(sym) => Some(*sym),
+        Expr::Call(sym, _) => Some(*sym),
+        Expr::Indexed(base, _) => expr_head_symbol(base),
+        _ => None,
+    }
+}
+
+fn is_dirac_bar_call(
+    sym: lasso::Spur,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> bool {
+    has_property(properties, sym, &TensorProperty::DiracBar)
+        || is_name(
+            interner.resolve(sym),
+            &["dirac_bar", "diracbar", "bar", "DiracBar"],
+        )
+}
+
+fn barred_spinor_symbol(
+    expr: &Expr,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> Option<lasso::Spur> {
+    match expr {
+        Expr::Sym(sym) => {
+            if has_property(properties, *sym, &TensorProperty::DiracBar) {
+                return Some(*sym);
+            }
+            let name = interner.resolve(*sym);
+            if name.contains("bar")
+                || name.contains("Bar")
+                || name.ends_with("bar")
+                || name.ends_with("_bar")
+                || name.ends_with("Bar")
+            {
+                Some(*sym)
+            } else {
+                None
+            }
+        }
+        Expr::Call(f, args) => {
+            if is_dirac_bar_call(*f, properties, interner) {
+                args.first().and_then(spinor_symbol)
+            } else {
+                None
+            }
+        }
+        Expr::Indexed(base, _) => barred_spinor_symbol(base, properties, interner),
+        _ => None,
+    }
+}
+
+fn spinor_symbol(expr: &Expr) -> Option<lasso::Spur> {
+    match expr {
+        Expr::Sym(sym) => Some(*sym),
+        Expr::Indexed(base, _) => spinor_symbol(base),
+        _ => None,
+    }
+}
+
+fn gamma_factor_indices(
+    expr: &Expr,
+    gamma_sym: Option<lasso::Spur>,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> Option<Vec<lasso::Spur>> {
+    match expr {
+        Expr::Call(f, args) => {
+            let name = interner.resolve(*f);
+            if Some(*f) == gamma_sym
+                || has_property(properties, *f, &TensorProperty::GammaMatrixProp)
+                || is_name(name, &["gamma", "Gamma", "γ"])
+            {
+                Some(
+                    args.iter()
+                        .filter_map(|arg| match arg {
+                            Expr::Sym(sym) => Some(*sym),
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            } else if is_name(name, &["gamma5", "Gamma5", "γ5"]) {
+                Some(vec![interner.get_or_intern("5")])
+            } else {
+                None
+            }
+        }
+        Expr::Indexed(base, indices) => match base.as_ref() {
+            Expr::Sym(sym)
+                if Some(*sym) == gamma_sym
+                    || has_property(properties, *sym, &TensorProperty::GammaMatrixProp)
+                    || is_name(interner.resolve(*sym), &["gamma", "Gamma", "γ"]) =>
+            {
+                Some(indices.iter().map(|idx| idx.name).collect())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn parse_bilinear_at(
+    factors: &[Expr],
+    start: usize,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> Option<(lasso::Spur, Vec<lasso::Spur>, lasso::Spur, usize)> {
+    let barred = barred_spinor_symbol(&factors[start], properties, interner)?;
+    let mut gamma_indices = Vec::new();
+    let mut cursor = start + 1;
+    while cursor < factors.len() {
+        let Some(mut indices) = gamma_factor_indices(&factors[cursor], None, properties, interner)
+        else {
+            break;
+        };
+        gamma_indices.append(&mut indices);
+        cursor += 1;
+    }
+    if cursor >= factors.len() {
+        return None;
+    }
+    let spinor = spinor_symbol(&factors[cursor])?;
+    Some((barred, gamma_indices, spinor, cursor + 1))
+}
+
+pub fn find_bilinears(expr: &Expr, interner: &ax_ir::Interner) -> Option<BilinearPair> {
+    find_bilinears_impl(expr, None, interner)
+}
+
+pub fn find_bilinears_with_properties(
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Option<BilinearPair> {
+    find_bilinears_impl(expr, Some(properties), interner)
+}
+
+fn find_bilinears_impl(
+    expr: &Expr,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> Option<BilinearPair> {
+    let Expr::Mul(factors) = expr else {
+        return None;
+    };
+
+    let mut bilinears = Vec::new();
+    let mut remaining_factors = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < factors.len() {
+        if bilinears.len() < 2 {
+            if let Some((barred, gamma_indices, spinor, next)) =
+                parse_bilinear_at(factors, cursor, properties, interner)
+            {
+                bilinears.push((barred, gamma_indices, spinor));
+                cursor = next;
+                continue;
+            }
+        }
+        remaining_factors.push(factors[cursor].clone());
+        cursor += 1;
+    }
+
+    if bilinears.len() < 2 {
+        return None;
+    }
+
+    let (psi1, gamma_a, psi2) = bilinears[0].clone();
+    let (psi3, gamma_b, psi4) = bilinears[1].clone();
+    Some(BilinearPair {
+        psi1,
+        gamma_a,
+        psi2,
+        psi3,
+        gamma_b,
+        psi4,
+        remaining_factors,
+    })
+}
+
+fn gamma_index_count(expr: &Expr, gamma_sym: lasso::Spur) -> Option<usize> {
+    match expr {
+        Expr::Call(f, args) if *f == gamma_sym => Some(args.len()),
+        Expr::Indexed(base, indices) if expr_head_symbol(base) == Some(gamma_sym) => {
+            Some(indices.len())
+        }
+        _ => None,
+    }
+}
+
+fn is_gamma_expr(expr: &Expr, gamma_sym: lasso::Spur) -> bool {
+    gamma_index_count(expr, gamma_sym).is_some()
+}
+
+fn expand_diracbar_inner(inner: &Expr, diracbar_sym: lasso::Spur, gamma_sym: lasso::Spur) -> Expr {
+    let Expr::Mul(factors) = inner else {
+        return Expr::Call(diracbar_sym, vec![inner.clone()]);
+    };
+
+    let mut gamma_chain = Vec::new();
+    let mut spinor = None;
+    for factor in factors {
+        if is_gamma_expr(factor, gamma_sym) && spinor.is_none() {
+            gamma_chain.push(factor.clone());
+        } else if spinor.is_none() {
+            spinor = Some(factor.clone());
+        } else {
+            return Expr::Call(diracbar_sym, vec![inner.clone()]);
+        }
+    }
+
+    if gamma_chain.is_empty() {
+        return Expr::Call(diracbar_sym, vec![inner.clone()]);
+    }
+
+    let Some(spinor) = spinor else {
+        return Expr::Call(diracbar_sym, vec![inner.clone()]);
+    };
+
+    let total_gamma_indices: usize = gamma_chain
+        .iter()
+        .filter_map(|gamma| gamma_index_count(gamma, gamma_sym))
+        .sum();
+    let mut factors = vec![Expr::Call(diracbar_sym, vec![spinor])];
+    factors.extend(gamma_chain.into_iter().rev());
+    let result = Expr::mul(factors);
+
+    if (total_gamma_indices * total_gamma_indices.saturating_sub(1) / 2) % 2 == 1 {
+        Expr::neg(result)
+    } else {
+        result
+    }
+}
+
+pub fn expand_diracbar(
+    expr: &Expr,
+    diracbar_sym: lasso::Spur,
+    gamma_sym: lasso::Spur,
+    metric_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let _ = (metric_sym, interner);
+    match expr {
+        Expr::Call(f, args) if *f == diracbar_sym && args.len() == 1 => {
+            let inner = expand_diracbar(&args[0], diracbar_sym, gamma_sym, metric_sym, interner);
+            expand_diracbar_inner(&inner, diracbar_sym, gamma_sym)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| expand_diracbar(term, diracbar_sym, gamma_sym, metric_sym, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| {
+                    expand_diracbar(factor, diracbar_sym, gamma_sym, metric_sym, interner)
+                })
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(expand_diracbar(
+            inner,
+            diracbar_sym,
+            gamma_sym,
+            metric_sym,
+            interner,
+        )),
+        Expr::Pow(base, exp) => Expr::pow(
+            expand_diracbar(base, diracbar_sym, gamma_sym, metric_sym, interner),
+            expand_diracbar(exp, diracbar_sym, gamma_sym, metric_sym, interner),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(expand_diracbar(
+                re,
+                diracbar_sym,
+                gamma_sym,
+                metric_sym,
+                interner,
+            )),
+            Box::new(expand_diracbar(
+                im,
+                diracbar_sym,
+                gamma_sym,
+                metric_sym,
+                interner,
+            )),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| expand_diracbar(arg, diracbar_sym, gamma_sym, metric_sym, interner))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(expand_diracbar(
+                base,
+                diracbar_sym,
+                gamma_sym,
+                metric_sym,
+                interner,
+            )),
+            indices.clone(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+pub fn diracbar_sort(
+    expr: &Expr,
+    diracbar_sym: lasso::Spur,
+    gamma_sym: lasso::Spur,
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let _ = (operators, interner);
+    match expr {
+        Expr::Mul(factors) => {
+            let sorted = factors
+                .iter()
+                .map(|factor| diracbar_sort(factor, diracbar_sym, gamma_sym, operators, interner))
+                .collect::<Vec<_>>();
+            let mut out = Vec::new();
+            let mut cursor = 0usize;
+            while cursor < sorted.len() {
+                let factor = &sorted[cursor];
+                if matches!(factor, Expr::Call(f, _) if *f == diracbar_sym) {
+                    out.push(factor.clone());
+                    cursor += 1;
+                    let mut gammas = Vec::new();
+                    let mut spinor = None;
+                    let mut others = Vec::new();
+                    while cursor < sorted.len() {
+                        let next = &sorted[cursor];
+                        if matches!(next, Expr::Call(f, _) if *f == diracbar_sym) {
+                            break;
+                        }
+                        if is_gamma_expr(next, gamma_sym) {
+                            gammas.push(next.clone());
+                        } else if spinor.is_none() {
+                            spinor = Some(next.clone());
+                        } else {
+                            others.push(next.clone());
+                        }
+                        cursor += 1;
+                    }
+                    out.extend(gammas);
+                    if let Some(spinor) = spinor {
+                        out.push(spinor);
+                    }
+                    out.extend(others);
+                } else {
+                    out.push(factor.clone());
+                    cursor += 1;
+                }
+            }
+            Expr::mul(out)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| diracbar_sort(term, diracbar_sym, gamma_sym, operators, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(diracbar_sort(
+            inner,
+            diracbar_sym,
+            gamma_sym,
+            operators,
+            interner,
+        )),
+        Expr::Pow(base, exp) => Expr::pow(
+            diracbar_sort(base, diracbar_sym, gamma_sym, operators, interner),
+            diracbar_sort(exp, diracbar_sym, gamma_sym, operators, interner),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(diracbar_sort(
+                re,
+                diracbar_sym,
+                gamma_sym,
+                operators,
+                interner,
+            )),
+            Box::new(diracbar_sort(
+                im,
+                diracbar_sym,
+                gamma_sym,
+                operators,
+                interner,
+            )),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| diracbar_sort(arg, diracbar_sym, gamma_sym, operators, interner))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(diracbar_sort(
+                base,
+                diracbar_sym,
+                gamma_sym,
+                operators,
+                interner,
+            )),
+            indices.clone(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+fn fresh_fierz_indices(
+    rank: usize,
+    counter: &mut usize,
+    interner: &ax_ir::Interner,
+) -> Vec<lasso::Spur> {
+    (0..rank)
+        .map(|_| {
+            let name = format!("_f{}", *counter);
+            *counter += 1;
+            interner.get_or_intern(&name)
+        })
+        .collect()
+}
+
+fn bilinear_expr(
+    left: lasso::Spur,
+    gamma_indices: &[lasso::Spur],
+    right: lasso::Spur,
+    gamma_sym: lasso::Spur,
+) -> Expr {
+    let mut factors = vec![Expr::Sym(left)];
+    if !gamma_indices.is_empty() {
+        factors.push(Expr::Call(
+            gamma_sym,
+            gamma_indices.iter().map(|idx| Expr::Sym(*idx)).collect(),
+        ));
+    }
+    factors.push(Expr::Sym(right));
+    Expr::mul(factors)
+}
+
+/// Apply Fierz identity to a concrete product of two spinor bilinears.
+pub fn fierz(
+    expr: &ax_ir::Expr,
+    dim: usize,
+    spinor_order: [lasso::Spur; 4],
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let Some(pair) = find_bilinears(expr, interner) else {
+        return expr.clone();
+    };
+
+    let coeffs = fierz_coefficients(dim);
+    let gamma_sym = interner.get_or_intern("gamma");
+    let [psi1, psi4, psi3, psi2] = spinor_order;
+    let mut counter = 0usize;
+
+    let terms = coeffs
+        .into_iter()
+        .map(|(coefficient, rank)| {
+            let gamma_indices = fresh_fierz_indices(rank, &mut counter, interner);
+            let first = bilinear_expr(psi1, &gamma_indices, psi4, gamma_sym);
+            let second = bilinear_expr(psi3, &gamma_indices, psi2, gamma_sym);
+
+            let mut factors = pair.remaining_factors.clone();
+            factors.push(Expr::Rational(coefficient));
+            factors.push(first);
+            factors.push(second);
+            Expr::mul(factors)
+        })
+        .collect();
+    ax_ir::Expr::add(terms)
+}
+
+/// Return the abstract Fierz coefficient expansion used by the old API.
+pub fn fierz_simple(dim: usize, interner: &ax_ir::Interner) -> ax_ir::Expr {
     let coeffs = fierz_coefficients(dim);
     let terms: Vec<ax_ir::Expr> = coeffs
         .iter()
@@ -976,7 +1467,7 @@ pub fn fierz(expr: &ax_ir::Expr, dim: usize, interner: &ax_ir::Interner) -> ax_i
                 ax_ir::Expr::Rational(c.clone()),
                 ax_ir::Expr::Call(
                     interner.get_or_intern("gamma_basis"),
-                    vec![ax_ir::Expr::Int(num_bigint::BigInt::from(*k))],
+                    vec![ax_ir::Expr::Int(BigInt::from(*k))],
                 ),
             ])
         })
@@ -1302,6 +1793,61 @@ mod tests {
     }
 
     #[test]
+    fn expand_bar_single_gamma() {
+        // bar(gamma(a) psi) = bar(psi) gamma(a)
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        let inner = Expr::mul(vec![Expr::Call(gamma, vec![Expr::Sym(a)]), Expr::Sym(psi)]);
+        let expr = Expr::Call(bar, vec![inner]);
+        let result = expand_diracbar(&expr, bar, gamma, interner.get_or_intern("eta"), &interner);
+        let result_str = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            result_str.contains("bar") && result_str.contains("gamma"),
+            "should contain bar(psi) and gamma, got {}",
+            result_str
+        );
+    }
+
+    #[test]
+    fn expand_bar_double_gamma_reverses() {
+        // bar(gamma(a) gamma(b) psi) = -bar(psi) gamma(b) gamma(a)
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let inner = Expr::mul(vec![
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+            Expr::Call(gamma, vec![Expr::Sym(b)]),
+            Expr::Sym(psi),
+        ]);
+        let expr = Expr::Call(bar, vec![inner]);
+        let result = expand_diracbar(&expr, bar, gamma, interner.get_or_intern("eta"), &interner);
+        let result_str = format!("{:?}", result);
+        assert!(
+            result_str.contains("Neg") || result_str.contains("-1"),
+            "double gamma reversal should introduce a sign, got {}",
+            result_str
+        );
+    }
+
+    #[test]
+    fn expand_bar_no_gamma() {
+        // bar(psi) should stay as bar(psi)
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let expr = Expr::Call(bar, vec![Expr::Sym(psi)]);
+        let result = expand_diracbar(&expr, bar, gamma, interner.get_or_intern("eta"), &interner);
+        assert_eq!(result, expr, "bar(psi) with no gammas should be unchanged");
+    }
+
+    #[test]
     fn fierz_coefficients_4d() {
         let coeffs = fierz_coefficients(4);
         // ranks 0, 1, 2, 3, 4 in 4D → 5 entries
@@ -1340,6 +1886,31 @@ mod tests {
         // As a basic sanity check, verify no coefficient is zero
         for (c, _) in &coeffs {
             assert_ne!(*c, num_rational::BigRational::new(0i64.into(), 1i64.into()));
+        }
+    }
+
+    #[test]
+    fn fierz_4d_unit_unit() {
+        // (psibar1 psi2)(psibar3 psi4) Fierz rearranged in 4D.
+        let interner = ax_ir::Interner::new();
+        let coeffs = fierz_coefficients(4);
+        let total_basis: usize = coeffs.iter().map(|(_, k)| binomial(4, *k) as usize).sum();
+        assert_eq!(total_basis, 16, "total gamma basis size in 4D should be 16");
+
+        let psibar1 = interner.get_or_intern("psibar1");
+        let psi2 = interner.get_or_intern("psi2");
+        let psibar3 = interner.get_or_intern("psibar3");
+        let psi4 = interner.get_or_intern("psi4");
+        let expr = Expr::mul(vec![
+            Expr::Sym(psibar1),
+            Expr::Sym(psi2),
+            Expr::Sym(psibar3),
+            Expr::Sym(psi4),
+        ]);
+        let result = fierz(&expr, 4, [psibar1, psi4, psibar3, psi2], &interner);
+        match result {
+            Expr::Add(terms) => assert_eq!(terms.len(), coeffs.len()),
+            other => panic!("expected Fierz sum, got {other:?}"),
         }
     }
 

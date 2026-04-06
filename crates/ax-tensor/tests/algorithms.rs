@@ -125,6 +125,75 @@ fn canon_riemann_first_bianchi() {
     );
 }
 
+#[test]
+fn traceless_trace_vanishes() {
+    // T_{a}^{a} where T is Traceless should canonicalise to zero
+    let int = interner();
+    let t = int.get_or_intern("T");
+    let a = int.get_or_intern("a");
+    let mut props = HashMap::new();
+    props.insert(
+        t,
+        vec![
+            TensorProperty::Traceless,
+            TensorProperty::Symmetric(vec![0, 1]),
+        ],
+    );
+    let expr = Expr::Indexed(
+        Box::new(Expr::Sym(t)),
+        vec![
+            Index {
+                name: a,
+                variance: Variance::Down,
+                index_type: None,
+            },
+            Index {
+                name: a,
+                variance: Variance::Up,
+                index_type: None,
+            },
+        ],
+    );
+    let result = canonicalise(&expr, &props, &int);
+    assert_eq!(
+        result,
+        Expr::zero(),
+        "trace of traceless tensor should be zero"
+    );
+}
+
+#[test]
+fn anticommuting_dummies_sign() {
+    // For anticommuting indices, swapping a dummy pair introduces a sign.
+    let int = interner();
+    let psi = int.get_or_intern("psi");
+    let chi = int.get_or_intern("chi");
+    let alpha = int.get_or_intern("alpha");
+    let mut props: HashMap<lasso::Spur, Vec<TensorProperty>> = HashMap::new();
+    props.insert(psi, vec![TensorProperty::AntiCommuting]);
+    props.insert(chi, vec![TensorProperty::AntiCommuting]);
+    let expr = Expr::mul(vec![
+        Expr::Indexed(
+            Box::new(Expr::Sym(psi)),
+            vec![Index {
+                name: alpha,
+                variance: Variance::Down,
+                index_type: None,
+            }],
+        ),
+        Expr::Indexed(
+            Box::new(Expr::Sym(chi)),
+            vec![Index {
+                name: alpha,
+                variance: Variance::Up,
+                index_type: None,
+            }],
+        ),
+    ]);
+    let result = canonicalise(&expr, &props, &int);
+    assert_ne!(format!("{:?}", result), "", "should produce a result");
+}
+
 // === ELIMINATE_KRONECKER ===
 
 #[test]

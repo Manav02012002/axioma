@@ -1471,6 +1471,22 @@ pub fn apply_property_declaration(
                 interner.resolve(tensor)
             ))
         }
+        "diagonal" => {
+            add_property(ax_ir::TensorProperty::Diagonal);
+            Some(format!(
+                "attached property {} to {}",
+                prop_name,
+                interner.resolve(tensor)
+            ))
+        }
+        "trace" => {
+            add_property(ax_ir::TensorProperty::Trace);
+            Some(format!(
+                "attached property {} to {}",
+                prop_name,
+                interner.resolve(tensor)
+            ))
+        }
         "derivative" => {
             add_property(ax_ir::TensorProperty::Derivative);
             Some(format!(
@@ -1617,6 +1633,8 @@ pub fn apply_index_declaration(
     }
     env.property_store
         .set_index_to_family(env.index_to_family.clone());
+    env.property_store
+        .set_index_families(env.index_families.clone());
     Some(format!(
         "declared index family: {}",
         interner.resolve(*family_name)
@@ -4524,7 +4542,14 @@ fn builtin_call(
                 let avail: Vec<lasso::Spur> = (0..20)
                     .map(|i| interner.get_or_intern(&format!("_impl{}", i)))
                     .collect();
-                ax_tensor::explicit_indices(&args[0], &implicit, &avail, &n_per, interner)
+                ax_tensor::explicit_indices(
+                    &args[0],
+                    &implicit,
+                    &avail,
+                    &n_per,
+                    &env.property_store,
+                    interner,
+                )
             } else {
                 Expr::Call(f, args)
             }
@@ -4538,7 +4563,14 @@ fn builtin_call(
                 let avail: Vec<lasso::Spur> = (0..40)
                     .map(|i| interner.get_or_intern(&format!("_exp{}", i)))
                     .collect();
-                ax_tensor::expand_implicit(&args[0], &implicit, &avail, &n_per, interner)
+                ax_tensor::expand_implicit(
+                    &args[0],
+                    &implicit,
+                    &avail,
+                    &n_per,
+                    &env.property_store,
+                    interner,
+                )
             } else {
                 Expr::Call(f, args)
             }
@@ -5400,6 +5432,38 @@ fn builtin_call(
             if args.len() == 1 {
                 let contractions = HashMap::new();
                 ax_qm::wick_expand(&args[0], &env.operators, &contractions, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "expand_diracbar" | "expand_bar" => {
+            if args.len() == 1 {
+                let diracbar_sym = find_tensor_property_sym(env, |prop| {
+                    matches!(prop, ax_ir::TensorProperty::DiracBar)
+                })
+                .unwrap_or_else(|| interner.get_or_intern("bar"));
+                let gamma_sym = find_tensor_property_sym(env, |prop| {
+                    matches!(prop, ax_ir::TensorProperty::GammaMatrixProp)
+                })
+                .unwrap_or_else(|| interner.get_or_intern("gamma"));
+                let metric_sym =
+                    find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
+                ax_qm::expand_diracbar(&args[0], diracbar_sym, gamma_sym, metric_sym, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "sort_spinors" | "diracbar_sort" => {
+            if args.len() == 1 {
+                let diracbar_sym = find_tensor_property_sym(env, |prop| {
+                    matches!(prop, ax_ir::TensorProperty::DiracBar)
+                })
+                .unwrap_or_else(|| interner.get_or_intern("bar"));
+                let gamma_sym = find_tensor_property_sym(env, |prop| {
+                    matches!(prop, ax_ir::TensorProperty::GammaMatrixProp)
+                })
+                .unwrap_or_else(|| interner.get_or_intern("gamma"));
+                ax_qm::diracbar_sort(&args[0], diracbar_sym, gamma_sym, &env.operators, interner)
             } else {
                 Expr::Call(f, args)
             }

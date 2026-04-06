@@ -63,7 +63,10 @@ fn latex_no_input_flag() {
     let mut options = ExportOptions::default();
     options.include_input = false;
     let result = export(source, &options, &interner);
-    assert!(!result.contains("lstlisting"), "should not contain code listing");
+    assert!(
+        !result.contains("lstlisting"),
+        "should not contain code listing"
+    );
     assert!(result.contains("3"), "should still contain output");
 }
 
@@ -125,7 +128,10 @@ fn latex_revtex_class() {
     let mut options = ExportOptions::default();
     options.document_class = "revtex4-2".to_string();
     let result = export(source, &options, &interner);
-    assert!(result.contains("revtex4-2"), "should use revtex document class");
+    assert!(
+        result.contains("revtex4-2"),
+        "should use revtex document class"
+    );
 }
 
 #[test]
@@ -148,7 +154,10 @@ fn html_contains_math() {
     let mut options = ExportOptions::default();
     options.format = ExportFormat::Html;
     let result = export(source, &options, &interner);
-    assert!(result.contains("$$"), "output should be wrapped in $$ for KaTeX");
+    assert!(
+        result.contains("$$"),
+        "output should be wrapped in $$ for KaTeX"
+    );
 }
 
 #[test]
@@ -158,7 +167,10 @@ fn html_syntax_highlight() {
     let mut options = ExportOptions::default();
     options.format = ExportFormat::Html;
     let result = export(source, &options, &interner);
-    assert!(result.contains("keyword"), "let should be highlighted as keyword");
+    assert!(
+        result.contains("keyword"),
+        "let should be highlighted as keyword"
+    );
 }
 
 #[test]
@@ -181,8 +193,14 @@ fn html_fragment_no_wrapper() {
     options.format = ExportFormat::Html;
     options.standalone = false;
     let result = export(source, &options, &interner);
-    assert!(!result.contains("<!DOCTYPE"), "fragment should not have doctype");
-    assert!(!result.contains("<html"), "fragment should not have html tag");
+    assert!(
+        !result.contains("<!DOCTYPE"),
+        "fragment should not have doctype"
+    );
+    assert!(
+        !result.contains("<html"),
+        "fragment should not have html tag"
+    );
 }
 
 #[test]
