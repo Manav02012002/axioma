@@ -227,9 +227,11 @@ dependencies = [
  "ax-context",
  "ax-core-ir",
  "ax-forms",
+ "ax-graded",
  "ax-ir",
  "ax-linalg",
  "ax-ode",
+ "ax-perturb",
  "ax-plot",
  "ax-qm",
  "ax-rewrite",
@@ -255,6 +257,17 @@ dependencies = [
  "ax-core-ir",
  "ax-ir",
  "ax-tensor",
+ "lasso",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
+name = "ax-graded"
+version = "0.1.0"
+dependencies = [
+ "ax-ir",
  "lasso",
  "num-bigint",
  "num-rational",
@@ -342,6 +355,18 @@ name = "ax-perm"
 version = "0.1.0"
 dependencies = [
  "rayon",
+]
+
+[[package]]
+name = "ax-perturb"
+version = "0.1.0"
+dependencies = [
+ "ax-ir",
+ "ax-tensor",
+ "lasso",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
 ]
 
 [[package]]

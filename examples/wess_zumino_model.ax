@@ -1,0 +1,10 @@
+// Wess-Zumino model: simplest N=1 SUSY theory
+setup_superspace(1)
+let Phi = chiral_superfield(Phi)
+let Phi_bar = antichiral_superfield(Phi_bar)
+// Kahler potential
+let K = superspace_integrate(Phi_bar * Phi, "full")
+// Superpotential
+let W = superspace_integrate(1/2 * m * Phi * Phi + 1/3 * lambda * Phi * Phi * Phi, "chiral")
+K
+W

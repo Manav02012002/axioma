@@ -10,9 +10,11 @@ ax-compare = { path = "../ax-compare" }
 ax-codegen = { path = "../ax-codegen" }
 ax-context = { path = "../ax-context" }
 ax-forms = { path = "../ax-forms" }
+ax-graded = { path = "../ax-graded" }
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
 ax-ode = { path = "../ax-ode" }
+ax-perturb = { path = "../ax-perturb" }
 ax-plot = { path = "../ax-plot" }
 ax-qm = { path = "../ax-qm" }
 ax-rewrite = { path = "../ax-rewrite" }

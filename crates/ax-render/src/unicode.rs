@@ -172,6 +172,8 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
             spinor_label_unicode(&args[2], interner),
             spinor_label_unicode(&args[3], interner)
         ),
+        ("laplacian", 1) => format!("∇²{}", rendered_args[0]),
+        ("partial_i", 1) => format!("∂ᵢ{}", rendered_args[0]),
         ("sin", 1)
         | ("cos", 1)
         | ("tan", 1)

@@ -46,6 +46,9 @@ pub struct Env {
     pub expr_pool_threshold: usize,
     pub parallel: bool,
     pub spinor_labels: ax_spinor::LabelMap,
+    pub graded_table: ax_graded::GradedSymbolTable,
+    pub superspace_setup: Option<ax_graded::superspace::SuperspaceSetup>,
+    pub brst_setup: Option<ax_graded::brst::BRSTSetup>,
     pub convention: ax_ir::Convention,
     /// Weights assigned to symbols. Map from (symbol, label) to weight value.
     /// Example: x::Weight(value=1, label=field) → weights[(x, "field")] = 1
@@ -70,6 +73,9 @@ impl Env {
             expr_pool_threshold: 256,
             parallel: false,
             spinor_labels: ax_spinor::LabelMap::new(),
+            graded_table: ax_graded::GradedSymbolTable::new(),
+            superspace_setup: None,
+            brst_setup: None,
             convention: ax_ir::Convention::default(),
             weights: HashMap::new(),
         }
@@ -100,6 +106,9 @@ impl Env {
             expr_pool_threshold: self.expr_pool_threshold,
             parallel: self.parallel,
             spinor_labels: self.spinor_labels.clone(),
+            graded_table: self.graded_table.clone(),
+            superspace_setup: self.superspace_setup.clone(),
+            brst_setup: self.brst_setup.clone(),
             convention: self.convention.clone(),
             weights: self.weights.clone(),
         }
@@ -230,6 +239,193 @@ fn int_from_expr(expr: &Expr) -> Option<u16> {
 
 fn int_expr_u16(n: u16) -> Expr {
     Expr::Int(BigInt::from(n))
+}
+
+fn usize_from_expr(expr: &Expr) -> Option<usize> {
+    match expr {
+        Expr::Int(n) => n.to_usize(),
+        _ => None,
+    }
+}
+
+fn symbol_from_expr(expr: &Expr) -> Option<lasso::Spur> {
+    match expr {
+        Expr::Sym(s) => Some(*s),
+        _ => None,
+    }
+}
+
+fn symbol_list_from_expr(expr: &Expr) -> Option<Vec<lasso::Spur>> {
+    match expr {
+        Expr::List(items) => items.iter().map(symbol_from_expr).collect(),
+        _ => None,
+    }
+}
+
+fn name_from_expr<'a>(expr: &Expr, interner: &'a ax_ir::Interner) -> Option<&'a str> {
+    match expr {
+        Expr::Sym(s) => Some(interner.resolve(*s)),
+        _ => None,
+    }
+}
+
+fn theta_monomial_from_spec(
+    expr: &Expr,
+    setup: &ax_graded::superspace::SuperspaceSetup,
+) -> Option<ax_graded::superspace::ThetaMonomial> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    if items.len() != 2 {
+        return None;
+    }
+    let theta_count = usize_from_expr(&items[0])?;
+    let theta_bar_count = usize_from_expr(&items[1])?;
+    if theta_count > setup.theta.len() || theta_bar_count > setup.theta_bar.len() {
+        return None;
+    }
+    let mut theta_powers = vec![0; setup.theta.len()];
+    let mut theta_bar_powers = vec![0; setup.theta_bar.len()];
+    for power in theta_powers.iter_mut().take(theta_count) {
+        *power = 1;
+    }
+    for power in theta_bar_powers.iter_mut().take(theta_bar_count) {
+        *power = 1;
+    }
+    Some(ax_graded::superspace::ThetaMonomial {
+        theta_powers,
+        theta_bar_powers,
+    })
+}
+
+fn active_superspace(
+    env: &Env,
+    interner: &ax_ir::Interner,
+) -> (
+    ax_graded::superspace::SuperspaceSetup,
+    ax_graded::GradedSymbolTable,
+) {
+    env.superspace_setup
+        .clone()
+        .map(|setup| (setup, env.graded_table.clone()))
+        .unwrap_or_else(|| ax_graded::superspace::setup_n1_superspace(interner))
+}
+
+fn grading_from_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<ax_graded::Grading> {
+    match expr {
+        Expr::Int(n) => n.to_i32().map(ax_graded::Grading::ghost),
+        Expr::Sym(sym) => match interner.resolve(*sym).to_ascii_lowercase().as_str() {
+            "bosonic" | "boson" | "even" => Some(ax_graded::Grading::bosonic()),
+            "fermionic" | "fermion" | "odd" => Some(ax_graded::Grading::fermionic()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn perturbation_setup(
+    full_field: lasso::Spur,
+    background: lasso::Spur,
+    inverse_background: Option<lasso::Spur>,
+    perturbation: lasso::Spur,
+    epsilon: lasso::Spur,
+    max_order: usize,
+) -> ax_perturb::PerturbationSetup {
+    ax_perturb::PerturbationSetup {
+        full_field,
+        background,
+        inverse_background,
+        perturbations: vec![ax_perturb::PerturbationOrder {
+            order: 1,
+            field: perturbation,
+        }],
+        epsilon,
+        max_order,
+    }
+}
+
+fn expanded_to_expr_list(expanded: ax_perturb::ExpandedExpression, max_order: usize) -> Expr {
+    let mut by_order = vec![Expr::zero(); max_order + 1];
+    for term in expanded.orders {
+        if term.order <= max_order {
+            by_order[term.order] = term.expr;
+        }
+    }
+    Expr::List(by_order)
+}
+
+fn labelled_exprs_to_list(items: Vec<(String, Expr)>, interner: &ax_ir::Interner) -> Expr {
+    Expr::List(
+        items
+            .into_iter()
+            .map(|(label, expr)| Expr::List(vec![Expr::Sym(interner.get_or_intern(&label)), expr]))
+            .collect(),
+    )
+}
+
+fn svt_decomposition_to_expr(
+    decomp: ax_perturb::gauge::SVTDecomposition,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let component_sym = |name: &str| Expr::Sym(interner.get_or_intern(name));
+    let scalars = decomp
+        .scalar_modes
+        .into_iter()
+        .map(|mode| {
+            let component = match mode.component {
+                ax_perturb::gauge::SVTComponent::Phi => "Phi",
+                ax_perturb::gauge::SVTComponent::Psi => "Psi",
+                ax_perturb::gauge::SVTComponent::B => "B",
+                ax_perturb::gauge::SVTComponent::E => "E",
+            };
+            Expr::List(vec![Expr::Sym(mode.name), component_sym(component)])
+        })
+        .collect();
+    let vectors = decomp
+        .vector_modes
+        .into_iter()
+        .map(|mode| {
+            let component = match mode.component {
+                ax_perturb::gauge::VectorSVT::Si => "Si",
+                ax_perturb::gauge::VectorSVT::Fi => "Fi",
+            };
+            Expr::List(vec![Expr::Sym(mode.name), component_sym(component)])
+        })
+        .collect();
+    let tensors = decomp
+        .tensor_modes
+        .into_iter()
+        .map(|mode| Expr::Sym(mode.name))
+        .collect();
+    Expr::List(vec![
+        Expr::List(scalars),
+        Expr::List(vectors),
+        Expr::List(tensors),
+    ])
+}
+
+fn regge_wheeler_decomposition_to_expr(
+    decomp: ax_perturb::gauge::ReggeWheelerDecomposition,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let named_exprs = |items: Vec<(lasso::Spur, Expr)>| {
+        Expr::List(
+            items
+                .into_iter()
+                .map(|(name, expr)| Expr::List(vec![Expr::Sym(name), expr]))
+                .collect(),
+        )
+    };
+    Expr::List(vec![
+        Expr::List(vec![
+            Expr::Sym(interner.get_or_intern("even_parity")),
+            named_exprs(decomp.even_parity),
+        ]),
+        Expr::List(vec![
+            Expr::Sym(interner.get_or_intern("odd_parity")),
+            named_exprs(decomp.odd_parity),
+        ]),
+    ])
 }
 
 fn rational_or_int(r: &BigRational) -> Expr {
@@ -672,6 +868,78 @@ pub fn apply_parallel_declaration(
         }
         _ => None,
     }
+}
+
+pub fn apply_graded_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "graded" || args.len() != 2 {
+        return None;
+    }
+    let Expr::Sym(sym) = &args[0] else {
+        return None;
+    };
+    let grading = grading_from_expr(&args[1], interner)?;
+    env.graded_table.declare(*sym, grading.clone());
+    Some(format!(
+        "declared grading for {}: {:?}",
+        interner.resolve(*sym),
+        grading
+    ))
+}
+
+pub fn apply_superspace_setup(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "setup_superspace" || args.len() != 1 {
+        return None;
+    }
+    match usize_from_expr(&args[0])? {
+        1 => {
+            let (setup, table) = ax_graded::superspace::setup_n1_superspace(interner);
+            env.superspace_setup = Some(setup);
+            env.graded_table = table;
+            Some("initialized N=1 superspace".to_string())
+        }
+        _ => Some("N>1 superspace not yet implemented".to_string()),
+    }
+}
+
+pub fn apply_brst_setup(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "setup_brst_ym" || args.len() != 5 {
+        return None;
+    }
+    let (Some(gauge), Some(ghost), Some(antighost), Some(aux), Some(coupling)) = (
+        symbol_from_expr(&args[0]),
+        symbol_from_expr(&args[1]),
+        symbol_from_expr(&args[2]),
+        symbol_from_expr(&args[3]),
+        symbol_from_expr(&args[4]),
+    ) else {
+        return None;
+    };
+    let (setup, table) =
+        ax_graded::brst::setup_yang_mills_brst(gauge, ghost, antighost, aux, coupling, interner);
+    env.brst_setup = Some(setup);
+    env.graded_table = table;
+    Some("initialized Yang-Mills BRST setup".to_string())
 }
 
 fn extract_sym_list(expr: &Expr) -> Vec<lasso::Spur> {
@@ -2979,6 +3247,411 @@ fn builtin_call(
                         &ax_spinor::twistor::apply_plucker(&t, a, b, c, d, e, g),
                         interner,
                     )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "perturb" => {
+            if args.len() == 6 {
+                if let (
+                    Some(field),
+                    Some(background),
+                    Some(perturbation),
+                    Some(epsilon),
+                    Some(order),
+                ) = (
+                    symbol_from_expr(&args[1]),
+                    symbol_from_expr(&args[2]),
+                    symbol_from_expr(&args[3]),
+                    symbol_from_expr(&args[4]),
+                    usize_from_expr(&args[5]),
+                ) {
+                    let setup =
+                        perturbation_setup(field, background, None, perturbation, epsilon, order);
+                    expanded_to_expr_list(
+                        ax_perturb::perturb_expand(&args[0], &setup, interner),
+                        order,
+                    )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "perturb_inverse" => {
+            if args.len() == 6 {
+                if let (
+                    Some(field),
+                    Some(background),
+                    Some(background_inv),
+                    Some(perturbation),
+                    Some(epsilon),
+                    Some(order),
+                ) = (
+                    symbol_from_expr(&args[0]),
+                    symbol_from_expr(&args[1]),
+                    symbol_from_expr(&args[2]),
+                    symbol_from_expr(&args[3]),
+                    symbol_from_expr(&args[4]),
+                    usize_from_expr(&args[5]),
+                ) {
+                    let setup = perturbation_setup(
+                        field,
+                        background,
+                        Some(background_inv),
+                        perturbation,
+                        epsilon,
+                        order,
+                    );
+                    expanded_to_expr_list(
+                        ax_perturb::perturb_inverse_metric(&setup, interner),
+                        order,
+                    )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "perturb_christoffel" | "perturb_riemann" | "perturb_ricci" | "perturb_einstein" => {
+            if args.len() == 7 {
+                if let (
+                    Some(field),
+                    Some(background),
+                    Some(background_inv),
+                    Some(perturbation),
+                    Some(epsilon),
+                    Some(coords),
+                    Some(order),
+                ) = (
+                    symbol_from_expr(&args[0]),
+                    symbol_from_expr(&args[1]),
+                    symbol_from_expr(&args[2]),
+                    symbol_from_expr(&args[3]),
+                    symbol_from_expr(&args[4]),
+                    symbol_list_from_expr(&args[5]),
+                    usize_from_expr(&args[6]),
+                ) {
+                    let setup = perturbation_setup(
+                        field,
+                        background,
+                        Some(background_inv),
+                        perturbation,
+                        epsilon,
+                        order,
+                    );
+                    let expanded = match name {
+                        "perturb_christoffel" => {
+                            ax_perturb::perturb_christoffel(&setup, &coords, interner)
+                        }
+                        "perturb_riemann" => ax_perturb::perturb_riemann(&setup, &coords, interner),
+                        "perturb_ricci" => ax_perturb::perturb_ricci(&setup, &coords, interner),
+                        "perturb_einstein" => {
+                            ax_perturb::perturb_einstein(&setup, &coords, interner)
+                        }
+                        _ => unreachable!(),
+                    };
+                    expanded_to_expr_list(expanded, order)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "linearized_einstein" => {
+            if args.len() == 1 {
+                if let Some(order) = usize_from_expr(&args[0]) {
+                    let bg = ax_perturb::cosmology::frw_background(interner);
+                    let decomp = ax_perturb::gauge::svt_decompose_perturbation(3, interner);
+                    let equations = match order {
+                        1 => ax_perturb::cosmology::linearized_einstein_scalar(
+                            &bg, &decomp, interner,
+                        ),
+                        2 => ax_perturb::cosmology::linearized_einstein_second_order(
+                            &bg, &decomp, interner,
+                        ),
+                        _ => return Expr::Call(f, args),
+                    };
+                    labelled_exprs_to_list(equations, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "mukhanov_sasaki" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let eps = interner.get_or_intern("epsilon");
+                ax_perturb::cosmology::mukhanov_sasaki_equation(&bg, eps, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "svt_decompose" => {
+            if args.is_empty() {
+                svt_decomposition_to_expr(
+                    ax_perturb::gauge::svt_decompose_perturbation(3, interner),
+                    interner,
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bardeen" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let decomp = ax_perturb::gauge::svt_decompose_perturbation(3, interner);
+                let vars = ax_perturb::gauge::bardeen_variables(
+                    &decomp,
+                    bg.scale_factor,
+                    bg.conformal_time,
+                    interner,
+                );
+                Expr::List(
+                    vars.into_iter()
+                        .map(|(name, expr)| Expr::List(vec![Expr::Sym(name), expr]))
+                        .collect(),
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "regge_wheeler_decompose" => {
+            if args.len() == 1 {
+                if let Some(l) = usize_from_expr(&args[0]) {
+                    regge_wheeler_decomposition_to_expr(
+                        ax_perturb::gauge::regge_wheeler_decompose(l, interner),
+                        interner,
+                    )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "zerilli" | "regge_wheeler" => {
+            if args.len() == 1 {
+                if let Some(l) = usize_from_expr(&args[0]) {
+                    let mass = interner.get_or_intern("M");
+                    if name == "zerilli" {
+                        ax_perturb::gauge::zerilli_equation(l, mass, interner)
+                    } else {
+                        ax_perturb::gauge::regge_wheeler_equation(l, mass, interner)
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "power_spectrum" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let eps = interner.get_or_intern("epsilon");
+                let h_star = interner.get_or_intern("H_star");
+                ax_perturb::cosmology::power_spectrum_leading(&bg, eps, h_star, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "spectral_index" => {
+            if args.is_empty() {
+                let eps = interner.get_or_intern("epsilon");
+                let eta = interner.get_or_intern("eta_sr");
+                ax_perturb::cosmology::spectral_index(eps, eta, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "tensor_scalar_ratio" => {
+            if args.is_empty() {
+                let eps = interner.get_or_intern("epsilon");
+                ax_perturb::cosmology::tensor_to_scalar_ratio(eps, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "graded" => {
+            if args.len() == 2 && symbol_from_expr(&args[0]).is_some() {
+                if let Some(grading) = grading_from_expr(&args[1], interner) {
+                    Expr::Sym(interner.get_or_intern(match grading {
+                        ax_graded::Grading::Z2(0) => "bosonic",
+                        ax_graded::Grading::Z2(_) => "fermionic",
+                        ax_graded::Grading::Z(_) | ax_graded::Grading::Product(_) => "graded",
+                    }))
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "graded_commutator" => {
+            if args.len() == 2 {
+                ax_graded::graded_commutator(&args[0], &args[1], &env.graded_table, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "graded_simplify" => {
+            if args.len() == 1 {
+                ax_graded::graded_simplify(&args[0], &env.graded_table, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "setup_superspace" => {
+            if args.len() == 1 {
+                match usize_from_expr(&args[0]) {
+                    Some(1) => Expr::Sym(interner.get_or_intern("superspace_n1")),
+                    Some(_) => Expr::Sym(interner.get_or_intern("N_gt_1_superspace_not_yet_implemented")),
+                    None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "expand_superfield" | "chiral_superfield" | "antichiral_superfield" | "vector_superfield_wz" => {
+            if args.len() == 1 {
+                if let Some(name_sym) = symbol_from_expr(&args[0]) {
+                    let (setup, _) = active_superspace(env, interner);
+                    let expansion = match name {
+                        "expand_superfield" => {
+                            ax_graded::superspace::expand_superfield(name_sym, &setup, interner)
+                        }
+                        "chiral_superfield" => {
+                            let expanded = ax_graded::superspace::expand_superfield(name_sym, &setup, interner);
+                            ax_graded::superspace::chiral_constraint(&expanded, &setup, interner)
+                        }
+                        "antichiral_superfield" => {
+                            let expanded = ax_graded::superspace::expand_superfield(name_sym, &setup, interner);
+                            ax_graded::superspace::antichiral_constraint(&expanded, &setup, interner)
+                        }
+                        "vector_superfield_wz" => {
+                            ax_graded::superspace::vector_superfield_wz_gauge(name_sym, &setup, interner)
+                        }
+                        _ => unreachable!(),
+                    };
+                    ax_graded::superspace::superfield_to_expr(&expansion, &setup, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "extract_component" => {
+            if args.len() == 2 {
+                let (setup, table) = active_superspace(env, interner);
+                if let Some(theta) = theta_monomial_from_spec(&args[1], &setup) {
+                    ax_graded::superspace::extract_component(&args[0], &theta, &setup, &table, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "d_alpha" | "d_bar" => {
+            if args.len() == 2 {
+                let (setup, table) = active_superspace(env, interner);
+                if let Some(alpha) = usize_from_expr(&args[1]) {
+                    if name == "d_alpha" {
+                        ax_graded::d_algebra::apply_d_alpha(&args[0], alpha, &setup, &table, interner)
+                    } else {
+                        ax_graded::d_algebra::apply_d_bar_alpha_dot(&args[0], alpha, &setup, &table, interner)
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "d_squared" | "d_bar_squared" => {
+            if args.len() == 1 {
+                let (setup, table) = active_superspace(env, interner);
+                if name == "d_squared" {
+                    ax_graded::d_algebra::d_squared(&args[0], &setup, &table, interner)
+                } else {
+                    ax_graded::d_algebra::d_bar_squared(&args[0], &setup, &table, interner)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "superspace_integrate" => {
+            if args.len() == 2 {
+                let (setup, table) = active_superspace(env, interner);
+                let measure = match name_from_expr(&args[1], interner).map(|s| s.to_ascii_lowercase()) {
+                    Some(s) if s == "full" => ax_graded::d_algebra::SuperspaceMeasure::FullSuperspace,
+                    Some(s) if s == "chiral" => ax_graded::d_algebra::SuperspaceMeasure::Chiral,
+                    Some(s) if s == "antichiral" || s == "anti_chiral" => ax_graded::d_algebra::SuperspaceMeasure::AntiChiral,
+                    _ => return Expr::Call(f, args),
+                };
+                ax_graded::d_algebra::superspace_integrate(&args[0], measure, &setup, &table, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "setup_brst_ym" => {
+            if args.len() == 5 {
+                Expr::Sym(interner.get_or_intern("brst_yang_mills"))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "brst" => {
+            if args.len() == 1 {
+                if let Some(setup) = &env.brst_setup {
+                    ax_graded::brst::apply_brst(&args[0], setup, &env.graded_table, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "brst_check" => {
+            if args.len() == 1 {
+                if let Some(setup) = &env.brst_setup {
+                    let applied = ax_graded::brst::apply_brst(&args[0], setup, &env.graded_table, interner);
+                    let simplified = ax_graded::graded_simplify(&applied, &env.graded_table, interner);
+                    Expr::Sym(interner.get_or_intern(if simplified == Expr::zero() { "true" } else { "false" }))
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "ghost_number" => {
+            if args.len() == 1 {
+                ax_graded::brst::ghost_number(&args[0], &env.graded_table)
+                    .map(|n| Expr::Int(BigInt::from(n)))
+                    .unwrap_or_else(|| Expr::Sym(interner.get_or_intern("inconsistent_ghost_number")))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "filter_ghost" => {
+            if args.len() == 2 {
+                if let Expr::Int(n) = &args[1] {
+                    if let Some(target) = n.to_i32() {
+                        ax_graded::brst::filter_by_ghost_number(&args[0], target, &env.graded_table, interner)
+                    } else {
+                        Expr::Call(f, args)
+                    }
                 } else {
                     Expr::Call(f, args)
                 }

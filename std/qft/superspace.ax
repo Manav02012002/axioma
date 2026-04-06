@@ -1,0 +1,10 @@
+// N=1 Superspace in 4 dimensions
+// Coordinates: (x^mu, theta^alpha, theta_bar^alpha_dot)
+// Supercovariant derivatives:
+//   D_alpha = d/d(theta^alpha) + i sigma^mu_{alpha alpha_dot} theta_bar^alpha_dot partial_mu
+//   D_bar_alpha_dot = -d/d(theta_bar^alpha_dot) - i theta^alpha sigma^mu_{alpha alpha_dot} partial_mu
+// Key identities:
+//   {D_alpha, D_bar_alpha_dot} = -2i sigma^mu_{alpha alpha_dot} partial_mu
+//   {D_alpha, D_beta} = 0
+//   {D_bar_alpha_dot, D_bar_beta_dot} = 0
+setup_superspace(1)

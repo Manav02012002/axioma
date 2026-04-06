@@ -285,6 +285,8 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
             spinor_label_latex(&args[2], interner),
             spinor_label_latex(&args[3], interner)
         ),
+        ("laplacian", 1) => format!("\\nabla^2 {}", rendered_args[0]),
+        ("partial_i", 1) => format!("\\partial_i {}", rendered_args[0]),
         ("sin", 1)
         | ("cos", 1)
         | ("tan", 1)

@@ -1,0 +1,5 @@
+// BRST symmetry
+// The BRST operator s is a nilpotent graded derivation (s^2 = 0).
+// Ghost number assignments: fields=0, ghost c=+1, antighost cbar=-1, NL field B=0.
+// Physical observables lie in the BRST cohomology: s-closed modulo s-exact.
+// Usage: setup_brst_ym(A, c, cbar, B, g) to initialize Yang-Mills BRST.

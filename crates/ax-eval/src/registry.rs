@@ -624,6 +624,41 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "Apply the momentum-twistor Plucker identity.",
             "plucker(expr, 1, 2, 3, 4, 5, 6)",
         ),
+        b("perturb", "perturbation", "perturb(expr, field, background, perturbation, epsilon, order)", "Expand an expression in a metric perturbation series through the requested order.", "perturb(R_ab, g, g0, h, eps, 2)"),
+        b("perturb_inverse", "perturbation", "perturb_inverse(field, background, background_inv, perturbation, epsilon, order)", "Expand the inverse metric perturbatively as a geometric series.", "perturb_inverse(g, g0, g0inv, h, eps, 2)"),
+        b("perturb_christoffel", "perturbation", "perturb_christoffel(field, background, background_inv, perturbation, epsilon, coords, order)", "Expand the Christoffel symbol order by order in a metric perturbation.", "perturb_christoffel(g, g0, g0inv, h, eps, [t,r,theta,phi], 1)"),
+        b("perturb_riemann", "perturbation", "perturb_riemann(field, background, background_inv, perturbation, epsilon, coords, order)", "Expand the Riemann tensor order by order in a metric perturbation.", "perturb_riemann(g, g0, g0inv, h, eps, [t,r,theta,phi], 1)"),
+        b("perturb_ricci", "perturbation", "perturb_ricci(field, background, background_inv, perturbation, epsilon, coords, order)", "Expand the Ricci tensor order by order in a metric perturbation.", "perturb_ricci(g, g0, g0inv, h, eps, [t,r,theta,phi], 1)"),
+        b("perturb_einstein", "perturbation", "perturb_einstein(field, background, background_inv, perturbation, epsilon, coords, order)", "Expand the Einstein tensor order by order in a metric perturbation.", "perturb_einstein(g, g0, g0inv, h, eps, [t,r,theta,phi], 1)"),
+        b("linearized_einstein", "cosmology", "linearized_einstein(order)", "Return first- or second-order scalar perturbation Einstein equations on an FRW background.", "linearized_einstein(1)"),
+        b("mukhanov_sasaki", "cosmology", "mukhanov_sasaki()", "Return the Mukhanov-Sasaki equation in conformal time.", "mukhanov_sasaki()"),
+        b("svt_decompose", "cosmology", "svt_decompose()", "Return the standard scalar-vector-tensor decomposition modes.", "svt_decompose()"),
+        b("bardeen", "cosmology", "bardeen()", "Return the two Bardeen gauge-invariant scalar potentials.", "bardeen()"),
+        b("regge_wheeler_decompose", "cosmology", "regge_wheeler_decompose(l)", "Return symbolic even- and odd-parity Schwarzschild perturbation sectors.", "regge_wheeler_decompose(2)"),
+        b("zerilli", "cosmology", "zerilli(l)", "Return the Zerilli master equation for even-parity Schwarzschild perturbations.", "zerilli(2)"),
+        b("regge_wheeler", "cosmology", "regge_wheeler(l)", "Return the Regge-Wheeler master equation for odd-parity Schwarzschild perturbations.", "regge_wheeler(2)"),
+        b("power_spectrum", "cosmology", "power_spectrum()", "Return the leading-order scalar curvature power spectrum.", "power_spectrum()"),
+        b("spectral_index", "cosmology", "spectral_index()", "Return the leading slow-roll scalar spectral index.", "spectral_index()"),
+        b("tensor_scalar_ratio", "cosmology", "tensor_scalar_ratio()", "Return the leading single-field tensor-to-scalar ratio.", "tensor_scalar_ratio()"),
+        b("graded", "graded-algebra", "graded(sym, bosonic|fermionic|n)", "Declare a Z2 or integer grading on a symbol.", "graded(theta, fermionic)"),
+        b("graded_commutator", "graded-algebra", "graded_commutator(a, b)", "Compute the graded commutator using the active graded symbol table.", "graded_commutator(Q, theta)"),
+        b("graded_simplify", "graded-algebra", "graded_simplify(expr)", "Simplify expressions with graded-commutation and nilpotency rules.", "graded_simplify(theta*theta)"),
+        b("setup_superspace", "superspace", "setup_superspace(N)", "Initialize N=1 superspace coordinates and Grassmann gradings.", "setup_superspace(1)"),
+        b("expand_superfield", "superspace", "expand_superfield(name)", "Expand a generic N=1 superfield into theta components.", "expand_superfield(Phi)"),
+        b("chiral_superfield", "superspace", "chiral_superfield(name)", "Construct a chiral N=1 superfield expansion.", "chiral_superfield(Phi)"),
+        b("antichiral_superfield", "superspace", "antichiral_superfield(name)", "Construct an antichiral N=1 superfield expansion.", "antichiral_superfield(Phi_bar)"),
+        b("vector_superfield_wz", "superspace", "vector_superfield_wz(name)", "Construct a Wess-Zumino gauge vector superfield.", "vector_superfield_wz(V)"),
+        b("extract_component", "superspace", "extract_component(expr, [theta, theta_bar])", "Extract a theta-sector component from a superspace expression.", "extract_component(Phi, [2,0])"),
+        b("d_alpha", "superspace", "d_alpha(expr, alpha)", "Apply the N=1 supercovariant derivative D_alpha.", "d_alpha(Phi, 0)"),
+        b("d_bar", "superspace", "d_bar(expr, alpha_dot)", "Apply the conjugate supercovariant derivative D_bar.", "d_bar(Phi, 1)"),
+        b("d_squared", "superspace", "d_squared(expr)", "Apply D^2 to a superspace expression.", "d_squared(Phi)"),
+        b("d_bar_squared", "superspace", "d_bar_squared(expr)", "Apply D_bar^2 to a superspace expression.", "d_bar_squared(Phi)"),
+        b("superspace_integrate", "superspace", "superspace_integrate(expr, full|chiral|antichiral)", "Extract the component corresponding to a superspace integration measure.", "superspace_integrate(Phi_bar*Phi, full)"),
+        b("setup_brst_ym", "brst", "setup_brst_ym(A, c, cbar, B, g)", "Initialize Yang-Mills BRST fields, ghost numbers, and transformation rules.", "setup_brst_ym(A, c, cbar, B, g)"),
+        b("brst", "brst", "brst(expr)", "Apply the active BRST operator as a graded derivation.", "brst(A)"),
+        b("brst_check", "brst", "brst_check(expr)", "Check whether an expression is BRST-closed.", "brst_check(F)"),
+        b("ghost_number", "brst", "ghost_number(expr)", "Compute the ghost number of an expression.", "ghost_number(cbar*B)"),
+        b("filter_ghost", "brst", "filter_ghost(expr, n)", "Keep only terms with the requested ghost number.", "filter_ghost(expr, 0)"),
         b(
             "gradient",
             "vector-calculus",
@@ -1889,7 +1924,10 @@ pub fn std_modules() -> Vec<StdModule> {
         m("gr/frw", "Builds a flat FRW metric with symbolic scale factor and computes Christoffel symbols.", "let g, let coords, let Gamma"),
         m("gr/kerr_newman", "Defines symbolic Kerr-Newman metric component expressions in Boyer-Lindquist coordinates.", "let Sigma_expr, let Delta_expr, let g_tt, let g_rr, let g_theta_theta, let g_phi_phi, let g_t_phi"),
         m("gr/minkowski", "Builds flat Minkowski spacetime and its vanishing Christoffel symbols.", "let g, let coords, let Gamma"),
+        m("gr/perturbation", "Metric perturbation theory: expansion of inverse metric, Christoffel symbols, Riemann, Ricci, and Einstein tensors to arbitrary order in a perturbation parameter.", "perturb, perturb_inverse, perturb_christoffel, perturb_riemann, perturb_ricci, perturb_einstein"),
         m("gr/schwarzschild", "Builds the Schwarzschild metric, Christoffel symbols, Riemann tensor, and Ricci tensor.", "let g, let coords, let Gamma, let R, let Ric"),
+        m("cosmology/perturbation", "Cosmological perturbation theory: SVT decomposition, Bardeen variables, linearized Einstein equations, Mukhanov-Sasaki equation, power spectrum, spectral index.", "linearized_einstein, mukhanov_sasaki, svt_decompose, bardeen, power_spectrum, spectral_index, tensor_scalar_ratio"),
+        m("gr/black_hole_perturbation", "Black hole perturbation theory: Regge-Wheeler and Zerilli master equations for Schwarzschild perturbations.", "regge_wheeler, zerilli, regge_wheeler_decompose"),
         m("physics/classical_mechanics", "Notes the intended Euler-Lagrange workflow for classical mechanics.", "documentation comments only"),
         m("physics/klein_gordon", "Sets up a Klein-Gordon Lagrangian and computes its Euler-Lagrange equation.", "let dphi_dt, let dphi_dx, let dphi_dy, let dphi_dz, let L, let EOM"),
         m("physics/maxwell", "Placeholder notes for Maxwell theory setup from a Lagrangian.", "documentation comments only"),
@@ -1898,6 +1936,8 @@ pub fn std_modules() -> Vec<StdModule> {
         m("qft/normal_ordering", "Documents normal ordering and Wick expansion usage.", "documentation comments only"),
         m("qft/scalar_field", "Summarizes the free scalar-field Lagrangian and Klein-Gordon equation.", "documentation comments only"),
         m("qft/spinor_helicity", "Spinor-helicity formalism: angle/square brackets, Mandelstam invariants, Parke-Taylor amplitudes, BCFW recursion, momentum twistors.", "angle, square, mandelstam, parke_taylor, bcfw_shift, bcfw_decomposition, four_bracket"),
+        m("qft/superspace", "N=1 superspace: supercovariant derivatives, chiral/antichiral superfields, Wess-Zumino gauge vector superfields, D-algebra, superspace integration.", "setup_superspace, expand_superfield, chiral_superfield, d_alpha, d_squared, superspace_integrate"),
+        m("qft/brst", "BRST cohomology: ghost number grading, BRST operator, nilpotency check, Yang-Mills BRST setup.", "setup_brst_ym, brst, ghost_number, brst_check"),
         m("qm/bell", "Constructs a Bell state, its density matrix, and a reduced density matrix by partial trace.", "let up, let down, let phi_plus, let rho, let rho_A"),
         m("qm/harmonic_oscillator", "Documents the intended harmonic-oscillator operator setup.", "documentation comments only"),
         m("qm/spin", "Builds Pauli matrices and their commutator as a spin-1/2 algebra example.", "let sigma_x, let sigma_y, let sigma_z, let comm_xy"),
@@ -4752,6 +4792,430 @@ fn handle_plucker_twistor(
     )
 }
 
+fn handle_perturb_general(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(
+        call_named(
+            "perturb",
+            vec![
+                expr,
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "field", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 2, "background", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 3, "perturbation", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 4, "epsilon", state)?),
+                int_expr_arg(args, 5, "order")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_perturb_inverse(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "perturb_inverse",
+            vec![
+                ax_ir::Expr::Sym(symbol_arg(args, 0, "field", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "background", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 2, "background_inv", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 3, "perturbation", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 4, "epsilon", state)?),
+                int_expr_arg(args, 5, "order")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_perturb_tensor_named(
+    name: &str,
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let coords = symbol_list_arg(args, 5, "coords", state)?
+        .into_iter()
+        .map(ax_ir::Expr::Sym)
+        .collect();
+    expr_response(
+        call_named(
+            name,
+            vec![
+                ax_ir::Expr::Sym(symbol_arg(args, 0, "field", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "background", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 2, "background_inv", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 3, "perturbation", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 4, "epsilon", state)?),
+                ax_ir::Expr::List(coords),
+                int_expr_arg(args, 6, "order")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_perturb_christoffel(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_perturb_tensor_named("perturb_christoffel", args, state)
+}
+fn handle_perturb_riemann(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_perturb_tensor_named("perturb_riemann", args, state)
+}
+fn handle_perturb_ricci(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_perturb_tensor_named("perturb_ricci", args, state)
+}
+fn handle_perturb_einstein(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_perturb_tensor_named("perturb_einstein", args, state)
+}
+
+fn handle_linearized_einstein_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "linearized_einstein",
+            vec![int_expr_arg(args, 0, "order")?],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_nullary_named(
+    name: &str,
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(call_named(name, Vec::new(), state), state)
+}
+
+fn handle_mukhanov_sasaki_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("mukhanov_sasaki", state)
+}
+fn handle_svt_decompose_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("svt_decompose", state)
+}
+fn handle_bardeen_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("bardeen", state)
+}
+fn handle_regge_wheeler_decompose_gauge(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "regge_wheeler_decompose",
+            vec![int_expr_arg(args, 0, "l")?],
+            state,
+        ),
+        state,
+    )
+}
+fn handle_power_spectrum_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("power_spectrum", state)
+}
+fn handle_spectral_index_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("spectral_index", state)
+}
+fn handle_tensor_scalar_ratio_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("tensor_scalar_ratio", state)
+}
+
+fn handle_zerilli_gauge(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named("zerilli", vec![int_expr_arg(args, 0, "l")?], state),
+        state,
+    )
+}
+fn handle_regge_wheeler_gauge(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named("regge_wheeler", vec![int_expr_arg(args, 0, "l")?], state),
+        state,
+    )
+}
+
+fn handle_graded_declare(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let grading = match require_arg(args, 1, "grading")? {
+        serde_json::Value::String(s) => match s.to_ascii_lowercase().as_str() {
+            "bosonic" | "boson" | "even" => ax_graded::Grading::bosonic(),
+            "fermionic" | "fermion" | "odd" => ax_graded::Grading::fermionic(),
+            other => other
+                .parse::<i32>()
+                .map(ax_graded::Grading::ghost)
+                .map_err(|_| format!("unknown grading '{s}'"))?,
+        },
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(|v| ax_graded::Grading::ghost(v as i32))
+            .ok_or_else(|| "numeric grading must be an integer".to_string())?,
+        _ => return Err("grading must be a string or integer".to_string()),
+    };
+    state.env_mut().graded_table.declare(symbol, grading.clone());
+    Ok(serde_json::json!({
+        "symbol": state.interner().resolve(symbol),
+        "grading": format!("{:?}", grading)
+    }))
+}
+
+fn handle_graded_commutator_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let lhs = expr_from_id(args, 0, "lhs", state)?;
+    let rhs = expr_from_id(args, 1, "rhs", state)?;
+    let out = ax_graded::graded_commutator(&lhs, &rhs, &state.env().graded_table, state.interner());
+    expr_response(out, state)
+}
+
+fn handle_graded_simplify_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let out = ax_graded::graded_simplify(&expr, &state.env().graded_table, state.interner());
+    expr_response(out, state)
+}
+
+fn active_superspace_for_state(
+    state: &dyn EvalState,
+) -> (
+    ax_graded::superspace::SuperspaceSetup,
+    ax_graded::GradedSymbolTable,
+) {
+    state
+        .env()
+        .superspace_setup
+        .clone()
+        .map(|setup| (setup, state.env().graded_table.clone()))
+        .unwrap_or_else(|| ax_graded::superspace::setup_n1_superspace(state.interner()))
+}
+
+fn theta_monomial_from_json(
+    value: &serde_json::Value,
+    setup: &ax_graded::superspace::SuperspaceSetup,
+) -> Result<ax_graded::superspace::ThetaMonomial, String> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| "theta_spec must be [theta_count, theta_bar_count]".to_string())?;
+    if items.len() != 2 {
+        return Err("theta_spec must contain exactly two integers".to_string());
+    }
+    let theta_count = items[0]
+        .as_u64()
+        .ok_or_else(|| "theta count must be an integer".to_string())? as usize;
+    let theta_bar_count = items[1]
+        .as_u64()
+        .ok_or_else(|| "theta_bar count must be an integer".to_string())? as usize;
+    if theta_count > setup.theta.len() || theta_bar_count > setup.theta_bar.len() {
+        return Err("theta_spec exceeds available N=1 theta coordinates".to_string());
+    }
+    let mut theta_powers = vec![0; setup.theta.len()];
+    let mut theta_bar_powers = vec![0; setup.theta_bar.len()];
+    for power in theta_powers.iter_mut().take(theta_count) {
+        *power = 1;
+    }
+    for power in theta_bar_powers.iter_mut().take(theta_bar_count) {
+        *power = 1;
+    }
+    Ok(ax_graded::superspace::ThetaMonomial {
+        theta_powers,
+        theta_bar_powers,
+    })
+}
+
+fn handle_setup_superspace_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let n = int_arg(args, 0, "N")?;
+    if n != 1 {
+        return Err("N>1 superspace not yet implemented".to_string());
+    }
+    let (setup, table) = ax_graded::superspace::setup_n1_superspace(state.interner());
+    state.env_mut().superspace_setup = Some(setup);
+    state.env_mut().graded_table = table;
+    Ok(serde_json::json!({ "status": "ok", "N": 1 }))
+}
+
+fn superfield_expr_response(
+    expansion: ax_graded::superspace::SuperfieldExpansion,
+    setup: &ax_graded::superspace::SuperspaceSetup,
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        ax_graded::superspace::superfield_to_expr(&expansion, setup, state.interner()),
+        state,
+    )
+}
+
+fn handle_superfield_named(
+    name: &str,
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "name", state)?;
+    let (setup, _) = active_superspace_for_state(state);
+    let expansion = match name {
+        "expand_superfield" => ax_graded::superspace::expand_superfield(symbol, &setup, state.interner()),
+        "chiral_superfield" => {
+            let expanded = ax_graded::superspace::expand_superfield(symbol, &setup, state.interner());
+            ax_graded::superspace::chiral_constraint(&expanded, &setup, state.interner())
+        }
+        "antichiral_superfield" => {
+            let expanded = ax_graded::superspace::expand_superfield(symbol, &setup, state.interner());
+            ax_graded::superspace::antichiral_constraint(&expanded, &setup, state.interner())
+        }
+        "vector_superfield_wz" => ax_graded::superspace::vector_superfield_wz_gauge(symbol, &setup, state.interner()),
+        _ => unreachable!(),
+    };
+    superfield_expr_response(expansion, &setup, state)
+}
+
+fn handle_expand_superfield_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    handle_superfield_named("expand_superfield", args, state)
+}
+fn handle_chiral_superfield_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    handle_superfield_named("chiral_superfield", args, state)
+}
+fn handle_antichiral_superfield_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    handle_superfield_named("antichiral_superfield", args, state)
+}
+fn handle_vector_superfield_wz_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    handle_superfield_named("vector_superfield_wz", args, state)
+}
+
+fn handle_extract_component_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let (setup, table) = active_superspace_for_state(state);
+    let theta = theta_monomial_from_json(require_arg(args, 1, "theta_spec")?, &setup)?;
+    expr_response(ax_graded::superspace::extract_component(&expr, &theta, &setup, &table, state.interner()), state)
+}
+
+fn handle_d_alpha_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let alpha = int_arg(args, 1, "alpha")? as usize;
+    let (setup, table) = active_superspace_for_state(state);
+    expr_response(ax_graded::d_algebra::apply_d_alpha(&expr, alpha, &setup, &table, state.interner()), state)
+}
+
+fn handle_d_bar_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let alpha = int_arg(args, 1, "alpha_dot")? as usize;
+    let (setup, table) = active_superspace_for_state(state);
+    expr_response(ax_graded::d_algebra::apply_d_bar_alpha_dot(&expr, alpha, &setup, &table, state.interner()), state)
+}
+
+fn handle_d_squared_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let (setup, table) = active_superspace_for_state(state);
+    expr_response(ax_graded::d_algebra::d_squared(&expr, &setup, &table, state.interner()), state)
+}
+
+fn handle_d_bar_squared_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let (setup, table) = active_superspace_for_state(state);
+    expr_response(ax_graded::d_algebra::d_bar_squared(&expr, &setup, &table, state.interner()), state)
+}
+
+fn handle_superspace_integrate_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let measure = match string_arg(args, 1, "measure")?.to_ascii_lowercase().as_str() {
+        "full" => ax_graded::d_algebra::SuperspaceMeasure::FullSuperspace,
+        "chiral" => ax_graded::d_algebra::SuperspaceMeasure::Chiral,
+        "antichiral" | "anti_chiral" => ax_graded::d_algebra::SuperspaceMeasure::AntiChiral,
+        other => return Err(format!("unknown superspace measure '{other}'")),
+    };
+    let (setup, table) = active_superspace_for_state(state);
+    expr_response(ax_graded::d_algebra::superspace_integrate(&expr, measure, &setup, &table, state.interner()), state)
+}
+
+fn handle_setup_brst_ym_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let gauge = symbol_arg(args, 0, "A", state)?;
+    let ghost = symbol_arg(args, 1, "c", state)?;
+    let antighost = symbol_arg(args, 2, "cbar", state)?;
+    let aux = symbol_arg(args, 3, "B", state)?;
+    let coupling = symbol_arg(args, 4, "g", state)?;
+    let (setup, table) = ax_graded::brst::setup_yang_mills_brst(gauge, ghost, antighost, aux, coupling, state.interner());
+    state.env_mut().brst_setup = Some(setup);
+    state.env_mut().graded_table = table;
+    Ok(serde_json::json!({ "status": "ok", "theory": "yang_mills_brst" }))
+}
+
+fn handle_brst_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let setup = state.env().brst_setup.clone().ok_or_else(|| "BRST setup is not initialized; call setup_brst_ym first".to_string())?;
+    expr_response(ax_graded::brst::apply_brst(&expr, &setup, &state.env().graded_table, state.interner()), state)
+}
+
+fn handle_brst_check_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let setup = state.env().brst_setup.clone().ok_or_else(|| "BRST setup is not initialized; call setup_brst_ym first".to_string())?;
+    let applied = ax_graded::brst::apply_brst(&expr, &setup, &state.env().graded_table, state.interner());
+    let simplified = ax_graded::graded_simplify(&applied, &state.env().graded_table, state.interner());
+    Ok(serde_json::json!({ "closed": simplified == ax_ir::Expr::zero(), "result": state.render_unicode(&simplified) }))
+}
+
+fn handle_ghost_number_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    match ax_graded::brst::ghost_number(&expr, &state.env().graded_table) {
+        Some(n) => Ok(serde_json::json!({ "ghost_number": n })),
+        None => Err("expression has inconsistent ghost number".to_string()),
+    }
+}
+
+fn handle_filter_ghost_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let target = int_arg(args, 1, "n")? as i32;
+    expr_response(ax_graded::brst::filter_by_ghost_number(&expr, target, &state.env().graded_table, state.interner()), state)
+}
+
 pub fn callable_entries() -> Vec<CallableEntry> {
     let ps =
         |params: Vec<ParamDef>| -> &'static [ParamDef] { Box::leak(params.into_boxed_slice()) };
@@ -4840,6 +5304,41 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("bcfw_decomposition", "Enumerate BCFW factorization terms.", ps(vec![pdef("n", ParamType::Integer, true, "Number of particles."), pdef("i", ParamType::Integer, true, "Shifted angle label."), pdef("j", ParamType::Integer, true, "Shifted square label."), pdef("helicities", ParamType::Code, true, "Array of +1/-1 helicities.")]), handle_bcfw_decomposition_spinor),
         centry("four_bracket", "Construct a momentum-twistor four-bracket.", ps(vec![pdef("i", ParamType::Integer, true, "First label."), pdef("j", ParamType::Integer, true, "Second label."), pdef("k", ParamType::Integer, true, "Third label."), pdef("l", ParamType::Integer, true, "Fourth label.")]), handle_four_bracket_twistor),
         centry("plucker", "Apply the momentum-twistor Plucker identity.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored twistor expression id."), pdef("a", ParamType::Integer, true, "Label a."), pdef("b", ParamType::Integer, true, "Label b."), pdef("c", ParamType::Integer, true, "Label c."), pdef("d", ParamType::Integer, true, "Label d."), pdef("e", ParamType::Integer, true, "Label e."), pdef("f", ParamType::Integer, true, "Label f.")]), handle_plucker_twistor),
+        centry("perturb", "Expand an expression in a metric perturbation series.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("field", ParamType::Symbol, true, "Full field symbol."), pdef("background", ParamType::Symbol, true, "Background field symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_general),
+        centry("perturb_inverse", "Expand the inverse metric perturbatively.", ps(vec![pdef("field", ParamType::Symbol, true, "Full metric symbol."), pdef("background", ParamType::Symbol, true, "Background metric symbol."), pdef("background_inv", ParamType::Symbol, true, "Background inverse metric symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_inverse),
+        centry("perturb_christoffel", "Expand the Christoffel symbol perturbatively.", ps(vec![pdef("field", ParamType::Symbol, true, "Full metric symbol."), pdef("background", ParamType::Symbol, true, "Background metric symbol."), pdef("background_inv", ParamType::Symbol, true, "Background inverse metric symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_christoffel),
+        centry("perturb_riemann", "Expand the Riemann tensor perturbatively.", ps(vec![pdef("field", ParamType::Symbol, true, "Full metric symbol."), pdef("background", ParamType::Symbol, true, "Background metric symbol."), pdef("background_inv", ParamType::Symbol, true, "Background inverse metric symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_riemann),
+        centry("perturb_ricci", "Expand the Ricci tensor perturbatively.", ps(vec![pdef("field", ParamType::Symbol, true, "Full metric symbol."), pdef("background", ParamType::Symbol, true, "Background metric symbol."), pdef("background_inv", ParamType::Symbol, true, "Background inverse metric symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_ricci),
+        centry("perturb_einstein", "Expand the Einstein tensor perturbatively.", ps(vec![pdef("field", ParamType::Symbol, true, "Full metric symbol."), pdef("background", ParamType::Symbol, true, "Background metric symbol."), pdef("background_inv", ParamType::Symbol, true, "Background inverse metric symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_einstein),
+        centry("linearized_einstein", "Return first- or second-order scalar perturbation Einstein equations.", ps(vec![pdef("order", ParamType::Integer, true, "Perturbation order, currently 1 or 2.")]), handle_linearized_einstein_cosmology),
+        centry("mukhanov_sasaki", "Return the Mukhanov-Sasaki equation.", ps(vec![]), handle_mukhanov_sasaki_cosmology),
+        centry("svt_decompose", "Return the standard SVT decomposition modes.", ps(vec![]), handle_svt_decompose_cosmology),
+        centry("bardeen", "Return the two Bardeen potentials.", ps(vec![]), handle_bardeen_cosmology),
+        centry("regge_wheeler_decompose", "Return symbolic even- and odd-parity Schwarzschild perturbation sectors.", ps(vec![pdef("l", ParamType::Integer, true, "Angular momentum quantum number.")]), handle_regge_wheeler_decompose_gauge),
+        centry("zerilli", "Return the Zerilli master equation.", ps(vec![pdef("l", ParamType::Integer, true, "Angular momentum quantum number.")]), handle_zerilli_gauge),
+        centry("regge_wheeler", "Return the Regge-Wheeler master equation.", ps(vec![pdef("l", ParamType::Integer, true, "Angular momentum quantum number.")]), handle_regge_wheeler_gauge),
+        centry("power_spectrum", "Return the leading scalar power spectrum.", ps(vec![]), handle_power_spectrum_cosmology),
+        centry("spectral_index", "Return the leading slow-roll spectral index.", ps(vec![]), handle_spectral_index_cosmology),
+        centry("tensor_scalar_ratio", "Return the leading tensor-to-scalar ratio.", ps(vec![]), handle_tensor_scalar_ratio_cosmology),
+        centry("graded", "Declare a grading on a symbol.", ps(vec![pdef("symbol", ParamType::Symbol, true, "Target symbol."), pdef("grading", ParamType::Code, true, "bosonic, fermionic, or integer ghost number.")]), handle_graded_declare),
+        centry("graded_commutator", "Compute the graded commutator.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Left expression id."), pdef("rhs", ParamType::ExprId, true, "Right expression id.")]), handle_graded_commutator_entry),
+        centry("graded_simplify", "Simplify using graded algebra rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_graded_simplify_entry),
+        centry("setup_superspace", "Initialize N=1 superspace.", ps(vec![pdef("N", ParamType::Integer, true, "Supersymmetry count; currently only 1.")]), handle_setup_superspace_entry),
+        centry("expand_superfield", "Expand a generic superfield.", ps(vec![pdef("name", ParamType::Symbol, true, "Superfield symbol.")]), handle_expand_superfield_entry),
+        centry("chiral_superfield", "Construct a chiral superfield.", ps(vec![pdef("name", ParamType::Symbol, true, "Superfield symbol.")]), handle_chiral_superfield_entry),
+        centry("antichiral_superfield", "Construct an antichiral superfield.", ps(vec![pdef("name", ParamType::Symbol, true, "Superfield symbol.")]), handle_antichiral_superfield_entry),
+        centry("vector_superfield_wz", "Construct a Wess-Zumino gauge vector superfield.", ps(vec![pdef("name", ParamType::Symbol, true, "Vector superfield symbol.")]), handle_vector_superfield_wz_entry),
+        centry("extract_component", "Extract a theta component.", ps(vec![pdef("expr", ParamType::ExprId, true, "Superspace expression id."), pdef("theta_spec", ParamType::Code, true, "JSON array [theta_count, theta_bar_count].")]), handle_extract_component_entry),
+        centry("d_alpha", "Apply D_alpha.", ps(vec![pdef("expr", ParamType::ExprId, true, "Superspace expression id."), pdef("alpha", ParamType::Integer, true, "Spinor index 0 or 1.")]), handle_d_alpha_entry),
+        centry("d_bar", "Apply D_bar alpha-dot.", ps(vec![pdef("expr", ParamType::ExprId, true, "Superspace expression id."), pdef("alpha_dot", ParamType::Integer, true, "Dotted spinor index 0 or 1.")]), handle_d_bar_entry),
+        centry("d_squared", "Apply D squared.", ps(vec![pdef("expr", ParamType::ExprId, true, "Superspace expression id.")]), handle_d_squared_entry),
+        centry("d_bar_squared", "Apply D-bar squared.", ps(vec![pdef("expr", ParamType::ExprId, true, "Superspace expression id.")]), handle_d_bar_squared_entry),
+        centry("superspace_integrate", "Integrate over a superspace measure.", ps(vec![pdef("expr", ParamType::ExprId, true, "Superspace expression id."), pdef("measure", ParamType::StringEnum(&["full", "chiral", "antichiral"]), true, "Integration measure.")]), handle_superspace_integrate_entry),
+        centry("setup_brst_ym", "Initialize Yang-Mills BRST.", ps(vec![pdef("A", ParamType::Symbol, true, "Gauge field."), pdef("c", ParamType::Symbol, true, "Ghost."), pdef("cbar", ParamType::Symbol, true, "Antighost."), pdef("B", ParamType::Symbol, true, "Nakanishi-Lautrup field."), pdef("g", ParamType::Symbol, true, "Coupling.")]), handle_setup_brst_ym_entry),
+        centry("brst", "Apply the BRST operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_brst_entry),
+        centry("brst_check", "Check BRST closure.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_brst_check_entry),
+        centry("ghost_number", "Compute ghost number.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_ghost_number_entry),
+        centry("filter_ghost", "Filter a sum by ghost number.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("n", ParamType::Integer, true, "Ghost number.")]), handle_filter_ghost_entry),
         centry("canonicalise", "Canonical tensor simplification.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_canonicalise),
         centry("canonicalize_indices", "Canonicalize index ordering with tensor properties.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_canonicalize_indices),
         centry("meld", "Combine indexed sum terms using symmetry identities.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_meld),

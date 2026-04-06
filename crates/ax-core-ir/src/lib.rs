@@ -514,6 +514,19 @@ impl<'a> Cursor<'a> {
                 let sym = self.parse_ident()?;
                 Ok(Expr::Sym(sym))
             }
+            Some('"') => {
+                self.bump_char();
+                let start = self.pos;
+                while let Some(ch) = self.peek_char() {
+                    if ch == '"' {
+                        let value = &self.src[start..self.pos];
+                        self.bump_char();
+                        return Ok(Expr::Sym(self.interner.get_or_intern(value)));
+                    }
+                    self.bump_char();
+                }
+                Err(self.error("unterminated string literal"))
+            }
             Some('(') => {
                 self.bump_char();
                 let expr = self.parse_expr()?;

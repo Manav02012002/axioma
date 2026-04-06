@@ -1,0 +1,5 @@
+// Linearized gravity around flat Minkowski background
+convention riemann_sign mtw
+let result = perturb_ricci(g, eta, eta_inv, h, eps, [t,x,y,z], 1)
+// First-order Ricci tensor perturbation:
+result[1]

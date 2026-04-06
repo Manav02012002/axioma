@@ -1,0 +1,7 @@
+// BRST structure of QED
+setup_brst_ym(A, c, cbar, B, e)
+// Verify nilpotency
+brst(brst(A))
+brst(brst(c))
+// Ghost number of the gauge-fixed Lagrangian piece
+ghost_number(cbar * B)

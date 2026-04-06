@@ -1,0 +1,10 @@
+// Scalar perturbations in FRW cosmology
+let eqs = linearized_einstein(1)
+// The four linearized Einstein equations:
+eqs
+// Mukhanov-Sasaki equation for curvature perturbation:
+mukhanov_sasaki()
+// Leading-order power spectrum:
+power_spectrum()
+// Spectral index:
+spectral_index()
