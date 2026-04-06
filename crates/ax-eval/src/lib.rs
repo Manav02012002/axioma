@@ -847,6 +847,20 @@ fn builtin_unary(name: &str, arg: Expr, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(interner.get_or_intern(name), vec![arg])
 }
 
+fn is_unevaluated_integrate_check(expr: &Expr, interner: &ax_ir::Interner) -> bool {
+    match expr {
+        Expr::Call(f, _) => interner.resolve(*f) == "integrate",
+        Expr::Add(terms) => terms
+            .iter()
+            .any(|t| is_unevaluated_integrate_check(t, interner)),
+        Expr::Mul(factors) => factors
+            .iter()
+            .any(|f| is_unevaluated_integrate_check(f, interner)),
+        Expr::Neg(e) => is_unevaluated_integrate_check(e, interner),
+        _ => false,
+    }
+}
+
 fn trig_special_from_rational(func: &str, r: &BigRational, interner: &ax_ir::Interner) -> Option<Expr> {
     let two = BigRational::from_integer(2.into());
     let mut normalized = r.clone();
@@ -3033,6 +3047,171 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "gradient" | "grad" => {
+            if args.len() == 2 {
+                if let Expr::List(vars) = &args[1] {
+                    let components: Vec<Expr> = vars
+                        .iter()
+                        .map(|v| {
+                            if let Expr::Sym(s) = v {
+                                let d = differentiate(&args[0], *s, interner);
+                                eval(&d, env, interner)
+                            } else {
+                                Expr::zero()
+                            }
+                        })
+                        .collect();
+                    Expr::List(components)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "divergence" | "div" => {
+            if args.len() == 2 {
+                if let (Expr::List(components), Expr::List(vars)) = (&args[0], &args[1]) {
+                    if components.len() == vars.len() {
+                        let terms: Vec<Expr> = components
+                            .iter()
+                            .zip(vars.iter())
+                            .map(|(comp, v)| {
+                                if let Expr::Sym(s) = v {
+                                    let d = differentiate(comp, *s, interner);
+                                    eval(&d, env, interner)
+                                } else {
+                                    Expr::zero()
+                                }
+                            })
+                            .collect();
+                        eval(&Expr::add(terms), env, interner)
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "curl" => {
+            if args.len() == 2 {
+                if let (Expr::List(f_vec), Expr::List(vars)) = (&args[0], &args[1]) {
+                    if f_vec.len() == 3 && vars.len() == 3 {
+                        let (fx, fy, fz) = (&f_vec[0], &f_vec[1], &f_vec[2]);
+                        let (x, y, z) = if let (Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)) =
+                            (&vars[0], &vars[1], &vars[2])
+                        {
+                            (*a, *b, *c)
+                        } else {
+                            return Expr::Call(f, args);
+                        };
+
+                        let curl_x = Expr::add(vec![
+                            eval(&differentiate(fz, y, interner), env, interner),
+                            Expr::neg(eval(&differentiate(fy, z, interner), env, interner)),
+                        ]);
+                        let curl_y = Expr::add(vec![
+                            eval(&differentiate(fx, z, interner), env, interner),
+                            Expr::neg(eval(&differentiate(fz, x, interner), env, interner)),
+                        ]);
+                        let curl_z = Expr::add(vec![
+                            eval(&differentiate(fy, x, interner), env, interner),
+                            Expr::neg(eval(&differentiate(fx, y, interner), env, interner)),
+                        ]);
+
+                        Expr::List(vec![
+                            eval(&curl_x, env, interner),
+                            eval(&curl_y, env, interner),
+                            eval(&curl_z, env, interner),
+                        ])
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "laplacian" => {
+            if args.len() == 2 {
+                if let Expr::List(vars) = &args[1] {
+                    let terms: Vec<Expr> = vars
+                        .iter()
+                        .map(|v| {
+                            if let Expr::Sym(s) = v {
+                                let d1 = differentiate(&args[0], *s, interner);
+                                let d2 = differentiate(&d1, *s, interner);
+                                eval(&d2, env, interner)
+                            } else {
+                                Expr::zero()
+                            }
+                        })
+                        .collect();
+                    eval(&Expr::add(terms), env, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "jacobian" => {
+            if args.len() == 2 {
+                if let (Expr::List(funcs), Expr::List(vars)) = (&args[0], &args[1]) {
+                    let rows: Vec<Vec<Expr>> = funcs
+                        .iter()
+                        .map(|fi| {
+                            vars.iter()
+                                .map(|v| {
+                                    if let Expr::Sym(s) = v {
+                                        eval(&differentiate(fi, *s, interner), env, interner)
+                                    } else {
+                                        Expr::zero()
+                                    }
+                                })
+                                .collect()
+                        })
+                        .collect();
+                    Expr::Matrix(rows)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "hessian" => {
+            if args.len() == 2 {
+                if let Expr::List(vars) = &args[1] {
+                    let n = vars.len();
+                    let rows: Vec<Vec<Expr>> = (0..n)
+                        .map(|i| {
+                            (0..n)
+                                .map(|j| {
+                                    if let (Expr::Sym(xi), Expr::Sym(xj)) = (&vars[i], &vars[j]) {
+                                        let d1 = differentiate(&args[0], *xi, interner);
+                                        let d2 = differentiate(&d1, *xj, interner);
+                                        eval(&d2, env, interner)
+                                    } else {
+                                        Expr::zero()
+                                    }
+                                })
+                                .collect()
+                        })
+                        .collect();
+                    Expr::Matrix(rows)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "solve" => {
             if args.len() == 2 {
                 match (&args[0], &args[1]) {
@@ -3565,6 +3744,44 @@ fn builtin_call(
                 _ => Expr::Call(f, args),
             }
         }
+        "classify_pde" => {
+            if args.len() == 3 {
+                let pde_type = ax_ode::classify_pde(&args[0], &args[1], &args[2], interner);
+                let type_str = match pde_type {
+                    ax_ode::PdeType::Elliptic => "elliptic",
+                    ax_ode::PdeType::Parabolic => "parabolic",
+                    ax_ode::PdeType::Hyperbolic => "hyperbolic",
+                    ax_ode::PdeType::Unknown => "unknown",
+                };
+                Expr::Sym(interner.get_or_intern(type_str))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "separate_variables" | "separation" => {
+            if args.len() >= 3 {
+                let pde_type = if let Expr::Sym(s) = &args[0] {
+                    match interner.resolve(*s) {
+                        "wave" | "hyperbolic" => ax_ode::PdeType::Hyperbolic,
+                        "heat" | "parabolic" | "diffusion" => ax_ode::PdeType::Parabolic,
+                        "laplace" | "elliptic" => ax_ode::PdeType::Elliptic,
+                        _ => ax_ode::PdeType::Unknown,
+                    }
+                } else {
+                    ax_ode::PdeType::Unknown
+                };
+
+                if let (Expr::Sym(x), Expr::Sym(t)) = (&args[1], &args[2]) {
+                    let coeff = args.get(3).cloned().unwrap_or(Expr::Int(1.into()));
+                    let sol = ax_ode::separate_variables(pde_type, *x, *t, &coeff, interner);
+                    Expr::List(vec![sol.spatial, sol.temporal, sol.separation_constant])
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "plot" => {
             if args.len() == 4 {
                 match (&args[1], to_f64(&args[2]), to_f64(&args[3])) {
@@ -3941,6 +4158,70 @@ fn builtin_call(
                         eval(
                             &Expr::add(vec![hi_val, Expr::neg(lo_val)]),
                             &Env::new(),
+                            interner,
+                        )
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "double_integral" | "dblint" => {
+            if args.len() == 3 {
+                if let (Expr::Sym(x), Expr::Sym(y)) = (&args[1], &args[2]) {
+                    let inner = integrate::integrate(&args[0], *x, interner);
+                    let outer = integrate::integrate(&inner, *y, interner);
+                    eval(&outer, env, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "triple_integral" | "tplint" => {
+            if args.len() == 4 {
+                if let (Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)) =
+                    (&args[1], &args[2], &args[3])
+                {
+                    let i1 = integrate::integrate(&args[0], *x, interner);
+                    let i2 = integrate::integrate(&i1, *y, interner);
+                    let i3 = integrate::integrate(&i2, *z, interner);
+                    eval(&i3, env, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "definite_integral" | "defint" => {
+            if args.len() == 4 {
+                if let Expr::Sym(var_sym) = &args[1] {
+                    let antideriv = integrate::integrate(&args[0], *var_sym, interner);
+                    if is_unevaluated_integrate_check(&antideriv, interner) {
+                        Expr::Call(f, args)
+                    } else {
+                        let at_b = symbolic_substitute(
+                            &antideriv,
+                            &Expr::Sym(*var_sym),
+                            &args[3],
+                            interner,
+                        );
+                        let at_a = symbolic_substitute(
+                            &antideriv,
+                            &Expr::Sym(*var_sym),
+                            &args[2],
+                            interner,
+                        );
+                        eval(
+                            &Expr::add(vec![
+                                eval(&at_b, env, interner),
+                                Expr::neg(eval(&at_a, env, interner)),
+                            ]),
+                            env,
                             interner,
                         )
                     }
@@ -4804,6 +5085,149 @@ mod tests {
         let expr = Expr::Call(cos_sym, vec![Expr::Sym(pi_sym)]);
         let result = eval(&expr, &Env::new(), &interner);
         assert_eq!(result, Expr::Int((-1i64).into()));
+    }
+
+    #[test]
+    fn gradient_3d() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let z = interner.get_or_intern("z");
+        let grad_sym = interner.get_or_intern("gradient");
+
+        let f = Expr::add(vec![
+            Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+            Expr::pow(Expr::Sym(y), Expr::Int(2.into())),
+            Expr::pow(Expr::Sym(z), Expr::Int(2.into())),
+        ]);
+        let expr = Expr::Call(
+            grad_sym,
+            vec![f, Expr::List(vec![Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)])],
+        );
+        let result = eval(&expr, &env, &interner);
+
+        if let Expr::List(components) = &result {
+            assert_eq!(components.len(), 3, "gradient should have 3 components");
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn divergence_3d() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let z = interner.get_or_intern("z");
+        let div_sym = interner.get_or_intern("divergence");
+
+        let expr = Expr::Call(
+            div_sym,
+            vec![
+                Expr::List(vec![Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)]),
+                Expr::List(vec![Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)]),
+            ],
+        );
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::Int(3.into()), "div([x,y,z]) = 3");
+    }
+
+    #[test]
+    fn curl_conservative_field_is_zero() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let z = interner.get_or_intern("z");
+        let curl_sym = interner.get_or_intern("curl");
+
+        let expr = Expr::Call(
+            curl_sym,
+            vec![
+                Expr::List(vec![Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)]),
+                Expr::List(vec![Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)]),
+            ],
+        );
+        let result = eval(&expr, &env, &interner);
+        if let Expr::List(components) = &result {
+            for c in components {
+                assert_eq!(*c, Expr::zero(), "curl of conservative field should be zero");
+            }
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn laplacian_harmonic() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let lap_sym = interner.get_or_intern("laplacian");
+
+        let f = Expr::add(vec![
+            Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+            Expr::neg(Expr::pow(Expr::Sym(y), Expr::Int(2.into()))),
+        ]);
+        let expr = Expr::Call(
+            lap_sym,
+            vec![f, Expr::List(vec![Expr::Sym(x), Expr::Sym(y)])],
+        );
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::zero(), "x²-y² is harmonic");
+    }
+
+    #[test]
+    fn hessian_quadratic() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let hess_sym = interner.get_or_intern("hessian");
+
+        let f = Expr::add(vec![
+            Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+            Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(x), Expr::Sym(y)]),
+            Expr::pow(Expr::Sym(y), Expr::Int(2.into())),
+        ]);
+        let expr = Expr::Call(
+            hess_sym,
+            vec![f, Expr::List(vec![Expr::Sym(x), Expr::Sym(y)])],
+        );
+        let result = eval(&expr, &env, &interner);
+        if let Expr::Matrix(rows) = &result {
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].len(), 2);
+            assert_eq!(rows[0][0], Expr::Int(2.into()));
+            assert_eq!(rows[0][1], Expr::Int(3.into()));
+            assert_eq!(rows[1][0], Expr::Int(3.into()));
+            assert_eq!(rows[1][1], Expr::Int(2.into()));
+        } else {
+            panic!("expected Matrix, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn definite_integral_x_squared() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let x = interner.get_or_intern("x");
+        let defint_sym = interner.get_or_intern("definite_integral");
+
+        let expr = Expr::Call(
+            defint_sym,
+            vec![
+                Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+                Expr::Sym(x),
+                Expr::Int(0.into()),
+                Expr::Int(1.into()),
+            ],
+        );
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::Rational(BigRational::new(1.into(), 3.into())));
     }
 
     #[test]

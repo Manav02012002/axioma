@@ -256,6 +256,182 @@ fn match_one_over_sqrt_one_minus_var_sq(expr: &Expr, var: lasso::Spur) -> bool {
     }
 }
 
+#[derive(Debug)]
+enum QuadraticSign {
+    AMinusX,
+    APlusX,
+    XMinusA,
+}
+
+fn expr_to_rational(expr: &Expr) -> Option<BigRational> {
+    match expr {
+        Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
+        Expr::Rational(r) => Some(r.clone()),
+        Expr::Neg(inner) => expr_to_rational(inner).map(|r| -r),
+        _ => None,
+    }
+}
+
+fn is_var_squared(expr: &Expr, var: lasso::Spur) -> bool {
+    matches!(expr, Expr::Pow(base, exp)
+        if matches!(base.as_ref(), Expr::Sym(s) if *s == var)
+            && matches!(exp.as_ref(), Expr::Int(n) if *n == 2.into()))
+}
+
+fn is_neg_var_squared(expr: &Expr, var: lasso::Spur) -> bool {
+    matches!(expr, Expr::Neg(inner) if is_var_squared(inner, var))
+}
+
+fn is_negative(expr: &Expr) -> bool {
+    match expr {
+        Expr::Neg(_) => true,
+        Expr::Int(n) => n < &BigInt::from(0),
+        _ => false,
+    }
+}
+
+fn negate_expr(expr: &Expr) -> Expr {
+    match expr {
+        Expr::Neg(inner) => inner.as_ref().clone(),
+        Expr::Int(n) => Expr::Int(-n.clone()),
+        _ => Expr::neg(expr.clone()),
+    }
+}
+
+fn decompose_quadratic_form(expr: &Expr, var: lasso::Spur) -> Option<(Expr, QuadraticSign)> {
+    match expr {
+        Expr::Add(terms) if terms.len() == 2 => {
+            let (t0_has_var, t1_has_var) =
+                (contains_var(&terms[0], var), contains_var(&terms[1], var));
+
+            if !t0_has_var && t1_has_var {
+                if is_neg_var_squared(&terms[1], var) {
+                    Some((terms[0].clone(), QuadraticSign::AMinusX))
+                } else if is_var_squared(&terms[1], var) {
+                    Some((terms[0].clone(), QuadraticSign::APlusX))
+                } else {
+                    None
+                }
+            } else if t0_has_var && !t1_has_var {
+                if is_var_squared(&terms[0], var) {
+                    if is_negative(&terms[1]) {
+                        Some((negate_expr(&terms[1]), QuadraticSign::XMinusA))
+                    } else {
+                        Some((terms[1].clone(), QuadraticSign::APlusX))
+                    }
+                } else if is_neg_var_squared(&terms[0], var) {
+                    Some((terms[1].clone(), QuadraticSign::AMinusX))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn match_sqrt_quadratic(
+    expr: &Expr,
+    var: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Option<(Expr, QuadraticSign, BigRational)> {
+    match expr {
+        Expr::Call(f, args) if interner.resolve(*f) == "sqrt" && args.len() == 1 => {
+            if let Some((a_sq, sign)) = decompose_quadratic_form(&args[0], var) {
+                return Some((a_sq, sign, BigRational::new(1.into(), 2.into())));
+            }
+        }
+        Expr::Pow(base, exp) => {
+            if let Some(r) = expr_to_rational(exp) {
+                if *r.denom() == BigInt::from(2) {
+                    if let Some((a_sq, sign)) = decompose_quadratic_form(base, var) {
+                        return Some((a_sq, sign, r));
+                    }
+                }
+            }
+            if let Expr::Int(n) = exp.as_ref() {
+                if *n == (-1).into() {
+                    if let Some((a_sq, sign)) = decompose_quadratic_form(base, var) {
+                        return Some((a_sq, sign, BigRational::from_integer((-1).into())));
+                    }
+                }
+            }
+        }
+        Expr::Mul(factors) => {
+            for factor in factors {
+                if let Some(result) = match_sqrt_quadratic(factor, var, interner) {
+                    return Some(result);
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+fn trig_sub_a_minus_x(
+    _expr: &Expr,
+    var: lasso::Spur,
+    a_sq: &Expr,
+    _power: BigRational,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let a = call1("sqrt", a_sq.clone(), interner);
+    Some(call1(
+        "arcsin",
+        Expr::mul(vec![Expr::Sym(var), Expr::pow(a, Expr::Int((-1).into()))]),
+        interner,
+    ))
+}
+
+fn trig_sub_a_plus_x(
+    _expr: &Expr,
+    var: lasso::Spur,
+    a_sq: &Expr,
+    _power: BigRational,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let a = call1("sqrt", a_sq.clone(), interner);
+    Some(call1(
+        "asinh",
+        Expr::mul(vec![Expr::Sym(var), Expr::pow(a, Expr::Int((-1).into()))]),
+        interner,
+    ))
+}
+
+fn trig_sub_x_minus_a(
+    _expr: &Expr,
+    var: lasso::Spur,
+    a_sq: &Expr,
+    _power: BigRational,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let a = call1("sqrt", a_sq.clone(), interner);
+    Some(call1(
+        "acosh",
+        Expr::mul(vec![Expr::Sym(var), Expr::pow(a, Expr::Int((-1).into()))]),
+        interner,
+    ))
+}
+
+pub fn try_trig_substitution(
+    expr: &Expr,
+    var: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    if let Some((a_sq, sign, power)) = match_sqrt_quadratic(expr, var, interner) {
+        match sign {
+            QuadraticSign::AMinusX => trig_sub_a_minus_x(expr, var, &a_sq, power, interner),
+            QuadraticSign::APlusX => trig_sub_a_plus_x(expr, var, &a_sq, power, interner),
+            QuadraticSign::XMinusA => trig_sub_x_minus_a(expr, var, &a_sq, power, interner),
+        }
+    } else {
+        None
+    }
+}
+
 fn table_integrate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Option<Expr> {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) if !contains_var(expr, var) => {
@@ -674,6 +850,10 @@ pub fn integrate(expr: &ax_ir::Expr, var: lasso::Spur, interner: &ax_ir::Interne
         return result;
     }
 
+    if let Some(result) = try_trig_substitution(expr, var, interner) {
+        return result;
+    }
+
     if let Some(result) = try_integration_by_parts(expr, var, interner) {
         return result;
     }
@@ -705,6 +885,7 @@ pub fn integrate(expr: &ax_ir::Expr, var: lasso::Spur, interner: &ax_ir::Interne
 mod tests {
     use super::integrate;
     use ax_ir::Expr;
+    use num_rational::BigRational;
 
     fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
@@ -816,6 +997,26 @@ mod tests {
         assert!(
             pp.contains("arctan") || pp.contains("atan"),
             "∫arctan(x)dx should contain arctan, got: {}",
+            pp
+        );
+    }
+
+    #[test]
+    fn trig_sub_one_over_sqrt_4_minus_x2() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let expr = Expr::pow(
+            Expr::add(vec![
+                Expr::Int(4.into()),
+                Expr::neg(Expr::pow(Expr::Sym(x), Expr::Int(2.into()))),
+            ]),
+            Expr::Rational(BigRational::new((-1).into(), 2.into())),
+        );
+        let result = integrate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            pp.contains("arcsin") || pp.contains("asin"),
+            "expected arcsin, got: {}",
             pp
         );
     }

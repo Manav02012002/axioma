@@ -1,7 +1,25 @@
 #![forbid(unsafe_code)]
 
 use ax_ir::Expr;
+use num_rational::BigRational;
+use num_traits::{One, Signed, Zero};
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PdeType {
+    Elliptic,
+    Parabolic,
+    Hyperbolic,
+    Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct SeparatedSolution {
+    pub spatial: ax_ir::Expr,
+    pub temporal: ax_ir::Expr,
+    pub separation_constant: ax_ir::Expr,
+    pub pde_type: PdeType,
+}
 
 fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
     match expr {
@@ -75,6 +93,245 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
         Expr::Pow(base, exp) => Expr::pow(simplify_expr(*base, interner), simplify_expr(*exp, interner)),
         Expr::Neg(inner) => Expr::neg(simplify_expr(*inner, interner)),
         other => other,
+    }
+}
+
+fn expr_to_rational(expr: &Expr) -> Option<BigRational> {
+    match expr {
+        Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
+        Expr::Rational(r) => Some(r.clone()),
+        Expr::Neg(inner) => expr_to_rational(inner).map(|r| -r),
+        _ => None,
+    }
+}
+
+fn expr_from_rational(r: BigRational) -> Expr {
+    if r.is_integer() {
+        Expr::Int(r.to_integer())
+    } else {
+        Expr::Rational(r)
+    }
+}
+
+fn eval_expr_simple(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
+    let _ = interner;
+    match expr {
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Sym(_) => expr.clone(),
+        Expr::Neg(inner) => {
+            let value = eval_expr_simple(inner, interner);
+            if let Some(r) = expr_to_rational(&value) {
+                expr_from_rational(-r)
+            } else {
+                Expr::neg(value)
+            }
+        }
+        Expr::Add(terms) => {
+            let simplified: Vec<Expr> = terms.iter().map(|t| eval_expr_simple(t, interner)).collect();
+            if simplified.iter().all(|e| expr_to_rational(e).is_some()) {
+                let sum = simplified
+                    .iter()
+                    .filter_map(expr_to_rational)
+                    .fold(BigRational::zero(), |acc, r| acc + r);
+                expr_from_rational(sum)
+            } else {
+                Expr::add(simplified)
+            }
+        }
+        Expr::Mul(factors) => {
+            let simplified: Vec<Expr> = factors.iter().map(|f| eval_expr_simple(f, interner)).collect();
+            if simplified.iter().all(|e| expr_to_rational(e).is_some()) {
+                let product = simplified
+                    .iter()
+                    .filter_map(expr_to_rational)
+                    .fold(BigRational::one(), |acc, r| acc * r);
+                expr_from_rational(product)
+            } else {
+                Expr::mul(simplified)
+            }
+        }
+        Expr::Pow(base, exp) => {
+            let base_eval = eval_expr_simple(base, interner);
+            let exp_eval = eval_expr_simple(exp, interner);
+            match (expr_to_rational(&base_eval), &exp_eval) {
+                (Some(b), Expr::Int(n)) => {
+                    if n.is_zero() {
+                        Expr::one()
+                    } else if let Some(pow) = num_traits::ToPrimitive::to_u32(n) {
+                        let numer = b.numer().clone().pow(pow);
+                        let denom = b.denom().clone().pow(pow);
+                        expr_from_rational(BigRational::new(numer, denom))
+                    } else if n.is_negative() {
+                        let pow = num_traits::ToPrimitive::to_u32(&(-n.clone())).unwrap_or(0);
+                        let numer = b.denom().clone().pow(pow);
+                        let denom = b.numer().clone().pow(pow);
+                        expr_from_rational(BigRational::new(numer, denom))
+                    } else {
+                        Expr::pow(base_eval, exp_eval)
+                    }
+                }
+                _ => Expr::pow(base_eval, exp_eval),
+            }
+        }
+        _ => expr.clone(),
+    }
+}
+
+pub fn classify_pde(
+    a: &ax_ir::Expr,
+    b: &ax_ir::Expr,
+    c: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> PdeType {
+    let b_sq = ax_ir::Expr::pow(b.clone(), ax_ir::Expr::Int(2.into()));
+    let ac = ax_ir::Expr::mul(vec![a.clone(), c.clone()]);
+    let disc = ax_ir::Expr::add(vec![b_sq, ax_ir::Expr::neg(ac)]);
+    let disc_eval = eval_expr_simple(&disc, interner);
+
+    match &disc_eval {
+        ax_ir::Expr::Int(n) => {
+            if n.is_negative() {
+                PdeType::Elliptic
+            } else if n.is_zero() {
+                PdeType::Parabolic
+            } else {
+                PdeType::Hyperbolic
+            }
+        }
+        ax_ir::Expr::Float(v) => {
+            if *v < -1e-12 {
+                PdeType::Elliptic
+            } else if v.abs() < 1e-12 {
+                PdeType::Parabolic
+            } else {
+                PdeType::Hyperbolic
+            }
+        }
+        ax_ir::Expr::Rational(r) => {
+            if r.is_negative() {
+                PdeType::Elliptic
+            } else if r.is_zero() {
+                PdeType::Parabolic
+            } else {
+                PdeType::Hyperbolic
+            }
+        }
+        _ => PdeType::Unknown,
+    }
+}
+
+pub fn separate_variables(
+    pde_type: PdeType,
+    spatial_var: lasso::Spur,
+    temporal_var: lasso::Spur,
+    coefficient: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> SeparatedSolution {
+    let k = interner.get_or_intern("k");
+    let a_const = interner.get_or_intern("A");
+    let b_const = interner.get_or_intern("B");
+    let c_const = interner.get_or_intern("C");
+    let d_const = interner.get_or_intern("D");
+
+    let sin_sym = interner.get_or_intern("sin");
+    let cos_sym = interner.get_or_intern("cos");
+    let exp_sym = interner.get_or_intern("exp");
+
+    match pde_type {
+        PdeType::Hyperbolic => {
+            let spatial = Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Sym(a_const),
+                    Expr::Call(sin_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                ]),
+                Expr::mul(vec![
+                    Expr::Sym(b_const),
+                    Expr::Call(cos_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                ]),
+            ]);
+
+            let ck = Expr::mul(vec![coefficient.clone(), Expr::Sym(k)]);
+            let temporal = Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Sym(c_const),
+                    Expr::Call(sin_sym, vec![Expr::mul(vec![ck.clone(), Expr::Sym(temporal_var)])]),
+                ]),
+                Expr::mul(vec![
+                    Expr::Sym(d_const),
+                    Expr::Call(cos_sym, vec![Expr::mul(vec![ck, Expr::Sym(temporal_var)])]),
+                ]),
+            ]);
+
+            SeparatedSolution {
+                spatial,
+                temporal,
+                separation_constant: Expr::pow(Expr::Sym(k), Expr::Int(2.into())),
+                pde_type: PdeType::Hyperbolic,
+            }
+        }
+        PdeType::Parabolic => {
+            let spatial = Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Sym(a_const),
+                    Expr::Call(sin_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                ]),
+                Expr::mul(vec![
+                    Expr::Sym(b_const),
+                    Expr::Call(cos_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                ]),
+            ]);
+
+            let decay = Expr::neg(Expr::mul(vec![
+                coefficient.clone(),
+                Expr::pow(Expr::Sym(k), Expr::Int(2.into())),
+                Expr::Sym(temporal_var),
+            ]));
+            let temporal = Expr::Call(exp_sym, vec![decay]);
+
+            SeparatedSolution {
+                spatial,
+                temporal,
+                separation_constant: Expr::pow(Expr::Sym(k), Expr::Int(2.into())),
+                pde_type: PdeType::Parabolic,
+            }
+        }
+        PdeType::Elliptic => {
+            let spatial = Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Sym(a_const),
+                    Expr::Call(sin_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                ]),
+                Expr::mul(vec![
+                    Expr::Sym(b_const),
+                    Expr::Call(cos_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                ]),
+            ]);
+
+            let sinh_sym = interner.get_or_intern("sinh");
+            let cosh_sym = interner.get_or_intern("cosh");
+            let temporal = Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Sym(c_const),
+                    Expr::Call(sinh_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(temporal_var)])]),
+                ]),
+                Expr::mul(vec![
+                    Expr::Sym(d_const),
+                    Expr::Call(cosh_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(temporal_var)])]),
+                ]),
+            ]);
+
+            SeparatedSolution {
+                spatial,
+                temporal,
+                separation_constant: Expr::pow(Expr::Sym(k), Expr::Int(2.into())),
+                pde_type: PdeType::Elliptic,
+            }
+        }
+        PdeType::Unknown => SeparatedSolution {
+            spatial: Expr::Sym(interner.get_or_intern("X")),
+            temporal: Expr::Sym(interner.get_or_intern("T")),
+            separation_constant: Expr::Sym(interner.get_or_intern("lambda")),
+            pde_type: PdeType::Unknown,
+        },
     }
 }
 
@@ -654,5 +911,53 @@ mod tests {
 
         let system = first_order_form(&ode, x, t, &interner);
         assert_eq!(system.len(), 3, "3rd-order ODE should give 3 equations");
+    }
+
+    #[test]
+    fn classify_wave_equation() {
+        let interner = ax_ir::Interner::new();
+        let result = classify_pde(
+            &Expr::Int(1.into()),
+            &Expr::Int(0.into()),
+            &Expr::Int((-1i64).into()),
+            &interner,
+        );
+        assert_eq!(result, PdeType::Hyperbolic);
+    }
+
+    #[test]
+    fn classify_heat_equation() {
+        let interner = ax_ir::Interner::new();
+        let result = classify_pde(
+            &Expr::Int(1.into()),
+            &Expr::Int(0.into()),
+            &Expr::Int(0.into()),
+            &interner,
+        );
+        assert_eq!(result, PdeType::Parabolic);
+    }
+
+    #[test]
+    fn classify_laplace() {
+        let interner = ax_ir::Interner::new();
+        let result = classify_pde(
+            &Expr::Int(1.into()),
+            &Expr::Int(0.into()),
+            &Expr::Int(1.into()),
+            &interner,
+        );
+        assert_eq!(result, PdeType::Elliptic);
+    }
+
+    #[test]
+    fn separate_wave() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let t = interner.get_or_intern("t");
+        let c = interner.get_or_intern("c");
+        let sol = separate_variables(PdeType::Hyperbolic, x, t, &Expr::Sym(c), &interner);
+        assert_eq!(sol.pde_type, PdeType::Hyperbolic);
+        let pp = ax_ir::pretty_print(&sol.spatial, &interner);
+        assert!(pp.contains("sin") && pp.contains("cos"), "spatial should have sin and cos: {}", pp);
     }
 }

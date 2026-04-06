@@ -163,6 +163,39 @@ fn build_trig_rules(interner: &ax_ir::Interner) -> Vec<ax_rewrite::RewriteRule> 
             condition: None,
             trust_level: ax_ir::TrustLevel::Exact,
         },
+        ax_rewrite::RewriteRule {
+            name: "sin2_power_reduce".into(),
+            pattern: pow_pat(sin_x_pat.clone(), 2),
+            replacement: Expr::mul(vec![
+                Expr::Rational(BigRational::new(1.into(), 2.into())),
+                Expr::add(vec![
+                    Expr::one(),
+                    Expr::neg(Expr::Call(cos_sym, vec![two_x.clone()])),
+                ]),
+            ]),
+            condition: Some(is_nontrivial_x_slot),
+            trust_level: ax_ir::TrustLevel::Exact,
+        },
+        ax_rewrite::RewriteRule {
+            name: "cos2_power_reduce".into(),
+            pattern: pow_pat(cos_x_pat.clone(), 2),
+            replacement: Expr::mul(vec![
+                Expr::Rational(BigRational::new(1.into(), 2.into())),
+                Expr::add(vec![Expr::one(), Expr::Call(cos_sym, vec![two_x.clone()])]),
+            ]),
+            condition: Some(is_nontrivial_x_slot),
+            trust_level: ax_ir::TrustLevel::Exact,
+        },
+        ax_rewrite::RewriteRule {
+            name: "sin_cos_double".into(),
+            pattern: mul_pat(vec![sin_x_pat.clone(), cos_x_pat.clone()]),
+            replacement: Expr::mul(vec![
+                Expr::Rational(BigRational::new(1.into(), 2.into())),
+                Expr::Call(sin_sym, vec![two_x.clone()]),
+            ]),
+            condition: Some(is_nontrivial_x_slot),
+            trust_level: ax_ir::TrustLevel::Exact,
+        },
     ]
 }
 
@@ -1198,12 +1231,260 @@ pub fn rationalize(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Exp
     }
 }
 
+fn extract_log_multiple(expr: &Expr, log_sym: lasso::Spur) -> Option<(Expr, Expr)> {
+    if let Expr::Mul(factors) = expr {
+        let mut coeff = None;
+        let mut log_arg = None;
+        let mut others = Vec::new();
+
+        for f in factors {
+            if let Expr::Call(func, args) = f {
+                if *func == log_sym && args.len() == 1 && log_arg.is_none() {
+                    log_arg = Some(args[0].clone());
+                    continue;
+                }
+            }
+            match f {
+                Expr::Int(_) | Expr::Rational(_) if coeff.is_none() => coeff = Some(f.clone()),
+                _ => others.push(f.clone()),
+            }
+        }
+
+        if let (Some(c), Some(la)) = (coeff, log_arg) {
+            if others.is_empty() {
+                return Some((c, la));
+            }
+        }
+    }
+    None
+}
+
+pub fn log_simplify(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    let log_sym = interner.get_or_intern("log");
+
+    match expr {
+        Expr::Add(terms) => {
+            let mut log_args = Vec::new();
+            let mut other_terms = Vec::new();
+
+            for term in terms {
+                let simplified = log_simplify(term, interner);
+                if let Expr::Call(f, args) = &simplified {
+                    if *f == log_sym && args.len() == 1 {
+                        log_args.push(args[0].clone());
+                        continue;
+                    }
+                }
+                if let Some((coeff, log_arg)) = extract_log_multiple(&simplified, log_sym) {
+                    log_args.push(Expr::pow(log_arg, coeff));
+                    continue;
+                }
+                other_terms.push(simplified);
+            }
+
+            if log_args.len() >= 2 {
+                other_terms.push(Expr::Call(log_sym, vec![Expr::mul(log_args)]));
+            } else {
+                other_terms.extend(log_args.into_iter().map(|a| Expr::Call(log_sym, vec![a])));
+            }
+
+            if other_terms.len() == 1 {
+                other_terms.remove(0)
+            } else {
+                Expr::add(other_terms)
+            }
+        }
+        Expr::Mul(factors) => {
+            let simplified: Vec<Expr> = factors.iter().map(|f| log_simplify(f, interner)).collect();
+
+            let mut coeff_parts = Vec::new();
+            let mut log_part: Option<Expr> = None;
+            let mut other_parts = Vec::new();
+
+            for factor in &simplified {
+                if let Expr::Call(f, args) = factor {
+                    if *f == log_sym && args.len() == 1 && log_part.is_none() {
+                        log_part = Some(args[0].clone());
+                        continue;
+                    }
+                }
+                match factor {
+                    Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => coeff_parts.push(factor.clone()),
+                    _ => other_parts.push(factor.clone()),
+                }
+            }
+
+            if let Some(log_arg) = log_part {
+                if !coeff_parts.is_empty() {
+                    let coeff = if coeff_parts.len() == 1 {
+                        coeff_parts.remove(0)
+                    } else {
+                        Expr::mul(coeff_parts)
+                    };
+                    other_parts.push(Expr::Call(log_sym, vec![Expr::pow(log_arg, coeff)]));
+                    Expr::mul(other_parts)
+                } else {
+                    Expr::mul(simplified)
+                }
+            } else {
+                Expr::mul(simplified)
+            }
+        }
+        Expr::Neg(inner) => Expr::neg(log_simplify(inner, interner)),
+        _ => expr.clone(),
+    }
+}
+
+fn factor_base_and_exp_expr(expr: &Expr) -> (Expr, Expr) {
+    match expr {
+        Expr::Pow(base, exp) => (base.as_ref().clone(), exp.as_ref().clone()),
+        _ => (expr.clone(), Expr::one()),
+    }
+}
+
+/// Combine like powers in a product: x^a · x^b → x^(a+b)
+pub fn combine_powers(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut power_map: Vec<(Expr, Expr)> = Vec::new();
+            let mut scalar_factors = Vec::new();
+
+            for factor in factors {
+                let (base, exp) = factor_base_and_exp_expr(factor);
+                let mut found = false;
+                for (existing_base, existing_exp) in &mut power_map {
+                    if *existing_base == base {
+                        *existing_exp = Expr::add(vec![existing_exp.clone(), exp.clone()]);
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    if matches!(&base, Expr::Int(_) | Expr::Rational(_) | Expr::Float(_))
+                        && matches!(&exp, Expr::Int(n) if *n == 1.into())
+                    {
+                        scalar_factors.push(factor.clone());
+                    } else {
+                        power_map.push((base, exp));
+                    }
+                }
+            }
+
+            let mut result = scalar_factors;
+            for (base, exp) in power_map {
+                let simplified_exp = eval(&exp, &Env::new(), interner);
+                match &simplified_exp {
+                    Expr::Int(n) if *n == 0.into() => {}
+                    Expr::Int(n) if *n == 1.into() => result.push(base),
+                    _ => result.push(Expr::pow(base, simplified_exp)),
+                }
+            }
+
+            if result.is_empty() {
+                Expr::one()
+            } else {
+                Expr::mul(result)
+            }
+        }
+        _ => expr.clone(),
+    }
+}
+
+fn node_count(expr: &Expr) -> usize {
+    match expr {
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            1 + terms.iter().map(node_count).sum::<usize>()
+        }
+        Expr::Pow(base, exp) => 1 + node_count(base) + node_count(exp),
+        Expr::Neg(inner) => 1 + node_count(inner),
+        Expr::Call(_, args) => 1 + args.iter().map(node_count).sum::<usize>(),
+        Expr::Complex(re, im) => 1 + node_count(re) + node_count(im),
+        Expr::FnDef(_, _, body) => 1 + node_count(body),
+        Expr::Rule(lhs, rhs, _) => 1 + node_count(lhs) + node_count(rhs),
+        Expr::Piecewise(cases) => 1 + cases.iter().map(|(v, _)| node_count(v)).sum::<usize>(),
+        Expr::Indexed(base, _) => 1 + node_count(base),
+        Expr::Let(_, val, body) => 1 + node_count(val) + node_count(body),
+        Expr::Matrix(rows) => 1 + rows.iter().flatten().map(node_count).sum::<usize>(),
+        _ => 1,
+    }
+}
+
+fn extract_common_factor_for_factoring(terms: &[Expr]) -> Option<(Expr, Vec<Expr>)> {
+    if terms.len() < 2 {
+        return None;
+    }
+
+    let mut common = factor_list(&terms[0]);
+    if common.is_empty() {
+        return None;
+    }
+
+    for term in &terms[1..] {
+        let factors = factor_list(term);
+        common.retain_mut(|(common_base, common_exp)| {
+            if let Some((_, exp)) = factors.iter().find(|(base, _)| *base == *common_base) {
+                if *exp < *common_exp {
+                    *common_exp = exp.clone();
+                }
+                !common_exp.is_zero()
+            } else {
+                false
+            }
+        });
+        if common.is_empty() {
+            return None;
+        }
+    }
+
+    let common_expr = Expr::mul(
+        common
+            .iter()
+            .map(|(base, exp)| {
+                if exp.is_one() {
+                    base.clone()
+                } else {
+                    Expr::pow(base.clone(), Expr::Rational(exp.clone()))
+                }
+            })
+            .collect(),
+    );
+
+    if common_expr == Expr::one() {
+        return None;
+    }
+
+    let remainders = terms
+        .iter()
+        .map(|term| remove_common_factor(&factor_list(term), &common))
+        .collect::<Vec<_>>();
+
+    Some((common_expr, remainders))
+}
+
+fn try_factor(expr: &Expr, _interner: &ax_ir::Interner) -> Expr {
+    match expr {
+        Expr::Add(terms) => {
+            if let Some((common, remainders)) = extract_common_factor_for_factoring(terms) {
+                let factored = Expr::mul(vec![common, Expr::add(remainders)]);
+                if node_count(&factored) < node_count(expr) {
+                    return factored;
+                }
+            }
+            expr.clone()
+        }
+        _ => expr.clone(),
+    }
+}
+
 pub fn simplify(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
     let e1 = expand(expr, interner);
     let e2 = collect_terms(&e1, interner);
     let e3 = rationalize(&e2, interner);
     let e4 = trig_simplify(&e3, interner);
-    eval(&e4, &Env::new(), interner)
+    let e5 = log_simplify(&e4, interner);
+    let e6 = combine_powers(&e5, interner);
+    let e7 = try_factor(&e6, interner);
+    eval(&e7, &Env::new(), interner)
 }
 
 pub fn trig_simplify(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
@@ -1641,5 +1922,71 @@ mod tests {
         ]);
         let result = factor_out(&expr, &[a], &interner);
         assert!(matches!(result, Expr::Mul(_)), "expected Mul, got {result:?}");
+    }
+
+    #[test]
+    fn log_combine() {
+        let interner = ax_ir::Interner::new();
+        let log_sym = interner.get_or_intern("log");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::add(vec![
+            Expr::Call(log_sym, vec![Expr::Sym(a)]),
+            Expr::Call(log_sym, vec![Expr::Sym(b)]),
+        ]);
+        let result = log_simplify(&expr, &interner);
+        if let Expr::Call(f, args) = &result {
+            assert_eq!(*f, log_sym);
+            if let Expr::Mul(factors) = &args[0] {
+                assert_eq!(factors.len(), 2);
+            } else {
+                panic!("expected log(a·b), got: {:?}", result);
+            }
+        } else {
+            panic!("expected Call, got: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn combine_powers_same_base() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+
+        let expr = Expr::mul(vec![
+            Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+            Expr::pow(Expr::Sym(x), Expr::Int(3.into())),
+        ]);
+        let result = combine_powers(&expr, &interner);
+        if let Expr::Pow(base, exp) = &result {
+            assert_eq!(**base, Expr::Sym(x));
+            assert_eq!(**exp, Expr::Int(5.into()));
+        } else {
+            panic!("expected x^5, got: {:?}", result);
+        }
+    }
+
+    #[test]
+    fn n_log_x_to_log_x_n() {
+        let interner = ax_ir::Interner::new();
+        let log_sym = interner.get_or_intern("log");
+        let x = interner.get_or_intern("x");
+
+        let expr = Expr::mul(vec![
+            Expr::Int(3.into()),
+            Expr::Call(log_sym, vec![Expr::Sym(x)]),
+        ]);
+        let result = log_simplify(&expr, &interner);
+        if let Expr::Call(f, args) = &result {
+            assert_eq!(*f, log_sym);
+            if let Expr::Pow(base, exp) = &args[0] {
+                assert_eq!(**base, Expr::Sym(x));
+                assert_eq!(**exp, Expr::Int(3.into()));
+            } else {
+                panic!("expected log(x^3), got: {:?}", result);
+            }
+        } else {
+            panic!("expected Call, got: {:?}", result);
+        }
     }
 }
