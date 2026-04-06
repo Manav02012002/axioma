@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ax_ir::Expr;
 use rustyline::error::ReadlineError;
 
@@ -59,6 +59,62 @@ fn trust_for_expr(expr: &Expr, env: &ax_eval::Env, interner: &ax_ir::Interner) -
     }
 }
 
+fn export_session(
+    command: &str,
+    session_cells: &[(String, Option<Expr>)],
+    interner: &ax_ir::Interner,
+) -> Result<()> {
+    let mut parts = command.split_whitespace();
+    let _export = parts.next();
+    let format_name = parts.next().unwrap_or("latex");
+    let format = match format_name {
+        "latex" | "tex" => crate::cmd_export::ExportFormat::Latex,
+        "html" => crate::cmd_export::ExportFormat::Html,
+        other => anyhow::bail!("unknown export format: {other}; expected latex or html"),
+    };
+    let default_filename = match format {
+        crate::cmd_export::ExportFormat::Latex => "session.tex",
+        crate::cmd_export::ExportFormat::Html => "session.html",
+    };
+    let filename = parts.next().unwrap_or(default_filename);
+    if parts.next().is_some() {
+        anyhow::bail!("usage: :export latex [filename] or :export html [filename]");
+    }
+
+    let cells = session_cells
+        .iter()
+        .enumerate()
+        .map(|(idx, (input, output))| crate::cmd_export::ExportCell {
+            input_source: input.clone(),
+            input_line_start: idx + 1,
+            output_latex: output
+                .as_ref()
+                .map(|expr| ax_render::to_latex(expr, interner)),
+            output_unicode: output
+                .as_ref()
+                .map(|expr| ax_render::to_unicode(expr, interner)),
+            cell_type: crate::cmd_export::CellType::Code,
+        })
+        .collect::<Vec<_>>();
+
+    let options = crate::cmd_export::ExportOptions {
+        format: format.clone(),
+        include_input: true,
+        include_output: true,
+        standalone: true,
+        title: Some("Axioma REPL Session".to_string()),
+        author: None,
+        document_class: "article".to_string(),
+    };
+    let rendered = match format {
+        crate::cmd_export::ExportFormat::Latex => crate::cmd_export::export_latex(&cells, &options),
+        crate::cmd_export::ExportFormat::Html => crate::cmd_export::export_html(&cells, &options),
+    };
+    std::fs::write(filename, rendered).with_context(|| format!("failed to write {filename}"))?;
+    println!("wrote {filename}");
+    Ok(())
+}
+
 fn print_help() {
     println!("Axioma REPL commands:");
     println!("  :quit, :q          Exit");
@@ -77,6 +133,8 @@ fn print_help() {
     println!("  :codegen python    Generate Python for last result");
     println!("  :codegen rust      Generate Rust for last result");
     println!("  :codegen cpp       Generate C++ for last result");
+    println!("  :export latex [f]  Export current session to LaTeX");
+    println!("  :export html [f]   Export current session to HTML");
     println!("  :reset             Clear all bindings and rules");
     println!("  :trust             Show trust level of last result");
 }
@@ -229,6 +287,7 @@ pub fn run() -> Result<()> {
         .map(|home| std::path::PathBuf::from(home).join(".axioma_history"));
     let mut last_result: Option<Expr> = None;
     let mut last_trust: Option<String> = None;
+    let mut session_cells: Vec<(String, Option<Expr>)> = Vec::new();
 
     if let Some(path) = &history_path {
         let _ = editor.load_history(path);
@@ -381,6 +440,7 @@ pub fn run() -> Result<()> {
                 env = ax_eval::Env::new();
                 last_result = None;
                 last_trust = None;
+                session_cells.clear();
                 println!("Environment reset.");
                 continue;
             }
@@ -412,6 +472,12 @@ pub fn run() -> Result<()> {
                 }
                 continue;
             }
+            s if s.starts_with(":export") => {
+                if let Err(err) = export_session(s, &session_cells, &interner) {
+                    eprintln!("{err:#}");
+                }
+                continue;
+            }
             _ => {}
         }
 
@@ -434,14 +500,16 @@ pub fn run() -> Result<()> {
         if let Some(expr) = lowered.expr {
             let candidate_last = candidate_last_expr(&expr, &env, &interner);
             let trust = trust_for_expr(&expr, &env, &interner);
+            let mut session_output = None;
             if let Some(message) =
                 crate::cmd_run::execute_expr(&expr, &mut env, &interner, &search_paths)?
             {
                 println!("{message}");
-            }
-            if let Some(expr) = candidate_last {
+            } else if let Some(expr) = candidate_last {
                 last_result = Some(expr);
+                session_output = last_result.clone();
             }
+            session_cells.push((trimmed.to_string(), session_output));
             last_trust = trust;
         }
     }

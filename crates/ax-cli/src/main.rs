@@ -5,6 +5,7 @@ mod cmd_ai_pack;
 
 mod cmd_codegen;
 pub mod cmd_docgen;
+pub mod cmd_export;
 mod cmd_fix;
 mod cmd_install;
 mod cmd_parse;
@@ -84,6 +85,25 @@ enum Command {
         file: std::path::PathBuf,
         #[arg(long, default_value = "latex")]
         format: String,
+    },
+    Export {
+        file: std::path::PathBuf,
+        #[arg(long, default_value = "latex")]
+        format: String,
+        #[arg(long)]
+        output: Option<std::path::PathBuf>,
+        #[arg(long = "no-input")]
+        no_input: bool,
+        #[arg(long = "no-output")]
+        no_output: bool,
+        #[arg(long)]
+        fragment: bool,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        author: Option<String>,
+        #[arg(long = "class", default_value = "article")]
+        class: String,
     },
     Codegen {
         file: std::path::PathBuf,
@@ -304,6 +324,45 @@ fn real_main() -> Result<()> {
         Command::Render { file, format } => {
             let code = cmd_render::run(&file, &format)?;
             std::process::exit(code);
+        }
+        Command::Export {
+            file,
+            format,
+            output,
+            no_input,
+            no_output,
+            fragment,
+            title,
+            author,
+            class,
+        } => {
+            let format = match format.as_str() {
+                "latex" | "tex" => cmd_export::ExportFormat::Latex,
+                "html" => cmd_export::ExportFormat::Html,
+                other => bail!("unsupported export format: {other}; expected latex or html"),
+            };
+            let default_extension = match format {
+                cmd_export::ExportFormat::Latex => "tex",
+                cmd_export::ExportFormat::Html => "html",
+            };
+            let options = cmd_export::ExportOptions {
+                format,
+                include_input: !no_input,
+                include_output: !no_output,
+                standalone: !fragment,
+                title,
+                author,
+                document_class: class,
+            };
+            let source = fs::read_to_string(&file)
+                .with_context(|| format!("failed to read {}", file.display()))?;
+            let interner = ax_ir::Interner::new();
+            let rendered = cmd_export::export(&source, &options, &interner);
+            let output_path = output.unwrap_or_else(|| file.with_extension(default_extension));
+            fs::write(&output_path, rendered)
+                .with_context(|| format!("failed to write {}", output_path.display()))?;
+            println!("wrote {}", output_path.display());
+            Ok(())
         }
         Command::Codegen {
             file,

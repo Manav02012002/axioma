@@ -13,6 +13,10 @@ categories = ["science", "mathematics"]
 name = "axioma"
 path = "src/main.rs"
 
+[lib]
+name = "ax_cli"
+path = "src/lib.rs"
+
 [features]
 default = ["notebook"]
 notebook = ["dep:ax-notebook"]
