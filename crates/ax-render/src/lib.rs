@@ -118,6 +118,14 @@ fn render_joined(exprs: &[Expr], parent_prec: u8, interner: &ax_ir::Interner, se
         .join(sep)
 }
 
+fn spinor_label_latex(expr: &Expr, interner: &ax_ir::Interner) -> String {
+    match expr {
+        Expr::Int(n) => n.to_string(),
+        Expr::Sym(s) => symbol_to_latex(*s, interner),
+        _ => render(expr, PREC_TOP, interner),
+    }
+}
+
 fn render_add(terms: &[Expr], parent_prec: u8, interner: &ax_ir::Interner) -> String {
     let mut out = String::new();
     for (idx, term) in terms.iter().enumerate() {
@@ -249,6 +257,34 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
         .collect::<Vec<_>>();
 
     match (name, args.len()) {
+        ("__angle", 2) => format!(
+            "\\langle {}\\,{} \\rangle",
+            spinor_label_latex(&args[0], interner),
+            spinor_label_latex(&args[1], interner)
+        ),
+        ("__square", 2) => format!(
+            "[{}\\,{}]",
+            spinor_label_latex(&args[0], interner),
+            spinor_label_latex(&args[1], interner)
+        ),
+        ("__mandelstam", 2) => format!(
+            "s_{{{} {}}}",
+            spinor_label_latex(&args[0], interner),
+            spinor_label_latex(&args[1], interner)
+        ),
+        ("__mandelstam3", 3) | ("__mandelstam_multi", 3) => format!(
+            "s_{{{} {} {}}}",
+            spinor_label_latex(&args[0], interner),
+            spinor_label_latex(&args[1], interner),
+            spinor_label_latex(&args[2], interner)
+        ),
+        ("__four_bracket", 4) => format!(
+            "\\langle {}\\,{}\\,{}\\,{} \\rangle",
+            spinor_label_latex(&args[0], interner),
+            spinor_label_latex(&args[1], interner),
+            spinor_label_latex(&args[2], interner),
+            spinor_label_latex(&args[3], interner)
+        ),
         ("sin", 1)
         | ("cos", 1)
         | ("tan", 1)
@@ -258,12 +294,18 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
         | ("sinh", 1)
         | ("cosh", 1)
         | ("tanh", 1)
-        | ("arcsin", 1) | ("asin", 1)
-        | ("arccos", 1) | ("acos", 1)
-        | ("arctan", 1) | ("atan", 1)
-        | ("arcsinh", 1) | ("asinh", 1)
-        | ("arccosh", 1) | ("acosh", 1)
-        | ("arctanh", 1) | ("atanh", 1) => {
+        | ("arcsin", 1)
+        | ("asin", 1)
+        | ("arccos", 1)
+        | ("acos", 1)
+        | ("arctan", 1)
+        | ("atan", 1)
+        | ("arcsinh", 1)
+        | ("asinh", 1)
+        | ("arccosh", 1)
+        | ("acosh", 1)
+        | ("arctanh", 1)
+        | ("atanh", 1) => {
             let latex_name = match name {
                 "asin" | "arcsin" => "\\arcsin",
                 "acos" | "arccos" => "\\arccos",
@@ -279,10 +321,16 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
             format!("{}\\!\\left({}\\right)", latex_name, rendered_args[0])
         }
         ("sign", 1) | ("sgn", 1) => {
-            format!("\\operatorname{{sgn}}\\!\\left({}\\right)", rendered_args[0])
+            format!(
+                "\\operatorname{{sgn}}\\!\\left({}\\right)",
+                rendered_args[0]
+            )
         }
         ("atan2", 2) => {
-            format!("\\operatorname{{atan2}}\\!\\left({}, {}\\right)", rendered_args[0], rendered_args[1])
+            format!(
+                "\\operatorname{{atan2}}\\!\\left({}, {}\\right)",
+                rendered_args[0], rendered_args[1]
+            )
         }
         ("log", 1) => format!("\\log\\!\\left({}\\right)", rendered_args[0]),
         ("ln", 1) => format!("\\ln\\!\\left({}\\right)", rendered_args[0]),
@@ -335,12 +383,36 @@ fn render_assumption(assumption: &Assumption) -> &'static str {
 
 fn render_condition(condition: &Condition, interner: &ax_ir::Interner) -> String {
     match condition {
-        Condition::Gt(a, b) => format!("{} > {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
-        Condition::Lt(a, b) => format!("{} < {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
-        Condition::Ge(a, b) => format!("{} \\ge {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
-        Condition::Le(a, b) => format!("{} \\le {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
-        Condition::Eq(a, b) => format!("{} = {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
-        Condition::Ne(a, b) => format!("{} \\ne {}", render(a, PREC_TOP, interner), render(b, PREC_TOP, interner)),
+        Condition::Gt(a, b) => format!(
+            "{} > {}",
+            render(a, PREC_TOP, interner),
+            render(b, PREC_TOP, interner)
+        ),
+        Condition::Lt(a, b) => format!(
+            "{} < {}",
+            render(a, PREC_TOP, interner),
+            render(b, PREC_TOP, interner)
+        ),
+        Condition::Ge(a, b) => format!(
+            "{} \\ge {}",
+            render(a, PREC_TOP, interner),
+            render(b, PREC_TOP, interner)
+        ),
+        Condition::Le(a, b) => format!(
+            "{} \\le {}",
+            render(a, PREC_TOP, interner),
+            render(b, PREC_TOP, interner)
+        ),
+        Condition::Eq(a, b) => format!(
+            "{} = {}",
+            render(a, PREC_TOP, interner),
+            render(b, PREC_TOP, interner)
+        ),
+        Condition::Ne(a, b) => format!(
+            "{} \\ne {}",
+            render(a, PREC_TOP, interner),
+            render(b, PREC_TOP, interner)
+        ),
         Condition::And(a, b) => format!(
             "\\left({}\\right) \\land \\left({}\\right)",
             render_condition(a, interner),

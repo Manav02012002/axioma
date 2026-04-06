@@ -234,6 +234,7 @@ dependencies = [
  "ax-qm",
  "ax-rewrite",
  "ax-solve",
+ "ax-spinor",
  "ax-syntax",
  "ax-tensor",
  "ax-units",
@@ -424,6 +425,17 @@ dependencies = [
  "lasso",
  "num-bigint",
  "num-integer",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
+name = "ax-spinor"
+version = "0.1.0"
+dependencies = [
+ "ax-ir",
+ "lasso",
+ "num-bigint",
  "num-rational",
  "num-traits",
 ]

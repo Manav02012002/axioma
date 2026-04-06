@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
-pub mod integrate;
 pub mod inspect;
+pub mod integrate;
 pub mod limits;
 pub mod property_store;
 pub mod registry;
@@ -17,15 +17,15 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub use registry::{
-    algorithm_entries, assumption_entries, builtin_entries, callable_entries,
-    convention_entries, property_entries, std_modules, syntax_rules, AlgorithmEntry,
-    AssumptionEntry, BuiltinEntry, CallableEntry, ConventionEntry, EvalState, ParamDef,
-    ParamType, PropertyEntry, StdModule, SyntaxRule,
-};
 pub use property_store::{
     property_discriminant_matches, InheritanceRule, PropertyAttachment, PropertyPattern,
     PropertyStore, SlotSpec, WeightCombine,
+};
+pub use registry::{
+    algorithm_entries, assumption_entries, builtin_entries, callable_entries, convention_entries,
+    property_entries, std_modules, syntax_rules, AlgorithmEntry, AssumptionEntry, BuiltinEntry,
+    CallableEntry, ConventionEntry, EvalState, ParamDef, ParamType, PropertyEntry, StdModule,
+    SyntaxRule,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -45,6 +45,7 @@ pub struct Env {
     pub expr_pool: Option<ax_ir::ExprPool>,
     pub expr_pool_threshold: usize,
     pub parallel: bool,
+    pub spinor_labels: ax_spinor::LabelMap,
     pub convention: ax_ir::Convention,
     /// Weights assigned to symbols. Map from (symbol, label) to weight value.
     /// Example: x::Weight(value=1, label=field) → weights[(x, "field")] = 1
@@ -68,6 +69,7 @@ impl Env {
             expr_pool: None,
             expr_pool_threshold: 256,
             parallel: false,
+            spinor_labels: ax_spinor::LabelMap::new(),
             convention: ax_ir::Convention::default(),
             weights: HashMap::new(),
         }
@@ -97,6 +99,7 @@ impl Env {
             expr_pool: self.expr_pool.clone(),
             expr_pool_threshold: self.expr_pool_threshold,
             parallel: self.parallel,
+            spinor_labels: self.spinor_labels.clone(),
             convention: self.convention.clone(),
             weights: self.weights.clone(),
         }
@@ -150,7 +153,12 @@ fn expr_node_count(expr: &Expr) -> usize {
                 .map(expr_node_count)
                 .sum::<usize>()
         }
-        Expr::Piecewise(cases) => 1 + cases.iter().map(|(value, _)| expr_node_count(value)).sum::<usize>(),
+        Expr::Piecewise(cases) => {
+            1 + cases
+                .iter()
+                .map(|(value, _)| expr_node_count(value))
+                .sum::<usize>()
+        }
         Expr::Let(_, val, body) => 1 + expr_node_count(val) + expr_node_count(body),
         Expr::FnDef(_, _, body) => 1 + expr_node_count(body),
         Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) => 1,
@@ -201,6 +209,444 @@ fn maybe_pooled_meld(
     }
 }
 
+fn label_from_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<ax_spinor::Label> {
+    match expr {
+        Expr::Int(n) => n.to_u16().map(ax_spinor::Label::new),
+        Expr::Sym(s) => interner
+            .resolve(*s)
+            .parse::<u16>()
+            .ok()
+            .map(ax_spinor::Label::new),
+        _ => None,
+    }
+}
+
+fn int_from_expr(expr: &Expr) -> Option<u16> {
+    match expr {
+        Expr::Int(n) => n.to_u16(),
+        _ => None,
+    }
+}
+
+fn int_expr_u16(n: u16) -> Expr {
+    Expr::Int(BigInt::from(n))
+}
+
+fn rational_or_int(r: &BigRational) -> Expr {
+    if r.is_integer() {
+        Expr::Int(r.to_integer())
+    } else {
+        Expr::Rational(r.clone())
+    }
+}
+
+fn spinor_factor_to_expr(factor: &ax_spinor::SpinorFactor, interner: &ax_ir::Interner) -> Expr {
+    match factor {
+        ax_spinor::SpinorFactor::Angle(i, j) => Expr::Call(
+            interner.get_or_intern("__angle"),
+            vec![int_expr_u16(i.0), int_expr_u16(j.0)],
+        ),
+        ax_spinor::SpinorFactor::Square(i, j) => Expr::Call(
+            interner.get_or_intern("__square"),
+            vec![int_expr_u16(i.0), int_expr_u16(j.0)],
+        ),
+        ax_spinor::SpinorFactor::AngleSquare(i, middle, j) => Expr::Call(
+            interner.get_or_intern("__angle_square_chain"),
+            std::iter::once(int_expr_u16(i.0))
+                .chain(middle.iter().map(|l| int_expr_u16(l.0)))
+                .chain(std::iter::once(int_expr_u16(j.0)))
+                .collect(),
+        ),
+        ax_spinor::SpinorFactor::SquareAngle(i, middle, j) => Expr::Call(
+            interner.get_or_intern("__square_angle_chain"),
+            std::iter::once(int_expr_u16(i.0))
+                .chain(middle.iter().map(|l| int_expr_u16(l.0)))
+                .chain(std::iter::once(int_expr_u16(j.0)))
+                .collect(),
+        ),
+        ax_spinor::SpinorFactor::Mandelstam(labels) => Expr::Call(
+            interner.get_or_intern("__mandelstam_multi"),
+            labels.iter().map(|l| int_expr_u16(l.0)).collect(),
+        ),
+        ax_spinor::SpinorFactor::Power(base, n) => Expr::pow(
+            spinor_factor_to_expr(base, interner),
+            Expr::Int(BigInt::from(*n)),
+        ),
+        ax_spinor::SpinorFactor::Grouped(expr) => spinor_to_expr(expr, interner),
+        ax_spinor::SpinorFactor::SymbolicParam(s) => Expr::Sym(*s),
+    }
+}
+
+fn spinor_term_to_expr(term: &ax_spinor::SpinorTerm, interner: &ax_ir::Interner) -> Expr {
+    let mut factors = Vec::new();
+    if term.coefficient != BigRational::from_integer(1.into()) || term.factors.is_empty() {
+        factors.push(rational_or_int(&term.coefficient));
+    }
+    factors.extend(
+        term.factors
+            .iter()
+            .map(|f| spinor_factor_to_expr(f, interner)),
+    );
+    Expr::mul(factors)
+}
+
+fn spinor_to_expr(s: &ax_spinor::SpinorExpr, interner: &ax_ir::Interner) -> Expr {
+    match s {
+        ax_spinor::SpinorExpr::AngleBracket(i, j) => Expr::Call(
+            interner.get_or_intern("__angle"),
+            vec![int_expr_u16(i.0), int_expr_u16(j.0)],
+        ),
+        ax_spinor::SpinorExpr::SquareBracket(i, j) => Expr::Call(
+            interner.get_or_intern("__square"),
+            vec![int_expr_u16(i.0), int_expr_u16(j.0)],
+        ),
+        ax_spinor::SpinorExpr::AngleChain(i, middle, j) => Expr::Call(
+            interner.get_or_intern("__angle_chain"),
+            std::iter::once(int_expr_u16(i.0))
+                .chain(middle.iter().map(|l| int_expr_u16(l.0)))
+                .chain(std::iter::once(int_expr_u16(j.0)))
+                .collect(),
+        ),
+        ax_spinor::SpinorExpr::SquareChain(i, middle, j) => Expr::Call(
+            interner.get_or_intern("__square_chain"),
+            std::iter::once(int_expr_u16(i.0))
+                .chain(middle.iter().map(|l| int_expr_u16(l.0)))
+                .chain(std::iter::once(int_expr_u16(j.0)))
+                .collect(),
+        ),
+        ax_spinor::SpinorExpr::AngleSquareChain(i, middle, j) => Expr::Call(
+            interner.get_or_intern("__angle_square_chain"),
+            std::iter::once(int_expr_u16(i.0))
+                .chain(middle.iter().map(|l| int_expr_u16(l.0)))
+                .chain(std::iter::once(int_expr_u16(j.0)))
+                .collect(),
+        ),
+        ax_spinor::SpinorExpr::SquareAngleChain(i, middle, j) => Expr::Call(
+            interner.get_or_intern("__square_angle_chain"),
+            std::iter::once(int_expr_u16(i.0))
+                .chain(middle.iter().map(|l| int_expr_u16(l.0)))
+                .chain(std::iter::once(int_expr_u16(j.0)))
+                .collect(),
+        ),
+        ax_spinor::SpinorExpr::Mandelstam(i, j) => Expr::Call(
+            interner.get_or_intern("__mandelstam"),
+            vec![int_expr_u16(i.0), int_expr_u16(j.0)],
+        ),
+        ax_spinor::SpinorExpr::Mandelstam3(i, j, k) => Expr::Call(
+            interner.get_or_intern("__mandelstam3"),
+            vec![int_expr_u16(i.0), int_expr_u16(j.0), int_expr_u16(k.0)],
+        ),
+        ax_spinor::SpinorExpr::Product(terms) => Expr::mul(
+            terms
+                .iter()
+                .map(|t| spinor_term_to_expr(t, interner))
+                .collect(),
+        ),
+        ax_spinor::SpinorExpr::Sum(terms) => {
+            Expr::add(terms.iter().map(|t| spinor_to_expr(t, interner)).collect())
+        }
+        ax_spinor::SpinorExpr::Ratio(n, d) => Expr::mul(vec![
+            spinor_to_expr(n, interner),
+            Expr::pow(spinor_to_expr(d, interner), Expr::Int((-1).into())),
+        ]),
+        ax_spinor::SpinorExpr::Numeric(r) => rational_or_int(r),
+        ax_spinor::SpinorExpr::Power(base, n) => {
+            Expr::pow(spinor_to_expr(base, interner), Expr::Int(BigInt::from(*n)))
+        }
+        ax_spinor::SpinorExpr::Neg(x) => Expr::neg(spinor_to_expr(x, interner)),
+    }
+}
+
+fn expr_to_spinor(e: &Expr, interner: &ax_ir::Interner) -> Option<ax_spinor::SpinorExpr> {
+    match e {
+        Expr::Call(f, args) if interner.resolve(*f) == "__angle" && args.len() == 2 => {
+            Some(ax_spinor::SpinorExpr::AngleBracket(
+                label_from_expr(&args[0], interner)?,
+                label_from_expr(&args[1], interner)?,
+            ))
+        }
+        Expr::Call(f, args) if interner.resolve(*f) == "__square" && args.len() == 2 => {
+            Some(ax_spinor::SpinorExpr::SquareBracket(
+                label_from_expr(&args[0], interner)?,
+                label_from_expr(&args[1], interner)?,
+            ))
+        }
+        Expr::Call(f, args) if interner.resolve(*f) == "__mandelstam" && args.len() == 2 => {
+            Some(ax_spinor::SpinorExpr::Mandelstam(
+                label_from_expr(&args[0], interner)?,
+                label_from_expr(&args[1], interner)?,
+            ))
+        }
+        Expr::Call(f, args) if interner.resolve(*f) == "__mandelstam3" && args.len() == 3 => {
+            Some(ax_spinor::SpinorExpr::Mandelstam3(
+                label_from_expr(&args[0], interner)?,
+                label_from_expr(&args[1], interner)?,
+                label_from_expr(&args[2], interner)?,
+            ))
+        }
+        Expr::Call(f, args) if interner.resolve(*f) == "__angle_chain" && args.len() >= 2 => {
+            let labels = args
+                .iter()
+                .map(|arg| label_from_expr(arg, interner))
+                .collect::<Option<Vec<_>>>()?;
+            Some(ax_spinor::SpinorExpr::AngleChain(
+                labels[0],
+                labels[1..labels.len() - 1].to_vec(),
+                labels[labels.len() - 1],
+            ))
+        }
+        Expr::Call(f, args) if interner.resolve(*f) == "__square_chain" && args.len() >= 2 => {
+            let labels = args
+                .iter()
+                .map(|arg| label_from_expr(arg, interner))
+                .collect::<Option<Vec<_>>>()?;
+            Some(ax_spinor::SpinorExpr::SquareChain(
+                labels[0],
+                labels[1..labels.len() - 1].to_vec(),
+                labels[labels.len() - 1],
+            ))
+        }
+        Expr::Call(f, args)
+            if interner.resolve(*f) == "__angle_square_chain" && args.len() >= 2 =>
+        {
+            let labels = args
+                .iter()
+                .map(|arg| label_from_expr(arg, interner))
+                .collect::<Option<Vec<_>>>()?;
+            Some(ax_spinor::SpinorExpr::AngleSquareChain(
+                labels[0],
+                labels[1..labels.len() - 1].to_vec(),
+                labels[labels.len() - 1],
+            ))
+        }
+        Expr::Call(f, args)
+            if interner.resolve(*f) == "__square_angle_chain" && args.len() >= 2 =>
+        {
+            let labels = args
+                .iter()
+                .map(|arg| label_from_expr(arg, interner))
+                .collect::<Option<Vec<_>>>()?;
+            Some(ax_spinor::SpinorExpr::SquareAngleChain(
+                labels[0],
+                labels[1..labels.len() - 1].to_vec(),
+                labels[labels.len() - 1],
+            ))
+        }
+        Expr::Add(terms) => Some(ax_spinor::SpinorExpr::Sum(
+            terms
+                .iter()
+                .map(|t| expr_to_spinor(t, interner))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Expr::Neg(inner) => Some(ax_spinor::SpinorExpr::Neg(Box::new(expr_to_spinor(
+            inner, interner,
+        )?))),
+        Expr::Pow(base, exp) => {
+            let Expr::Int(n) = exp.as_ref() else {
+                return None;
+            };
+            Some(ax_spinor::SpinorExpr::Power(
+                Box::new(expr_to_spinor(base, interner)?),
+                n.to_i32()?,
+            ))
+        }
+        Expr::Rational(r) => Some(ax_spinor::SpinorExpr::Numeric(r.clone())),
+        Expr::Int(n) => Some(ax_spinor::SpinorExpr::Numeric(BigRational::from_integer(
+            n.clone(),
+        ))),
+        Expr::Mul(factors) => {
+            let mut coeff = BigRational::from_integer(1.into());
+            let mut spinor_factors = Vec::new();
+            for factor in factors {
+                match factor {
+                    Expr::Int(n) => coeff *= BigRational::from_integer(n.clone()),
+                    Expr::Rational(r) => coeff *= r.clone(),
+                    Expr::Call(f, args) if interner.resolve(*f) == "__angle" && args.len() == 2 => {
+                        spinor_factors.push(ax_spinor::SpinorFactor::Angle(
+                            label_from_expr(&args[0], interner)?,
+                            label_from_expr(&args[1], interner)?,
+                        ));
+                    }
+                    Expr::Call(f, args)
+                        if interner.resolve(*f) == "__square" && args.len() == 2 =>
+                    {
+                        spinor_factors.push(ax_spinor::SpinorFactor::Square(
+                            label_from_expr(&args[0], interner)?,
+                            label_from_expr(&args[1], interner)?,
+                        ));
+                    }
+                    Expr::Call(f, args)
+                        if interner.resolve(*f) == "__mandelstam" && args.len() == 2 =>
+                    {
+                        spinor_factors.push(ax_spinor::SpinorFactor::Mandelstam(vec![
+                            label_from_expr(&args[0], interner)?,
+                            label_from_expr(&args[1], interner)?,
+                        ]));
+                    }
+                    Expr::Sym(s) => spinor_factors.push(ax_spinor::SpinorFactor::SymbolicParam(*s)),
+                    Expr::Pow(base, exp) => {
+                        let Expr::Int(n) = exp.as_ref() else {
+                            return None;
+                        };
+                        let factor_expr = expr_to_spinor(base, interner)?;
+                        let factor = match factor_expr {
+                            ax_spinor::SpinorExpr::AngleBracket(i, j) => {
+                                ax_spinor::SpinorFactor::Angle(i, j)
+                            }
+                            ax_spinor::SpinorExpr::SquareBracket(i, j) => {
+                                ax_spinor::SpinorFactor::Square(i, j)
+                            }
+                            ax_spinor::SpinorExpr::Mandelstam(i, j) => {
+                                ax_spinor::SpinorFactor::Mandelstam(vec![i, j])
+                            }
+                            _ => return None,
+                        };
+                        spinor_factors.push(ax_spinor::SpinorFactor::Power(
+                            Box::new(factor),
+                            n.to_i32()?,
+                        ));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(ax_spinor::SpinorExpr::Product(vec![
+                ax_spinor::SpinorTerm::new(coeff, spinor_factors),
+            ]))
+        }
+        _ => None,
+    }
+}
+
+fn twistor_to_expr(t: &ax_spinor::twistor::TwistorExpr, interner: &ax_ir::Interner) -> Expr {
+    use ax_spinor::twistor::{TwistorExpr, TwistorFactor};
+    match t {
+        TwistorExpr::FourBracket(i, j, k, l) => Expr::Call(
+            interner.get_or_intern("__four_bracket"),
+            vec![
+                int_expr_u16(i.0),
+                int_expr_u16(j.0),
+                int_expr_u16(k.0),
+                int_expr_u16(l.0),
+            ],
+        ),
+        TwistorExpr::Product(terms) => Expr::mul(
+            terms
+                .iter()
+                .map(|term| {
+                    let mut factors = vec![rational_or_int(&term.coefficient)];
+                    factors.extend(term.factors.iter().map(|factor| match factor {
+                        TwistorFactor::FourBracket(i, j, k, l) => Expr::Call(
+                            interner.get_or_intern("__four_bracket"),
+                            vec![
+                                int_expr_u16(i.0),
+                                int_expr_u16(j.0),
+                                int_expr_u16(k.0),
+                                int_expr_u16(l.0),
+                            ],
+                        ),
+                        TwistorFactor::FundamentalAngle(i, j) => Expr::Call(
+                            interner.get_or_intern("__angle"),
+                            vec![int_expr_u16(i.0), int_expr_u16(j.0)],
+                        ),
+                        TwistorFactor::Power(base, n) => Expr::pow(
+                            twistor_to_expr(
+                                &TwistorExpr::Product(vec![ax_spinor::twistor::TwistorTerm::new(
+                                    BigRational::from_integer(1.into()),
+                                    vec![base.as_ref().clone()],
+                                )]),
+                                interner,
+                            ),
+                            Expr::Int(BigInt::from(*n)),
+                        ),
+                    }));
+                    Expr::mul(factors)
+                })
+                .collect(),
+        ),
+        TwistorExpr::Sum(terms) => {
+            Expr::add(terms.iter().map(|t| twistor_to_expr(t, interner)).collect())
+        }
+        TwistorExpr::Ratio(n, d) => Expr::mul(vec![
+            twistor_to_expr(n, interner),
+            Expr::pow(twistor_to_expr(d, interner), Expr::Int((-1).into())),
+        ]),
+        TwistorExpr::Numeric(r) => rational_or_int(r),
+        TwistorExpr::Power(base, n) => {
+            Expr::pow(twistor_to_expr(base, interner), Expr::Int(BigInt::from(*n)))
+        }
+        TwistorExpr::Neg(x) => Expr::neg(twistor_to_expr(x, interner)),
+    }
+}
+
+fn expr_to_twistor(
+    e: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_spinor::twistor::TwistorExpr> {
+    use ax_spinor::twistor::{TwistorExpr, TwistorFactor, TwistorTerm};
+    match e {
+        Expr::Call(f, args) if interner.resolve(*f) == "__four_bracket" && args.len() == 4 => {
+            Some(TwistorExpr::FourBracket(
+                label_from_expr(&args[0], interner)?,
+                label_from_expr(&args[1], interner)?,
+                label_from_expr(&args[2], interner)?,
+                label_from_expr(&args[3], interner)?,
+            ))
+        }
+        Expr::Add(terms) => Some(TwistorExpr::Sum(
+            terms
+                .iter()
+                .map(|term| expr_to_twistor(term, interner))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Expr::Neg(inner) => Some(TwistorExpr::Neg(Box::new(expr_to_twistor(
+            inner, interner,
+        )?))),
+        Expr::Rational(r) => Some(TwistorExpr::Numeric(r.clone())),
+        Expr::Int(n) => Some(TwistorExpr::Numeric(BigRational::from_integer(n.clone()))),
+        Expr::Pow(base, exp) => {
+            let Expr::Int(n) = exp.as_ref() else {
+                return None;
+            };
+            Some(TwistorExpr::Power(
+                Box::new(expr_to_twistor(base, interner)?),
+                n.to_i32()?,
+            ))
+        }
+        Expr::Mul(factors) => {
+            let mut coeff = BigRational::from_integer(1.into());
+            let mut twistor_factors = Vec::new();
+            for factor in factors {
+                match factor {
+                    Expr::Int(n) => coeff *= BigRational::from_integer(n.clone()),
+                    Expr::Rational(r) => coeff *= r.clone(),
+                    Expr::Call(f, args)
+                        if interner.resolve(*f) == "__four_bracket" && args.len() == 4 =>
+                    {
+                        twistor_factors.push(TwistorFactor::FourBracket(
+                            label_from_expr(&args[0], interner)?,
+                            label_from_expr(&args[1], interner)?,
+                            label_from_expr(&args[2], interner)?,
+                            label_from_expr(&args[3], interner)?,
+                        ));
+                    }
+                    Expr::Call(f, args) if interner.resolve(*f) == "__angle" && args.len() == 2 => {
+                        twistor_factors.push(TwistorFactor::FundamentalAngle(
+                            label_from_expr(&args[0], interner)?,
+                            label_from_expr(&args[1], interner)?,
+                        ));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(TwistorExpr::Product(vec![TwistorTerm::new(
+                coeff,
+                twistor_factors,
+            )]))
+        }
+        _ => None,
+    }
+}
+
 pub fn apply_parallel_declaration(
     expr: &Expr,
     env: &mut Env,
@@ -239,9 +685,7 @@ fn extract_sym_list(expr: &Expr) -> Vec<lasso::Spur> {
     }
 }
 
-fn parse_component_rules(
-    rule_exprs: &[Expr],
-) -> Vec<ax_tensor::ComponentRule> {
+fn parse_component_rules(rule_exprs: &[Expr]) -> Vec<ax_tensor::ComponentRule> {
     let mut rules = Vec::new();
     for rule_expr in rule_exprs {
         let Expr::List(items) = rule_expr else {
@@ -262,7 +706,10 @@ fn parse_component_rules(
         for item in index_exprs {
             match item {
                 Expr::Indexed(_, concrete_indices) if concrete_indices.len() == 1 => {
-                    indices.push((concrete_indices[0].name, concrete_indices[0].variance.clone()));
+                    indices.push((
+                        concrete_indices[0].name,
+                        concrete_indices[0].variance.clone(),
+                    ));
                 }
                 Expr::Sym(sym) => {
                     indices.push((*sym, ax_ir::Variance::Down));
@@ -523,7 +970,10 @@ pub fn apply_grassmann_declaration(
     if declared.is_empty() {
         None
     } else {
-        Some(format!("declared Grassmann variables: {}", declared.join(", ")))
+        Some(format!(
+            "declared Grassmann variables: {}",
+            declared.join(", ")
+        ))
     }
 }
 
@@ -554,7 +1004,10 @@ pub fn apply_operator_declaration(
             ax_qm::OperatorKind::Creation => "creation",
             ax_qm::OperatorKind::Annihilation => "annihilation",
         };
-        Some(format!("declared {kind_name} operators: {}", declared.join(", ")))
+        Some(format!(
+            "declared {kind_name} operators: {}",
+            declared.join(", ")
+        ))
     }
 }
 
@@ -741,39 +1194,66 @@ pub fn apply_property_declaration(
         }
         "spinor" => {
             add_property(ax_ir::TensorProperty::Spinor);
-            Some(format!("attached property spinor to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property spinor to {}",
+                interner.resolve(tensor)
+            ))
         }
         "dirac_bar" | "diracbar" => {
             add_property(ax_ir::TensorProperty::DiracBar);
-            Some(format!("attached property dirac_bar to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property dirac_bar to {}",
+                interner.resolve(tensor)
+            ))
         }
         "gamma_matrix" => {
             add_property(ax_ir::TensorProperty::GammaMatrixProp);
-            Some(format!("attached property gamma_matrix to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property gamma_matrix to {}",
+                interner.resolve(tensor)
+            ))
         }
         "commuting" => {
             add_property(ax_ir::TensorProperty::Commuting);
-            Some(format!("attached property commuting to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property commuting to {}",
+                interner.resolve(tensor)
+            ))
         }
         "anticommuting" | "anti_commuting" => {
             add_property(ax_ir::TensorProperty::AntiCommuting);
-            Some(format!("attached property anticommuting to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property anticommuting to {}",
+                interner.resolve(tensor)
+            ))
         }
         "noncommuting" | "non_commuting" => {
             add_property(ax_ir::TensorProperty::NonCommuting);
-            Some(format!("attached property noncommuting to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property noncommuting to {}",
+                interner.resolve(tensor)
+            ))
         }
         "bianchi" | "satisfies_bianchi" => {
             add_property(ax_ir::TensorProperty::SatisfiesBianchi);
-            Some(format!("attached property satisfies_bianchi to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property satisfies_bianchi to {}",
+                interner.resolve(tensor)
+            ))
         }
         "weyl" | "weyl_tensor" => {
             add_property(ax_ir::TensorProperty::WeylTensor);
-            Some(format!("attached property weyl_tensor to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property weyl_tensor to {}",
+                interner.resolve(tensor)
+            ))
         }
         "tableau_symmetry" => {
             add_property(ax_ir::TensorProperty::RiemannSymmetry);
-            Some(format!("attached property tableau_symmetry to {}", interner.resolve(tensor)))
+            Some(format!(
+                "attached property tableau_symmetry to {}",
+                interner.resolve(tensor)
+            ))
         }
         _ => None,
     }
@@ -847,7 +1327,12 @@ where
     env.property_store
         .symbols()
         .into_iter()
-        .filter(|sym| env.property_store.get_all(*sym).iter().any(|prop| predicate(prop)))
+        .filter(|sym| {
+            env.property_store
+                .get_all(*sym)
+                .iter()
+                .any(|prop| predicate(prop))
+        })
         .collect()
 }
 
@@ -1070,7 +1555,11 @@ fn is_unevaluated_integrate_check(expr: &Expr, interner: &ax_ir::Interner) -> bo
     }
 }
 
-fn trig_special_from_rational(func: &str, r: &BigRational, interner: &ax_ir::Interner) -> Option<Expr> {
+fn trig_special_from_rational(
+    func: &str,
+    r: &BigRational,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
     let two = BigRational::from_integer(2.into());
     let mut normalized = r.clone();
     while normalized < BigRational::zero() {
@@ -1136,11 +1625,19 @@ fn trig_special_from_rational(func: &str, r: &BigRational, interner: &ax_ir::Int
     }
 }
 
-fn try_trig_special_value(func: &str, factors: &[Expr], interner: &ax_ir::Interner) -> Option<Expr> {
+fn try_trig_special_value(
+    func: &str,
+    factors: &[Expr],
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
     let pi_sym = interner.get_or_intern("pi");
     let coeff = if factors.len() == 2 {
         if let Expr::Sym(s) = &factors[1] {
-            if *s == pi_sym { factors[0].clone() } else { return None; }
+            if *s == pi_sym {
+                factors[0].clone()
+            } else {
+                return None;
+            }
         } else if let Expr::Float(v) = &factors[1] {
             if (*v - std::f64::consts::PI).abs() < 1e-12 {
                 factors[0].clone()
@@ -1148,7 +1645,11 @@ fn try_trig_special_value(func: &str, factors: &[Expr], interner: &ax_ir::Intern
                 return None;
             }
         } else if let Expr::Sym(s) = &factors[0] {
-            if *s == pi_sym { factors[1].clone() } else { return None; }
+            if *s == pi_sym {
+                factors[1].clone()
+            } else {
+                return None;
+            }
         } else if let Expr::Float(v) = &factors[0] {
             if (*v - std::f64::consts::PI).abs() < 1e-12 {
                 factors[1].clone()
@@ -1253,9 +1754,12 @@ fn substitute_condition(
             Box::new(substitute_condition(a, target, replacement, interner)),
             Box::new(substitute_condition(b, target, replacement, interner)),
         ),
-        Condition::Not(c) => {
-            Condition::Not(Box::new(substitute_condition(c, target, replacement, interner)))
-        }
+        Condition::Not(c) => Condition::Not(Box::new(substitute_condition(
+            c,
+            target,
+            replacement,
+            interner,
+        ))),
         Condition::True => Condition::True,
         Condition::False => Condition::False,
     }
@@ -1299,9 +1803,11 @@ fn multi_substitute_condition(
             Box::new(multi_substitute_condition(a, substitutions, interner)),
             Box::new(multi_substitute_condition(b, substitutions, interner)),
         ),
-        Condition::Not(c) => {
-            Condition::Not(Box::new(multi_substitute_condition(c, substitutions, interner)))
-        }
+        Condition::Not(c) => Condition::Not(Box::new(multi_substitute_condition(
+            c,
+            substitutions,
+            interner,
+        ))),
         Condition::True => Condition::True,
         Condition::False => Condition::False,
     }
@@ -1319,7 +1825,8 @@ pub fn symbolic_substitute(
 
     match expr {
         Expr::Add(terms) => Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .map(|term| symbolic_substitute(term, target, replacement, interner))
                 .collect(),
         ),
@@ -1412,7 +1919,8 @@ pub fn multi_substitute(
 
     match expr {
         Expr::Add(terms) => Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .map(|term| multi_substitute(term, substitutions, interner))
                 .collect(),
         ),
@@ -1508,9 +2016,9 @@ fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
         Expr::Import(_) => false,
         Expr::Assume(_, _) => false,
         Expr::SetConvention(_, _) => false,
-        Expr::Piecewise(cases) => cases
-            .iter()
-            .any(|(value, condition)| contains_var(value, var) || condition_contains_var(condition, var)),
+        Expr::Piecewise(cases) => cases.iter().any(|(value, condition)| {
+            contains_var(value, var) || condition_contains_var(condition, var)
+        }),
         Expr::Indexed(base, _) => contains_var(base, var),
         Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
         Expr::Matrix(rows) => rows
@@ -1637,7 +2145,11 @@ fn equiv_sample_check(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner)
             Expr::Complex(re, im) => {
                 let re = numeric_eval_expr(re, env, interner)?;
                 let im = numeric_eval_expr(im, env, interner)?;
-                if im == 0.0 { Some(re) } else { None }
+                if im == 0.0 {
+                    Some(re)
+                } else {
+                    None
+                }
             }
             Expr::Sym(s) => {
                 if let Some(bound) = env.lookup(*s) {
@@ -1691,7 +2203,9 @@ fn equiv_sample_check(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner)
     for sample in 0..5 {
         let mut sample_env = env.clone();
         for (idx, sym) in syms.iter().enumerate() {
-            sample_env.bindings.insert(*sym, Expr::Float(base[(sample + idx) % base.len()]));
+            sample_env
+                .bindings
+                .insert(*sym, Expr::Float(base[(sample + idx) % base.len()]));
         }
         let (Some(lhs), Some(rhs)) = (
             numeric_eval_expr(a, &sample_env, interner),
@@ -1708,7 +2222,11 @@ fn equiv_sample_check(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner)
             return Some(false);
         }
     }
-    if successes == 5 { Some(true) } else { None }
+    if successes == 5 {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 fn equiv_description(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner) -> String {
@@ -1724,7 +2242,10 @@ fn equiv_description(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner) 
         return "equal".into();
     }
 
-    let diff = canonical_equiv_form(&Expr::add(vec![sa.clone(), Expr::neg(sb.clone())]), interner);
+    let diff = canonical_equiv_form(
+        &Expr::add(vec![sa.clone(), Expr::neg(sb.clone())]),
+        interner,
+    );
     if diff == Expr::zero() {
         return "equal".into();
     }
@@ -1798,8 +2319,12 @@ fn eval_condition(cond: &Condition, env: &Env, interner: &ax_ir::Interner) -> Op
             let eb = eval(b, env, interner);
             Some(ea != eb)
         }
-        Condition::And(a, b) => Some(eval_condition(a, env, interner)? && eval_condition(b, env, interner)?),
-        Condition::Or(a, b) => Some(eval_condition(a, env, interner)? || eval_condition(b, env, interner)?),
+        Condition::And(a, b) => {
+            Some(eval_condition(a, env, interner)? && eval_condition(b, env, interner)?)
+        }
+        Condition::Or(a, b) => {
+            Some(eval_condition(a, env, interner)? || eval_condition(b, env, interner)?)
+        }
         Condition::Not(c) => eval_condition(c, env, interner).map(|v| !v),
     }
 }
@@ -1902,7 +2427,10 @@ pub fn describe_rewrite_trace(trace: &ax_rewrite::RewriteTrace) -> String {
             .map(|step| step.rule_name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        format!("trust: {overall} (used rule{}: {used})", if trace.steps.len() == 1 { "" } else { "s" })
+        format!(
+            "trust: {overall} (used rule{}: {used})",
+            if trace.steps.len() == 1 { "" } else { "s" }
+        )
     }
 }
 
@@ -2103,10 +2631,7 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
                 ])),
                 "atan" | "arctan" => Expr::mul(vec![
                     Expr::pow(
-                        Expr::add(vec![
-                            Expr::one(),
-                            Expr::pow(arg, Expr::Int(2.into())),
-                        ]),
+                        Expr::add(vec![Expr::one(), Expr::pow(arg, Expr::Int(2.into()))]),
                         Expr::Int((-1).into()),
                     ),
                     darg,
@@ -2125,10 +2650,7 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
                 ]),
                 "asinh" | "arcsinh" => Expr::mul(vec![
                     Expr::pow(
-                        Expr::add(vec![
-                            Expr::pow(arg, Expr::Int(2.into())),
-                            Expr::one(),
-                        ]),
+                        Expr::add(vec![Expr::pow(arg, Expr::Int(2.into())), Expr::one()]),
                         Expr::Rational(BigRational::new((-1).into(), 2.into())),
                     ),
                     darg,
@@ -2171,7 +2693,8 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (differentiate(value, var, interner), condition.clone()))
                 .collect(),
         ),
@@ -2207,6 +2730,262 @@ fn builtin_call(
     env: &Env,
 ) -> Expr {
     match name {
+        "angle" => {
+            if args.len() == 2 {
+                match (
+                    label_from_expr(&args[0], interner),
+                    label_from_expr(&args[1], interner),
+                ) {
+                    (Some(i), Some(j)) => {
+                        spinor_to_expr(&ax_spinor::SpinorExpr::angle(i, j), interner)
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "square" => {
+            if args.len() == 2 {
+                match (
+                    label_from_expr(&args[0], interner),
+                    label_from_expr(&args[1], interner),
+                ) {
+                    (Some(i), Some(j)) => {
+                        spinor_to_expr(&ax_spinor::SpinorExpr::square(i, j), interner)
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "mandelstam" => {
+            if args.len() == 2 {
+                match (
+                    label_from_expr(&args[0], interner),
+                    label_from_expr(&args[1], interner),
+                ) {
+                    (Some(i), Some(j)) => spinor_to_expr(&ax_spinor::SpinorExpr::s(i, j), interner),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "parke_taylor" => {
+            if args.len() == 3 {
+                match (
+                    int_from_expr(&args[0]),
+                    label_from_expr(&args[1], interner),
+                    label_from_expr(&args[2], interner),
+                ) {
+                    (Some(n), Some(i), Some(j)) => {
+                        spinor_to_expr(&ax_spinor::parke_taylor(n, i, j), interner)
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "three_point_mhv" | "three_point_anti_mhv" => {
+            if args.len() == 3 {
+                match (
+                    label_from_expr(&args[0], interner),
+                    label_from_expr(&args[1], interner),
+                    label_from_expr(&args[2], interner),
+                ) {
+                    (Some(i), Some(j), Some(k)) => {
+                        let out = if name == "three_point_mhv" {
+                            ax_spinor::three_point_mhv([i, j, k])
+                        } else {
+                            ax_spinor::three_point_anti_mhv([i, j, k])
+                        };
+                        spinor_to_expr(&out, interner)
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "expand_chain" | "contract_adjacent" | "expand_mandelstam" | "collect_mandelstam" => {
+            if args.len() == 1 {
+                if let Some(s) = expr_to_spinor(&args[0], interner) {
+                    let out = match name {
+                        "expand_chain" => ax_spinor::expand_chain(&s),
+                        "contract_adjacent" => ax_spinor::contract_adjacent(&s),
+                        "expand_mandelstam" => ax_spinor::expand_mandelstam(&s),
+                        "collect_mandelstam" => ax_spinor::collect_mandelstam(&s),
+                        _ => unreachable!(),
+                    };
+                    spinor_to_expr(&out, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "schouten" => {
+            if args.len() == 5 {
+                if let (Some(s), Some(a), Some(b), Some(c), Some(d)) = (
+                    expr_to_spinor(&args[0], interner),
+                    label_from_expr(&args[1], interner),
+                    label_from_expr(&args[2], interner),
+                    label_from_expr(&args[3], interner),
+                    label_from_expr(&args[4], interner),
+                ) {
+                    spinor_to_expr(&ax_spinor::apply_schouten(&s, a, b, c, d), interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "momentum_conservation" | "spinor_simplify" => {
+            if args.len() == 3 || (name == "spinor_simplify" && args.len() == 2) {
+                if let (Some(s), Some(n)) =
+                    (expr_to_spinor(&args[0], interner), int_from_expr(&args[1]))
+                {
+                    let out = if name == "spinor_simplify" {
+                        ax_spinor::spinor_simplify(&s, n)
+                    } else if let Some(elim) = label_from_expr(&args[2], interner) {
+                        ax_spinor::apply_momentum_conservation(&s, n, elim)
+                    } else {
+                        return Expr::Call(f, args);
+                    };
+                    spinor_to_expr(&out, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bcfw_shift" => {
+            if args.len() == 4 {
+                if let (Some(s), Some(i), Some(j), Expr::Sym(z)) = (
+                    expr_to_spinor(&args[0], interner),
+                    label_from_expr(&args[1], interner),
+                    label_from_expr(&args[2], interner),
+                    &args[3],
+                ) {
+                    let shift = ax_spinor::BCFWShift {
+                        shifted_angle: i,
+                        shifted_square: j,
+                    };
+                    spinor_to_expr(
+                        &ax_spinor::bcfw_shift_momentum(&s, &shift, *z, interner),
+                        interner,
+                    )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bcfw_decomposition" => {
+            if args.len() == 4 {
+                if let (Some(n), Some(i), Some(j), Expr::List(helicity_exprs)) = (
+                    int_from_expr(&args[0]),
+                    label_from_expr(&args[1], interner),
+                    label_from_expr(&args[2], interner),
+                    &args[3],
+                ) {
+                    let helicities = helicity_exprs
+                        .iter()
+                        .map(|e| match e {
+                            Expr::Int(v) => v.to_i8(),
+                            _ => None,
+                        })
+                        .collect::<Option<Vec<_>>>();
+                    if let Some(helicities) = helicities {
+                        let shift = ax_spinor::BCFWShift {
+                            shifted_angle: i,
+                            shifted_square: j,
+                        };
+                        let terms = ax_spinor::bcfw_decomposition(n, &shift, &helicities)
+                            .into_iter()
+                            .map(|t| {
+                                Expr::List(vec![
+                                    Expr::List(
+                                        t.left_particles
+                                            .into_iter()
+                                            .map(|l| int_expr_u16(l.0))
+                                            .collect(),
+                                    ),
+                                    Expr::List(
+                                        t.right_particles
+                                            .into_iter()
+                                            .map(|l| int_expr_u16(l.0))
+                                            .collect(),
+                                    ),
+                                    Expr::Int(BigInt::from(t.internal_helicity)),
+                                    Expr::List(
+                                        t.propagator_momentum
+                                            .into_iter()
+                                            .map(|l| int_expr_u16(l.0))
+                                            .collect(),
+                                    ),
+                                ])
+                            })
+                            .collect();
+                        Expr::List(terms)
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "four_bracket" => {
+            if args.len() == 4 {
+                if let (Some(i), Some(j), Some(k), Some(l)) = (
+                    label_from_expr(&args[0], interner),
+                    label_from_expr(&args[1], interner),
+                    label_from_expr(&args[2], interner),
+                    label_from_expr(&args[3], interner),
+                ) {
+                    twistor_to_expr(
+                        &ax_spinor::twistor::TwistorExpr::four_bracket(i, j, k, l),
+                        interner,
+                    )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "plucker" => {
+            if args.len() == 7 {
+                if let (Some(t), Some(a), Some(b), Some(c), Some(d), Some(e), Some(g)) = (
+                    expr_to_twistor(&args[0], interner),
+                    label_from_expr(&args[1], interner),
+                    label_from_expr(&args[2], interner),
+                    label_from_expr(&args[3], interner),
+                    label_from_expr(&args[4], interner),
+                    label_from_expr(&args[5], interner),
+                    label_from_expr(&args[6], interner),
+                ) {
+                    twistor_to_expr(
+                        &ax_spinor::twistor::apply_plucker(&t, a, b, c, d, e, g),
+                        interner,
+                    )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "Re" => {
             if args.len() == 1 {
                 match &args[0] {
@@ -2230,9 +3009,10 @@ fn builtin_call(
         "conj" => {
             if args.len() == 1 {
                 match &args[0] {
-                    Expr::Complex(re, im) => {
-                        Expr::Complex(Box::new(re.as_ref().clone()), Box::new(Expr::neg(im.as_ref().clone())))
-                    }
+                    Expr::Complex(re, im) => Expr::Complex(
+                        Box::new(re.as_ref().clone()),
+                        Box::new(Expr::neg(im.as_ref().clone())),
+                    ),
                     other => other.clone(),
                 }
             } else {
@@ -2342,8 +3122,7 @@ fn builtin_call(
                         inner_args[0].clone()
                     }
                     Expr::Pow(base, exp) => {
-                        let base_is_e =
-                            matches!(base.as_ref(), Expr::Sym(sym) if interner.resolve(*sym) == "e");
+                        let base_is_e = matches!(base.as_ref(), Expr::Sym(sym) if interner.resolve(*sym) == "e");
                         if !base_is_e {
                             Expr::mul(vec![
                                 exp.as_ref().clone(),
@@ -2369,7 +3148,9 @@ fn builtin_call(
                     Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "cosh" => {
             if args.len() == 1 {
@@ -2378,7 +3159,9 @@ fn builtin_call(
                     Expr::Int(n) if n.is_zero() => Expr::Int(1.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "tanh" => {
             if args.len() == 1 {
@@ -2387,7 +3170,9 @@ fn builtin_call(
                     Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "asin" | "arcsin" => {
             if args.len() == 1 {
@@ -2397,7 +3182,9 @@ fn builtin_call(
                     Expr::Int(n) if *n == 1.into() => Expr::Float(std::f64::consts::FRAC_PI_2),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "acos" | "arccos" => {
             if args.len() == 1 {
@@ -2407,7 +3194,9 @@ fn builtin_call(
                     Expr::Int(n) if *n == 1.into() => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "atan" | "arctan" => {
             if args.len() == 1 {
@@ -2416,51 +3205,72 @@ fn builtin_call(
                     Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "atan2" => {
             if args.len() == 2 {
                 if let (Some(y), Some(x_val)) = (to_f64(&args[0]), to_f64(&args[1])) {
                     Expr::Float(y.atan2(x_val))
-                } else { Expr::Call(f, args) }
-            } else { Expr::Call(f, args) }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "sec" => {
             if args.len() == 1 {
                 match &args[0] {
                     Expr::Float(v) => {
                         let c = v.cos();
-                        if c.abs() < 1e-15 { Expr::Call(f, args) }
-                        else { Expr::Float(1.0 / c) }
+                        if c.abs() < 1e-15 {
+                            Expr::Call(f, args)
+                        } else {
+                            Expr::Float(1.0 / c)
+                        }
                     }
                     Expr::Int(n) if n.is_zero() => Expr::Int(1.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "csc" => {
             if args.len() == 1 {
                 match &args[0] {
                     Expr::Float(v) => {
                         let s = v.sin();
-                        if s.abs() < 1e-15 { Expr::Call(f, args) }
-                        else { Expr::Float(1.0 / s) }
+                        if s.abs() < 1e-15 {
+                            Expr::Call(f, args)
+                        } else {
+                            Expr::Float(1.0 / s)
+                        }
                     }
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "cot" => {
             if args.len() == 1 {
                 match &args[0] {
                     Expr::Float(v) => {
                         let t = v.tan();
-                        if t.abs() < 1e-15 { Expr::Call(f, args) }
-                        else { Expr::Float(1.0 / t) }
+                        if t.abs() < 1e-15 {
+                            Expr::Call(f, args)
+                        } else {
+                            Expr::Float(1.0 / t)
+                        }
                     }
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "asinh" | "arcsinh" => {
             if args.len() == 1 {
@@ -2469,7 +3279,9 @@ fn builtin_call(
                     Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "acosh" | "arccosh" => {
             if args.len() == 1 {
@@ -2478,7 +3290,9 @@ fn builtin_call(
                     Expr::Int(n) if *n == 1.into() => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "atanh" | "arctanh" => {
             if args.len() == 1 {
@@ -2487,25 +3301,37 @@ fn builtin_call(
                     Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "sign" | "sgn" => {
             if args.len() == 1 {
                 match &args[0] {
                     Expr::Float(v) => {
-                        if *v > 0.0 { Expr::Int(1.into()) }
-                        else if *v < 0.0 { Expr::Int((-1i64).into()) }
-                        else { Expr::Int(0.into()) }
+                        if *v > 0.0 {
+                            Expr::Int(1.into())
+                        } else if *v < 0.0 {
+                            Expr::Int((-1i64).into())
+                        } else {
+                            Expr::Int(0.into())
+                        }
                     }
                     Expr::Int(n) => {
                         use num_traits::Signed;
-                        if n.is_positive() { Expr::Int(1.into()) }
-                        else if n.is_negative() { Expr::Int((-1i64).into()) }
-                        else { Expr::Int(0.into()) }
+                        if n.is_positive() {
+                            Expr::Int(1.into())
+                        } else if n.is_negative() {
+                            Expr::Int((-1i64).into())
+                        } else {
+                            Expr::Int(0.into())
+                        }
                     }
                     _ => Expr::Call(f, args),
                 }
-            } else { Expr::Call(f, args) }
+            } else {
+                Expr::Call(f, args)
+            }
         }
         "sqrt" => {
             if args.len() == 1 {
@@ -2719,11 +3545,14 @@ fn builtin_call(
             if args.len() >= 2 {
                 if let Expr::Int(w) = &args[1] {
                     let target = num_traits::ToPrimitive::to_i64(w).unwrap_or(0);
-                    let label = args.get(2)
-                        .and_then(|e| if let Expr::Sym(s) = e {
-                            Some(interner.resolve(*s).to_string())
-                        } else {
-                            None
+                    let label = args
+                        .get(2)
+                        .and_then(|e| {
+                            if let Expr::Sym(s) = e {
+                                Some(interner.resolve(*s).to_string())
+                            } else {
+                                None
+                            }
                         })
                         .unwrap_or_default();
                     ax_tensor::keep_weight(&args[0], target, &env.weights, &label, interner)
@@ -2738,11 +3567,14 @@ fn builtin_call(
             if args.len() >= 2 {
                 if let Expr::Int(w) = &args[1] {
                     let target = num_traits::ToPrimitive::to_i64(w).unwrap_or(0);
-                    let label = args.get(2)
-                        .and_then(|e| if let Expr::Sym(s) = e {
-                            Some(interner.resolve(*s).to_string())
-                        } else {
-                            None
+                    let label = args
+                        .get(2)
+                        .and_then(|e| {
+                            if let Expr::Sym(s) = e {
+                                Some(interner.resolve(*s).to_string())
+                            } else {
+                                None
+                            }
                         })
                         .unwrap_or_default();
                     ax_tensor::drop_weight(&args[0], target, &env.weights, &label, interner)
@@ -2756,7 +3588,11 @@ fn builtin_call(
         "einsteinify" => {
             if !args.is_empty() {
                 let metric = if args.len() >= 2 {
-                    if let Expr::Sym(s) = &args[1] { Some(*s) } else { None }
+                    if let Expr::Sym(s) = &args[1] {
+                        Some(*s)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -2809,10 +3645,10 @@ fn builtin_call(
         }
         "explicit_indices" => {
             if !args.is_empty() {
-                let implicit =
-                    symbols_with_property(env, |p| matches!(p, ax_ir::TensorProperty::GammaMatrixProp));
-                let n_per: HashMap<lasso::Spur, usize> =
-                    implicit.iter().map(|s| (*s, 2)).collect();
+                let implicit = symbols_with_property(env, |p| {
+                    matches!(p, ax_ir::TensorProperty::GammaMatrixProp)
+                });
+                let n_per: HashMap<lasso::Spur, usize> = implicit.iter().map(|s| (*s, 2)).collect();
                 let avail: Vec<lasso::Spur> = (0..20)
                     .map(|i| interner.get_or_intern(&format!("_impl{}", i)))
                     .collect();
@@ -2823,10 +3659,10 @@ fn builtin_call(
         }
         "expand_implicit" => {
             if !args.is_empty() {
-                let implicit =
-                    symbols_with_property(env, |p| matches!(p, ax_ir::TensorProperty::GammaMatrixProp));
-                let n_per: HashMap<lasso::Spur, usize> =
-                    implicit.iter().map(|s| (*s, 2)).collect();
+                let implicit = symbols_with_property(env, |p| {
+                    matches!(p, ax_ir::TensorProperty::GammaMatrixProp)
+                });
+                let n_per: HashMap<lasso::Spur, usize> = implicit.iter().map(|s| (*s, 2)).collect();
                 let avail: Vec<lasso::Spur> = (0..40)
                     .map(|i| interner.get_or_intern(&format!("_exp{}", i)))
                     .collect();
@@ -2956,7 +3792,13 @@ fn builtin_call(
             if !args.is_empty() {
                 let dim = args
                     .get(1)
-                    .and_then(|e| if let Expr::Int(n) = e { n.to_usize() } else { None })
+                    .and_then(|e| {
+                        if let Expr::Int(n) = e {
+                            n.to_usize()
+                        } else {
+                            None
+                        }
+                    })
                     .unwrap_or(4);
                 ax_tensor::decompose_product(&args[0], dim, &env.property_store, interner)
             } else {
@@ -3021,17 +3863,15 @@ fn builtin_call(
                 let mut units = ax_units::si_units(interner);
                 units.extend(ax_units::natural_units(interner));
                 match (&args[1], &args[2]) {
-                    (Expr::Sym(from), Expr::Sym(to)) => {
-                        match (units.get(from), units.get(to)) {
-                            (Some(from_unit), Some(to_unit)) => {
-                                match ax_units::convert(&args[0], from_unit, to_unit) {
-                                    Ok(expr) => eval(&expr, &Env::new(), interner),
-                                    Err(_) => Expr::Call(f, args),
-                                }
+                    (Expr::Sym(from), Expr::Sym(to)) => match (units.get(from), units.get(to)) {
+                        (Some(from_unit), Some(to_unit)) => {
+                            match ax_units::convert(&args[0], from_unit, to_unit) {
+                                Ok(expr) => eval(&expr, &Env::new(), interner),
+                                Err(_) => Expr::Call(f, args),
                             }
-                            _ => Expr::Call(f, args),
                         }
-                    }
+                        _ => Expr::Call(f, args),
+                    },
                     _ => Expr::Call(f, args),
                 }
             } else {
@@ -3050,10 +3890,13 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => {
-            Expr::Call(f, args)
-        }
-        "__declare_indices" | "__declare_coordinates" | "__declare_property" | "__declare_weight" | "__declare_depends" | "__set_parallel" => Expr::Call(f, args),
+        "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => Expr::Call(f, args),
+        "__declare_indices"
+        | "__declare_coordinates"
+        | "__declare_property"
+        | "__declare_weight"
+        | "__declare_depends"
+        | "__set_parallel" => Expr::Call(f, args),
         "grassmann" => Expr::Call(f, args),
         "expand" => {
             if args.len() == 1 {
@@ -3164,13 +4007,7 @@ fn builtin_call(
                             || has_any_indices(&args[1])
                             || has_any_indices(&args[2]);
                         if has_indices {
-                            substitute_with_indices(
-                                &args[0],
-                                &args[1],
-                                &args[2],
-                                env,
-                                interner,
-                            )
+                            substitute_with_indices(&args[0], &args[1], &args[2], env, interner)
                         } else {
                             symbolic_substitute(&args[0], &args[1], &args[2], interner)
                         }
@@ -3189,7 +4026,9 @@ fn builtin_call(
         }
         "equiv" => {
             if args.len() == 2 {
-                Expr::Sym(interner.get_or_intern(&equiv_description(&args[0], &args[1], env, interner)))
+                Expr::Sym(
+                    interner.get_or_intern(&equiv_description(&args[0], &args[1], env, interner)),
+                )
             } else {
                 Expr::Call(f, args)
             }
@@ -3204,7 +4043,10 @@ fn builtin_call(
         }
         "to_python" => {
             if args.len() == 1 {
-                println!("{}", ax_codegen::generate(&args[0], ax_codegen::Target::Python, interner, None, &[]));
+                println!(
+                    "{}",
+                    ax_codegen::generate(&args[0], ax_codegen::Target::Python, interner, None, &[])
+                );
                 Expr::zero()
             } else {
                 Expr::Call(f, args)
@@ -3212,7 +4054,10 @@ fn builtin_call(
         }
         "to_rust" => {
             if args.len() == 1 {
-                println!("{}", ax_codegen::generate(&args[0], ax_codegen::Target::Rust, interner, None, &[]));
+                println!(
+                    "{}",
+                    ax_codegen::generate(&args[0], ax_codegen::Target::Rust, interner, None, &[])
+                );
                 Expr::zero()
             } else {
                 Expr::Call(f, args)
@@ -3220,7 +4065,10 @@ fn builtin_call(
         }
         "to_cpp" => {
             if args.len() == 1 {
-                println!("{}", ax_codegen::generate(&args[0], ax_codegen::Target::Cpp, interner, None, &[]));
+                println!(
+                    "{}",
+                    ax_codegen::generate(&args[0], ax_codegen::Target::Cpp, interner, None, &[])
+                );
                 Expr::zero()
             } else {
                 Expr::Call(f, args)
@@ -3590,42 +4438,34 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "ket" => {
-            match args.as_slice() {
-                [Expr::Int(n)] => {
-                    if let Some(index) = n.to_usize() {
-                        Expr::List(ax_qm::ket(index, 2))
-                    } else {
-                        Expr::Call(f, args)
-                    }
+        "ket" => match args.as_slice() {
+            [Expr::Int(n)] => {
+                if let Some(index) = n.to_usize() {
+                    Expr::List(ax_qm::ket(index, 2))
+                } else {
+                    Expr::Call(f, args)
                 }
-                [Expr::Int(n), Expr::Int(d)] => {
-                    match (n.to_usize(), d.to_usize()) {
-                        (Some(index), Some(dim)) => Expr::List(ax_qm::ket(index, dim)),
-                        _ => Expr::Call(f, args),
-                    }
-                }
-                _ => Expr::Call(f, args),
             }
-        }
-        "bra" => {
-            match args.as_slice() {
-                [Expr::Int(n)] => {
-                    if let Some(index) = n.to_usize() {
-                        Expr::List(ax_qm::bra(index, 2))
-                    } else {
-                        Expr::Call(f, args)
-                    }
-                }
-                [Expr::Int(n), Expr::Int(d)] => {
-                    match (n.to_usize(), d.to_usize()) {
-                        (Some(index), Some(dim)) => Expr::List(ax_qm::bra(index, dim)),
-                        _ => Expr::Call(f, args),
-                    }
-                }
+            [Expr::Int(n), Expr::Int(d)] => match (n.to_usize(), d.to_usize()) {
+                (Some(index), Some(dim)) => Expr::List(ax_qm::ket(index, dim)),
                 _ => Expr::Call(f, args),
+            },
+            _ => Expr::Call(f, args),
+        },
+        "bra" => match args.as_slice() {
+            [Expr::Int(n)] => {
+                if let Some(index) = n.to_usize() {
+                    Expr::List(ax_qm::bra(index, 2))
+                } else {
+                    Expr::Call(f, args)
+                }
             }
-        }
+            [Expr::Int(n), Expr::Int(d)] => match (n.to_usize(), d.to_usize()) {
+                (Some(index), Some(dim)) => Expr::List(ax_qm::bra(index, dim)),
+                _ => Expr::Call(f, args),
+            },
+            _ => Expr::Call(f, args),
+        },
         "braket" => {
             if args.len() == 2 {
                 match (&args[0], &args[1]) {
@@ -3705,13 +4545,16 @@ fn builtin_call(
             if !args.is_empty() {
                 let gamma = interner.get_or_intern("gamma");
                 let g = interner.get_or_intern("g");
-                let on_back = args.get(1).map(|a| {
-                    if let Expr::Sym(s) = a {
-                        interner.resolve(*s) == "back"
-                    } else {
-                        false
-                    }
-                }).unwrap_or(true);
+                let on_back = args
+                    .get(1)
+                    .map(|a| {
+                        if let Expr::Sym(s) = a {
+                            interner.resolve(*s) == "back"
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(true);
                 ax_qm::split_gamma(&args[0], gamma, g, on_back, interner)
             } else {
                 Expr::Call(f, args)
@@ -3720,7 +4563,12 @@ fn builtin_call(
         "euler_lagrange" => {
             if args.len() == 4 {
                 match (&args[0], &args[1], &args[2], &args[3]) {
-                    (lagrangian, Expr::Sym(field), Expr::List(field_derivs), Expr::List(coords)) => {
+                    (
+                        lagrangian,
+                        Expr::Sym(field),
+                        Expr::List(field_derivs),
+                        Expr::List(coords),
+                    ) => {
                         let field_derivs = field_derivs
                             .iter()
                             .map(|expr| match expr {
@@ -3803,7 +4651,8 @@ fn builtin_call(
                 let Expr::List(items) = expr else {
                     return None;
                 };
-                items.iter()
+                items
+                    .iter()
                     .map(|item| match item {
                         Expr::Sym(sym) => Some(*sym),
                         _ => None,
@@ -3834,7 +4683,8 @@ fn builtin_call(
                 let Expr::List(items) = expr else {
                     return None;
                 };
-                items.iter()
+                items
+                    .iter()
                     .map(|item| match item {
                         Expr::Sym(sym) => Some(*sym),
                         _ => None,
@@ -3986,7 +4836,9 @@ fn builtin_call(
                     ax_forms::one_form_from_expr(&args[0]),
                     ax_forms::one_form_from_expr(&args[1]),
                 ) {
-                    (Some(a), Some(b)) => ax_forms::form_to_expr(&ax_forms::wedge(&a, &b, interner)),
+                    (Some(a), Some(b)) => {
+                        ax_forms::form_to_expr(&ax_forms::wedge(&a, &b, interner))
+                    }
                     _ => Expr::Call(f, args),
                 }
             } else {
@@ -4011,9 +4863,7 @@ fn builtin_call(
                                 ax_forms::scalar_form(field, coords.len())
                             };
                             ax_forms::form_to_expr(&ax_forms::exterior_derivative(
-                                &form,
-                                &coords,
-                                interner,
+                                &form, &coords, interner,
                             ))
                         } else {
                             Expr::Call(f, args)
@@ -4110,7 +4960,10 @@ fn builtin_call(
                             .collect::<Option<Vec<_>>>();
                         if let Some(coords) = coords {
                             expr_4d_to_list(ax_tensor::riemann_from_christoffel(
-                                &gamma, &coords, interner, &env.convention,
+                                &gamma,
+                                &coords,
+                                interner,
+                                &env.convention,
                             ))
                         } else {
                             Expr::Call(f, args)
@@ -4192,7 +5045,12 @@ fn builtin_call(
         "covariant_diff" => {
             if args.len() == 4 {
                 match (&args[0], expr_to_3d(&args[1]), &args[2], &args[3]) {
-                    (Expr::List(v), Some(gamma), Expr::Int(coord_index), Expr::List(coords_exprs)) => {
+                    (
+                        Expr::List(v),
+                        Some(gamma),
+                        Expr::Int(coord_index),
+                        Expr::List(coords_exprs),
+                    ) => {
                         let coords = coords_exprs
                             .iter()
                             .map(|expr| match expr {
@@ -4214,7 +5072,12 @@ fn builtin_call(
                             _ => Expr::Call(f, args),
                         }
                     }
-                    (Expr::Matrix(t), Some(gamma), Expr::Int(coord_index), Expr::List(coords_exprs)) => {
+                    (
+                        Expr::Matrix(t),
+                        Some(gamma),
+                        Expr::Int(coord_index),
+                        Expr::List(coords_exprs),
+                    ) => {
                         let coords = coords_exprs
                             .iter()
                             .map(|expr| match expr {
@@ -4279,10 +5142,7 @@ fn builtin_call(
                         if let Some(coords) = coords {
                             match field {
                                 Expr::List(w) => Expr::List(ax_tensor::lie_derivative_vector(
-                                    w,
-                                    v,
-                                    &coords,
-                                    interner,
+                                    w, v, &coords, interner,
                                 )),
                                 _ => ax_tensor::lie_derivative_scalar(field, v, &coords, interner),
                             }
@@ -4362,9 +5222,7 @@ fn builtin_call(
         }
         "triple_integral" | "tplint" => {
             if args.len() == 4 {
-                if let (Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)) =
-                    (&args[1], &args[2], &args[3])
-                {
+                if let (Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)) = (&args[1], &args[2], &args[3]) {
                     let i1 = integrate::integrate(&args[0], *x, interner);
                     let i2 = integrate::integrate(&i1, *y, interner);
                     let i3 = integrate::integrate(&i2, *z, interner);
@@ -4507,7 +5365,11 @@ fn structurally_matches(expr: &Expr, pattern: &Expr) -> bool {
     match (expr, pattern) {
         (Expr::Sym(a), Expr::Sym(b)) => a == b,
         (Expr::Indexed(base_e, _), Expr::Sym(s)) => {
-            if let Expr::Sym(base_s) = base_e.as_ref() { base_s == s } else { false }
+            if let Expr::Sym(base_s) = base_e.as_ref() {
+                base_s == s
+            } else {
+                false
+            }
         }
         (Expr::Call(f1, _), Expr::Sym(s)) => f1 == s,
         (Expr::Call(f1, _), Expr::Call(f2, _)) => f1 == f2,
@@ -4520,9 +5382,10 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
         Expr::Int(n) => Expr::Int(n.clone()),
         Expr::Rational(r) => Expr::Rational(r.clone()),
         Expr::Float(f) => Expr::Float(*f),
-        Expr::Complex(re, im) => {
-            Expr::Complex(Box::new(eval(re, env, interner)), Box::new(eval(im, env, interner)))
-        }
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(eval(re, env, interner)),
+            Box::new(eval(im, env, interner)),
+        ),
         Expr::Sym(s) => {
             if let Some(val) = env.lookup(*s) {
                 if matches!(val, Expr::Sym(bound) if *bound == *s) {
@@ -4615,8 +5478,11 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
                     Some(false) => continue,
                     None => {
                         return Expr::Piecewise(
-                            cases.iter()
-                                .map(|(value, condition)| (eval(value, env, interner), condition.clone()))
+                            cases
+                                .iter()
+                                .map(|(value, condition)| {
+                                    (eval(value, env, interner), condition.clone())
+                                })
                                 .collect(),
                         );
                     }
@@ -4639,7 +5505,8 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
                 })
                 .collect::<Vec<_>>();
             let indexed = Expr::Indexed(Box::new(eval(base, env, interner)), typed_indices);
-            let canonical = ax_tensor::canonicalize_indices(&indexed, &env.property_store, interner);
+            let canonical =
+                ax_tensor::canonicalize_indices(&indexed, &env.property_store, interner);
             let _ = if let Expr::Indexed(_, idxs) = &canonical {
                 ax_tensor::detect_contractions(idxs)
             } else {
@@ -5017,10 +5884,7 @@ fn apply_index_mapping(expr: &Expr, mapping: &HashMap<lasso::Spur, lasso::Spur>)
                     }
                 })
                 .collect();
-            Expr::Indexed(
-                Box::new(apply_index_mapping(base, mapping)),
-                new_indices,
-            )
+            Expr::Indexed(Box::new(apply_index_mapping(base, mapping)), new_indices)
         }
         Expr::Sym(s) => {
             let new_s = mapping.get(s).copied().unwrap_or(*s);
@@ -5043,7 +5907,9 @@ fn apply_index_mapping(expr: &Expr, mapping: &HashMap<lasso::Spur, lasso::Spur>)
             let new_f = mapping.get(f).copied().unwrap_or(*f);
             Expr::Call(
                 new_f,
-                args.iter().map(|a| apply_index_mapping(a, mapping)).collect(),
+                args.iter()
+                    .map(|a| apply_index_mapping(a, mapping))
+                    .collect(),
             )
         }
         _ => expr.clone(),
@@ -5081,8 +5947,7 @@ pub fn substitute_with_indices(
         for dummy in find_dummy_index_names(&renamed_replacement) {
             if used_indices.contains(&dummy) && !mapping.values().any(|&v| v == dummy) {
                 let fresh = generate_fresh_index(dummy, &used_indices, interner);
-                renamed_replacement =
-                    rename_index_everywhere(&renamed_replacement, dummy, fresh);
+                renamed_replacement = rename_index_everywhere(&renamed_replacement, dummy, fresh);
                 used_indices.insert(fresh);
             }
         }
@@ -5103,7 +5968,13 @@ pub fn substitute_with_indices(
                 .map(|f| substitute_with_indices(f, target, replacement, env, interner))
                 .collect(),
         ),
-        Expr::Neg(e) => Expr::neg(substitute_with_indices(e, target, replacement, env, interner)),
+        Expr::Neg(e) => Expr::neg(substitute_with_indices(
+            e,
+            target,
+            replacement,
+            env,
+            interner,
+        )),
         Expr::Pow(b, e) => Expr::pow(
             substitute_with_indices(b, target, replacement, env, interner),
             substitute_with_indices(e, target, replacement, env, interner),
@@ -5293,7 +6164,10 @@ mod tests {
         ]);
         let expr = Expr::Call(
             grad_sym,
-            vec![f, Expr::List(vec![Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)])],
+            vec![
+                f,
+                Expr::List(vec![Expr::Sym(x), Expr::Sym(y), Expr::Sym(z)]),
+            ],
         );
         let result = eval(&expr, &env, &interner);
 
@@ -5343,7 +6217,11 @@ mod tests {
         let result = eval(&expr, &env, &interner);
         if let Expr::List(components) = &result {
             for c in components {
-                assert_eq!(*c, Expr::zero(), "curl of conservative field should be zero");
+                assert_eq!(
+                    *c,
+                    Expr::zero(),
+                    "curl of conservative field should be zero"
+                );
             }
         } else {
             panic!("expected List, got {:?}", result);
@@ -5557,7 +6435,11 @@ mod tests {
         let expr = Expr::Call(tan_sym, vec![Expr::Sym(x)]);
         let result = differentiate(&expr, x, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
-        assert!(pp.contains("sec"), "d/dx tan(x) should contain sec, got: {}", pp);
+        assert!(
+            pp.contains("sec"),
+            "d/dx tan(x) should contain sec, got: {}",
+            pp
+        );
     }
 
     #[test]
@@ -5568,7 +6450,11 @@ mod tests {
         let expr = Expr::Call(sinh_sym, vec![Expr::Sym(x)]);
         let result = differentiate(&expr, x, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
-        assert!(pp.contains("cosh"), "d/dx sinh(x) should be cosh(x), got: {}", pp);
+        assert!(
+            pp.contains("cosh"),
+            "d/dx sinh(x) should be cosh(x), got: {}",
+            pp
+        );
     }
 
     #[test]
@@ -5579,7 +6465,11 @@ mod tests {
         let expr = Expr::Call(atan_sym, vec![Expr::Sym(x)]);
         let result = differentiate(&expr, x, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
-        assert!(!pp.contains("diff"), "d/dx atan(x) should not be unevaluated, got: {}", pp);
+        assert!(
+            !pp.contains("diff"),
+            "d/dx atan(x) should not be unevaluated, got: {}",
+            pp
+        );
     }
 
     #[test]
@@ -5590,7 +6480,11 @@ mod tests {
         let expr = Expr::Call(tan_sym, vec![Expr::pow(Expr::Sym(x), Expr::Int(2.into()))]);
         let result = differentiate(&expr, x, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
-        assert!(pp.contains("sec"), "chain rule should produce sec²(x²) · 2x, got: {}", pp);
+        assert!(
+            pp.contains("sec"),
+            "chain rule should produce sec²(x²) · 2x, got: {}",
+            pp
+        );
     }
 
     #[test]
@@ -5864,8 +6758,16 @@ mod tests {
         let target = Expr::Indexed(
             Box::new(Expr::Sym(t)),
             vec![
-                ax_ir::Index { name: a, variance: ax_ir::Variance::Down, index_type: None },
-                ax_ir::Index { name: b, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index {
+                    name: a,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: b,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let replacement = Expr::mul(vec![
@@ -5889,13 +6791,20 @@ mod tests {
         let expression = Expr::Indexed(
             Box::new(Expr::Sym(t)),
             vec![
-                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
-                ax_ir::Index { name: nu, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: nu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
             ],
         );
 
-        let result =
-            substitute_with_indices(&expression, &target, &replacement, &env, &interner);
+        let result = substitute_with_indices(&expression, &target, &replacement, &env, &interner);
         // Should be A[mu↓] * B[nu↓]
         if let Expr::Mul(factors) = &result {
             assert_eq!(factors.len(), 2);
@@ -5976,8 +6885,7 @@ mod tests {
             ],
         );
 
-        let result =
-            substitute_with_indices(&expression, &target, &replacement, &env, &interner);
+        let result = substitute_with_indices(&expression, &target, &replacement, &env, &interner);
 
         if let Expr::Mul(factors) = &result {
             assert_eq!(factors.len(), 2);
@@ -6006,19 +6914,30 @@ mod tests {
 
         let target = Expr::Indexed(
             Box::new(Expr::Sym(f_sym)),
-            vec![ax_ir::Index { name: x, variance: ax_ir::Variance::Up, index_type: None }],
+            vec![ax_ir::Index {
+                name: x,
+                variance: ax_ir::Variance::Up,
+                index_type: None,
+            }],
         );
         let replacement = Expr::Indexed(
             Box::new(Expr::Sym(f_sym)),
-            vec![ax_ir::Index { name: x, variance: ax_ir::Variance::Up, index_type: None }],
+            vec![ax_ir::Index {
+                name: x,
+                variance: ax_ir::Variance::Up,
+                index_type: None,
+            }],
         );
         let expression = Expr::Indexed(
             Box::new(Expr::Sym(f_sym)),
-            vec![ax_ir::Index { name: y, variance: ax_ir::Variance::Up, index_type: None }],
+            vec![ax_ir::Index {
+                name: y,
+                variance: ax_ir::Variance::Up,
+                index_type: None,
+            }],
         );
 
-        let result =
-            substitute_with_indices(&expression, &target, &replacement, &env, &interner);
+        let result = substitute_with_indices(&expression, &target, &replacement, &env, &interner);
         // F[y↑] substituted by pattern F[x↑] → F[x↑], mapping x→y gives F[y↑]
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains("y"), "expected y in result, got: {pp}");
@@ -6035,16 +6954,23 @@ mod tests {
 
         let target = Expr::Indexed(
             Box::new(Expr::Sym(t)),
-            vec![ax_ir::Index { name: a, variance: ax_ir::Variance::Up, index_type: None }],
+            vec![ax_ir::Index {
+                name: a,
+                variance: ax_ir::Variance::Up,
+                index_type: None,
+            }],
         );
         let replacement = Expr::Sym(x);
         let expression = Expr::Indexed(
             Box::new(Expr::Sym(t)),
-            vec![ax_ir::Index { name: a, variance: ax_ir::Variance::Down, index_type: None }],
+            vec![ax_ir::Index {
+                name: a,
+                variance: ax_ir::Variance::Down,
+                index_type: None,
+            }],
         );
 
-        let result =
-            substitute_with_indices(&expression, &target, &replacement, &env, &interner);
+        let result = substitute_with_indices(&expression, &target, &replacement, &env, &interner);
         // Variance mismatch: expression unchanged
         assert_eq!(result, expression);
     }

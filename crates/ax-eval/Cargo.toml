@@ -17,6 +17,7 @@ ax-plot = { path = "../ax-plot" }
 ax-qm = { path = "../ax-qm" }
 ax-rewrite = { path = "../ax-rewrite" }
 ax-solve = { path = "../ax-solve" }
+ax-spinor = { path = "../ax-spinor" }
 ax-tensor = { path = "../ax-tensor" }
 ax-units = { path = "../ax-units" }
 ax-variational = { path = "../ax-variational" }

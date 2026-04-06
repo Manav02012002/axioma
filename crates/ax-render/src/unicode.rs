@@ -129,6 +129,14 @@ fn render_fractional_or_plain(r: &BigRational) -> String {
     }
 }
 
+fn spinor_label_unicode(expr: &Expr, interner: &ax_ir::Interner) -> String {
+    match expr {
+        Expr::Int(n) => n.to_string(),
+        Expr::Sym(s) => sym_to_unicode(*s, interner),
+        _ => render_with_paren(expr, PREC_TOP, interner),
+    }
+}
+
 fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String {
     let rendered_args = args
         .iter()
@@ -136,6 +144,34 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
         .collect::<Vec<_>>();
 
     match (name, args.len()) {
+        ("__angle", 2) => format!(
+            "⟨{}{}⟩",
+            spinor_label_unicode(&args[0], interner),
+            spinor_label_unicode(&args[1], interner)
+        ),
+        ("__square", 2) => format!(
+            "[{}{}]",
+            spinor_label_unicode(&args[0], interner),
+            spinor_label_unicode(&args[1], interner)
+        ),
+        ("__mandelstam", 2) => format!(
+            "s_{{{}{}}}",
+            spinor_label_unicode(&args[0], interner),
+            spinor_label_unicode(&args[1], interner)
+        ),
+        ("__mandelstam3", 3) | ("__mandelstam_multi", 3) => format!(
+            "s_{{{}{}{}}}",
+            spinor_label_unicode(&args[0], interner),
+            spinor_label_unicode(&args[1], interner),
+            spinor_label_unicode(&args[2], interner)
+        ),
+        ("__four_bracket", 4) => format!(
+            "⟨{}{}{}{}⟩",
+            spinor_label_unicode(&args[0], interner),
+            spinor_label_unicode(&args[1], interner),
+            spinor_label_unicode(&args[2], interner),
+            spinor_label_unicode(&args[3], interner)
+        ),
         ("sin", 1)
         | ("cos", 1)
         | ("tan", 1)
@@ -145,12 +181,18 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
         | ("sinh", 1)
         | ("cosh", 1)
         | ("tanh", 1)
-        | ("arcsin", 1) | ("asin", 1)
-        | ("arccos", 1) | ("acos", 1)
-        | ("arctan", 1) | ("atan", 1)
-        | ("arcsinh", 1) | ("asinh", 1)
-        | ("arccosh", 1) | ("acosh", 1)
-        | ("arctanh", 1) | ("atanh", 1) => format!("{name}({})", rendered_args[0]),
+        | ("arcsin", 1)
+        | ("asin", 1)
+        | ("arccos", 1)
+        | ("acos", 1)
+        | ("arctan", 1)
+        | ("atan", 1)
+        | ("arcsinh", 1)
+        | ("asinh", 1)
+        | ("arccosh", 1)
+        | ("acosh", 1)
+        | ("arctanh", 1)
+        | ("atanh", 1) => format!("{name}({})", rendered_args[0]),
         ("sign", 1) | ("sgn", 1) => format!("sgn({})", rendered_args[0]),
         ("atan2", 2) => format!("atan2({}, {})", rendered_args[0], rendered_args[1]),
         ("sqrt", 1) => format!("√({})", rendered_args[0]),
@@ -208,12 +250,36 @@ fn render_assumption(assumption: &Assumption) -> &'static str {
 
 fn render_condition(condition: &Condition, interner: &ax_ir::Interner) -> String {
     match condition {
-        Condition::Gt(a, b) => format!("{} > {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
-        Condition::Lt(a, b) => format!("{} < {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
-        Condition::Ge(a, b) => format!("{} >= {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
-        Condition::Le(a, b) => format!("{} <= {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
-        Condition::Eq(a, b) => format!("{} == {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
-        Condition::Ne(a, b) => format!("{} != {}", render_with_paren(a, PREC_TOP, interner), render_with_paren(b, PREC_TOP, interner)),
+        Condition::Gt(a, b) => format!(
+            "{} > {}",
+            render_with_paren(a, PREC_TOP, interner),
+            render_with_paren(b, PREC_TOP, interner)
+        ),
+        Condition::Lt(a, b) => format!(
+            "{} < {}",
+            render_with_paren(a, PREC_TOP, interner),
+            render_with_paren(b, PREC_TOP, interner)
+        ),
+        Condition::Ge(a, b) => format!(
+            "{} >= {}",
+            render_with_paren(a, PREC_TOP, interner),
+            render_with_paren(b, PREC_TOP, interner)
+        ),
+        Condition::Le(a, b) => format!(
+            "{} <= {}",
+            render_with_paren(a, PREC_TOP, interner),
+            render_with_paren(b, PREC_TOP, interner)
+        ),
+        Condition::Eq(a, b) => format!(
+            "{} == {}",
+            render_with_paren(a, PREC_TOP, interner),
+            render_with_paren(b, PREC_TOP, interner)
+        ),
+        Condition::Ne(a, b) => format!(
+            "{} != {}",
+            render_with_paren(a, PREC_TOP, interner),
+            render_with_paren(b, PREC_TOP, interner)
+        ),
         Condition::And(a, b) => format!(
             "({}) and ({})",
             render_condition(a, interner),
@@ -245,10 +311,16 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
                 return ("i".to_string(), PREC_ADD);
             }
             if matches!(re.as_ref(), Expr::Int(n) if *n == 0.into()) {
-                return (format!("{}i", render_with_paren(im, PREC_MUL, interner)), PREC_ADD);
+                return (
+                    format!("{}i", render_with_paren(im, PREC_MUL, interner)),
+                    PREC_ADD,
+                );
             }
             if matches!(im.as_ref(), Expr::Int(n) if *n == 1.into()) {
-                return (format!("{} + i", render_with_paren(re, PREC_ADD, interner)), PREC_ADD);
+                return (
+                    format!("{} + i", render_with_paren(re, PREC_ADD, interner)),
+                    PREC_ADD,
+                );
             }
             if let Expr::Neg(inner) = im.as_ref() {
                 return (
@@ -389,14 +461,12 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
             ),
             PREC_TOP,
         ),
-        Expr::SetConvention(field, value) => (
-            format!("convention {} {}", field, value),
-            PREC_TOP,
-        ),
+        Expr::SetConvention(field, value) => (format!("convention {} {}", field, value), PREC_TOP),
         Expr::Piecewise(cases) => (
             format!(
                 "piecewise({})",
-                cases.iter()
+                cases
+                    .iter()
                     .map(|(value, condition)| format!(
                         "{}, {}",
                         render_with_paren(value, PREC_TOP, interner),

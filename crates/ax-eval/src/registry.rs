@@ -86,10 +86,7 @@ pub trait EvalState {
     fn parse_code(&mut self, code: &str) -> Result<ax_ir::Expr, String>;
     fn render_latex(&self, expr: &ax_ir::Expr) -> String;
     fn render_unicode(&self, expr: &ax_ir::Expr) -> String;
-    fn get_metric(
-        &self,
-        id: &str,
-    ) -> Option<&(ax_tensor::SymbolicMatrix, Vec<lasso::Spur>)>;
+    fn get_metric(&self, id: &str) -> Option<&(ax_tensor::SymbolicMatrix, Vec<lasso::Spur>)>;
     fn store_metric(
         &mut self,
         id: String,
@@ -191,208 +188,1527 @@ fn asm(name: &'static str, description: &'static str) -> AssumptionEntry {
 
 pub fn builtin_entries() -> Vec<BuiltinEntry> {
     vec![
-        b("import", "syntax", "import(path)", "Import a standard-library module into the current environment.", "import std.conventions.mtw"),
-        b("assume", "syntax", "assume(sym, property)", "Attach assumptions such as real, positive, integer, even, or odd to a symbol.", "assume(x, positive)"),
-        b("Re", "complex", "Re(z)", "Return the real part of a complex expression.", "Re(3 + 4*i)"),
-        b("Im", "complex", "Im(z)", "Return the imaginary part of a complex expression.", "Im(3 + 4*i)"),
-        b("conj", "complex", "conj(z)", "Return the complex conjugate.", "conj(3 + 4*i)"),
-        b("arg", "complex", "arg(z)", "Return the complex argument or phase.", "arg(1 + i)"),
-        b("N", "numeric", "N(expr)", "Evaluate an expression numerically when possible.", "N(sin(pi/4))"),
-        b("sin", "elementary", "sin(x)", "Sine with symbolic and numeric evaluation.", "sin(x)"),
-        b("cos", "elementary", "cos(x)", "Cosine with symbolic and numeric evaluation.", "cos(x)"),
-        b("tan", "elementary", "tan(x)", "Tangent with symbolic and numeric evaluation.", "tan(x)"),
-        b("sec", "elementary", "sec(x)", "Secant with symbolic and numeric evaluation.", "sec(x)"),
-        b("csc", "elementary", "csc(x)", "Cosecant with symbolic and numeric evaluation.", "csc(x)"),
-        b("cot", "elementary", "cot(x)", "Cotangent with symbolic and numeric evaluation.", "cot(x)"),
+        b(
+            "import",
+            "syntax",
+            "import(path)",
+            "Import a standard-library module into the current environment.",
+            "import std.conventions.mtw",
+        ),
+        b(
+            "assume",
+            "syntax",
+            "assume(sym, property)",
+            "Attach assumptions such as real, positive, integer, even, or odd to a symbol.",
+            "assume(x, positive)",
+        ),
+        b(
+            "Re",
+            "complex",
+            "Re(z)",
+            "Return the real part of a complex expression.",
+            "Re(3 + 4*i)",
+        ),
+        b(
+            "Im",
+            "complex",
+            "Im(z)",
+            "Return the imaginary part of a complex expression.",
+            "Im(3 + 4*i)",
+        ),
+        b(
+            "conj",
+            "complex",
+            "conj(z)",
+            "Return the complex conjugate.",
+            "conj(3 + 4*i)",
+        ),
+        b(
+            "arg",
+            "complex",
+            "arg(z)",
+            "Return the complex argument or phase.",
+            "arg(1 + i)",
+        ),
+        b(
+            "N",
+            "numeric",
+            "N(expr)",
+            "Evaluate an expression numerically when possible.",
+            "N(sin(pi/4))",
+        ),
+        b(
+            "sin",
+            "elementary",
+            "sin(x)",
+            "Sine with symbolic and numeric evaluation.",
+            "sin(x)",
+        ),
+        b(
+            "cos",
+            "elementary",
+            "cos(x)",
+            "Cosine with symbolic and numeric evaluation.",
+            "cos(x)",
+        ),
+        b(
+            "tan",
+            "elementary",
+            "tan(x)",
+            "Tangent with symbolic and numeric evaluation.",
+            "tan(x)",
+        ),
+        b(
+            "sec",
+            "elementary",
+            "sec(x)",
+            "Secant with symbolic and numeric evaluation.",
+            "sec(x)",
+        ),
+        b(
+            "csc",
+            "elementary",
+            "csc(x)",
+            "Cosecant with symbolic and numeric evaluation.",
+            "csc(x)",
+        ),
+        b(
+            "cot",
+            "elementary",
+            "cot(x)",
+            "Cotangent with symbolic and numeric evaluation.",
+            "cot(x)",
+        ),
         b("asin", "elementary", "asin(x)", "Inverse sine.", "asin(x)"),
-        b("arcsin", "elementary", "arcsin(x)", "Inverse sine alias.", "arcsin(x)"),
-        b("acos", "elementary", "acos(x)", "Inverse cosine.", "acos(x)"),
-        b("arccos", "elementary", "arccos(x)", "Inverse cosine alias.", "arccos(x)"),
-        b("atan", "elementary", "atan(x)", "Inverse tangent.", "atan(x)"),
-        b("arctan", "elementary", "arctan(x)", "Inverse tangent alias.", "arctan(x)"),
-        b("atan2", "elementary", "atan2(y, x)", "Two-argument arctangent.", "atan2(y, x)"),
-        b("sinh", "elementary", "sinh(x)", "Hyperbolic sine.", "sinh(x)"),
-        b("cosh", "elementary", "cosh(x)", "Hyperbolic cosine.", "cosh(x)"),
-        b("tanh", "elementary", "tanh(x)", "Hyperbolic tangent.", "tanh(x)"),
-        b("asinh", "elementary", "asinh(x)", "Inverse hyperbolic sine.", "asinh(x)"),
-        b("arcsinh", "elementary", "arcsinh(x)", "Inverse hyperbolic sine alias.", "arcsinh(x)"),
-        b("acosh", "elementary", "acosh(x)", "Inverse hyperbolic cosine.", "acosh(x)"),
-        b("arccosh", "elementary", "arccosh(x)", "Inverse hyperbolic cosine alias.", "arccosh(x)"),
-        b("atanh", "elementary", "atanh(x)", "Inverse hyperbolic tangent.", "atanh(x)"),
-        b("arctanh", "elementary", "arctanh(x)", "Inverse hyperbolic tangent alias.", "arctanh(x)"),
-        b("exp", "elementary", "exp(x)", "Exponential function.", "exp(x)"),
-        b("log", "elementary", "log(x)", "Natural logarithm.", "log(x)"),
-        b("sqrt", "elementary", "sqrt(x)", "Square root with exact perfect-square simplification.", "sqrt(9)"),
-        b("abs", "elementary", "abs(x)", "Absolute value or complex modulus.", "abs(x)"),
+        b(
+            "arcsin",
+            "elementary",
+            "arcsin(x)",
+            "Inverse sine alias.",
+            "arcsin(x)",
+        ),
+        b(
+            "acos",
+            "elementary",
+            "acos(x)",
+            "Inverse cosine.",
+            "acos(x)",
+        ),
+        b(
+            "arccos",
+            "elementary",
+            "arccos(x)",
+            "Inverse cosine alias.",
+            "arccos(x)",
+        ),
+        b(
+            "atan",
+            "elementary",
+            "atan(x)",
+            "Inverse tangent.",
+            "atan(x)",
+        ),
+        b(
+            "arctan",
+            "elementary",
+            "arctan(x)",
+            "Inverse tangent alias.",
+            "arctan(x)",
+        ),
+        b(
+            "atan2",
+            "elementary",
+            "atan2(y, x)",
+            "Two-argument arctangent.",
+            "atan2(y, x)",
+        ),
+        b(
+            "sinh",
+            "elementary",
+            "sinh(x)",
+            "Hyperbolic sine.",
+            "sinh(x)",
+        ),
+        b(
+            "cosh",
+            "elementary",
+            "cosh(x)",
+            "Hyperbolic cosine.",
+            "cosh(x)",
+        ),
+        b(
+            "tanh",
+            "elementary",
+            "tanh(x)",
+            "Hyperbolic tangent.",
+            "tanh(x)",
+        ),
+        b(
+            "asinh",
+            "elementary",
+            "asinh(x)",
+            "Inverse hyperbolic sine.",
+            "asinh(x)",
+        ),
+        b(
+            "arcsinh",
+            "elementary",
+            "arcsinh(x)",
+            "Inverse hyperbolic sine alias.",
+            "arcsinh(x)",
+        ),
+        b(
+            "acosh",
+            "elementary",
+            "acosh(x)",
+            "Inverse hyperbolic cosine.",
+            "acosh(x)",
+        ),
+        b(
+            "arccosh",
+            "elementary",
+            "arccosh(x)",
+            "Inverse hyperbolic cosine alias.",
+            "arccosh(x)",
+        ),
+        b(
+            "atanh",
+            "elementary",
+            "atanh(x)",
+            "Inverse hyperbolic tangent.",
+            "atanh(x)",
+        ),
+        b(
+            "arctanh",
+            "elementary",
+            "arctanh(x)",
+            "Inverse hyperbolic tangent alias.",
+            "arctanh(x)",
+        ),
+        b(
+            "exp",
+            "elementary",
+            "exp(x)",
+            "Exponential function.",
+            "exp(x)",
+        ),
+        b(
+            "log",
+            "elementary",
+            "log(x)",
+            "Natural logarithm.",
+            "log(x)",
+        ),
+        b(
+            "sqrt",
+            "elementary",
+            "sqrt(x)",
+            "Square root with exact perfect-square simplification.",
+            "sqrt(9)",
+        ),
+        b(
+            "abs",
+            "elementary",
+            "abs(x)",
+            "Absolute value or complex modulus.",
+            "abs(x)",
+        ),
         b("sign", "elementary", "sign(x)", "Sign function.", "sign(x)"),
-        b("sgn", "elementary", "sgn(x)", "Sign function alias.", "sgn(x)"),
-        b("diff", "calculus", "diff(expr, var)", "Differentiate an expression symbolically.", "diff(sin(x^2), x)"),
-        b("integrate", "calculus", "integrate(expr, var) or integrate(expr, var, a, b)", "Indefinite or definite symbolic integration.", "integrate(x^2, x)"),
-        b("double_integral", "calculus", "double_integral(expr, x, y)", "Perform iterated double integration.", "double_integral(x*y, x, y)"),
-        b("dblint", "calculus", "dblint(expr, x, y)", "Alias for double_integral.", "dblint(x*y, x, y)"),
-        b("triple_integral", "calculus", "triple_integral(expr, x, y, z)", "Perform iterated triple integration.", "triple_integral(x*y*z, x, y, z)"),
-        b("tplint", "calculus", "tplint(expr, x, y, z)", "Alias for triple_integral.", "tplint(x*y*z, x, y, z)"),
-        b("definite_integral", "calculus", "definite_integral(expr, var, a, b)", "Compute a definite integral from an antiderivative.", "definite_integral(x^2, x, 0, 1)"),
-        b("defint", "calculus", "defint(expr, var, a, b)", "Alias for definite_integral.", "defint(x^2, x, 0, 1)"),
-        b("integrate_by_parts", "calculus", "integrate_by_parts(expr, u, v, var)", "Perform one integration-by-parts step using explicit u and v'.", "integrate_by_parts(x*exp(x), x, exp(x), x)"),
-        b("ibp", "calculus", "ibp(expr, u, v, var)", "Alias for integrate_by_parts.", "ibp(x*exp(x), x, exp(x), x)"),
-        b("limit", "calculus", "limit(expr, var, point)", "Evaluate a symbolic limit.", "limit(sin(x)/x, x, 0)"),
-        b("series", "calculus", "series(expr, var, point, order)", "Compute a Taylor series.", "series(exp(x), x, 0, 4)"),
-        b("gradient", "vector-calculus", "gradient(f, [x, y, z])", "Return the gradient vector.", "gradient(x^2 + y^2 + z^2, [x, y, z])"),
-        b("grad", "vector-calculus", "grad(f, [x, y, z])", "Alias for gradient.", "grad(x^2 + y^2, [x, y])"),
-        b("divergence", "vector-calculus", "divergence([Fx, Fy, Fz], [x, y, z])", "Return the divergence of a vector field.", "divergence([x, y, z], [x, y, z])"),
-        b("div", "vector-calculus", "div([Fx, Fy, Fz], [x, y, z])", "Alias for divergence.", "div([x, y], [x, y])"),
-        b("curl", "vector-calculus", "curl([Fx, Fy, Fz], [x, y, z])", "Return the three-dimensional curl.", "curl([x, y, z], [x, y, z])"),
-        b("laplacian", "vector-calculus", "laplacian(f, [x, y, z])", "Return the Laplacian.", "laplacian(x^2 - y^2, [x, y])"),
-        b("jacobian", "vector-calculus", "jacobian([f1, ...], [x1, ...])", "Return the Jacobian matrix.", "jacobian([x^2, x*y], [x, y])"),
-        b("hessian", "vector-calculus", "hessian(f, [x1, ...])", "Return the Hessian matrix.", "hessian(x^2 + 3*x*y + y^2, [x, y])"),
-        b("expand", "simplify", "expand(expr)", "Distribute products and expand small powers.", "expand((x + 1)^2)"),
-        b("simplify", "simplify", "simplify(expr)", "Run the full simplification pipeline.", "simplify(sin(x)^2 + cos(x)^2)"),
-        b("rationalize", "simplify", "rationalize(expr)", "Put sums over a common denominator and cancel common factors.", "rationalize(1/x + 1/x^2)"),
-        b("partial_fractions", "simplify", "partial_fractions(expr, var)", "Decompose a rational function into partial fractions when supported.", "partial_fractions(1/(x*(x+1)), x)"),
-        b("apart", "simplify", "apart(expr, var)", "Alias for partial_fractions.", "apart(1/(x*(x+1)), x)"),
-        b("trig_simplify", "simplify", "trig_simplify(expr)", "Apply exact trigonometric rewrite rules.", "trig_simplify(sin(x)^2 + cos(x)^2)"),
-        b("factor_out", "simplify", "factor_out(expr[, targets])", "Factor common factors from a sum.", "factor_out(a*x + a*y, [a])"),
-        b("factor_in", "simplify", "factor_in(expr[, targets])", "Group terms that share common prefactors.", "factor_in(a*x + a*y, [a])"),
-        b("subs", "rewrite", "subs(expr, target, replacement)", "Perform symbolic substitution with index-aware matching when needed.", "subs(f(x), x, y)"),
-        b("rewrite", "rewrite", "rewrite(expr)", "Apply user-defined rewrite rules to an expression.", "rewrite(expr)"),
-        b("zoom", "rewrite", "zoom(expr, pattern)", "Split an expression into matching and non-matching parts.", "zoom(a + b + c, a + b)"),
-        b("unzoom", "rewrite", "unzoom(focus, remainder)", "Recombine a focused expression with its remainder.", "unzoom(a + b, c)"),
-        b("take_match", "rewrite", "take_match(expr, pattern)", "Keep only the parts of a sum that match a pattern.", "take_match(a + b + c, a_)"),
-        b("equiv", "analysis", "equiv(lhs, rhs)", "Describe whether two expressions are semantically equivalent.", "equiv(x + x, 2*x)"),
-        b("semantic_diff", "analysis", "semantic_diff(lhs, rhs)", "Return a semantic-difference descriptor.", "semantic_diff(x + x, 2*x)"),
-        b("canonicalise", "tensor", "canonicalise(expr)", "Canonicalize tensor indices using declared tensor properties.", "canonicalise(R[a-,b-,c-,d-] + R[a-,c-,d-,b-])"),
-        b("canonicalize", "tensor", "canonicalize(expr)", "Alias for canonicalise.", "canonicalize(T[a-, b-])"),
-        b("lower_free_indices", "tensor", "lower_free_indices(expr)", "Lower free upper indices using the active metric family.", "lower_free_indices(V[mu+])"),
-        b("lower_indices", "tensor", "lower_indices(expr)", "Alias for lower_free_indices.", "lower_indices(V[mu+])"),
-        b("raise_free_indices", "tensor", "raise_free_indices(expr)", "Raise free lower indices using the active inverse metric family.", "raise_free_indices(V[mu-])"),
-        b("raise_indices", "tensor", "raise_indices(expr)", "Alias for raise_free_indices.", "raise_indices(V[mu-])"),
-        b("meld", "tensor", "meld(expr)", "Detect multi-term tensor identities using Young projection and linear dependence.", "meld(R[a-,b-,c-,d-] + R[a-,c-,d-,b-] + R[a-,d-,b-,c-])"),
-        b("rename_dummies", "tensor", "rename_dummies(expr)", "Rename dummy indices to a canonical fresh naming scheme.", "rename_dummies(T[a-, a+])"),
-        b("sort_product", "tensor", "sort_product(expr)", "Sort tensor products using symmetry-aware canonicalization.", "sort_product(B[a-] * A[a-])"),
-        b("product_rule", "tensor", "product_rule(expr)", "Apply the Leibniz rule to an indexed product.", "product_rule(diff(A[x] * B[x], x))"),
-        b("leibniz", "tensor", "leibniz(expr)", "Alias for product_rule.", "leibniz(diff(A[x] * B[x], x))"),
-        b("unwrap", "tensor", "unwrap(expr)", "Flatten nested additive and multiplicative structure.", "unwrap((a + b) + c)"),
-        b("tensor_distribute", "tensor", "tensor_distribute(expr)", "Distribute products over sums in tensor expressions.", "tensor_distribute(A*(B + C))"),
-        b("tdistribute", "tensor", "tdistribute(expr)", "Alias for tensor_distribute.", "tdistribute(A*(B + C))"),
-        b("keep_weight", "tensor", "keep_weight(expr, label, value)", "Filter terms by a recorded symbolic weight.", "keep_weight(expr, field, 1)"),
-        b("drop_weight", "tensor", "drop_weight(expr, label, value)", "Remove terms with a recorded symbolic weight.", "drop_weight(expr, field, 0)"),
-        b("einsteinify", "tensor", "einsteinify(expr)", "Insert implicit Einstein summation contractions.", "einsteinify(A[mu-] * B[mu+])"),
-        b("split_index", "tensor", "split_index(expr, old, [new...])", "Split one abstract index family into several fixed values.", "split_index(T[a-], a, [0,1,2])"),
-        b("eliminate_kronecker", "tensor", "eliminate_kronecker(expr)", "Contract Kronecker deltas through an expression.", "eliminate_kronecker(delta[mu+, nu-] * T[nu+, rho-])"),
-        b("expand_delta", "tensor", "expand_delta(expr)", "Expand delta contractions into explicit sums when possible.", "expand_delta(delta[mu+, nu-] * V[nu+])"),
-        b("expand_dummies", "tensor", "expand_dummies(expr)", "Expand dummy sums over the declared coordinate set.", "expand_dummies(T[mu-, mu+])"),
-        b("explicit_indices", "tensor", "explicit_indices(expr)", "Make implicit repeated indices explicit.", "explicit_indices(A * B)"),
-        b("expand_implicit", "tensor", "expand_implicit(expr)", "Expand implicit tensor contractions and index conventions.", "expand_implicit(A[mu-] B[mu+])"),
-        b("rewrite_indices", "tensor", "rewrite_indices(expr)", "Rewrite index names while preserving variance and families.", "rewrite_indices(T[a-, b+])"),
-        b("reduce_delta", "tensor", "reduce_delta(expr)", "Simplify explicit delta-expanded expressions back to compact form.", "reduce_delta(expr)"),
-        b("young_project", "tensor", "young_project(expr)", "Project a tensor onto a declared Young-tableau symmetry.", "young_project(T[a-,b-,c-])"),
-        b("symmetrise", "tensor", "symmetrise(expr, [positions])", "Symmetrise over listed slots.", "symmetrise(T[a-, b-], [0,1])"),
-        b("symmetrize", "tensor", "symmetrize(expr, [positions])", "Alias for symmetrise.", "symmetrize(T[a-, b-], [0,1])"),
-        b("sym", "tensor", "sym(expr, [positions])", "Short alias for symmetrise.", "sym(T[a-, b-], [0,1])"),
-        b("antisymmetrise", "tensor", "antisymmetrise(expr, [positions])", "Antisymmetrise over listed slots.", "antisymmetrise(F[a-, b-], [0,1])"),
-        b("antisymmetrize", "tensor", "antisymmetrize(expr, [positions])", "Alias for antisymmetrise.", "antisymmetrize(F[a-, b-], [0,1])"),
-        b("asym", "tensor", "asym(expr, [positions])", "Short alias for antisymmetrise.", "asym(F[a-, b-], [0,1])"),
-        b("eliminate_metric", "tensor", "eliminate_metric(expr)", "Use the metric or inverse metric to raise or lower contracted indices.", "eliminate_metric(g[mu-, nu-] * V[nu+])"),
-        b("eliminate_vielbein", "tensor", "eliminate_vielbein(expr)", "Simplify vielbein contractions into metric data when possible.", "eliminate_vielbein(e[a-,mu-] * e[b+,mu+])"),
-        b("decompose", "tensor", "decompose(expr)", "Decompose a tensor into symmetry-adapted pieces.", "decompose(T[a-, b-])"),
-        b("decompose_product", "tensor", "decompose_product(expr)", "Decompose a tensor product using known tensor properties.", "decompose_product(g[a-,b-] * T[b+,c-])"),
-        b("epsilon_to_delta", "tensor", "epsilon_to_delta(expr)", "Convert epsilon-tensor contractions into generalized Kronecker deltas.", "epsilon_to_delta(epsilon[a-,b-,c-] * epsilon[a+,d+,e+])"),
-        b("evaluate", "tensor", "evaluate(expr, rules)", "Evaluate tensor components using declared component rules.", "evaluate(g[mu-, nu-], rules)"),
-        b("eval_components", "tensor", "eval_components(expr, rules)", "Alias for evaluate component expressions.", "eval_components(g[mu-, nu-], rules)"),
-        b("dim", "units", "dim(expr)", "Return the dimension of a units-aware expression.", "dim(force)"),
-        b("convert", "units", "convert(expr, units)", "Convert an expression between compatible units.", "convert(1*m, cm)"),
-        b("check_units", "units", "check_units(expr)", "Verify that a units expression is dimensionally consistent.", "check_units(force == mass*acceleration)"),
-        b("metric", "properties", "metric(tensor)", "Declare a tensor as a metric and attach the symmetric metric property.", "metric(g)"),
-        b("symmetric", "properties", "symmetric(tensor)", "Property marker used in property declarations and metadata.", "symmetric(g)"),
-        b("antisymmetric", "properties", "antisymmetric(tensor)", "Property marker used in property declarations and metadata.", "antisymmetric(F)"),
-        b("inverse_metric", "properties", "inverse_metric(tensor)", "Declare a tensor as an inverse metric.", "inverse_metric(ginv)"),
-        b("kronecker_delta", "properties", "kronecker_delta(tensor)", "Declare a tensor as a Kronecker delta.", "kronecker_delta(delta)"),
-        b("kronecker", "properties", "kronecker(tensor)", "Alias for kronecker_delta.", "kronecker(delta)"),
-        b("epsilon", "properties", "epsilon(tensor)", "Declare a tensor as an epsilon or Levi-Civita tensor.", "epsilon(eps)"),
-        b("epsilon_tensor", "properties", "epsilon_tensor(tensor)", "Alias for epsilon.", "epsilon_tensor(eps)"),
-        b("riemann", "properties", "riemann(tensor)", "Declare Riemann slot symmetries on a tensor.", "riemann(R)"),
-        b("riemann_symmetry", "properties", "riemann_symmetry(tensor)", "Property marker for Riemann-like slot symmetries.", "riemann_symmetry(R)"),
-        b("traceless", "properties", "traceless(tensor)", "Property marker for traceless tensors.", "traceless(T)"),
-        b("derivative", "properties", "derivative(op)", "Declare a symbol as a derivative operator.", "derivative(D)"),
-        b("partial_derivative", "properties", "partial_derivative(op)", "Declare a symbol as a partial derivative operator.", "partial_derivative(partial)"),
-        b("covariant_derivative", "properties", "covariant_derivative(op)", "Declare a symbol as a covariant derivative operator.", "covariant_derivative(nabla)"),
-        b("spinor", "properties", "spinor(tensor)", "Declare a tensor as carrying spinor indices.", "spinor(psi)"),
-        b("dirac_bar", "properties", "dirac_bar(symbol)", "Declare a symbol as a Dirac-bar object.", "dirac_bar(psibar)"),
-        b("diracbar", "properties", "diracbar(symbol)", "Alias for dirac_bar.", "diracbar(psibar)"),
-        b("gamma_matrix", "properties", "gamma_matrix(symbol)", "Declare a symbol as a gamma matrix.", "gamma_matrix(gamma)"),
-        b("commuting", "properties", "commuting(symbol)", "Declare an object as commuting.", "commuting(A)"),
-        b("anticommuting", "properties", "anticommuting(symbol)", "Declare an object as anticommuting.", "anticommuting(psi)"),
-        b("anti_commuting", "properties", "anti_commuting(symbol)", "Alias for anticommuting.", "anti_commuting(psi)"),
-        b("noncommuting", "properties", "noncommuting(symbol)", "Declare an object as noncommuting.", "noncommuting(A)"),
-        b("non_commuting", "properties", "non_commuting(symbol)", "Alias for noncommuting.", "non_commuting(A)"),
-        b("bianchi", "properties", "bianchi(tensor)", "Declare that a tensor satisfies a Bianchi identity.", "bianchi(R)"),
-        b("satisfies_bianchi", "properties", "satisfies_bianchi(tensor)", "Alias for bianchi.", "satisfies_bianchi(R)"),
-        b("weyl", "properties", "weyl(tensor)", "Declare a tensor as a Weyl tensor.", "weyl(C)"),
-        b("weyl_tensor", "properties", "weyl_tensor(tensor)", "Alias for weyl.", "weyl_tensor(C)"),
-        b("tableau_symmetry", "properties", "tableau_symmetry(tensor, shape, indices)", "Declare Young-tableau symmetry data on a tensor.", "tableau_symmetry(T, [2,1], [0,1,2])"),
-        b("grassmann", "quantum", "grassmann(sym)", "Declare a Grassmann-odd symbol.", "grassmann(theta)"),
-        b("grassmann_simplify", "quantum", "grassmann_simplify(expr)", "Simplify using Grassmann anticommutation.", "grassmann_simplify(theta*theta)"),
-        b("solve", "algebra", "solve(expr, var) or solve([eqs], [vars])", "Solve one polynomial equation or a linear system.", "solve(x^2 - 5*x + 6, x)"),
-        b("det", "linear-algebra", "det(matrix)", "Determinant of a matrix.", "det([[1,2],[3,4]])"),
-        b("inv", "linear-algebra", "inv(matrix)", "Inverse of a matrix.", "inv([[1,0],[0,2]])"),
-        b("transpose", "linear-algebra", "transpose(matrix)", "Transpose a matrix.", "transpose([[1,2],[3,4]])"),
-        b("trace_mat", "linear-algebra", "trace_mat(matrix)", "Trace of a matrix.", "trace_mat([[1,2],[3,4]])"),
-        b("eigenvalues", "linear-algebra", "eigenvalues(matrix)", "Eigenvalues of a small symbolic or numeric matrix.", "eigenvalues([[1,0],[0,2]])"),
-        b("matmul", "linear-algebra", "matmul(a, b)", "Matrix multiplication.", "matmul(A, B)"),
-        b("identity", "linear-algebra", "identity(n)", "n×n identity matrix.", "identity(3)"),
-        b("tensor_product", "linear-algebra", "tensor_product(a, b)", "Kronecker or tensor product of arrays or operators.", "tensor_product(A, B)"),
-        b("pauli_x", "quantum", "pauli_x()", "Pauli sigma_x matrix.", "pauli_x()"),
-        b("sigma_x", "quantum", "sigma_x()", "Alias for pauli_x.", "sigma_x()"),
-        b("pauli_y", "quantum", "pauli_y()", "Pauli sigma_y matrix.", "pauli_y()"),
-        b("sigma_y", "quantum", "sigma_y()", "Alias for pauli_y.", "sigma_y()"),
-        b("pauli_z", "quantum", "pauli_z()", "Pauli sigma_z matrix.", "pauli_z()"),
-        b("sigma_z", "quantum", "sigma_z()", "Alias for pauli_z.", "sigma_z()"),
-        b("gamma", "quantum", "gamma(index)", "Dirac gamma matrix for an index.", "gamma(mu)"),
-        b("gamma5", "quantum", "gamma5()", "Dirac gamma_5 matrix.", "gamma5()"),
-        b("commutator", "quantum", "commutator(a, b)", "Operator commutator [a, b].", "commutator(A, B)"),
-        b("anticommutator", "quantum", "anticommutator(a, b)", "Operator anticommutator {a, b}.", "anticommutator(A, B)"),
-        b("ket", "quantum", "ket(label)", "Construct a ket vector.", "ket(psi)"),
-        b("bra", "quantum", "bra(label)", "Construct a bra vector.", "bra(psi)"),
-        b("braket", "quantum", "braket(bra, ket)", "Inner product of a bra and a ket.", "braket(bra(psi), ket(phi))"),
-        b("outer", "quantum", "outer(ket, bra)", "Outer product operator.", "outer(ket(psi), bra(phi))"),
-        b("density", "quantum", "density(state)", "Density matrix of a pure state.", "density(ket(psi))"),
-        b("partial_trace", "quantum", "partial_trace(rho, subsystem)", "Partial trace over a subsystem.", "partial_trace(rho, 1)"),
-        b("creation", "quantum", "creation(sym)", "Declare or mark a creation operator.", "creation(a)"),
-        b("annihilation", "quantum", "annihilation(sym)", "Declare or mark an annihilation operator.", "annihilation(a)"),
-        b("normal_order", "quantum", "normal_order(expr)", "Reorder ladder operators into normal order.", "normal_order(a * creation(a))"),
-        b("wick", "quantum", "wick(expr)", "Expand products using Wick contraction rules.", "wick(psi*psibar)"),
-        b("join_gamma", "quantum", "join_gamma(expr)", "Join adjacent gamma matrices into a compact gamma chain.", "join_gamma(gamma(mu) * gamma(nu))"),
-        b("split_gamma", "quantum", "split_gamma(expr)", "Split compact gamma-chain structures into explicit factors.", "split_gamma(expr)"),
-        b("gamma_trace", "quantum", "gamma_trace(expr)", "Trace over a chain of gamma matrices.", "gamma_trace([mu, nu])"),
-        b("gamma5_trace", "quantum", "gamma5_trace(expr)", "Trace a gamma-chain with gamma_5 inserted.", "gamma5_trace([mu, nu, rho, sigma])"),
-        b("euler_lagrange", "variational", "euler_lagrange(L, field, coords)", "Compute Euler-Lagrange equations.", "euler_lagrange(L, phi, [t, x])"),
-        b("vary", "variational", "vary(expr, field)", "Take a formal variation with respect to a field.", "vary(S, phi)"),
-        b("dsolve", "ode", "dsolve(eq, y, x)", "Solve a supported first-order ODE symbolically.", "dsolve(y, y, x)"),
-        b("first_order_form", "ode", "first_order_form(ode, dep, indep)", "Convert a higher-order ODE to a first-order system.", "first_order_form(diff(diff(x,t),t)+x, x, t)"),
-        b("rk4", "ode", "rk4(f, x, y, x0, y0, x1[, steps])", "Numerically integrate an ODE with fourth-order Runge-Kutta.", "rk4(y, x, y, 0, 1, 1, 100)"),
-        b("classify_pde", "pde", "classify_pde(A, B, C)", "Classify a second-order PDE as elliptic, parabolic, or hyperbolic.", "classify_pde(1, 0, -1)"),
-        b("separate_variables", "pde", "separate_variables(type, x, t[, coeff])", "Return a standard separated solution ansatz for a supported PDE family.", "separate_variables(wave, x, t, c)"),
-        b("separation", "pde", "separation(type, x, t[, coeff])", "Alias for separate_variables.", "separation(heat, x, t, alpha)"),
-        b("plot", "plotting", "plot(expr, var, xmin, xmax)", "Plot a one-dimensional expression to SVG.", "plot(sin(x), x, 0, 6.28)"),
-        b("wedge_1_1", "forms", "wedge_1_1(a, b)", "Wedge product of two 1-forms.", "wedge_1_1(A, B)"),
-        b("exterior_d", "forms", "exterior_d(form)", "Exterior derivative of a differential form.", "exterior_d(A)"),
-        b("d", "forms", "d(form)", "Alias for exterior_d in the forms subsystem.", "d(A)"),
-        b("hodge_star", "forms", "hodge_star(form, metric)", "Hodge dual of a differential form.", "hodge_star(F, g)"),
-        b("christoffel", "gr", "christoffel(metric, coords)", "Christoffel symbols from a metric.", "christoffel(g, [t,r,theta,phi])"),
-        b("riemann", "gr", "riemann(christoffel, coords)", "Riemann tensor from a connection.", "riemann(Gamma, [t,r,theta,phi])"),
-        b("ricci", "gr", "ricci(riemann)", "Ricci tensor from the Riemann tensor.", "ricci(R)"),
-        b("ricci_scalar", "gr", "ricci_scalar(metric, ricci)", "Ricci scalar curvature.", "ricci_scalar(g, Ric)"),
-        b("einstein", "gr", "einstein(metric, ricci, scalar)", "Einstein tensor.", "einstein(g, Ric, R)"),
-        b("kretschner", "gr", "kretschner(metric, riemann)", "Kretschmann scalar.", "kretschner(g, R)"),
-        b("covariant_diff", "gr", "covariant_diff(expr, metric, coords)", "Covariant derivative.", "covariant_diff(V, g, [t,r,theta,phi])"),
-        b("geodesic", "gr", "geodesic(metric, coords, param)", "Geodesic equations for a metric.", "geodesic(g, [t,r,theta,phi], lambda)"),
-        b("lie_derivative", "gr", "lie_derivative(field, vector, coords)", "Lie derivative of a scalar or vector field.", "lie_derivative(T, V, [x,y,z])"),
-        b("metric", "gr", "metric(diag(...))", "Construct a symbolic metric tensor from a diagonal form.", "metric(diag(-1, 1, 1, 1))"),
-        b("diag", "linear-algebra", "diag(a, b, ...)", "Construct a diagonal matrix.", "diag(1, 2, 3)"),
-        b("to_python", "codegen", "to_python(expr)", "Print Python code for an expression.", "to_python(sin(x)^2)"),
-        b("to_rust", "codegen", "to_rust(expr)", "Print Rust code for an expression.", "to_rust(sin(x)^2)"),
-        b("to_cpp", "codegen", "to_cpp(expr)", "Print C++ code for an expression.", "to_cpp(sin(x)^2)"),
+        b(
+            "sgn",
+            "elementary",
+            "sgn(x)",
+            "Sign function alias.",
+            "sgn(x)",
+        ),
+        b(
+            "diff",
+            "calculus",
+            "diff(expr, var)",
+            "Differentiate an expression symbolically.",
+            "diff(sin(x^2), x)",
+        ),
+        b(
+            "integrate",
+            "calculus",
+            "integrate(expr, var) or integrate(expr, var, a, b)",
+            "Indefinite or definite symbolic integration.",
+            "integrate(x^2, x)",
+        ),
+        b(
+            "double_integral",
+            "calculus",
+            "double_integral(expr, x, y)",
+            "Perform iterated double integration.",
+            "double_integral(x*y, x, y)",
+        ),
+        b(
+            "dblint",
+            "calculus",
+            "dblint(expr, x, y)",
+            "Alias for double_integral.",
+            "dblint(x*y, x, y)",
+        ),
+        b(
+            "triple_integral",
+            "calculus",
+            "triple_integral(expr, x, y, z)",
+            "Perform iterated triple integration.",
+            "triple_integral(x*y*z, x, y, z)",
+        ),
+        b(
+            "tplint",
+            "calculus",
+            "tplint(expr, x, y, z)",
+            "Alias for triple_integral.",
+            "tplint(x*y*z, x, y, z)",
+        ),
+        b(
+            "definite_integral",
+            "calculus",
+            "definite_integral(expr, var, a, b)",
+            "Compute a definite integral from an antiderivative.",
+            "definite_integral(x^2, x, 0, 1)",
+        ),
+        b(
+            "defint",
+            "calculus",
+            "defint(expr, var, a, b)",
+            "Alias for definite_integral.",
+            "defint(x^2, x, 0, 1)",
+        ),
+        b(
+            "integrate_by_parts",
+            "calculus",
+            "integrate_by_parts(expr, u, v, var)",
+            "Perform one integration-by-parts step using explicit u and v'.",
+            "integrate_by_parts(x*exp(x), x, exp(x), x)",
+        ),
+        b(
+            "ibp",
+            "calculus",
+            "ibp(expr, u, v, var)",
+            "Alias for integrate_by_parts.",
+            "ibp(x*exp(x), x, exp(x), x)",
+        ),
+        b(
+            "limit",
+            "calculus",
+            "limit(expr, var, point)",
+            "Evaluate a symbolic limit.",
+            "limit(sin(x)/x, x, 0)",
+        ),
+        b(
+            "series",
+            "calculus",
+            "series(expr, var, point, order)",
+            "Compute a Taylor series.",
+            "series(exp(x), x, 0, 4)",
+        ),
+        b(
+            "angle",
+            "spinor",
+            "angle(i, j)",
+            "Construct the spinor-helicity angle bracket <ij>.",
+            "angle(1, 2)",
+        ),
+        b(
+            "square",
+            "spinor",
+            "square(i, j)",
+            "Construct the spinor-helicity square bracket [ij].",
+            "square(1, 2)",
+        ),
+        b(
+            "mandelstam",
+            "spinor",
+            "mandelstam(i, j)",
+            "Construct the two-particle Mandelstam invariant s_ij.",
+            "mandelstam(1, 2)",
+        ),
+        b(
+            "parke_taylor",
+            "spinor",
+            "parke_taylor(n, i, j)",
+            "Construct the n-gluon MHV Parke-Taylor amplitude.",
+            "parke_taylor(4, 0, 2)",
+        ),
+        b(
+            "three_point_mhv",
+            "spinor",
+            "three_point_mhv(i, j, k)",
+            "Construct the three-point MHV amplitude.",
+            "three_point_mhv(0, 1, 2)",
+        ),
+        b(
+            "three_point_anti_mhv",
+            "spinor",
+            "three_point_anti_mhv(i, j, k)",
+            "Construct the three-point anti-MHV amplitude.",
+            "three_point_anti_mhv(0, 1, 2)",
+        ),
+        b(
+            "expand_chain",
+            "spinor",
+            "expand_chain(expr)",
+            "Expand spinor chains into angle and square bracket products.",
+            "expand_chain(angle_square_chain)",
+        ),
+        b(
+            "contract_adjacent",
+            "spinor",
+            "contract_adjacent(expr)",
+            "Contract adjacent angle-square bracket pairs into one-momentum chains.",
+            "contract_adjacent(expr)",
+        ),
+        b(
+            "expand_mandelstam",
+            "spinor",
+            "expand_mandelstam(expr)",
+            "Expand Mandelstam invariants into spinor brackets.",
+            "expand_mandelstam(mandelstam(1,2))",
+        ),
+        b(
+            "collect_mandelstam",
+            "spinor",
+            "collect_mandelstam(expr)",
+            "Collect spinor-bracket products back into Mandelstam invariants.",
+            "collect_mandelstam(expr)",
+        ),
+        b(
+            "schouten",
+            "spinor",
+            "schouten(expr, a, b, c, d)",
+            "Apply the spinor Schouten identity.",
+            "schouten(expr, 1, 2, 3, 4)",
+        ),
+        b(
+            "momentum_conservation",
+            "spinor",
+            "momentum_conservation(expr, n, eliminate)",
+            "Apply spinor-helicity momentum conservation eliminating one particle momentum.",
+            "momentum_conservation(expr, 4, 3)",
+        ),
+        b(
+            "spinor_simplify",
+            "spinor",
+            "spinor_simplify(expr, n)",
+            "Run the spinor-helicity simplification pipeline.",
+            "spinor_simplify(expr, 4)",
+        ),
+        b(
+            "bcfw_shift",
+            "spinor",
+            "bcfw_shift(expr, i, j, z)",
+            "Apply a BCFW shift to a spinor expression.",
+            "bcfw_shift(expr, 0, 1, z)",
+        ),
+        b(
+            "bcfw_decomposition",
+            "spinor",
+            "bcfw_decomposition(n, i, j, helicities)",
+            "Enumerate BCFW factorization channels.",
+            "bcfw_decomposition(4, 0, 1, [-1,1,1,-1])",
+        ),
+        b(
+            "four_bracket",
+            "twistor",
+            "four_bracket(i, j, k, l)",
+            "Construct a momentum-twistor four-bracket.",
+            "four_bracket(1, 2, 3, 4)",
+        ),
+        b(
+            "plucker",
+            "twistor",
+            "plucker(expr, a, b, c, d, e, f)",
+            "Apply the momentum-twistor Plucker identity.",
+            "plucker(expr, 1, 2, 3, 4, 5, 6)",
+        ),
+        b(
+            "gradient",
+            "vector-calculus",
+            "gradient(f, [x, y, z])",
+            "Return the gradient vector.",
+            "gradient(x^2 + y^2 + z^2, [x, y, z])",
+        ),
+        b(
+            "grad",
+            "vector-calculus",
+            "grad(f, [x, y, z])",
+            "Alias for gradient.",
+            "grad(x^2 + y^2, [x, y])",
+        ),
+        b(
+            "divergence",
+            "vector-calculus",
+            "divergence([Fx, Fy, Fz], [x, y, z])",
+            "Return the divergence of a vector field.",
+            "divergence([x, y, z], [x, y, z])",
+        ),
+        b(
+            "div",
+            "vector-calculus",
+            "div([Fx, Fy, Fz], [x, y, z])",
+            "Alias for divergence.",
+            "div([x, y], [x, y])",
+        ),
+        b(
+            "curl",
+            "vector-calculus",
+            "curl([Fx, Fy, Fz], [x, y, z])",
+            "Return the three-dimensional curl.",
+            "curl([x, y, z], [x, y, z])",
+        ),
+        b(
+            "laplacian",
+            "vector-calculus",
+            "laplacian(f, [x, y, z])",
+            "Return the Laplacian.",
+            "laplacian(x^2 - y^2, [x, y])",
+        ),
+        b(
+            "jacobian",
+            "vector-calculus",
+            "jacobian([f1, ...], [x1, ...])",
+            "Return the Jacobian matrix.",
+            "jacobian([x^2, x*y], [x, y])",
+        ),
+        b(
+            "hessian",
+            "vector-calculus",
+            "hessian(f, [x1, ...])",
+            "Return the Hessian matrix.",
+            "hessian(x^2 + 3*x*y + y^2, [x, y])",
+        ),
+        b(
+            "expand",
+            "simplify",
+            "expand(expr)",
+            "Distribute products and expand small powers.",
+            "expand((x + 1)^2)",
+        ),
+        b(
+            "simplify",
+            "simplify",
+            "simplify(expr)",
+            "Run the full simplification pipeline.",
+            "simplify(sin(x)^2 + cos(x)^2)",
+        ),
+        b(
+            "rationalize",
+            "simplify",
+            "rationalize(expr)",
+            "Put sums over a common denominator and cancel common factors.",
+            "rationalize(1/x + 1/x^2)",
+        ),
+        b(
+            "partial_fractions",
+            "simplify",
+            "partial_fractions(expr, var)",
+            "Decompose a rational function into partial fractions when supported.",
+            "partial_fractions(1/(x*(x+1)), x)",
+        ),
+        b(
+            "apart",
+            "simplify",
+            "apart(expr, var)",
+            "Alias for partial_fractions.",
+            "apart(1/(x*(x+1)), x)",
+        ),
+        b(
+            "trig_simplify",
+            "simplify",
+            "trig_simplify(expr)",
+            "Apply exact trigonometric rewrite rules.",
+            "trig_simplify(sin(x)^2 + cos(x)^2)",
+        ),
+        b(
+            "factor_out",
+            "simplify",
+            "factor_out(expr[, targets])",
+            "Factor common factors from a sum.",
+            "factor_out(a*x + a*y, [a])",
+        ),
+        b(
+            "factor_in",
+            "simplify",
+            "factor_in(expr[, targets])",
+            "Group terms that share common prefactors.",
+            "factor_in(a*x + a*y, [a])",
+        ),
+        b(
+            "subs",
+            "rewrite",
+            "subs(expr, target, replacement)",
+            "Perform symbolic substitution with index-aware matching when needed.",
+            "subs(f(x), x, y)",
+        ),
+        b(
+            "rewrite",
+            "rewrite",
+            "rewrite(expr)",
+            "Apply user-defined rewrite rules to an expression.",
+            "rewrite(expr)",
+        ),
+        b(
+            "zoom",
+            "rewrite",
+            "zoom(expr, pattern)",
+            "Split an expression into matching and non-matching parts.",
+            "zoom(a + b + c, a + b)",
+        ),
+        b(
+            "unzoom",
+            "rewrite",
+            "unzoom(focus, remainder)",
+            "Recombine a focused expression with its remainder.",
+            "unzoom(a + b, c)",
+        ),
+        b(
+            "take_match",
+            "rewrite",
+            "take_match(expr, pattern)",
+            "Keep only the parts of a sum that match a pattern.",
+            "take_match(a + b + c, a_)",
+        ),
+        b(
+            "equiv",
+            "analysis",
+            "equiv(lhs, rhs)",
+            "Describe whether two expressions are semantically equivalent.",
+            "equiv(x + x, 2*x)",
+        ),
+        b(
+            "semantic_diff",
+            "analysis",
+            "semantic_diff(lhs, rhs)",
+            "Return a semantic-difference descriptor.",
+            "semantic_diff(x + x, 2*x)",
+        ),
+        b(
+            "canonicalise",
+            "tensor",
+            "canonicalise(expr)",
+            "Canonicalize tensor indices using declared tensor properties.",
+            "canonicalise(R[a-,b-,c-,d-] + R[a-,c-,d-,b-])",
+        ),
+        b(
+            "canonicalize",
+            "tensor",
+            "canonicalize(expr)",
+            "Alias for canonicalise.",
+            "canonicalize(T[a-, b-])",
+        ),
+        b(
+            "lower_free_indices",
+            "tensor",
+            "lower_free_indices(expr)",
+            "Lower free upper indices using the active metric family.",
+            "lower_free_indices(V[mu+])",
+        ),
+        b(
+            "lower_indices",
+            "tensor",
+            "lower_indices(expr)",
+            "Alias for lower_free_indices.",
+            "lower_indices(V[mu+])",
+        ),
+        b(
+            "raise_free_indices",
+            "tensor",
+            "raise_free_indices(expr)",
+            "Raise free lower indices using the active inverse metric family.",
+            "raise_free_indices(V[mu-])",
+        ),
+        b(
+            "raise_indices",
+            "tensor",
+            "raise_indices(expr)",
+            "Alias for raise_free_indices.",
+            "raise_indices(V[mu-])",
+        ),
+        b(
+            "meld",
+            "tensor",
+            "meld(expr)",
+            "Detect multi-term tensor identities using Young projection and linear dependence.",
+            "meld(R[a-,b-,c-,d-] + R[a-,c-,d-,b-] + R[a-,d-,b-,c-])",
+        ),
+        b(
+            "rename_dummies",
+            "tensor",
+            "rename_dummies(expr)",
+            "Rename dummy indices to a canonical fresh naming scheme.",
+            "rename_dummies(T[a-, a+])",
+        ),
+        b(
+            "sort_product",
+            "tensor",
+            "sort_product(expr)",
+            "Sort tensor products using symmetry-aware canonicalization.",
+            "sort_product(B[a-] * A[a-])",
+        ),
+        b(
+            "product_rule",
+            "tensor",
+            "product_rule(expr)",
+            "Apply the Leibniz rule to an indexed product.",
+            "product_rule(diff(A[x] * B[x], x))",
+        ),
+        b(
+            "leibniz",
+            "tensor",
+            "leibniz(expr)",
+            "Alias for product_rule.",
+            "leibniz(diff(A[x] * B[x], x))",
+        ),
+        b(
+            "unwrap",
+            "tensor",
+            "unwrap(expr)",
+            "Flatten nested additive and multiplicative structure.",
+            "unwrap((a + b) + c)",
+        ),
+        b(
+            "tensor_distribute",
+            "tensor",
+            "tensor_distribute(expr)",
+            "Distribute products over sums in tensor expressions.",
+            "tensor_distribute(A*(B + C))",
+        ),
+        b(
+            "tdistribute",
+            "tensor",
+            "tdistribute(expr)",
+            "Alias for tensor_distribute.",
+            "tdistribute(A*(B + C))",
+        ),
+        b(
+            "keep_weight",
+            "tensor",
+            "keep_weight(expr, label, value)",
+            "Filter terms by a recorded symbolic weight.",
+            "keep_weight(expr, field, 1)",
+        ),
+        b(
+            "drop_weight",
+            "tensor",
+            "drop_weight(expr, label, value)",
+            "Remove terms with a recorded symbolic weight.",
+            "drop_weight(expr, field, 0)",
+        ),
+        b(
+            "einsteinify",
+            "tensor",
+            "einsteinify(expr)",
+            "Insert implicit Einstein summation contractions.",
+            "einsteinify(A[mu-] * B[mu+])",
+        ),
+        b(
+            "split_index",
+            "tensor",
+            "split_index(expr, old, [new...])",
+            "Split one abstract index family into several fixed values.",
+            "split_index(T[a-], a, [0,1,2])",
+        ),
+        b(
+            "eliminate_kronecker",
+            "tensor",
+            "eliminate_kronecker(expr)",
+            "Contract Kronecker deltas through an expression.",
+            "eliminate_kronecker(delta[mu+, nu-] * T[nu+, rho-])",
+        ),
+        b(
+            "expand_delta",
+            "tensor",
+            "expand_delta(expr)",
+            "Expand delta contractions into explicit sums when possible.",
+            "expand_delta(delta[mu+, nu-] * V[nu+])",
+        ),
+        b(
+            "expand_dummies",
+            "tensor",
+            "expand_dummies(expr)",
+            "Expand dummy sums over the declared coordinate set.",
+            "expand_dummies(T[mu-, mu+])",
+        ),
+        b(
+            "explicit_indices",
+            "tensor",
+            "explicit_indices(expr)",
+            "Make implicit repeated indices explicit.",
+            "explicit_indices(A * B)",
+        ),
+        b(
+            "expand_implicit",
+            "tensor",
+            "expand_implicit(expr)",
+            "Expand implicit tensor contractions and index conventions.",
+            "expand_implicit(A[mu-] B[mu+])",
+        ),
+        b(
+            "rewrite_indices",
+            "tensor",
+            "rewrite_indices(expr)",
+            "Rewrite index names while preserving variance and families.",
+            "rewrite_indices(T[a-, b+])",
+        ),
+        b(
+            "reduce_delta",
+            "tensor",
+            "reduce_delta(expr)",
+            "Simplify explicit delta-expanded expressions back to compact form.",
+            "reduce_delta(expr)",
+        ),
+        b(
+            "young_project",
+            "tensor",
+            "young_project(expr)",
+            "Project a tensor onto a declared Young-tableau symmetry.",
+            "young_project(T[a-,b-,c-])",
+        ),
+        b(
+            "symmetrise",
+            "tensor",
+            "symmetrise(expr, [positions])",
+            "Symmetrise over listed slots.",
+            "symmetrise(T[a-, b-], [0,1])",
+        ),
+        b(
+            "symmetrize",
+            "tensor",
+            "symmetrize(expr, [positions])",
+            "Alias for symmetrise.",
+            "symmetrize(T[a-, b-], [0,1])",
+        ),
+        b(
+            "sym",
+            "tensor",
+            "sym(expr, [positions])",
+            "Short alias for symmetrise.",
+            "sym(T[a-, b-], [0,1])",
+        ),
+        b(
+            "antisymmetrise",
+            "tensor",
+            "antisymmetrise(expr, [positions])",
+            "Antisymmetrise over listed slots.",
+            "antisymmetrise(F[a-, b-], [0,1])",
+        ),
+        b(
+            "antisymmetrize",
+            "tensor",
+            "antisymmetrize(expr, [positions])",
+            "Alias for antisymmetrise.",
+            "antisymmetrize(F[a-, b-], [0,1])",
+        ),
+        b(
+            "asym",
+            "tensor",
+            "asym(expr, [positions])",
+            "Short alias for antisymmetrise.",
+            "asym(F[a-, b-], [0,1])",
+        ),
+        b(
+            "eliminate_metric",
+            "tensor",
+            "eliminate_metric(expr)",
+            "Use the metric or inverse metric to raise or lower contracted indices.",
+            "eliminate_metric(g[mu-, nu-] * V[nu+])",
+        ),
+        b(
+            "eliminate_vielbein",
+            "tensor",
+            "eliminate_vielbein(expr)",
+            "Simplify vielbein contractions into metric data when possible.",
+            "eliminate_vielbein(e[a-,mu-] * e[b+,mu+])",
+        ),
+        b(
+            "decompose",
+            "tensor",
+            "decompose(expr)",
+            "Decompose a tensor into symmetry-adapted pieces.",
+            "decompose(T[a-, b-])",
+        ),
+        b(
+            "decompose_product",
+            "tensor",
+            "decompose_product(expr)",
+            "Decompose a tensor product using known tensor properties.",
+            "decompose_product(g[a-,b-] * T[b+,c-])",
+        ),
+        b(
+            "epsilon_to_delta",
+            "tensor",
+            "epsilon_to_delta(expr)",
+            "Convert epsilon-tensor contractions into generalized Kronecker deltas.",
+            "epsilon_to_delta(epsilon[a-,b-,c-] * epsilon[a+,d+,e+])",
+        ),
+        b(
+            "evaluate",
+            "tensor",
+            "evaluate(expr, rules)",
+            "Evaluate tensor components using declared component rules.",
+            "evaluate(g[mu-, nu-], rules)",
+        ),
+        b(
+            "eval_components",
+            "tensor",
+            "eval_components(expr, rules)",
+            "Alias for evaluate component expressions.",
+            "eval_components(g[mu-, nu-], rules)",
+        ),
+        b(
+            "dim",
+            "units",
+            "dim(expr)",
+            "Return the dimension of a units-aware expression.",
+            "dim(force)",
+        ),
+        b(
+            "convert",
+            "units",
+            "convert(expr, units)",
+            "Convert an expression between compatible units.",
+            "convert(1*m, cm)",
+        ),
+        b(
+            "check_units",
+            "units",
+            "check_units(expr)",
+            "Verify that a units expression is dimensionally consistent.",
+            "check_units(force == mass*acceleration)",
+        ),
+        b(
+            "metric",
+            "properties",
+            "metric(tensor)",
+            "Declare a tensor as a metric and attach the symmetric metric property.",
+            "metric(g)",
+        ),
+        b(
+            "symmetric",
+            "properties",
+            "symmetric(tensor)",
+            "Property marker used in property declarations and metadata.",
+            "symmetric(g)",
+        ),
+        b(
+            "antisymmetric",
+            "properties",
+            "antisymmetric(tensor)",
+            "Property marker used in property declarations and metadata.",
+            "antisymmetric(F)",
+        ),
+        b(
+            "inverse_metric",
+            "properties",
+            "inverse_metric(tensor)",
+            "Declare a tensor as an inverse metric.",
+            "inverse_metric(ginv)",
+        ),
+        b(
+            "kronecker_delta",
+            "properties",
+            "kronecker_delta(tensor)",
+            "Declare a tensor as a Kronecker delta.",
+            "kronecker_delta(delta)",
+        ),
+        b(
+            "kronecker",
+            "properties",
+            "kronecker(tensor)",
+            "Alias for kronecker_delta.",
+            "kronecker(delta)",
+        ),
+        b(
+            "epsilon",
+            "properties",
+            "epsilon(tensor)",
+            "Declare a tensor as an epsilon or Levi-Civita tensor.",
+            "epsilon(eps)",
+        ),
+        b(
+            "epsilon_tensor",
+            "properties",
+            "epsilon_tensor(tensor)",
+            "Alias for epsilon.",
+            "epsilon_tensor(eps)",
+        ),
+        b(
+            "riemann",
+            "properties",
+            "riemann(tensor)",
+            "Declare Riemann slot symmetries on a tensor.",
+            "riemann(R)",
+        ),
+        b(
+            "riemann_symmetry",
+            "properties",
+            "riemann_symmetry(tensor)",
+            "Property marker for Riemann-like slot symmetries.",
+            "riemann_symmetry(R)",
+        ),
+        b(
+            "traceless",
+            "properties",
+            "traceless(tensor)",
+            "Property marker for traceless tensors.",
+            "traceless(T)",
+        ),
+        b(
+            "derivative",
+            "properties",
+            "derivative(op)",
+            "Declare a symbol as a derivative operator.",
+            "derivative(D)",
+        ),
+        b(
+            "partial_derivative",
+            "properties",
+            "partial_derivative(op)",
+            "Declare a symbol as a partial derivative operator.",
+            "partial_derivative(partial)",
+        ),
+        b(
+            "covariant_derivative",
+            "properties",
+            "covariant_derivative(op)",
+            "Declare a symbol as a covariant derivative operator.",
+            "covariant_derivative(nabla)",
+        ),
+        b(
+            "spinor",
+            "properties",
+            "spinor(tensor)",
+            "Declare a tensor as carrying spinor indices.",
+            "spinor(psi)",
+        ),
+        b(
+            "dirac_bar",
+            "properties",
+            "dirac_bar(symbol)",
+            "Declare a symbol as a Dirac-bar object.",
+            "dirac_bar(psibar)",
+        ),
+        b(
+            "diracbar",
+            "properties",
+            "diracbar(symbol)",
+            "Alias for dirac_bar.",
+            "diracbar(psibar)",
+        ),
+        b(
+            "gamma_matrix",
+            "properties",
+            "gamma_matrix(symbol)",
+            "Declare a symbol as a gamma matrix.",
+            "gamma_matrix(gamma)",
+        ),
+        b(
+            "commuting",
+            "properties",
+            "commuting(symbol)",
+            "Declare an object as commuting.",
+            "commuting(A)",
+        ),
+        b(
+            "anticommuting",
+            "properties",
+            "anticommuting(symbol)",
+            "Declare an object as anticommuting.",
+            "anticommuting(psi)",
+        ),
+        b(
+            "anti_commuting",
+            "properties",
+            "anti_commuting(symbol)",
+            "Alias for anticommuting.",
+            "anti_commuting(psi)",
+        ),
+        b(
+            "noncommuting",
+            "properties",
+            "noncommuting(symbol)",
+            "Declare an object as noncommuting.",
+            "noncommuting(A)",
+        ),
+        b(
+            "non_commuting",
+            "properties",
+            "non_commuting(symbol)",
+            "Alias for noncommuting.",
+            "non_commuting(A)",
+        ),
+        b(
+            "bianchi",
+            "properties",
+            "bianchi(tensor)",
+            "Declare that a tensor satisfies a Bianchi identity.",
+            "bianchi(R)",
+        ),
+        b(
+            "satisfies_bianchi",
+            "properties",
+            "satisfies_bianchi(tensor)",
+            "Alias for bianchi.",
+            "satisfies_bianchi(R)",
+        ),
+        b(
+            "weyl",
+            "properties",
+            "weyl(tensor)",
+            "Declare a tensor as a Weyl tensor.",
+            "weyl(C)",
+        ),
+        b(
+            "weyl_tensor",
+            "properties",
+            "weyl_tensor(tensor)",
+            "Alias for weyl.",
+            "weyl_tensor(C)",
+        ),
+        b(
+            "tableau_symmetry",
+            "properties",
+            "tableau_symmetry(tensor, shape, indices)",
+            "Declare Young-tableau symmetry data on a tensor.",
+            "tableau_symmetry(T, [2,1], [0,1,2])",
+        ),
+        b(
+            "grassmann",
+            "quantum",
+            "grassmann(sym)",
+            "Declare a Grassmann-odd symbol.",
+            "grassmann(theta)",
+        ),
+        b(
+            "grassmann_simplify",
+            "quantum",
+            "grassmann_simplify(expr)",
+            "Simplify using Grassmann anticommutation.",
+            "grassmann_simplify(theta*theta)",
+        ),
+        b(
+            "solve",
+            "algebra",
+            "solve(expr, var) or solve([eqs], [vars])",
+            "Solve one polynomial equation or a linear system.",
+            "solve(x^2 - 5*x + 6, x)",
+        ),
+        b(
+            "det",
+            "linear-algebra",
+            "det(matrix)",
+            "Determinant of a matrix.",
+            "det([[1,2],[3,4]])",
+        ),
+        b(
+            "inv",
+            "linear-algebra",
+            "inv(matrix)",
+            "Inverse of a matrix.",
+            "inv([[1,0],[0,2]])",
+        ),
+        b(
+            "transpose",
+            "linear-algebra",
+            "transpose(matrix)",
+            "Transpose a matrix.",
+            "transpose([[1,2],[3,4]])",
+        ),
+        b(
+            "trace_mat",
+            "linear-algebra",
+            "trace_mat(matrix)",
+            "Trace of a matrix.",
+            "trace_mat([[1,2],[3,4]])",
+        ),
+        b(
+            "eigenvalues",
+            "linear-algebra",
+            "eigenvalues(matrix)",
+            "Eigenvalues of a small symbolic or numeric matrix.",
+            "eigenvalues([[1,0],[0,2]])",
+        ),
+        b(
+            "matmul",
+            "linear-algebra",
+            "matmul(a, b)",
+            "Matrix multiplication.",
+            "matmul(A, B)",
+        ),
+        b(
+            "identity",
+            "linear-algebra",
+            "identity(n)",
+            "n×n identity matrix.",
+            "identity(3)",
+        ),
+        b(
+            "tensor_product",
+            "linear-algebra",
+            "tensor_product(a, b)",
+            "Kronecker or tensor product of arrays or operators.",
+            "tensor_product(A, B)",
+        ),
+        b(
+            "pauli_x",
+            "quantum",
+            "pauli_x()",
+            "Pauli sigma_x matrix.",
+            "pauli_x()",
+        ),
+        b(
+            "sigma_x",
+            "quantum",
+            "sigma_x()",
+            "Alias for pauli_x.",
+            "sigma_x()",
+        ),
+        b(
+            "pauli_y",
+            "quantum",
+            "pauli_y()",
+            "Pauli sigma_y matrix.",
+            "pauli_y()",
+        ),
+        b(
+            "sigma_y",
+            "quantum",
+            "sigma_y()",
+            "Alias for pauli_y.",
+            "sigma_y()",
+        ),
+        b(
+            "pauli_z",
+            "quantum",
+            "pauli_z()",
+            "Pauli sigma_z matrix.",
+            "pauli_z()",
+        ),
+        b(
+            "sigma_z",
+            "quantum",
+            "sigma_z()",
+            "Alias for pauli_z.",
+            "sigma_z()",
+        ),
+        b(
+            "gamma",
+            "quantum",
+            "gamma(index)",
+            "Dirac gamma matrix for an index.",
+            "gamma(mu)",
+        ),
+        b(
+            "gamma5",
+            "quantum",
+            "gamma5()",
+            "Dirac gamma_5 matrix.",
+            "gamma5()",
+        ),
+        b(
+            "commutator",
+            "quantum",
+            "commutator(a, b)",
+            "Operator commutator [a, b].",
+            "commutator(A, B)",
+        ),
+        b(
+            "anticommutator",
+            "quantum",
+            "anticommutator(a, b)",
+            "Operator anticommutator {a, b}.",
+            "anticommutator(A, B)",
+        ),
+        b(
+            "ket",
+            "quantum",
+            "ket(label)",
+            "Construct a ket vector.",
+            "ket(psi)",
+        ),
+        b(
+            "bra",
+            "quantum",
+            "bra(label)",
+            "Construct a bra vector.",
+            "bra(psi)",
+        ),
+        b(
+            "braket",
+            "quantum",
+            "braket(bra, ket)",
+            "Inner product of a bra and a ket.",
+            "braket(bra(psi), ket(phi))",
+        ),
+        b(
+            "outer",
+            "quantum",
+            "outer(ket, bra)",
+            "Outer product operator.",
+            "outer(ket(psi), bra(phi))",
+        ),
+        b(
+            "density",
+            "quantum",
+            "density(state)",
+            "Density matrix of a pure state.",
+            "density(ket(psi))",
+        ),
+        b(
+            "partial_trace",
+            "quantum",
+            "partial_trace(rho, subsystem)",
+            "Partial trace over a subsystem.",
+            "partial_trace(rho, 1)",
+        ),
+        b(
+            "creation",
+            "quantum",
+            "creation(sym)",
+            "Declare or mark a creation operator.",
+            "creation(a)",
+        ),
+        b(
+            "annihilation",
+            "quantum",
+            "annihilation(sym)",
+            "Declare or mark an annihilation operator.",
+            "annihilation(a)",
+        ),
+        b(
+            "normal_order",
+            "quantum",
+            "normal_order(expr)",
+            "Reorder ladder operators into normal order.",
+            "normal_order(a * creation(a))",
+        ),
+        b(
+            "wick",
+            "quantum",
+            "wick(expr)",
+            "Expand products using Wick contraction rules.",
+            "wick(psi*psibar)",
+        ),
+        b(
+            "join_gamma",
+            "quantum",
+            "join_gamma(expr)",
+            "Join adjacent gamma matrices into a compact gamma chain.",
+            "join_gamma(gamma(mu) * gamma(nu))",
+        ),
+        b(
+            "split_gamma",
+            "quantum",
+            "split_gamma(expr)",
+            "Split compact gamma-chain structures into explicit factors.",
+            "split_gamma(expr)",
+        ),
+        b(
+            "gamma_trace",
+            "quantum",
+            "gamma_trace(expr)",
+            "Trace over a chain of gamma matrices.",
+            "gamma_trace([mu, nu])",
+        ),
+        b(
+            "gamma5_trace",
+            "quantum",
+            "gamma5_trace(expr)",
+            "Trace a gamma-chain with gamma_5 inserted.",
+            "gamma5_trace([mu, nu, rho, sigma])",
+        ),
+        b(
+            "euler_lagrange",
+            "variational",
+            "euler_lagrange(L, field, coords)",
+            "Compute Euler-Lagrange equations.",
+            "euler_lagrange(L, phi, [t, x])",
+        ),
+        b(
+            "vary",
+            "variational",
+            "vary(expr, field)",
+            "Take a formal variation with respect to a field.",
+            "vary(S, phi)",
+        ),
+        b(
+            "dsolve",
+            "ode",
+            "dsolve(eq, y, x)",
+            "Solve a supported first-order ODE symbolically.",
+            "dsolve(y, y, x)",
+        ),
+        b(
+            "first_order_form",
+            "ode",
+            "first_order_form(ode, dep, indep)",
+            "Convert a higher-order ODE to a first-order system.",
+            "first_order_form(diff(diff(x,t),t)+x, x, t)",
+        ),
+        b(
+            "rk4",
+            "ode",
+            "rk4(f, x, y, x0, y0, x1[, steps])",
+            "Numerically integrate an ODE with fourth-order Runge-Kutta.",
+            "rk4(y, x, y, 0, 1, 1, 100)",
+        ),
+        b(
+            "classify_pde",
+            "pde",
+            "classify_pde(A, B, C)",
+            "Classify a second-order PDE as elliptic, parabolic, or hyperbolic.",
+            "classify_pde(1, 0, -1)",
+        ),
+        b(
+            "separate_variables",
+            "pde",
+            "separate_variables(type, x, t[, coeff])",
+            "Return a standard separated solution ansatz for a supported PDE family.",
+            "separate_variables(wave, x, t, c)",
+        ),
+        b(
+            "separation",
+            "pde",
+            "separation(type, x, t[, coeff])",
+            "Alias for separate_variables.",
+            "separation(heat, x, t, alpha)",
+        ),
+        b(
+            "plot",
+            "plotting",
+            "plot(expr, var, xmin, xmax)",
+            "Plot a one-dimensional expression to SVG.",
+            "plot(sin(x), x, 0, 6.28)",
+        ),
+        b(
+            "wedge_1_1",
+            "forms",
+            "wedge_1_1(a, b)",
+            "Wedge product of two 1-forms.",
+            "wedge_1_1(A, B)",
+        ),
+        b(
+            "exterior_d",
+            "forms",
+            "exterior_d(form)",
+            "Exterior derivative of a differential form.",
+            "exterior_d(A)",
+        ),
+        b(
+            "d",
+            "forms",
+            "d(form)",
+            "Alias for exterior_d in the forms subsystem.",
+            "d(A)",
+        ),
+        b(
+            "hodge_star",
+            "forms",
+            "hodge_star(form, metric)",
+            "Hodge dual of a differential form.",
+            "hodge_star(F, g)",
+        ),
+        b(
+            "christoffel",
+            "gr",
+            "christoffel(metric, coords)",
+            "Christoffel symbols from a metric.",
+            "christoffel(g, [t,r,theta,phi])",
+        ),
+        b(
+            "riemann",
+            "gr",
+            "riemann(christoffel, coords)",
+            "Riemann tensor from a connection.",
+            "riemann(Gamma, [t,r,theta,phi])",
+        ),
+        b(
+            "ricci",
+            "gr",
+            "ricci(riemann)",
+            "Ricci tensor from the Riemann tensor.",
+            "ricci(R)",
+        ),
+        b(
+            "ricci_scalar",
+            "gr",
+            "ricci_scalar(metric, ricci)",
+            "Ricci scalar curvature.",
+            "ricci_scalar(g, Ric)",
+        ),
+        b(
+            "einstein",
+            "gr",
+            "einstein(metric, ricci, scalar)",
+            "Einstein tensor.",
+            "einstein(g, Ric, R)",
+        ),
+        b(
+            "kretschner",
+            "gr",
+            "kretschner(metric, riemann)",
+            "Kretschmann scalar.",
+            "kretschner(g, R)",
+        ),
+        b(
+            "covariant_diff",
+            "gr",
+            "covariant_diff(expr, metric, coords)",
+            "Covariant derivative.",
+            "covariant_diff(V, g, [t,r,theta,phi])",
+        ),
+        b(
+            "geodesic",
+            "gr",
+            "geodesic(metric, coords, param)",
+            "Geodesic equations for a metric.",
+            "geodesic(g, [t,r,theta,phi], lambda)",
+        ),
+        b(
+            "lie_derivative",
+            "gr",
+            "lie_derivative(field, vector, coords)",
+            "Lie derivative of a scalar or vector field.",
+            "lie_derivative(T, V, [x,y,z])",
+        ),
+        b(
+            "metric",
+            "gr",
+            "metric(diag(...))",
+            "Construct a symbolic metric tensor from a diagonal form.",
+            "metric(diag(-1, 1, 1, 1))",
+        ),
+        b(
+            "diag",
+            "linear-algebra",
+            "diag(a, b, ...)",
+            "Construct a diagonal matrix.",
+            "diag(1, 2, 3)",
+        ),
+        b(
+            "to_python",
+            "codegen",
+            "to_python(expr)",
+            "Print Python code for an expression.",
+            "to_python(sin(x)^2)",
+        ),
+        b(
+            "to_rust",
+            "codegen",
+            "to_rust(expr)",
+            "Print Rust code for an expression.",
+            "to_rust(sin(x)^2)",
+        ),
+        b(
+            "to_cpp",
+            "codegen",
+            "to_cpp(expr)",
+            "Print C++ code for an expression.",
+            "to_cpp(sin(x)^2)",
+        ),
     ]
 }
 
@@ -581,6 +1897,7 @@ pub fn std_modules() -> Vec<StdModule> {
         m("qft/gamma", "Introduces symbolic gamma and eta objects for gamma-matrix algebra experiments.", "let gamma, let eta"),
         m("qft/normal_ordering", "Documents normal ordering and Wick expansion usage.", "documentation comments only"),
         m("qft/scalar_field", "Summarizes the free scalar-field Lagrangian and Klein-Gordon equation.", "documentation comments only"),
+        m("qft/spinor_helicity", "Spinor-helicity formalism: angle/square brackets, Mandelstam invariants, Parke-Taylor amplitudes, BCFW recursion, momentum twistors.", "angle, square, mandelstam, parke_taylor, bcfw_shift, bcfw_decomposition, four_bracket"),
         m("qm/bell", "Constructs a Bell state, its density matrix, and a reduced density matrix by partial trace.", "let up, let down, let phi_plus, let rho, let rho_A"),
         m("qm/harmonic_oscillator", "Documents the intended harmonic-oscillator operator setup.", "documentation comments only"),
         m("qm/spin", "Builds Pauli matrices and their commutator as a spin-1/2 algebra example.", "let sigma_x, let sigma_y, let sigma_z, let comm_xy"),
@@ -803,7 +2120,8 @@ fn matrix_code_arg(
             row.as_array()
                 .ok_or_else(|| format!("argument '{name}' must be a 2D array of code strings"))
                 .and_then(|cells| {
-                    cells.iter()
+                    cells
+                        .iter()
                         .map(|cell| {
                             cell.as_str().map(|s| s.to_string()).ok_or_else(|| {
                                 format!("argument '{name}' contains a non-string matrix entry")
@@ -859,10 +2177,13 @@ fn list_from_id(
     state: &mut dyn EvalState,
 ) -> Result<Vec<ax_ir::Expr>, String> {
     let expr = expr_from_id(args, idx, name, state)?;
-    list_from_expr(&expr).ok_or_else(|| format!("argument '{name}' must reference a list expression"))
+    list_from_expr(&expr)
+        .ok_or_else(|| format!("argument '{name}' must reference a list expression"))
 }
 
-fn symbolic_matrix_from_rows(rows: Vec<Vec<ax_ir::Expr>>) -> Result<ax_tensor::SymbolicMatrix, String> {
+fn symbolic_matrix_from_rows(
+    rows: Vec<Vec<ax_ir::Expr>>,
+) -> Result<ax_tensor::SymbolicMatrix, String> {
     let dim = rows.len();
     if dim == 0 {
         return Ok(ax_tensor::SymbolicMatrix::new(0));
@@ -945,16 +2266,17 @@ fn evaluate_matrix(
         .collect()
 }
 
-fn evaluate_list(
-    items: Vec<ax_ir::Expr>,
-    state: &mut dyn EvalState,
-) -> Vec<ax_ir::Expr> {
-    items.into_iter()
+fn evaluate_list(items: Vec<ax_ir::Expr>, state: &mut dyn EvalState) -> Vec<ax_ir::Expr> {
+    items
+        .into_iter()
         .map(|item| crate::eval(&item, state.env(), state.interner()))
         .collect()
 }
 
-fn parse_property_string(value: &str, state: &mut dyn EvalState) -> Result<ax_ir::TensorProperty, String> {
+fn parse_property_string(
+    value: &str,
+    state: &mut dyn EvalState,
+) -> Result<ax_ir::TensorProperty, String> {
     let trimmed = value.trim();
     let lower = trimmed.to_ascii_lowercase();
     let parse_usize_list = |body: &str| -> Result<Vec<usize>, String> {
@@ -1029,17 +2351,33 @@ fn parse_property_string(value: &str, state: &mut dyn EvalState) -> Result<ax_ir
     if lower == "weyltensor" || lower == "weyl_tensor" || lower == "weyl" {
         return Ok(ax_ir::TensorProperty::WeylTensor);
     }
-    if let Some(body) = trimmed.strip_prefix("Symmetric(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(body) = trimmed
+        .strip_prefix("Symmetric(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         return Ok(ax_ir::TensorProperty::Symmetric(parse_usize_list(body)?));
     }
-    if let Some(body) = trimmed.strip_prefix("AntiSymmetric(").and_then(|s| s.strip_suffix(')')) {
-        return Ok(ax_ir::TensorProperty::AntiSymmetric(parse_usize_list(body)?));
+    if let Some(body) = trimmed
+        .strip_prefix("AntiSymmetric(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return Ok(ax_ir::TensorProperty::AntiSymmetric(parse_usize_list(
+            body,
+        )?));
     }
-    if let Some(body) = trimmed.strip_prefix("Depends(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(body) = trimmed
+        .strip_prefix("Depends(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         return Ok(ax_ir::TensorProperty::Depends(parse_sym_list(body, state)));
     }
-    if let Some(body) = trimmed.strip_prefix("SortOrder(").and_then(|s| s.strip_suffix(')')) {
-        return Ok(ax_ir::TensorProperty::SortOrder(parse_sym_list(body, state)));
+    if let Some(body) = trimmed
+        .strip_prefix("SortOrder(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return Ok(ax_ir::TensorProperty::SortOrder(parse_sym_list(
+            body, state,
+        )));
     }
     if let Some(body) = trimmed
         .strip_prefix("DifferentialFormDegree(")
@@ -1113,11 +2451,7 @@ fn zoom_response(
     }))
 }
 
-fn call_named(
-    name: &str,
-    call_args: Vec<ax_ir::Expr>,
-    state: &mut dyn EvalState,
-) -> ax_ir::Expr {
+fn call_named(name: &str, call_args: Vec<ax_ir::Expr>, state: &mut dyn EvalState) -> ax_ir::Expr {
     let sym = state.interner_mut().get_or_intern(name);
     crate::eval(
         &ax_ir::Expr::Call(sym, call_args),
@@ -1179,13 +2513,22 @@ fn handle_diff(
     expr_response(crate::differentiate(&expr, var, state.interner()), state)
 }
 
-fn handle_integrate(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_integrate(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    expr_response(crate::integrate::integrate(&expr, var, state.interner()), state)
+    expr_response(
+        crate::integrate::integrate(&expr, var, state.interner()),
+        state,
+    )
 }
 
-fn handle_double_integral(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_double_integral(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let x = symbol_arg(args, 1, "x", state)?;
     let y = symbol_arg(args, 2, "y", state)?;
@@ -1194,7 +2537,10 @@ fn handle_double_integral(args: &[serde_json::Value], state: &mut dyn EvalState)
     expr_response(crate::eval(&outer, state.env(), state.interner()), state)
 }
 
-fn handle_triple_integral(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_triple_integral(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let x = symbol_arg(args, 1, "x", state)?;
     let y = symbol_arg(args, 2, "y", state)?;
@@ -1205,14 +2551,19 @@ fn handle_triple_integral(args: &[serde_json::Value], state: &mut dyn EvalState)
     expr_response(crate::eval(&i3, state.env(), state.interner()), state)
 }
 
-fn handle_definite_integral(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_definite_integral(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
     let lower = code_expr(args, 2, "lower_bound", state)?;
     let upper = code_expr(args, 3, "upper_bound", state)?;
     let antideriv = crate::integrate::integrate(&expr, var, state.interner());
-    let at_b = crate::symbolic_substitute(&antideriv, &ax_ir::Expr::Sym(var), &upper, state.interner());
-    let at_a = crate::symbolic_substitute(&antideriv, &ax_ir::Expr::Sym(var), &lower, state.interner());
+    let at_b =
+        crate::symbolic_substitute(&antideriv, &ax_ir::Expr::Sym(var), &upper, state.interner());
+    let at_a =
+        crate::symbolic_substitute(&antideriv, &ax_ir::Expr::Sym(var), &lower, state.interner());
     let result = crate::eval(
         &ax_ir::Expr::add(vec![at_b, ax_ir::Expr::neg(at_a)]),
         state.env(),
@@ -1221,21 +2572,36 @@ fn handle_definite_integral(args: &[serde_json::Value], state: &mut dyn EvalStat
     expr_response(result, state)
 }
 
-fn handle_integrate_by_parts(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_integrate_by_parts(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let away = symbol_arg(args, 1, "away", state)?;
     let deriv_syms = derivative_syms(state);
-    expr_response(ax_tensor::integrate_by_parts(&expr, away, &deriv_syms, state.interner()), state)
+    expr_response(
+        ax_tensor::integrate_by_parts(&expr, away, &deriv_syms, state.interner()),
+        state,
+    )
 }
 
-fn handle_limit(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_limit(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
     let point = code_expr(args, 2, "point", state)?;
-    expr_response(crate::limits::limit(&expr, var, &point, state.interner()), state)
+    expr_response(
+        crate::limits::limit(&expr, var, &point, state.interner()),
+        state,
+    )
 }
 
-fn handle_series(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_series(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
     let point = code_expr(args, 2, "point", state)?;
@@ -1249,51 +2615,90 @@ fn handle_series(args: &[serde_json::Value], state: &mut dyn EvalState) -> Resul
     )
 }
 
-fn handle_simplify(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_simplify(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     expr_response(crate::simplify::simplify(&expr, state.interner()), state)
 }
 
-fn handle_expand(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_expand(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     expr_response(crate::simplify::expand(&expr, state.interner()), state)
 }
 
-fn handle_collect_terms(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_collect_terms(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(crate::simplify::collect_terms(&expr, state.interner()), state)
+    expr_response(
+        crate::simplify::collect_terms(&expr, state.interner()),
+        state,
+    )
 }
 
-fn handle_rationalize(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_rationalize(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     expr_response(crate::simplify::rationalize(&expr, state.interner()), state)
 }
 
-fn handle_partial_fractions(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_partial_fractions(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
     let result = crate::simplify::apart_expr(&expr, var, state.interner()).unwrap_or(expr);
     expr_response(result, state)
 }
 
-fn handle_trig_simplify(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_trig_simplify(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(crate::simplify::trig_simplify(&expr, state.interner()), state)
+    expr_response(
+        crate::simplify::trig_simplify(&expr, state.interner()),
+        state,
+    )
 }
 
-fn handle_factor_out(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_factor_out(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let targets = optional_symbol_list_arg(args, 1, "targets", state)?;
-    expr_response(crate::simplify::factor_out(&expr, &targets, state.interner()), state)
+    expr_response(
+        crate::simplify::factor_out(&expr, &targets, state.interner()),
+        state,
+    )
 }
 
-fn handle_factor_in(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_factor_in(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let targets = optional_symbol_list_arg(args, 1, "targets", state)?;
-    expr_response(crate::simplify::factor_in(&expr, &targets, state.interner()), state)
+    expr_response(
+        crate::simplify::factor_in(&expr, &targets, state.interner()),
+        state,
+    )
 }
 
-fn handle_subs(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_subs(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let target = code_expr(args, 1, "target", state)?;
     let replacement = code_expr(args, 2, "replacement", state)?;
@@ -1305,25 +2710,40 @@ fn handle_subs(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<
     expr_response(crate::eval(&result, state.env(), state.interner()), state)
 }
 
-fn handle_rewrite(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_rewrite(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(crate::rewrite_with_trace(&expr, state.env(), state.interner()).0, state)
+    expr_response(
+        crate::rewrite_with_trace(&expr, state.env(), state.interner()).0,
+        state,
+    )
 }
 
-fn handle_zoom(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_zoom(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let pattern = code_expr(args, 1, "pattern", state)?;
     let (focus, remainder) = crate::zoom(&expr, &pattern, state.interner());
     zoom_response(focus, remainder, state)
 }
 
-fn handle_unzoom(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_unzoom(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let focus = expr_from_id(args, 0, "focus", state)?;
     let remainder = expr_from_id(args, 1, "remainder", state)?;
     expr_response(crate::unzoom(&focus, &remainder), state)
 }
 
-fn handle_take_match(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_take_match(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let pattern = code_expr(args, 1, "pattern", state)?;
     expr_response(crate::take_match(&expr, &pattern, state.interner()), state)
@@ -1348,110 +2768,323 @@ fn binary_expr_builtin(
     expr_response(call_named(name, vec![lhs, rhs], state), state)
 }
 
-fn handle_sin(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("sin", args, state) }
-fn handle_cos(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("cos", args, state) }
-fn handle_tan(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("tan", args, state) }
-fn handle_sec(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("sec", args, state) }
-fn handle_csc(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("csc", args, state) }
-fn handle_cot(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("cot", args, state) }
-fn handle_asin(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("asin", args, state) }
-fn handle_arcsin(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("arcsin", args, state) }
-fn handle_acos(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("acos", args, state) }
-fn handle_arccos(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("arccos", args, state) }
-fn handle_atan(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("atan", args, state) }
-fn handle_arctan(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("arctan", args, state) }
-fn handle_atan2(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { binary_expr_builtin("atan2", args, state) }
-fn handle_sinh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("sinh", args, state) }
-fn handle_cosh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("cosh", args, state) }
-fn handle_tanh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("tanh", args, state) }
-fn handle_asinh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("asinh", args, state) }
-fn handle_arcsinh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("arcsinh", args, state) }
-fn handle_acosh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("acosh", args, state) }
-fn handle_arccosh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("arccosh", args, state) }
-fn handle_atanh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("atanh", args, state) }
-fn handle_arctanh(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("arctanh", args, state) }
-fn handle_exp(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("exp", args, state) }
-fn handle_log(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("log", args, state) }
-fn handle_sqrt(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("sqrt", args, state) }
-fn handle_abs(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("abs", args, state) }
-fn handle_sign(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("sign", args, state) }
-fn handle_sgn(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("sgn", args, state) }
-fn handle_re(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("Re", args, state) }
-fn handle_im(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("Im", args, state) }
-fn handle_conj(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("conj", args, state) }
-fn handle_arg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("arg", args, state) }
-fn handle_n(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_expr_builtin("N", args, state) }
-
-fn handle_gradient(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
-    let expr = expr_from_id(args, 0, "expr", state)?;
-    let vars = symbol_list_arg(args, 1, "variables", state)?
-        .into_iter()
-        .map(ax_ir::Expr::Sym)
-        .collect::<Vec<_>>();
-    expr_response(call_named("gradient", vec![expr, ax_ir::Expr::List(vars)], state), state)
+fn handle_sin(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("sin", args, state)
+}
+fn handle_cos(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("cos", args, state)
+}
+fn handle_tan(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("tan", args, state)
+}
+fn handle_sec(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("sec", args, state)
+}
+fn handle_csc(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("csc", args, state)
+}
+fn handle_cot(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("cot", args, state)
+}
+fn handle_asin(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("asin", args, state)
+}
+fn handle_arcsin(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("arcsin", args, state)
+}
+fn handle_acos(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("acos", args, state)
+}
+fn handle_arccos(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("arccos", args, state)
+}
+fn handle_atan(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("atan", args, state)
+}
+fn handle_arctan(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("arctan", args, state)
+}
+fn handle_atan2(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_expr_builtin("atan2", args, state)
+}
+fn handle_sinh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("sinh", args, state)
+}
+fn handle_cosh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("cosh", args, state)
+}
+fn handle_tanh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("tanh", args, state)
+}
+fn handle_asinh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("asinh", args, state)
+}
+fn handle_arcsinh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("arcsinh", args, state)
+}
+fn handle_acosh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("acosh", args, state)
+}
+fn handle_arccosh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("arccosh", args, state)
+}
+fn handle_atanh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("atanh", args, state)
+}
+fn handle_arctanh(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("arctanh", args, state)
+}
+fn handle_exp(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("exp", args, state)
+}
+fn handle_log(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("log", args, state)
+}
+fn handle_sqrt(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("sqrt", args, state)
+}
+fn handle_abs(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("abs", args, state)
+}
+fn handle_sign(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("sign", args, state)
+}
+fn handle_sgn(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("sgn", args, state)
+}
+fn handle_re(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("Re", args, state)
+}
+fn handle_im(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("Im", args, state)
+}
+fn handle_conj(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("conj", args, state)
+}
+fn handle_arg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("arg", args, state)
+}
+fn handle_n(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_expr_builtin("N", args, state)
 }
 
-fn handle_grad(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_gradient(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let vars = symbol_list_arg(args, 1, "variables", state)?
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(call_named("grad", vec![expr, ax_ir::Expr::List(vars)], state), state)
+    expr_response(
+        call_named("gradient", vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
 }
 
-fn handle_divergence(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_grad(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let vars = symbol_list_arg(args, 1, "variables", state)?
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(call_named("divergence", vec![expr, ax_ir::Expr::List(vars)], state), state)
+    expr_response(
+        call_named("grad", vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
 }
 
-fn handle_div(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_divergence(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let vars = symbol_list_arg(args, 1, "variables", state)?
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(call_named("div", vec![expr, ax_ir::Expr::List(vars)], state), state)
+    expr_response(
+        call_named("divergence", vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
 }
 
-fn handle_curl(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_div(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let vars = symbol_list_arg(args, 1, "variables", state)?
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(call_named("curl", vec![expr, ax_ir::Expr::List(vars)], state), state)
+    expr_response(
+        call_named("div", vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
 }
 
-fn handle_laplacian(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_curl(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let vars = symbol_list_arg(args, 1, "variables", state)?
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(call_named("laplacian", vec![expr, ax_ir::Expr::List(vars)], state), state)
+    expr_response(
+        call_named("curl", vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
 }
 
-fn handle_jacobian(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_laplacian(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let vars = symbol_list_arg(args, 1, "variables", state)?
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(call_named("jacobian", vec![expr, ax_ir::Expr::List(vars)], state), state)
+    expr_response(
+        call_named("laplacian", vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
 }
 
-fn handle_hessian(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_jacobian(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let vars = symbol_list_arg(args, 1, "variables", state)?
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(call_named("hessian", vec![expr, ax_ir::Expr::List(vars)], state), state)
+    expr_response(
+        call_named("jacobian", vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
+}
+
+fn handle_hessian(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let vars = symbol_list_arg(args, 1, "variables", state)?
+        .into_iter()
+        .map(ax_ir::Expr::Sym)
+        .collect::<Vec<_>>();
+    expr_response(
+        call_named("hessian", vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
 }
 
 fn unary_named_expr_response(
@@ -1480,7 +3113,10 @@ fn list_builtin_response(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let vars = vars.into_iter().map(ax_ir::Expr::Sym).collect::<Vec<_>>();
-    expr_or_struct_response(call_named(name, vec![expr, ax_ir::Expr::List(vars)], state), state)
+    expr_or_struct_response(
+        call_named(name, vec![expr, ax_ir::Expr::List(vars)], state),
+        state,
+    )
 }
 
 fn eval_call_response(
@@ -1491,77 +3127,221 @@ fn eval_call_response(
     expr_or_struct_response(call_named(name, args, state), state)
 }
 
-fn handle_canonicalise(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("canonicalise", args, state) }
-fn handle_canonicalize_indices(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_canonicalise(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("canonicalise", args, state)
+}
+fn handle_canonicalize_indices(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     expr_response(
         ax_tensor::canonicalize_indices(&expr, &state.env().property_store, state.interner()),
         state,
     )
 }
-fn handle_meld(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("meld", args, state) }
-fn handle_sort_product(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("sort_product", args, state) }
-fn handle_product_rule_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("product_rule", args, state) }
-fn handle_tensor_distribute(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("tensor_distribute", args, state) }
-fn handle_eliminate_kronecker(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("eliminate_kronecker", args, state) }
-fn handle_eliminate_metric(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("eliminate_metric", args, state) }
-fn handle_eliminate_vielbein(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("eliminate_vielbein", args, state) }
-fn handle_epsilon_to_delta(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("epsilon_to_delta", args, state) }
-fn handle_expand_delta(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("expand_delta", args, state) }
-fn handle_expand_dummies(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("expand_dummies", args, state) }
-fn handle_explicit_indices(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("explicit_indices", args, state) }
-fn handle_expand_implicit(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("expand_implicit", args, state) }
-fn handle_einsteinify(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("einsteinify", args, state) }
-fn handle_rename_dummies(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("rename_dummies", args, state) }
-fn handle_young_project(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("young_project", args, state) }
-fn handle_reduce_delta(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("reduce_delta", args, state) }
-fn handle_unwrap_derivatives_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("unwrap", args, state) }
-fn handle_drop_weight_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_meld(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("meld", args, state)
+}
+fn handle_sort_product(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("sort_product", args, state)
+}
+fn handle_product_rule_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("product_rule", args, state)
+}
+fn handle_tensor_distribute(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("tensor_distribute", args, state)
+}
+fn handle_eliminate_kronecker(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("eliminate_kronecker", args, state)
+}
+fn handle_eliminate_metric(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("eliminate_metric", args, state)
+}
+fn handle_eliminate_vielbein(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("eliminate_vielbein", args, state)
+}
+fn handle_epsilon_to_delta(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("epsilon_to_delta", args, state)
+}
+fn handle_expand_delta(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("expand_delta", args, state)
+}
+fn handle_expand_dummies(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("expand_dummies", args, state)
+}
+fn handle_explicit_indices(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("explicit_indices", args, state)
+}
+fn handle_expand_implicit(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("expand_implicit", args, state)
+}
+fn handle_einsteinify(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("einsteinify", args, state)
+}
+fn handle_rename_dummies(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("rename_dummies", args, state)
+}
+fn handle_young_project(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("young_project", args, state)
+}
+fn handle_reduce_delta(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("reduce_delta", args, state)
+}
+fn handle_unwrap_derivatives_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("unwrap", args, state)
+}
+fn handle_drop_weight_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let label = string_arg(args, 1, "label")?;
     let value = int_arg(args, 2, "value")?;
-    expr_response(ax_tensor::drop_weight(&expr, value, &state.env().weights, label, state.interner()), state)
+    expr_response(
+        ax_tensor::drop_weight(&expr, value, &state.env().weights, label, state.interner()),
+        state,
+    )
 }
-fn handle_keep_weight_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_keep_weight_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let label = string_arg(args, 1, "label")?;
     let value = int_arg(args, 2, "value")?;
-    expr_response(ax_tensor::keep_weight(&expr, value, &state.env().weights, label, state.interner()), state)
+    expr_response(
+        ax_tensor::keep_weight(&expr, value, &state.env().weights, label, state.interner()),
+        state,
+    )
 }
-fn handle_lower_free_indices(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("lower_free_indices", args, state) }
-fn handle_raise_free_indices(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("raise_free_indices", args, state) }
+fn handle_lower_free_indices(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("lower_free_indices", args, state)
+}
+fn handle_raise_free_indices(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("raise_free_indices", args, state)
+}
 
-fn handle_symmetrise_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_symmetrise_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let positions = require_arg(args, 1, "positions")?
         .as_array()
         .ok_or_else(|| "argument 'positions' must be an array of integers".to_string())?
         .iter()
-        .map(|v| v.as_u64().map(|n| n as usize).ok_or_else(|| "positions must be integers".to_string()))
+        .map(|v| {
+            v.as_u64()
+                .map(|n| n as usize)
+                .ok_or_else(|| "positions must be integers".to_string())
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    expr_response(ax_tensor::symmetrise(&expr, &positions, false, state.interner()), state)
+    expr_response(
+        ax_tensor::symmetrise(&expr, &positions, false, state.interner()),
+        state,
+    )
 }
 
-fn handle_antisymmetrise_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_antisymmetrise_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let positions = require_arg(args, 1, "positions")?
         .as_array()
         .ok_or_else(|| "argument 'positions' must be an array of integers".to_string())?
         .iter()
-        .map(|v| v.as_u64().map(|n| n as usize).ok_or_else(|| "positions must be integers".to_string()))
+        .map(|v| {
+            v.as_u64()
+                .map(|n| n as usize)
+                .ok_or_else(|| "positions must be integers".to_string())
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    expr_response(ax_tensor::symmetrise(&expr, &positions, true, state.interner()), state)
+    expr_response(
+        ax_tensor::symmetrise(&expr, &positions, true, state.interner()),
+        state,
+    )
 }
 
-fn handle_split_index_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_split_index_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let parent = optional_symbol_list_arg(args, 1, "parent_indices", state)?;
     let sub1 = optional_symbol_list_arg(args, 2, "subfamily_one", state)?;
     let sub2 = optional_symbol_list_arg(args, 3, "subfamily_two", state)?;
-    expr_response(ax_tensor::split_index(&expr, &parent, &sub1, &sub2, state.interner()), state)
+    expr_response(
+        ax_tensor::split_index(&expr, &parent, &sub1, &sub2, state.interner()),
+        state,
+    )
 }
 
-fn handle_rewrite_indices_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_rewrite_indices_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let tensor = symbol_arg(args, 1, "tensor", state)?;
     let variances = require_arg(args, 2, "variances")?
@@ -1569,7 +3349,9 @@ fn handle_rewrite_indices_tensor(args: &[serde_json::Value], state: &mut dyn Eva
         .ok_or_else(|| "argument 'variances' must be an array".to_string())?
         .iter()
         .map(|v| {
-            let s = v.as_str().ok_or_else(|| "variances must be strings".to_string())?;
+            let s = v
+                .as_str()
+                .ok_or_else(|| "variances must be strings".to_string())?;
             match s.to_ascii_lowercase().as_str() {
                 "up" | "+" => Ok(ax_ir::Variance::Up),
                 "down" | "-" => Ok(ax_ir::Variance::Down),
@@ -1581,10 +3363,16 @@ fn handle_rewrite_indices_tensor(args: &[serde_json::Value], state: &mut dyn Eva
     target_tensors.insert(tensor, variances);
     let g = state.interner_mut().get_or_intern("g");
     let ginv = state.interner_mut().get_or_intern("ginv");
-    expr_response(ax_tensor::rewrite_indices(&expr, &target_tensors, g, ginv, state.interner()), state)
+    expr_response(
+        ax_tensor::rewrite_indices(&expr, &target_tensors, g, ginv, state.interner()),
+        state,
+    )
 }
 
-fn handle_evaluate_components_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_evaluate_components_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let rules_expr = expr_from_id(args, 1, "rules", state)?;
     let rules = if let ax_ir::Expr::List(items) = rules_expr {
@@ -1592,11 +3380,20 @@ fn handle_evaluate_components_tensor(args: &[serde_json::Value], state: &mut dyn
     } else {
         Vec::new()
     };
-    let env = ax_tensor::DefaultEvalEnv::new(state.env().coordinates.iter().copied().collect(), state.env().tensor_properties.clone());
-    expr_response(ax_tensor::evaluate_components_v2(&expr, &rules, &env, state.interner()), state)
+    let env = ax_tensor::DefaultEvalEnv::new(
+        state.env().coordinates.iter().copied().collect(),
+        state.env().tensor_properties.clone(),
+    );
+    expr_response(
+        ax_tensor::evaluate_components_v2(&expr, &rules, &env, state.interner()),
+        state,
+    )
 }
 
-fn handle_complete_inverse_metric(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_complete_inverse_metric(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let rules_expr = expr_from_id(args, 0, "rules", state)?;
     let metric = symbol_arg(args, 1, "metric", state)?;
     let inv_metric = symbol_arg(args, 2, "inverse_metric", state)?;
@@ -1606,163 +3403,443 @@ fn handle_complete_inverse_metric(args: &[serde_json::Value], state: &mut dyn Ev
     } else {
         Vec::new()
     };
-    let completed = ax_tensor::complete_inverse_metric(&rules, metric, inv_metric, &coords, state.interner());
+    let completed =
+        ax_tensor::complete_inverse_metric(&rules, metric, inv_metric, &coords, state.interner());
     let as_expr = ax_ir::Expr::List(
         completed
             .into_iter()
             .map(|rule| {
                 let lhs = ax_ir::Expr::Indexed(
                     Box::new(ax_ir::Expr::Sym(rule.tensor)),
-                    rule.indices.iter().map(|(name, variance)| ax_ir::Index { name: *name, variance: variance.clone(), index_type: None }).collect(),
+                    rule.indices
+                        .iter()
+                        .map(|(name, variance)| ax_ir::Index {
+                            name: *name,
+                            variance: variance.clone(),
+                            index_type: None,
+                        })
+                        .collect(),
                 );
-                ax_ir::Expr::Rule(Box::new(lhs), Box::new(rule.value), ax_ir::TrustLevel::Exact)
+                ax_ir::Expr::Rule(
+                    Box::new(lhs),
+                    Box::new(rule.value),
+                    ax_ir::TrustLevel::Exact,
+                )
             })
             .collect(),
     );
     expr_response(as_expr, state)
 }
 
-fn handle_diff_component_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_diff_component_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    expr_response(ax_tensor::diff_component(&expr, var, state.interner()), state)
+    expr_response(
+        ax_tensor::diff_component(&expr, var, state.interner()),
+        state,
+    )
 }
 
-fn handle_decompose_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_decompose_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let basis = list_from_id(args, 1, "basis", state)?;
-    expr_response(ax_tensor::decompose(&expr, &basis, &state.env().property_store, state.interner()), state)
+    expr_response(
+        ax_tensor::decompose(&expr, &basis, &state.env().property_store, state.interner()),
+        state,
+    )
 }
 
-fn handle_decompose_product_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_decompose_product_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    let dim = args.get(1).and_then(|v| v.as_u64()).map(|n| n as usize).unwrap_or(4);
-    expr_response(ax_tensor::decompose_product(&expr, dim, &state.env().property_store, state.interner()), state)
+    let dim = args
+        .get(1)
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+        .unwrap_or(4);
+    expr_response(
+        ax_tensor::decompose_product(&expr, dim, &state.env().property_store, state.interner()),
+        state,
+    )
 }
 
-fn handle_metric_pipeline_christoffel(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_metric_pipeline_christoffel(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let metric_id = string_arg(args, 0, "metric_id")?;
-    let (metric, coords) = state.get_metric(metric_id).cloned().ok_or_else(|| format!("unknown metric '{metric_id}'"))?;
+    let (metric, coords) = state
+        .get_metric(metric_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown metric '{metric_id}'"))?;
     let gamma = ax_tensor::christoffel_from_metric(&metric, &coords, state.interner());
     state.store_christoffel(metric_id.to_string(), gamma.clone());
-    expr_or_struct_response(ax_ir::Expr::List(
-        gamma.into_iter()
-            .map(|plane| ax_ir::Expr::List(plane.into_iter().map(ax_ir::Expr::List).collect()))
-            .collect()
-    ), state)
+    expr_or_struct_response(
+        ax_ir::Expr::List(
+            gamma
+                .into_iter()
+                .map(|plane| ax_ir::Expr::List(plane.into_iter().map(ax_ir::Expr::List).collect()))
+                .collect(),
+        ),
+        state,
+    )
 }
 
-fn handle_riemann_from_christoffel(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_riemann_from_christoffel(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let id = string_arg(args, 0, "christoffel_id")?;
-    let gamma = state.get_christoffel(id).cloned().ok_or_else(|| format!("unknown christoffel '{id}'"))?;
-    let coords = state.get_metric(id).map(|(_, c)| c.clone()).ok_or_else(|| format!("no coordinates recorded for '{id}'"))?;
-    let riem = ax_tensor::riemann_from_christoffel(&gamma, &coords, state.interner(), &state.env().convention);
+    let gamma = state
+        .get_christoffel(id)
+        .cloned()
+        .ok_or_else(|| format!("unknown christoffel '{id}'"))?;
+    let coords = state
+        .get_metric(id)
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| format!("no coordinates recorded for '{id}'"))?;
+    let riem = ax_tensor::riemann_from_christoffel(
+        &gamma,
+        &coords,
+        state.interner(),
+        &state.env().convention,
+    );
     state.store_riemann(id.to_string(), riem.clone());
     let expr = ax_ir::Expr::List(
         riem.into_iter()
-            .map(|cube| ax_ir::Expr::List(cube.into_iter().map(|plane| ax_ir::Expr::List(plane.into_iter().map(ax_ir::Expr::List).collect())).collect()))
-            .collect()
+            .map(|cube| {
+                ax_ir::Expr::List(
+                    cube.into_iter()
+                        .map(|plane| {
+                            ax_ir::Expr::List(plane.into_iter().map(ax_ir::Expr::List).collect())
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
     );
     expr_response(expr, state)
 }
 
-fn handle_ricci_from_riemann(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_ricci_from_riemann(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let id = string_arg(args, 0, "riemann_id")?;
-    let riem = state.get_riemann(id).cloned().ok_or_else(|| format!("unknown riemann '{id}'"))?;
-    let ric = ax_tensor::ricci_from_riemann(&riem, riem.len(), state.interner(), &state.env().convention);
+    let riem = state
+        .get_riemann(id)
+        .cloned()
+        .ok_or_else(|| format!("unknown riemann '{id}'"))?;
+    let ric =
+        ax_tensor::ricci_from_riemann(&riem, riem.len(), state.interner(), &state.env().convention);
     state.store_ricci(id.to_string(), ric.clone());
     matrix_response(evaluate_matrix(ric, state), state)
 }
 
-fn handle_ricci_scalar_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_ricci_scalar_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let ricci = matrix_from_id(args, 0, "ricci", state)?;
     let metric = matrix_from_id(args, 1, "metric_inverse", state)?;
     let ginv = symbolic_matrix_from_rows(metric)?;
-    expr_response(crate::eval(&ax_tensor::ricci_scalar(&ricci, &ginv, state.interner()), state.env(), state.interner()), state)
+    expr_response(
+        crate::eval(
+            &ax_tensor::ricci_scalar(&ricci, &ginv, state.interner()),
+            state.env(),
+            state.interner(),
+        ),
+        state,
+    )
 }
 
-fn handle_einstein_tensor_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_einstein_tensor_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let ricci = matrix_from_id(args, 0, "ricci", state)?;
     let scalar = expr_from_id(args, 1, "scalar", state)?;
     let metric = symbolic_matrix_from_rows(matrix_from_id(args, 2, "metric", state)?)?;
-    matrix_response(evaluate_matrix(ax_tensor::einstein_tensor(&ricci, &scalar, &metric, state.interner()), state), state)
+    matrix_response(
+        evaluate_matrix(
+            ax_tensor::einstein_tensor(&ricci, &scalar, &metric, state.interner()),
+            state,
+        ),
+        state,
+    )
 }
 
-fn handle_kretschner_scalar_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_kretschner_scalar_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let id = string_arg(args, 0, "riemann_id")?;
-    let riem = state.get_riemann(id).cloned().ok_or_else(|| format!("unknown riemann '{id}'"))?;
-    let metric = state.get_metric(id).map(|(m, _)| m.clone()).ok_or_else(|| format!("unknown metric '{id}'"))?;
-    expr_response(crate::eval(&ax_tensor::kretschner_scalar(&riem, &metric, state.interner()), state.env(), state.interner()), state)
+    let riem = state
+        .get_riemann(id)
+        .cloned()
+        .ok_or_else(|| format!("unknown riemann '{id}'"))?;
+    let metric = state
+        .get_metric(id)
+        .map(|(m, _)| m.clone())
+        .ok_or_else(|| format!("unknown metric '{id}'"))?;
+    expr_response(
+        crate::eval(
+            &ax_tensor::kretschner_scalar(&riem, &metric, state.interner()),
+            state.env(),
+            state.interner(),
+        ),
+        state,
+    )
 }
 
-fn handle_covariant_derivative_vector_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_covariant_derivative_vector_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let v = list_from_id(args, 0, "vector", state)?;
     let gamma_id = string_arg(args, 1, "christoffel_id")?;
     let coord_index = int_arg(args, 2, "coord_index")? as usize;
-    let gamma = state.get_christoffel(gamma_id).cloned().ok_or_else(|| format!("unknown christoffel '{gamma_id}'"))?;
-    let coords = state.get_metric(gamma_id).map(|(_, c)| c.clone()).ok_or_else(|| format!("no coordinates recorded for '{gamma_id}'"))?;
-    list_response(evaluate_list(ax_tensor::covariant_derivative_vector(&v, &gamma, coord_index, &coords, state.interner()), state), state)
+    let gamma = state
+        .get_christoffel(gamma_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown christoffel '{gamma_id}'"))?;
+    let coords = state
+        .get_metric(gamma_id)
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| format!("no coordinates recorded for '{gamma_id}'"))?;
+    list_response(
+        evaluate_list(
+            ax_tensor::covariant_derivative_vector(
+                &v,
+                &gamma,
+                coord_index,
+                &coords,
+                state.interner(),
+            ),
+            state,
+        ),
+        state,
+    )
 }
 
-fn handle_covariant_derivative_covector_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_covariant_derivative_covector_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let w = list_from_id(args, 0, "covector", state)?;
     let gamma_id = string_arg(args, 1, "christoffel_id")?;
     let coord_index = int_arg(args, 2, "coord_index")? as usize;
-    let gamma = state.get_christoffel(gamma_id).cloned().ok_or_else(|| format!("unknown christoffel '{gamma_id}'"))?;
-    let coords = state.get_metric(gamma_id).map(|(_, c)| c.clone()).ok_or_else(|| format!("no coordinates recorded for '{gamma_id}'"))?;
-    list_response(evaluate_list(ax_tensor::covariant_derivative_covector(&w, &gamma, coord_index, &coords, state.interner()), state), state)
+    let gamma = state
+        .get_christoffel(gamma_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown christoffel '{gamma_id}'"))?;
+    let coords = state
+        .get_metric(gamma_id)
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| format!("no coordinates recorded for '{gamma_id}'"))?;
+    list_response(
+        evaluate_list(
+            ax_tensor::covariant_derivative_covector(
+                &w,
+                &gamma,
+                coord_index,
+                &coords,
+                state.interner(),
+            ),
+            state,
+        ),
+        state,
+    )
 }
 
-fn handle_covariant_derivative_tensor2_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_covariant_derivative_tensor2_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let t = matrix_from_id(args, 0, "tensor", state)?;
     let gamma_id = string_arg(args, 1, "christoffel_id")?;
     let coord_index = int_arg(args, 2, "coord_index")? as usize;
-    let gamma = state.get_christoffel(gamma_id).cloned().ok_or_else(|| format!("unknown christoffel '{gamma_id}'"))?;
-    let coords = state.get_metric(gamma_id).map(|(_, c)| c.clone()).ok_or_else(|| format!("no coordinates recorded for '{gamma_id}'"))?;
-    matrix_response(evaluate_matrix(ax_tensor::covariant_derivative_tensor2(&t, &gamma, coord_index, &coords, state.interner()), state), state)
+    let gamma = state
+        .get_christoffel(gamma_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown christoffel '{gamma_id}'"))?;
+    let coords = state
+        .get_metric(gamma_id)
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| format!("no coordinates recorded for '{gamma_id}'"))?;
+    matrix_response(
+        evaluate_matrix(
+            ax_tensor::covariant_derivative_tensor2(
+                &t,
+                &gamma,
+                coord_index,
+                &coords,
+                state.interner(),
+            ),
+            state,
+        ),
+        state,
+    )
 }
 
-fn handle_geodesic_equations_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_geodesic_equations_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let gamma_id = string_arg(args, 0, "christoffel_id")?;
-    let gamma = state.get_christoffel(gamma_id).cloned().ok_or_else(|| format!("unknown christoffel '{gamma_id}'"))?;
-    let coords = state.get_metric(gamma_id).map(|(_, c)| c.clone()).ok_or_else(|| format!("no coordinates recorded for '{gamma_id}'"))?;
-    list_response(evaluate_list(ax_tensor::geodesic_equations(&gamma, &coords, state.interner()), state), state)
+    let gamma = state
+        .get_christoffel(gamma_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown christoffel '{gamma_id}'"))?;
+    let coords = state
+        .get_metric(gamma_id)
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| format!("no coordinates recorded for '{gamma_id}'"))?;
+    list_response(
+        evaluate_list(
+            ax_tensor::geodesic_equations(&gamma, &coords, state.interner()),
+            state,
+        ),
+        state,
+    )
 }
 
-fn handle_lie_derivative_scalar_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_lie_derivative_scalar_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let f = expr_from_id(args, 0, "expr", state)?;
     let v = list_from_id(args, 1, "vector", state)?;
     let coords = symbol_list_arg(args, 2, "coordinates", state)?;
-    expr_response(crate::eval(&ax_tensor::lie_derivative_scalar(&f, &v, &coords, state.interner()), state.env(), state.interner()), state)
+    expr_response(
+        crate::eval(
+            &ax_tensor::lie_derivative_scalar(&f, &v, &coords, state.interner()),
+            state.env(),
+            state.interner(),
+        ),
+        state,
+    )
 }
 
-fn handle_lie_derivative_vector_gr(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_lie_derivative_vector_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let w = list_from_id(args, 0, "field", state)?;
     let v = list_from_id(args, 1, "vector", state)?;
     let coords = symbol_list_arg(args, 2, "coordinates", state)?;
-    list_response(evaluate_list(ax_tensor::lie_derivative_vector(&w, &v, &coords, state.interner()), state), state)
+    list_response(
+        evaluate_list(
+            ax_tensor::lie_derivative_vector(&w, &v, &coords, state.interner()),
+            state,
+        ),
+        state,
+    )
 }
 
-fn handle_pauli_x(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { let _ = args; matrix_response(ax_qm::pauli_x(state.interner()), state) }
-fn handle_pauli_y(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { let _ = args; matrix_response(ax_qm::pauli_y(state.interner()), state) }
-fn handle_pauli_z(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { let _ = args; matrix_response(ax_qm::pauli_z(state.interner()), state) }
-fn handle_gamma5(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { let _ = args; matrix_response(ax_qm::gamma5(state.interner()), state) }
-fn handle_gamma_trace_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("gamma_trace", args, state) }
-fn handle_join_gamma_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("join_gamma", args, state) }
-fn handle_split_gamma_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("split_gamma", args, state) }
-fn handle_fierz_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("fierz", args, state) }
-fn handle_commutator_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { binary_named_expr_response("commutator", args, state) }
-fn handle_anticommutator_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { binary_named_expr_response("anticommutator", args, state) }
-fn handle_normal_order_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("normal_order", args, state) }
-fn handle_wick_expand_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("wick", args, state) }
-fn handle_grassmann_simplify_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("grassmann_simplify", args, state) }
+fn handle_pauli_x(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    matrix_response(ax_qm::pauli_x(state.interner()), state)
+}
+fn handle_pauli_y(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    matrix_response(ax_qm::pauli_y(state.interner()), state)
+}
+fn handle_pauli_z(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    matrix_response(ax_qm::pauli_z(state.interner()), state)
+}
+fn handle_gamma5(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    matrix_response(ax_qm::gamma5(state.interner()), state)
+}
+fn handle_gamma_trace_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("gamma_trace", args, state)
+}
+fn handle_join_gamma_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("join_gamma", args, state)
+}
+fn handle_split_gamma_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("split_gamma", args, state)
+}
+fn handle_fierz_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("fierz", args, state)
+}
+fn handle_commutator_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("commutator", args, state)
+}
+fn handle_anticommutator_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("anticommutator", args, state)
+}
+fn handle_normal_order_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("normal_order", args, state)
+}
+fn handle_wick_expand_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("wick", args, state)
+}
+fn handle_grassmann_simplify_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("grassmann_simplify", args, state)
+}
 
-fn handle_density_matrix_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_density_matrix_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let state_vec = list_from_id(args, 0, "state", state)?;
     matrix_response(ax_qm::density_matrix(&state_vec), state)
 }
 
-fn handle_partial_trace_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_partial_trace_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let rho = matrix_from_id(args, 0, "rho", state)?;
     let dim_a = int_arg(args, 1, "dim_a")? as usize;
     let dim_b = int_arg(args, 2, "dim_b")? as usize;
@@ -1772,91 +3849,183 @@ fn handle_partial_trace_qm(args: &[serde_json::Value], state: &mut dyn EvalState
         "B" | "b" => 'B',
         _ => return Err("argument 'which' must be 'A' or 'B'".to_string()),
     };
-    matrix_response(ax_qm::partial_trace(&rho, dim_a, dim_b, which, state.interner()), state)
+    matrix_response(
+        ax_qm::partial_trace(&rho, dim_a, dim_b, which, state.interner()),
+        state,
+    )
 }
 
-fn handle_braket_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_braket_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let bra = list_from_id(args, 0, "bra", state)?;
     let ket = list_from_id(args, 1, "ket", state)?;
     expr_response(ax_qm::braket(&bra, &ket), state)
 }
 
-fn handle_outer_qm(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_outer_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let a = list_from_id(args, 0, "left", state)?;
     let b = list_from_id(args, 1, "right", state)?;
     matrix_response(ax_qm::outer(&a, &b), state)
 }
 
-fn handle_wedge_forms(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { binary_named_expr_response("wedge_1_1", args, state) }
-fn handle_exterior_derivative_forms(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { unary_named_expr_response("exterior_d", args, state) }
-fn handle_hodge_dual_forms(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { binary_named_expr_response("hodge_star", args, state) }
+fn handle_wedge_forms(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("wedge_1_1", args, state)
+}
+fn handle_exterior_derivative_forms(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("exterior_d", args, state)
+}
+fn handle_hodge_dual_forms(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("hodge_star", args, state)
+}
 
-fn handle_functional_derivative_variational(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_functional_derivative_variational(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let lagrangian = expr_from_id(args, 0, "lagrangian", state)?;
     let field = symbol_arg(args, 1, "field", state)?;
     let field_derivs = symbol_list_arg(args, 2, "field_derivatives", state)?;
     let coords = symbol_list_arg(args, 3, "coordinates", state)?;
-    expr_response(ax_variational::functional_derivative(&lagrangian, field, &field_derivs, &coords, state.interner()), state)
+    expr_response(
+        ax_variational::functional_derivative(
+            &lagrangian,
+            field,
+            &field_derivs,
+            &coords,
+            state.interner(),
+        ),
+        state,
+    )
 }
 
-fn handle_euler_lagrange_system_variational(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_euler_lagrange_system_variational(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let lagrangian = expr_from_id(args, 0, "lagrangian", state)?;
     let fields = require_arg(args, 1, "fields")?
         .as_array()
         .ok_or_else(|| "argument 'fields' must be an array".to_string())?
         .iter()
         .map(|item| {
-            let pair = item.as_array().ok_or_else(|| "each field entry must be [field, derivs]".to_string())?;
-            if pair.len() != 2 { return Err("each field entry must be [field, derivs]".to_string()); }
-            let field = pair[0].as_str().ok_or_else(|| "field name must be a string".to_string())?;
-            let derivs = pair[1].as_array().ok_or_else(|| "derivative list must be an array".to_string())?;
-            let derivs = derivs.iter().map(|v| v.as_str().map(|s| state.interner_mut().get_or_intern(s)).ok_or_else(|| "derivative names must be strings".to_string())).collect::<Result<Vec<_>, _>>()?;
+            let pair = item
+                .as_array()
+                .ok_or_else(|| "each field entry must be [field, derivs]".to_string())?;
+            if pair.len() != 2 {
+                return Err("each field entry must be [field, derivs]".to_string());
+            }
+            let field = pair[0]
+                .as_str()
+                .ok_or_else(|| "field name must be a string".to_string())?;
+            let derivs = pair[1]
+                .as_array()
+                .ok_or_else(|| "derivative list must be an array".to_string())?;
+            let derivs = derivs
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(|s| state.interner_mut().get_or_intern(s))
+                        .ok_or_else(|| "derivative names must be strings".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             Ok((state.interner_mut().get_or_intern(field), derivs))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let coords = symbol_list_arg(args, 2, "coordinates", state)?;
-    list_response(ax_variational::euler_lagrange_system(&lagrangian, &fields, &coords, state.interner()), state)
+    list_response(
+        ax_variational::euler_lagrange_system(&lagrangian, &fields, &coords, state.interner()),
+        state,
+    )
 }
 
-fn handle_vary_action_variational(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_vary_action_variational(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let lagrangian = expr_from_id(args, 0, "lagrangian", state)?;
     let field = symbol_arg(args, 1, "field", state)?;
     let variation = symbol_arg(args, 2, "variation", state)?;
     let field_derivs = symbol_list_arg(args, 3, "field_derivatives", state)?;
     let variation_derivs = symbol_list_arg(args, 4, "variation_derivatives", state)?;
-    expr_response(ax_variational::vary_action(&lagrangian, field, variation, &field_derivs, &variation_derivs, state.interner()), state)
+    expr_response(
+        ax_variational::vary_action(
+            &lagrangian,
+            field,
+            variation,
+            &field_derivs,
+            &variation_derivs,
+            state.interner(),
+        ),
+        state,
+    )
 }
 
-fn handle_solve_general(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_solve_general(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let equation = code_expr(args, 0, "equation", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
     expr_or_struct_response(ax_solve::solve(&equation, var, state.interner()), state)
 }
 
-fn handle_solve_linear_system_general(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_solve_linear_system_general(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let equations = string_list_arg(args, 0, "equations")?
         .into_iter()
         .map(|code| state.parse_code(&code))
         .collect::<Result<Vec<_>, _>>()?;
     let vars = symbol_list_arg(args, 1, "variables", state)?;
-    let solutions = ax_solve::solve_linear_system(&equations, &vars, state.interner()).unwrap_or_default();
+    let solutions =
+        ax_solve::solve_linear_system(&equations, &vars, state.interner()).unwrap_or_default();
     let expr = ax_ir::Expr::List(
         solutions
             .into_iter()
-            .map(|(sym, rhs)| ax_ir::Expr::Rule(Box::new(ax_ir::Expr::Sym(sym)), Box::new(rhs), ax_ir::TrustLevel::Exact))
+            .map(|(sym, rhs)| {
+                ax_ir::Expr::Rule(
+                    Box::new(ax_ir::Expr::Sym(sym)),
+                    Box::new(rhs),
+                    ax_ir::TrustLevel::Exact,
+                )
+            })
             .collect(),
     );
     expr_response(expr, state)
 }
 
-fn handle_solve_ode_ode(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_solve_ode_ode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let equation = expr_from_id(args, 0, "equation", state)?;
     let dependent = symbol_arg(args, 1, "dependent", state)?;
     let independent = symbol_arg(args, 2, "independent", state)?;
-    expr_response(ax_ode::solve_ode(&equation, dependent, independent, state.interner()), state)
+    expr_response(
+        ax_ode::solve_ode(&equation, dependent, independent, state.interner()),
+        state,
+    )
 }
 
-fn handle_rk4_ode(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_rk4_ode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let f = expr_from_id(args, 0, "f", state)?;
     let x = symbol_arg(args, 1, "x", state)?;
     let y = symbol_arg(args, 2, "y", state)?;
@@ -1864,10 +4033,22 @@ fn handle_rk4_ode(args: &[serde_json::Value], state: &mut dyn EvalState) -> Resu
     let y0 = float_arg(args, 4, "y0")?;
     let x_end = float_arg(args, 5, "x_end")?;
     let steps = args.get(6).and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
-    points_response(ax_ode::rk4(&f, x, y, x0, y0, x_end, steps, state.interner()))
+    points_response(ax_ode::rk4(
+        &f,
+        x,
+        y,
+        x0,
+        y0,
+        x_end,
+        steps,
+        state.interner(),
+    ))
 }
 
-fn handle_rk4_system_ode(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_rk4_system_ode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let fs = list_from_id(args, 0, "functions", state)?;
     let x = symbol_arg(args, 1, "independent", state)?;
     let ys = symbol_list_arg(args, 2, "dependents", state)?;
@@ -1876,7 +4057,10 @@ fn handle_rk4_system_ode(args: &[serde_json::Value], state: &mut dyn EvalState) 
         .as_array()
         .ok_or_else(|| "argument 'y0s' must be an array of floats".to_string())?
         .iter()
-        .map(|v| v.as_f64().ok_or_else(|| "initial values must be numeric".to_string()))
+        .map(|v| {
+            v.as_f64()
+                .ok_or_else(|| "initial values must be numeric".to_string())
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let x_end = float_arg(args, 5, "x_end")?;
     let steps = args.get(6).and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
@@ -1884,16 +4068,27 @@ fn handle_rk4_system_ode(args: &[serde_json::Value], state: &mut dyn EvalState) 
     Ok(serde_json::json!({ "values": values }))
 }
 
-fn handle_first_order_form_ode(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_first_order_form_ode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let ode = expr_from_id(args, 0, "ode", state)?;
     let dependent = symbol_arg(args, 1, "dependent", state)?;
     let independent = symbol_arg(args, 2, "independent", state)?;
     let system = ax_ode::first_order_form(&ode, dependent, independent, state.interner());
-    let expr = ax_ir::Expr::List(system.into_iter().map(|(lhs, rhs)| ax_ir::Expr::List(vec![lhs, rhs])).collect());
+    let expr = ax_ir::Expr::List(
+        system
+            .into_iter()
+            .map(|(lhs, rhs)| ax_ir::Expr::List(vec![lhs, rhs]))
+            .collect(),
+    );
     expr_response(expr, state)
 }
 
-fn handle_classify_pde_ode(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_classify_pde_ode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let a = expr_from_id(args, 0, "A", state)?;
     let b = expr_from_id(args, 1, "B", state)?;
     let c = expr_from_id(args, 2, "C", state)?;
@@ -1906,7 +4101,10 @@ fn handle_classify_pde_ode(args: &[serde_json::Value], state: &mut dyn EvalState
     Ok(serde_json::json!({ "kind": kind }))
 }
 
-fn handle_separate_variables_ode(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_separate_variables_ode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let kind = string_arg(args, 0, "pde_type")?;
     let pde_type = match kind.to_ascii_lowercase().as_str() {
         "wave" | "hyperbolic" => ax_ode::PdeType::Hyperbolic,
@@ -1916,50 +4114,85 @@ fn handle_separate_variables_ode(args: &[serde_json::Value], state: &mut dyn Eva
     };
     let x = symbol_arg(args, 1, "spatial", state)?;
     let t = symbol_arg(args, 2, "temporal", state)?;
-    let coeff = if args.len() > 3 { code_expr(args, 3, "coefficient", state)? } else { ax_ir::Expr::one() };
+    let coeff = if args.len() > 3 {
+        code_expr(args, 3, "coefficient", state)?
+    } else {
+        ax_ir::Expr::one()
+    };
     let sol = ax_ode::separate_variables(pde_type, x, t, &coeff, state.interner());
-    list_response(vec![sol.spatial, sol.temporal, sol.separation_constant], state)
+    list_response(
+        vec![sol.spatial, sol.temporal, sol.separation_constant],
+        state,
+    )
 }
 
-fn handle_determinant_linalg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_determinant_linalg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
     expr_response(ax_linalg::determinant(&matrix, state.interner()), state)
 }
 
-fn handle_inverse_linalg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_inverse_linalg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
-    let inv = ax_linalg::inverse(&matrix, state.interner()).ok_or_else(|| "matrix is singular".to_string())?;
+    let inv = ax_linalg::inverse(&matrix, state.interner())
+        .ok_or_else(|| "matrix is singular".to_string())?;
     matrix_response(inv, state)
 }
 
-fn handle_trace_linalg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_trace_linalg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
     expr_response(ax_linalg::trace(&matrix), state)
 }
 
-fn handle_eigenvalues_symbolic_linalg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_eigenvalues_symbolic_linalg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
-    expr_response(ax_linalg::eigenvalues_symbolic(&matrix, state.interner()), state)
+    expr_response(
+        ax_linalg::eigenvalues_symbolic(&matrix, state.interner()),
+        state,
+    )
 }
 
-fn handle_tensor_product_linalg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_tensor_product_linalg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let a = matrix_from_id(args, 0, "a", state)?;
     let b = matrix_from_id(args, 1, "b", state)?;
     matrix_response(ax_linalg::tensor_product(&a, &b), state)
 }
 
-fn handle_matmul_linalg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_matmul_linalg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let a = matrix_from_id(args, 0, "a", state)?;
     let b = matrix_from_id(args, 1, "b", state)?;
     matrix_response(ax_linalg::mat_mul(&a, &b, state.interner()), state)
 }
 
-fn handle_transpose_linalg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_transpose_linalg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
     matrix_response(ax_linalg::transpose(&matrix), state)
 }
 
-fn handle_identity_matrix_linalg(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_identity_matrix_linalg(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let n = int_arg(args, 0, "n")?;
     if n < 0 {
         return Err("argument 'n' must be non-negative".to_string());
@@ -1967,17 +4200,28 @@ fn handle_identity_matrix_linalg(args: &[serde_json::Value], state: &mut dyn Eva
     matrix_response(ax_linalg::identity(n as usize), state)
 }
 
-fn handle_declare_property(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_declare_property(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let symbol = symbol_arg(args, 0, "symbol", state)?;
     let prop = parse_property_string(string_arg(args, 1, "property")?, state)?;
-    state.env_mut().tensor_properties.entry(symbol).or_default().push(prop.clone());
+    state
+        .env_mut()
+        .tensor_properties
+        .entry(symbol)
+        .or_default()
+        .push(prop.clone());
     Ok(serde_json::json!({
         "symbol": state.interner().resolve(symbol),
         "property": format!("{:?}", prop)
     }))
 }
 
-fn handle_declare_indices(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_declare_indices(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let family = symbol_arg(args, 0, "family", state)?;
     let indices = symbol_list_arg(args, 1, "indices", state)?;
     let dimension = int_arg(args, 2, "dimension").ok().map(|n| n as usize);
@@ -1988,7 +4232,10 @@ fn handle_declare_indices(args: &[serde_json::Value], state: &mut dyn EvalState)
         dimension,
         parent: None,
     };
-    state.env_mut().index_families.insert(family, family_data.clone());
+    state
+        .env_mut()
+        .index_families
+        .insert(family, family_data.clone());
     for idx in indices.iter().copied() {
         state.env_mut().index_to_family.insert(idx, family);
     }
@@ -1999,7 +4246,10 @@ fn handle_declare_indices(args: &[serde_json::Value], state: &mut dyn EvalState)
     }))
 }
 
-fn handle_declare_coordinates(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_declare_coordinates(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let coords = symbol_list_arg(args, 0, "coordinates", state)?;
     state.env_mut().coordinates = coords.iter().copied().collect();
     Ok(serde_json::json!({
@@ -2007,7 +4257,10 @@ fn handle_declare_coordinates(args: &[serde_json::Value], state: &mut dyn EvalSt
     }))
 }
 
-fn handle_declare_assumption(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_declare_assumption(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let symbol = symbol_arg(args, 0, "symbol", state)?;
     let assumption_name = string_arg(args, 1, "assumption")?.to_ascii_lowercase();
     let assumption = match assumption_name.as_str() {
@@ -2020,20 +4273,31 @@ fn handle_declare_assumption(args: &[serde_json::Value], state: &mut dyn EvalSta
         "odd" => ax_ir::Assumption::Odd,
         _ => return Err(format!("unknown assumption '{assumption_name}'")),
     };
-    state.env_mut().assumptions.entry(symbol).or_default().push(assumption.clone());
+    state
+        .env_mut()
+        .assumptions
+        .entry(symbol)
+        .or_default()
+        .push(assumption.clone());
     Ok(serde_json::json!({
         "symbol": state.interner().resolve(symbol),
         "assumption": format!("{:?}", assumption)
     }))
 }
 
-fn handle_declare_grassmann(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_declare_grassmann(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let symbol = symbol_arg(args, 0, "symbol", state)?;
     state.env_mut().gradings.insert(symbol, ax_ir::Grading::Odd);
     Ok(serde_json::json!({ "symbol": state.interner().resolve(symbol), "grading": "Odd" }))
 }
 
-fn handle_declare_operator(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_declare_operator(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let symbol = symbol_arg(args, 0, "symbol", state)?;
     let kind = match string_arg(args, 1, "kind")?.to_ascii_lowercase().as_str() {
         "creation" => ax_qm::OperatorKind::Creation,
@@ -2041,10 +4305,15 @@ fn handle_declare_operator(args: &[serde_json::Value], state: &mut dyn EvalState
         _ => return Err("operator kind must be 'creation' or 'annihilation'".to_string()),
     };
     state.env_mut().operators.insert(symbol, kind);
-    Ok(serde_json::json!({ "symbol": state.interner().resolve(symbol), "operator": format!("{:?}", kind) }))
+    Ok(
+        serde_json::json!({ "symbol": state.interner().resolve(symbol), "operator": format!("{:?}", kind) }),
+    )
 }
 
-fn handle_set_convention(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_set_convention(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let key = string_arg(args, 0, "field")?.to_ascii_lowercase();
     let value = string_arg(args, 1, "value")?.to_ascii_lowercase();
     match key.as_str() {
@@ -2089,7 +4358,10 @@ fn handle_set_convention(args: &[serde_json::Value], state: &mut dyn EvalState) 
     Ok(convention_value_to_json(state.env()))
 }
 
-fn handle_define_rule(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_define_rule(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let name = string_arg(args, 0, "name")?;
     let lhs = code_expr(args, 1, "lhs", state)?;
     let rhs = code_expr(args, 2, "rhs", state)?;
@@ -2104,7 +4376,10 @@ fn handle_define_rule(args: &[serde_json::Value], state: &mut dyn EvalState) -> 
     Ok(serde_json::json!({ "name": name, "trust": "Exact" }))
 }
 
-fn handle_define_metric(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_define_metric(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let name = string_arg(args, 0, "name")?.to_string();
     let rows = matrix_code_arg(args, 1, "components")?
         .into_iter()
@@ -2118,7 +4393,12 @@ fn handle_define_metric(args: &[serde_json::Value], state: &mut dyn EvalState) -
     let matrix = symbolic_matrix_from_rows(rows)?;
     let sym = state.interner_mut().get_or_intern(&name);
     state.env_mut().coordinates = coords.iter().copied().collect();
-    state.env_mut().tensor_properties.entry(sym).or_default().push(ax_ir::TensorProperty::Metric);
+    state
+        .env_mut()
+        .tensor_properties
+        .entry(sym)
+        .or_default()
+        .push(ax_ir::TensorProperty::Metric);
     state.store_metric(name.clone(), matrix, coords.clone());
     Ok(serde_json::json!({
         "metric_id": name,
@@ -2126,25 +4406,47 @@ fn handle_define_metric(args: &[serde_json::Value], state: &mut dyn EvalState) -
     }))
 }
 
-fn handle_to_python_codegen(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_to_python_codegen(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     Ok(serde_json::json!({ "code": ax_codegen::to_python(&expr, state.interner()) }))
 }
 
-fn handle_to_rust_codegen(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_to_rust_codegen(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     Ok(serde_json::json!({ "code": ax_codegen::to_rust(&expr, state.interner()) }))
 }
 
-fn handle_to_cpp_codegen(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_to_cpp_codegen(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     Ok(serde_json::json!({ "code": ax_codegen::to_cpp(&expr, state.interner()) }))
 }
 
-fn handle_equiv_analysis(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { binary_named_expr_response("equiv", args, state) }
-fn handle_semantic_diff_analysis(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> { binary_named_expr_response("semantic_diff", args, state) }
+fn handle_equiv_analysis(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("equiv", args, state)
+}
+fn handle_semantic_diff_analysis(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    binary_named_expr_response("semantic_diff", args, state)
+}
 
-fn handle_inspect_analysis(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_inspect_analysis(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let result = crate::inspect::inspect_expr(&expr, state.env(), state.interner());
     Ok(serde_json::json!({
@@ -2157,7 +4459,10 @@ fn handle_inspect_analysis(args: &[serde_json::Value], state: &mut dyn EvalState
     }))
 }
 
-fn handle_suggest_analysis(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_suggest_analysis(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let result = crate::suggest::suggest_for_expr(&expr, state.env(), state.interner());
     Ok(serde_json::json!({
@@ -2166,10 +4471,290 @@ fn handle_suggest_analysis(args: &[serde_json::Value], state: &mut dyn EvalState
     }))
 }
 
+fn int_expr_arg(args: &[serde_json::Value], idx: usize, name: &str) -> Result<ax_ir::Expr, String> {
+    Ok(ax_ir::Expr::Int(int_arg(args, idx, name)?.into()))
+}
+
+fn handle_angle_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "angle",
+            vec![int_expr_arg(args, 0, "i")?, int_expr_arg(args, 1, "j")?],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_square_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "square",
+            vec![int_expr_arg(args, 0, "i")?, int_expr_arg(args, 1, "j")?],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_mandelstam_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "mandelstam",
+            vec![int_expr_arg(args, 0, "i")?, int_expr_arg(args, 1, "j")?],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_parke_taylor_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "parke_taylor",
+            vec![
+                int_expr_arg(args, 0, "n")?,
+                int_expr_arg(args, 1, "i")?,
+                int_expr_arg(args, 2, "j")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_three_point_mhv_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "three_point_mhv",
+            vec![
+                int_expr_arg(args, 0, "i")?,
+                int_expr_arg(args, 1, "j")?,
+                int_expr_arg(args, 2, "k")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_three_point_anti_mhv_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "three_point_anti_mhv",
+            vec![
+                int_expr_arg(args, 0, "i")?,
+                int_expr_arg(args, 1, "j")?,
+                int_expr_arg(args, 2, "k")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_spinor_unary_named(
+    name: &str,
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(call_named(name, vec![expr], state), state)
+}
+
+fn handle_expand_chain_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_spinor_unary_named("expand_chain", args, state)
+}
+fn handle_contract_adjacent_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_spinor_unary_named("contract_adjacent", args, state)
+}
+fn handle_expand_mandelstam_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_spinor_unary_named("expand_mandelstam", args, state)
+}
+fn handle_collect_mandelstam_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_spinor_unary_named("collect_mandelstam", args, state)
+}
+
+fn handle_schouten_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(
+        call_named(
+            "schouten",
+            vec![
+                expr,
+                int_expr_arg(args, 1, "a")?,
+                int_expr_arg(args, 2, "b")?,
+                int_expr_arg(args, 3, "c")?,
+                int_expr_arg(args, 4, "d")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_momentum_conservation_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(
+        call_named(
+            "momentum_conservation",
+            vec![
+                expr,
+                int_expr_arg(args, 1, "n")?,
+                int_expr_arg(args, 2, "eliminate")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_spinor_simplify_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(
+        call_named(
+            "spinor_simplify",
+            vec![expr, int_expr_arg(args, 1, "n")?],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_bcfw_shift_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let z = ax_ir::Expr::Sym(symbol_arg(args, 3, "z", state)?);
+    expr_response(
+        call_named(
+            "bcfw_shift",
+            vec![
+                expr,
+                int_expr_arg(args, 1, "i")?,
+                int_expr_arg(args, 2, "j")?,
+                z,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_bcfw_decomposition_spinor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let helicities = require_arg(args, 3, "helicities")?
+        .as_array()
+        .ok_or_else(|| "argument 'helicities' must be an array of integers".to_string())?
+        .iter()
+        .map(|v| {
+            v.as_i64()
+                .map(|n| ax_ir::Expr::Int(n.into()))
+                .ok_or_else(|| "helicities must contain integers".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    expr_response(
+        call_named(
+            "bcfw_decomposition",
+            vec![
+                int_expr_arg(args, 0, "n")?,
+                int_expr_arg(args, 1, "i")?,
+                int_expr_arg(args, 2, "j")?,
+                ax_ir::Expr::List(helicities),
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_four_bracket_twistor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_response(
+        call_named(
+            "four_bracket",
+            vec![
+                int_expr_arg(args, 0, "i")?,
+                int_expr_arg(args, 1, "j")?,
+                int_expr_arg(args, 2, "k")?,
+                int_expr_arg(args, 3, "l")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
+fn handle_plucker_twistor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(
+        call_named(
+            "plucker",
+            vec![
+                expr,
+                int_expr_arg(args, 1, "a")?,
+                int_expr_arg(args, 2, "b")?,
+                int_expr_arg(args, 3, "c")?,
+                int_expr_arg(args, 4, "d")?,
+                int_expr_arg(args, 5, "e")?,
+                int_expr_arg(args, 6, "f")?,
+            ],
+            state,
+        ),
+        state,
+    )
+}
+
 pub fn callable_entries() -> Vec<CallableEntry> {
-    let ps = |params: Vec<ParamDef>| -> &'static [ParamDef] {
-        Box::leak(params.into_boxed_slice())
-    };
+    let ps =
+        |params: Vec<ParamDef>| -> &'static [ParamDef] { Box::leak(params.into_boxed_slice()) };
     vec![
         centry("diff", "Symbolic differentiation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Differentiation variable.")]), handle_diff),
         centry("integrate", "Indefinite symbolic integration.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Integration variable.")]), handle_integrate),
@@ -2238,6 +4823,23 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("laplacian", "Laplacian.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored scalar expression id."), pdef("variables", ParamType::SymbolList, true, "Variables list.")]), handle_laplacian),
         centry("jacobian", "Jacobian matrix.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored list expression id."), pdef("variables", ParamType::SymbolList, true, "Variables list.")]), handle_jacobian),
         centry("hessian", "Hessian matrix.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored scalar expression id."), pdef("variables", ParamType::SymbolList, true, "Variables list.")]), handle_hessian),
+        centry("angle", "Construct a spinor-helicity angle bracket.", ps(vec![pdef("i", ParamType::Integer, true, "Left particle label."), pdef("j", ParamType::Integer, true, "Right particle label.")]), handle_angle_spinor),
+        centry("square", "Construct a spinor-helicity square bracket.", ps(vec![pdef("i", ParamType::Integer, true, "Left particle label."), pdef("j", ParamType::Integer, true, "Right particle label.")]), handle_square_spinor),
+        centry("mandelstam", "Construct a Mandelstam invariant.", ps(vec![pdef("i", ParamType::Integer, true, "First particle label."), pdef("j", ParamType::Integer, true, "Second particle label.")]), handle_mandelstam_spinor),
+        centry("parke_taylor", "Construct a Parke-Taylor MHV amplitude.", ps(vec![pdef("n", ParamType::Integer, true, "Number of gluons."), pdef("i", ParamType::Integer, true, "First negative-helicity label."), pdef("j", ParamType::Integer, true, "Second negative-helicity label.")]), handle_parke_taylor_spinor),
+        centry("three_point_mhv", "Construct the three-point MHV amplitude.", ps(vec![pdef("i", ParamType::Integer, true, "First negative-helicity label."), pdef("j", ParamType::Integer, true, "Second negative-helicity label."), pdef("k", ParamType::Integer, true, "Positive-helicity label.")]), handle_three_point_mhv_spinor),
+        centry("three_point_anti_mhv", "Construct the three-point anti-MHV amplitude.", ps(vec![pdef("i", ParamType::Integer, true, "First positive-helicity label."), pdef("j", ParamType::Integer, true, "Second positive-helicity label."), pdef("k", ParamType::Integer, true, "Negative-helicity label.")]), handle_three_point_anti_mhv_spinor),
+        centry("expand_chain", "Expand spinor chains into bracket products.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored spinor expression id.")]), handle_expand_chain_spinor),
+        centry("contract_adjacent", "Contract adjacent brackets into one-momentum chains.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored spinor expression id.")]), handle_contract_adjacent_spinor),
+        centry("expand_mandelstam", "Expand Mandelstam invariants into spinor brackets.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored spinor expression id.")]), handle_expand_mandelstam_spinor),
+        centry("collect_mandelstam", "Collect bracket products into Mandelstam invariants.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored spinor expression id.")]), handle_collect_mandelstam_spinor),
+        centry("schouten", "Apply the spinor Schouten identity.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored spinor expression id."), pdef("a", ParamType::Integer, true, "Label a."), pdef("b", ParamType::Integer, true, "Label b."), pdef("c", ParamType::Integer, true, "Label c."), pdef("d", ParamType::Integer, true, "Label d.")]), handle_schouten_spinor),
+        centry("momentum_conservation", "Apply spinor momentum conservation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored spinor expression id."), pdef("n", ParamType::Integer, true, "Number of particles."), pdef("eliminate", ParamType::Integer, true, "Particle label to eliminate.")]), handle_momentum_conservation_spinor),
+        centry("spinor_simplify", "Simplify spinor-helicity expressions.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored spinor expression id."), pdef("n", ParamType::Integer, true, "Number of particles.")]), handle_spinor_simplify_spinor),
+        centry("bcfw_shift", "Apply a BCFW shift.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored spinor expression id."), pdef("i", ParamType::Integer, true, "Shifted angle label."), pdef("j", ParamType::Integer, true, "Shifted square label."), pdef("z", ParamType::Symbol, true, "Shift parameter symbol.")]), handle_bcfw_shift_spinor),
+        centry("bcfw_decomposition", "Enumerate BCFW factorization terms.", ps(vec![pdef("n", ParamType::Integer, true, "Number of particles."), pdef("i", ParamType::Integer, true, "Shifted angle label."), pdef("j", ParamType::Integer, true, "Shifted square label."), pdef("helicities", ParamType::Code, true, "Array of +1/-1 helicities.")]), handle_bcfw_decomposition_spinor),
+        centry("four_bracket", "Construct a momentum-twistor four-bracket.", ps(vec![pdef("i", ParamType::Integer, true, "First label."), pdef("j", ParamType::Integer, true, "Second label."), pdef("k", ParamType::Integer, true, "Third label."), pdef("l", ParamType::Integer, true, "Fourth label.")]), handle_four_bracket_twistor),
+        centry("plucker", "Apply the momentum-twistor Plucker identity.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored twistor expression id."), pdef("a", ParamType::Integer, true, "Label a."), pdef("b", ParamType::Integer, true, "Label b."), pdef("c", ParamType::Integer, true, "Label c."), pdef("d", ParamType::Integer, true, "Label d."), pdef("e", ParamType::Integer, true, "Label e."), pdef("f", ParamType::Integer, true, "Label f.")]), handle_plucker_twistor),
         centry("canonicalise", "Canonical tensor simplification.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_canonicalise),
         centry("canonicalize_indices", "Canonicalize index ordering with tensor properties.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_canonicalize_indices),
         centry("meld", "Combine indexed sum terms using symmetry identities.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_meld),

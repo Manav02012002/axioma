@@ -21,6 +21,7 @@ members = [
   "crates/ax-qm",
   "crates/ax-render",
   "crates/ax-solve",
+  "crates/ax-spinor",
   "crates/ax-tensor",
   "crates/ax-units",
   "crates/ax-variational",
