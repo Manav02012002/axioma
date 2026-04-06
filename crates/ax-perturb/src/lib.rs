@@ -196,17 +196,17 @@ fn inverse_metric_order(
 
             let term = Expr::mul(factors);
             if sequence.len() % 2 == 1 {
-                Expr::neg(term)
+                Expr::Neg(Box::new(term))
             } else {
                 term
             }
         })
         .collect::<Vec<_>>();
 
-    if terms.is_empty() {
-        None
-    } else {
-        Some(Expr::add(terms))
+    match terms.len() {
+        0 => None,
+        1 => terms.into_iter().next(),
+        _ => Some(Expr::add(terms)),
     }
 }
 

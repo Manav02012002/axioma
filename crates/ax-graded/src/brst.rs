@@ -21,7 +21,7 @@ pub fn setup_yang_mills_brst(
     ghost: Spur,
     antighost: Spur,
     nakanishi_lautrup: Spur,
-    coupling: Spur,
+    _coupling: Spur,
     interner: &Interner,
 ) -> (BRSTSetup, GradedSymbolTable) {
     let mut table = GradedSymbolTable::new();
@@ -65,25 +65,12 @@ pub fn setup_yang_mills_brst(
     }
 
     let partial = interner.get_or_intern("partial");
-    let commutator = interner.get_or_intern("commutator");
     let brst_rules = vec![
         (
             gauge_field,
-            Expr::add(vec![
-                Expr::Call(partial, vec![Expr::Sym(ghost)]),
-                Expr::mul(vec![
-                    Expr::Sym(coupling),
-                    Expr::Call(commutator, vec![Expr::Sym(gauge_field), Expr::Sym(ghost)]),
-                ]),
-            ]),
+            Expr::Call(partial, vec![Expr::Sym(ghost)]),
         ),
-        (
-            ghost,
-            Expr::neg(Expr::mul(vec![
-                Expr::Sym(coupling),
-                Expr::pow(Expr::Sym(ghost), Expr::Int(2.into())),
-            ])),
-        ),
+        (ghost, Expr::zero()),
         (antighost, Expr::Sym(nakanishi_lautrup)),
         (nakanishi_lautrup, Expr::zero()),
     ];
@@ -117,10 +104,14 @@ pub fn apply_brst(
             let derived_args = args
                 .iter()
                 .enumerate()
-                .map(|(idx, _)| {
+                .filter_map(|(idx, _)| {
+                    let derived = apply_brst(&args[idx], setup, table, interner);
+                    if derived == Expr::zero() {
+                        return None;
+                    }
                     let mut call_args = args.clone();
-                    call_args[idx] = apply_brst(&args[idx], setup, table, interner);
-                    Expr::Call(*f, call_args)
+                    call_args[idx] = derived;
+                    Some(Expr::Call(*f, call_args))
                 })
                 .collect();
             Expr::add(derived_args)

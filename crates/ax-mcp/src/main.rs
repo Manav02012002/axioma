@@ -59,20 +59,41 @@ impl EvalState for McpState {
     fn get_expr(&self, id: &str) -> Option<&Expr> { self.expressions.get(id) }
 
     fn parse_code(&mut self, code: &str) -> Result<Expr, String> {
-        let (_node, diags) = ax_syntax::parser::parse_file(code);
-        let errors = diags
-            .iter()
-            .filter(|d| matches!(d.severity, ax_syntax::diag::Severity::Error))
-            .map(|d| d.message.clone())
-            .collect::<Vec<_>>();
-        if !errors.is_empty() {
-            return Err(errors.join("; "));
+        let mut sources = vec![code.to_string()];
+        if !code.trim_end().ends_with(';') {
+            sources.push(format!("{code};"));
         }
-        let lowered = ax_core_ir::lower(code, &self.interner);
-        if !lowered.errors.is_empty() {
-            return Err(lowered.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>().join("; "));
+
+        let mut last_errors = Vec::new();
+        let mut parsed = None;
+        for source in sources {
+            let lowered = ax_core_ir::lower(&source, &self.interner);
+            if lowered.errors.is_empty() {
+                if let Some(expr) = lowered.exprs.into_iter().next() {
+                    parsed = Some(expr);
+                    break;
+                }
+            } else {
+                last_errors = lowered.errors.iter().map(|e| e.message.clone()).collect();
+            }
         }
-        let expr = lowered.exprs.into_iter().next().ok_or_else(|| "no expression parsed".to_string())?;
+
+        let expr = parsed.ok_or_else(|| {
+            if last_errors.is_empty() {
+                "no expression parsed".to_string()
+            } else {
+                last_errors.join("; ")
+            }
+        })?;
+        ax_eval::apply_index_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_coordinate_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_property_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_grassmann_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_operator_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_parallel_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_graded_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_superspace_setup(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_brst_setup(&expr, &mut self.env, &self.interner);
         Ok(ax_eval::eval(&expr, &self.env, &self.interner))
     }
 
@@ -164,7 +185,17 @@ fn handle_tools_call(state: &mut McpState, tool_name: &str, arguments: &Value) -
         let args: Vec<Value> = entry
             .parameters
             .iter()
-            .map(|p| arguments.get(p.name).cloned().unwrap_or(Value::Null))
+            .map(|p| {
+                arguments
+                    .get(p.name)
+                    .cloned()
+                    .or_else(|| {
+                        (p.name == "expr")
+                            .then(|| arguments.get("expr_id").cloned())
+                            .flatten()
+                    })
+                    .unwrap_or(Value::Null)
+            })
             .collect();
         match (entry.handler)(&args, state) {
             Ok(result) => result,

@@ -217,8 +217,14 @@ pub fn suggest_for_expr(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> S
         let mut has_epsilon = false;
 
         for sym in &indexed_syms {
-            match env.tensor_properties.get(sym) {
-                Some(props) => {
+            let props = env.property_store.get_all(*sym);
+            if props.is_empty() {
+                let name = interner.resolve(*sym).to_string();
+                missing.push(MissingProperty {
+                    symbol: name.clone(),
+                    suggestion: format!("declare symmetry properties for {name} to enable canonicalise"),
+                });
+            } else {
                     for prop in props {
                         match prop {
                             ax_ir::TensorProperty::RiemannSymmetry => {
@@ -243,14 +249,6 @@ pub fn suggest_for_expr(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> S
                             _ => {}
                         }
                     }
-                }
-                None => {
-                    let name = interner.resolve(*sym).to_string();
-                    missing.push(MissingProperty {
-                        symbol: name.clone(),
-                        suggestion: format!("declare symmetry properties for {name} to enable canonicalise"),
-                    });
-                }
             }
         }
 

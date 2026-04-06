@@ -2301,6 +2301,7 @@ fn evaluate_matrix(
         .map(|row| {
             row.into_iter()
                 .map(|cell| crate::eval(&cell, state.env(), state.interner()))
+                .map(|cell| crate::simplify::simplify(&cell, state.interner()))
                 .collect()
         })
         .collect()
@@ -3521,8 +3522,14 @@ fn handle_metric_pipeline_christoffel(
         .cloned()
         .ok_or_else(|| format!("unknown metric '{metric_id}'"))?;
     let gamma = ax_tensor::christoffel_from_metric(&metric, &coords, state.interner());
+    let nonzero_count = gamma
+        .iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| crate::eval(entry, state.env(), state.interner()) != ax_ir::Expr::zero())
+        .count();
     state.store_christoffel(metric_id.to_string(), gamma.clone());
-    expr_or_struct_response(
+    let mut response = expr_or_struct_response(
         ax_ir::Expr::List(
             gamma
                 .into_iter()
@@ -3530,7 +3537,12 @@ fn handle_metric_pipeline_christoffel(
                 .collect(),
         ),
         state,
-    )
+    )?;
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("christoffel_id".to_string(), serde_json::json!(metric_id));
+        obj.insert("nonzero_count".to_string(), serde_json::json!(nonzero_count));
+    }
+    Ok(response)
 }
 
 fn handle_riemann_from_christoffel(
@@ -3566,7 +3578,11 @@ fn handle_riemann_from_christoffel(
             })
             .collect(),
     );
-    expr_response(expr, state)
+    let mut response = expr_response(expr, state)?;
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("riemann_id".to_string(), serde_json::json!(id));
+    }
+    Ok(response)
 }
 
 fn handle_ricci_from_riemann(
@@ -3581,7 +3597,14 @@ fn handle_ricci_from_riemann(
     let ric =
         ax_tensor::ricci_from_riemann(&riem, riem.len(), state.interner(), &state.env().convention);
     state.store_ricci(id.to_string(), ric.clone());
-    matrix_response(evaluate_matrix(ric, state), state)
+    let mut response = matrix_response(evaluate_matrix(ric, state), state)?;
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("ricci_id".to_string(), serde_json::json!(id));
+        if let Some(matrix) = obj.get("matrix").cloned() {
+            obj.insert("components".to_string(), matrix);
+        }
+    }
+    Ok(response)
 }
 
 fn handle_ricci_scalar_gr(
@@ -4511,6 +4534,15 @@ fn handle_suggest_analysis(
     }))
 }
 
+fn handle_eval_code(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let code = string_arg(args, 0, "code")?;
+    let expr = state.parse_code(code)?;
+    expr_or_struct_response(expr, state)
+}
+
 fn int_expr_arg(args: &[serde_json::Value], idx: usize, name: &str) -> Result<ax_ir::Expr, String> {
     Ok(ax_ir::Expr::Int(int_arg(args, idx, name)?.into()))
 }
@@ -5220,6 +5252,7 @@ pub fn callable_entries() -> Vec<CallableEntry> {
     let ps =
         |params: Vec<ParamDef>| -> &'static [ParamDef] { Box::leak(params.into_boxed_slice()) };
     vec![
+        centry("eval", "Parse and evaluate an Axioma code snippet.", ps(vec![pdef("code", ParamType::Code, true, "Axioma code or expression.")]), handle_eval_code),
         centry("diff", "Symbolic differentiation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Differentiation variable.")]), handle_diff),
         centry("integrate", "Indefinite symbolic integration.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Integration variable.")]), handle_integrate),
         centry("double_integral", "Iterated double integration.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("x", ParamType::Symbol, true, "Inner integration variable."), pdef("y", ParamType::Symbol, true, "Outer integration variable.")]), handle_double_integral),

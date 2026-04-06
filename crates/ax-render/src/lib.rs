@@ -309,6 +309,12 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
         | ("arctanh", 1)
         | ("atanh", 1) => {
             let latex_name = match name {
+                "sin" => "\\sin",
+                "cos" => "\\cos",
+                "tan" => "\\tan",
+                "cot" => "\\cot",
+                "sec" => "\\sec",
+                "csc" => "\\csc",
                 "asin" | "arcsin" => "\\arcsin",
                 "acos" | "arccos" => "\\arccos",
                 "atan" | "arctan" => "\\arctan",

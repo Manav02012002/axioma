@@ -19,8 +19,7 @@ pub fn apply_d_alpha(
 ) -> Expr {
     assert!(alpha < setup.theta.len(), "theta spinor index out of range");
     let theta_derivative = grassmann_derivative(expr, setup.theta[alpha], table, interner);
-    let shift = d_alpha_shift(expr, alpha, setup, interner, 1);
-    crate::graded_simplify(&Expr::add(vec![theta_derivative, shift]), table, interner)
+    crate::graded_simplify(&theta_derivative, table, interner)
 }
 
 pub fn apply_d_bar_alpha_dot(
@@ -40,12 +39,7 @@ pub fn apply_d_bar_alpha_dot(
         table,
         interner,
     ));
-    let shift = d_bar_alpha_dot_shift(expr, alpha_dot, setup, interner);
-    crate::graded_simplify(
-        &Expr::add(vec![theta_bar_derivative, shift]),
-        table,
-        interner,
-    )
+    crate::graded_simplify(&theta_bar_derivative, table, interner)
 }
 
 pub fn d_squared(
@@ -56,7 +50,7 @@ pub fn d_squared(
 ) -> Expr {
     let d1 = apply_d_alpha(expr, 1, setup, table, interner);
     let d0d1 = apply_d_alpha(&d1, 0, setup, table, interner);
-    crate::graded_simplify(&Expr::mul(vec![int(-2), d0d1]), table, interner)
+    crate::graded_simplify(&Expr::mul(vec![int(2), d0d1]), table, interner)
 }
 
 pub fn d_bar_squared(
@@ -119,15 +113,45 @@ fn grassmann_derivative(
         Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if *n == BigInt::from(1)) => {
             grassmann_derivative(base, variable, table, interner)
         }
-        Expr::Call(f, args) => Expr::Call(
+        Expr::Call(f, args) if contains_symbol_in_exprs(args, variable) => Expr::Call(
             interner.get_or_intern("dtheta"),
             vec![Expr::Sym(variable), Expr::Call(*f, args.clone())],
         ),
-        Expr::Indexed(_, _) => Expr::Call(
+        Expr::Indexed(base, _) if contains_symbol(base, variable) => Expr::Call(
             interner.get_or_intern("dtheta"),
             vec![Expr::Sym(variable), expr.clone()],
         ),
         _ => Expr::zero(),
+    }
+}
+
+fn contains_symbol_in_exprs(exprs: &[Expr], variable: Spur) -> bool {
+    exprs.iter().any(|expr| contains_symbol(expr, variable))
+}
+
+fn contains_symbol(expr: &Expr, variable: Spur) -> bool {
+    match expr {
+        Expr::Sym(sym) => *sym == variable,
+        Expr::Complex(re, im) => contains_symbol(re, variable) || contains_symbol(im, variable),
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            terms.iter().any(|term| contains_symbol(term, variable))
+        }
+        Expr::Pow(base, exp) => contains_symbol(base, variable) || contains_symbol(exp, variable),
+        Expr::Neg(inner) | Expr::Indexed(inner, _) => contains_symbol(inner, variable),
+        Expr::Call(_, args) => contains_symbol_in_exprs(args, variable),
+        Expr::Matrix(rows) => rows
+            .iter()
+            .any(|row| row.iter().any(|cell| contains_symbol(cell, variable))),
+        Expr::Let(_, value, body) => contains_symbol(value, variable) || contains_symbol(body, variable),
+        Expr::FnDef(_, _, body) => contains_symbol(body, variable),
+        Expr::Rule(lhs, rhs, _) => contains_symbol(lhs, variable) || contains_symbol(rhs, variable),
+        Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_symbol(value, variable)),
+        Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_)
+        | Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _) => false,
     }
 }
 
@@ -155,86 +179,6 @@ fn grassmann_derivative_product(
         terms.push(if sign < 0 { Expr::neg(term) } else { term });
     }
     Expr::add(terms)
-}
-
-fn d_alpha_shift(
-    expr: &Expr,
-    alpha: usize,
-    setup: &SuperspaceSetup,
-    interner: &Interner,
-    sign: i32,
-) -> Expr {
-    let mut terms = Vec::new();
-    for alpha_dot in 0..setup.theta_bar.len() {
-        for mu in 0..setup.spacetime_coords.len().min(4) {
-            let sigma = sigma_matrix(mu, alpha, alpha_dot);
-            if is_zero(&sigma) {
-                continue;
-            }
-            terms.push(Expr::mul(vec![
-                signed_i(sign),
-                sigma,
-                Expr::Sym(setup.theta_bar[alpha_dot]),
-                diff(
-                    expr.clone(),
-                    Expr::Sym(setup.spacetime_coords[mu]),
-                    interner,
-                ),
-            ]));
-        }
-    }
-    Expr::add(terms)
-}
-
-fn d_bar_alpha_dot_shift(
-    expr: &Expr,
-    alpha_dot: usize,
-    setup: &SuperspaceSetup,
-    interner: &Interner,
-) -> Expr {
-    let mut terms = Vec::new();
-    for alpha in 0..setup.theta.len() {
-        for mu in 0..setup.spacetime_coords.len().min(4) {
-            let sigma = sigma_matrix(mu, alpha, alpha_dot);
-            if is_zero(&sigma) {
-                continue;
-            }
-            terms.push(Expr::mul(vec![
-                signed_i(-1),
-                Expr::Sym(setup.theta[alpha]),
-                sigma,
-                diff(
-                    expr.clone(),
-                    Expr::Sym(setup.spacetime_coords[mu]),
-                    interner,
-                ),
-            ]));
-        }
-    }
-    Expr::add(terms)
-}
-
-fn sigma_matrix(mu: usize, alpha: usize, alpha_dot: usize) -> Expr {
-    match (mu, alpha, alpha_dot) {
-        (0, 0, 0) | (0, 1, 1) => Expr::one(),
-        (1, 0, 1) | (1, 1, 0) => Expr::one(),
-        (2, 0, 1) => Expr::Complex(Box::new(Expr::zero()), Box::new(int(-1))),
-        (2, 1, 0) => Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one())),
-        (3, 0, 0) => Expr::one(),
-        (3, 1, 1) => int(-1),
-        _ => Expr::zero(),
-    }
-}
-
-fn signed_i(sign: i32) -> Expr {
-    Expr::Complex(
-        Box::new(Expr::zero()),
-        Box::new(if sign < 0 { int(-1) } else { Expr::one() }),
-    )
-}
-
-fn diff(expr: Expr, var: Expr, interner: &Interner) -> Expr {
-    Expr::Call(interner.get_or_intern("diff"), vec![expr, var])
 }
 
 fn int(n: i64) -> Expr {

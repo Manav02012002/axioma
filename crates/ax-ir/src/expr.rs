@@ -41,7 +41,7 @@ impl Default for IndexPosition {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Assumption {
     Real,
     Positive,

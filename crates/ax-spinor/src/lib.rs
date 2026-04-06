@@ -386,12 +386,17 @@ pub fn apply_momentum_conservation(
             }
             combine_product_term_rewrites(out)
         }
-        SpinorExpr::Sum(terms) => SpinorExpr::Sum(
-            terms
-                .iter()
-                .map(|term| apply_momentum_conservation(term, n_particles, eliminate))
-                .collect(),
-        ),
+        SpinorExpr::Sum(terms) => {
+            if massless_mandelstam_sum_is_zero(terms, n_particles) {
+                return SpinorExpr::Numeric(BigRational::zero());
+            }
+            SpinorExpr::Sum(
+                terms
+                    .iter()
+                    .map(|term| apply_momentum_conservation(term, n_particles, eliminate))
+                    .collect(),
+            )
+        }
         SpinorExpr::Ratio(num, den) => SpinorExpr::Ratio(
             Box::new(apply_momentum_conservation(num, n_particles, eliminate)),
             Box::new(apply_momentum_conservation(den, n_particles, eliminate)),
@@ -760,6 +765,9 @@ pub fn bcfw_decomposition(n: u16, shift: &BCFWShift, helicities: &[i8]) -> Vec<B
         if mask > complement {
             continue;
         }
+        if !is_cyclic_contiguous(mask, n) || !is_cyclic_contiguous(complement, n) {
+            continue;
+        }
         let left_size = mask.count_ones();
         let right_size = complement.count_ones();
         if left_size < 2 || right_size < 2 {
@@ -801,12 +809,30 @@ pub fn bcfw_decomposition(n: u16, shift: &BCFWShift, helicities: &[i8]) -> Vec<B
 
 fn validate_label_in_range(n: u16, label: Label, name: &str) {
     assert!(
-        label.0 < n,
-        "{} label {} is outside the valid range 0..{}",
+        label.0 <= n,
+        "{} label {} is outside the supported zero- or one-based range 0..{} / 1..{}",
         name,
         label.0,
-        n.saturating_sub(1)
+        n.saturating_sub(1),
+        n
     );
+}
+
+fn is_cyclic_contiguous(mask: u32, n: u16) -> bool {
+    let labels = labels_from_mask(mask, n);
+    if labels.len() <= 1 || labels.len() == n as usize {
+        return true;
+    }
+    let positions: Vec<u16> = labels.iter().map(|label| label.0).collect();
+    for start in &positions {
+        let candidate = (0..positions.len())
+            .map(|offset| (*start + offset as u16) % n)
+            .collect::<Vec<_>>();
+        if candidate.iter().all(|idx| positions.contains(idx)) {
+            return true;
+        }
+    }
+    false
 }
 
 fn cyclic_bracket_product(n: u16, kind: BracketKind) -> SpinorExpr {
@@ -1573,19 +1599,17 @@ fn combine_like_sum_terms(terms: Vec<SpinorExpr>) -> SpinorExpr {
     let mut others: Vec<SpinorExpr> = Vec::new();
 
     for term in terms {
-        match term {
-            SpinorExpr::Product(items) if items.len() == 1 => {
-                let item = items[0].clone();
-                if let Some(existing) = products
-                    .iter_mut()
-                    .find(|existing| existing.factors == item.factors)
-                {
-                    existing.coefficient += item.coefficient;
-                } else {
-                    products.push(item);
-                }
+        if let Some(item) = expr_as_single_term(term.clone()) {
+            if let Some(existing) = products
+                .iter_mut()
+                .find(|existing| existing.factors == item.factors)
+            {
+                existing.coefficient += item.coefficient;
+            } else {
+                products.push(item);
             }
-            other => others.push(other),
+        } else {
+            others.push(term);
         }
     }
 
@@ -1596,10 +1620,37 @@ fn combine_like_sum_terms(terms: Vec<SpinorExpr>) -> SpinorExpr {
         .collect();
     result.extend(others);
 
+    if schouten_sum_is_zero(&result) {
+        return SpinorExpr::Numeric(BigRational::zero());
+    }
+
     match result.len() {
         0 => SpinorExpr::Numeric(BigRational::zero()),
         1 => result.remove(0),
         _ => SpinorExpr::Sum(result),
+    }
+}
+
+fn expr_as_single_term(expr: SpinorExpr) -> Option<SpinorTerm> {
+    match expr {
+        SpinorExpr::Product(items) if items.len() == 1 => Some(items[0].clone()),
+        SpinorExpr::AngleBracket(i, j) => Some(SpinorTerm::new(
+            BigRational::one(),
+            vec![SpinorFactor::Angle(i, j)],
+        )),
+        SpinorExpr::SquareBracket(i, j) => Some(SpinorTerm::new(
+            BigRational::one(),
+            vec![SpinorFactor::Square(i, j)],
+        )),
+        SpinorExpr::Mandelstam(i, j) => Some(SpinorTerm::new(
+            BigRational::one(),
+            vec![SpinorFactor::Mandelstam(vec![i, j])],
+        )),
+        SpinorExpr::Neg(inner) => expr_as_single_term(*inner).map(|mut term| {
+            term.coefficient = -term.coefficient;
+            term
+        }),
+        _ => None,
     }
 }
 
@@ -1653,6 +1704,148 @@ fn remove_common_factors(factors: &mut Vec<SpinorFactor>, common: &[SpinorFactor
     }
 }
 
+fn schouten_sum_is_zero(terms: &[SpinorExpr]) -> bool {
+    if terms.len() != 3 {
+        return false;
+    }
+    let parsed: Vec<SpinorTerm> = terms
+        .iter()
+        .filter_map(|term| expr_as_single_term(term.clone()))
+        .collect();
+    if parsed.len() != 3 {
+        return false;
+    }
+
+    for first_idx in 0..parsed.len() {
+        for kind in [BracketKind::Angle, BracketKind::Square] {
+            let Some((a, b, c, d)) = two_bracket_labels(&parsed[first_idx], kind) else {
+                continue;
+            };
+            let q = parsed[first_idx].coefficient.clone();
+            if q.is_zero() {
+                continue;
+            }
+            let mut has_second = false;
+            let mut has_third = false;
+            for (idx, term) in parsed.iter().enumerate() {
+                if idx == first_idx {
+                    continue;
+                }
+                if term.coefficient == -q.clone()
+                    && term_matches_two_brackets(term, a, c, b, d, kind)
+                {
+                    has_second = true;
+                }
+                if term.coefficient == q && term_matches_two_brackets(term, a, d, b, c, kind) {
+                    has_third = true;
+                }
+            }
+            if has_second && has_third {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn two_bracket_labels(
+    term: &SpinorTerm,
+    kind: BracketKind,
+) -> Option<(Label, Label, Label, Label)> {
+    if term.factors.len() != 2 {
+        return None;
+    }
+    let (a, b) = bracket_factor_labels(&term.factors[0], kind)?;
+    let (c, d) = bracket_factor_labels(&term.factors[1], kind)?;
+    Some((a, b, c, d))
+}
+
+fn bracket_factor_labels(factor: &SpinorFactor, kind: BracketKind) -> Option<(Label, Label)> {
+    match (kind, factor) {
+        (BracketKind::Angle, SpinorFactor::Angle(a, b))
+        | (BracketKind::Square, SpinorFactor::Square(a, b)) => Some((*a, *b)),
+        _ => None,
+    }
+}
+
+fn term_matches_two_brackets(
+    term: &SpinorTerm,
+    a: Label,
+    b: Label,
+    c: Label,
+    d: Label,
+    kind: BracketKind,
+) -> bool {
+    if term.factors.len() != 2 {
+        return false;
+    }
+    (matches_bracket_exact(&term.factors[0], a, b, kind)
+        && matches_bracket_exact(&term.factors[1], c, d, kind))
+        || (matches_bracket_exact(&term.factors[0], c, d, kind)
+            && matches_bracket_exact(&term.factors[1], a, b, kind))
+}
+
+fn matches_bracket_exact(
+    factor: &SpinorFactor,
+    a: Label,
+    b: Label,
+    kind: BracketKind,
+) -> bool {
+    match (kind, factor) {
+        (BracketKind::Angle, SpinorFactor::Angle(x, y))
+        | (BracketKind::Square, SpinorFactor::Square(x, y)) => *x == a && *y == b,
+        _ => false,
+    }
+}
+
+fn massless_mandelstam_sum_is_zero(terms: &[SpinorExpr], n_particles: u16) -> bool {
+    if terms.len() != n_particles.saturating_sub(1) as usize {
+        return false;
+    }
+    let Some((fixed, first_other)) = terms.first().and_then(expanded_mandelstam_pair) else {
+        return false;
+    };
+    let mut others = vec![first_other];
+    for term in &terms[1..] {
+        let Some((candidate_fixed, other)) = expanded_mandelstam_pair(term) else {
+            return false;
+        };
+        if candidate_fixed != fixed {
+            return false;
+        }
+        others.push(other);
+    }
+    others.sort();
+    let mut expected: Vec<Label> = (1..=n_particles)
+        .map(Label::new)
+        .filter(|label| *label != fixed)
+        .collect();
+    expected.sort();
+    others == expected
+}
+
+fn expanded_mandelstam_pair(expr: &SpinorExpr) -> Option<(Label, Label)> {
+    let SpinorExpr::Product(terms) = expr else {
+        return None;
+    };
+    if terms.len() != 1 {
+        return None;
+    }
+    let term = &terms[0];
+    if term.coefficient != BigRational::one() || term.factors.len() != 2 {
+        return None;
+    }
+    match (&term.factors[0], &term.factors[1]) {
+        (SpinorFactor::Angle(a, b), SpinorFactor::Square(c, d)) if b == c && a == d => {
+            Some((*a, *b))
+        }
+        (SpinorFactor::Square(c, d), SpinorFactor::Angle(a, b)) if b == c && a == d => {
+            Some((*a, *b))
+        }
+        _ => None,
+    }
+}
+
 fn combine_product_term_rewrites(items: Vec<SpinorExpr>) -> SpinorExpr {
     let mut iter = items.into_iter();
     let Some(first) = iter.next() else {
@@ -1687,8 +1880,21 @@ fn multiply_exprs(left: SpinorExpr, right: SpinorExpr) -> SpinorExpr {
             }
         }
         (SpinorExpr::Product(mut lhs), SpinorExpr::Product(mut rhs)) => {
-            lhs.append(&mut rhs);
-            SpinorExpr::Product(lhs)
+            match (lhs.len(), rhs.len()) {
+                (0, _) => SpinorExpr::Product(rhs),
+                (_, 0) => SpinorExpr::Product(lhs),
+                (1, 1) => {
+                    let mut left = lhs.remove(0);
+                    let right = rhs.remove(0);
+                    left.coefficient *= right.coefficient;
+                    left.factors.extend(right.factors);
+                    SpinorExpr::Product(vec![left])
+                }
+                _ => {
+                    lhs.append(&mut rhs);
+                    SpinorExpr::Product(lhs)
+                }
+            }
         }
         (SpinorExpr::Product(mut terms), rhs) => {
             if let Some(factor) = expr_to_factor(rhs) {

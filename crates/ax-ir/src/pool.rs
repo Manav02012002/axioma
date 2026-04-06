@@ -25,7 +25,10 @@ pub enum PooledExpr {
     Piecewise(Vec<(ExprId, ExprId)>),
     Let(lasso::Spur, ExprId, ExprId),
     FnDef(lasso::Spur, Vec<lasso::Spur>, ExprId),
-    Rule(ExprId, ExprId),
+    Rule(ExprId, ExprId, TrustLevel),
+    Import(Vec<lasso::Spur>),
+    Assume(lasso::Spur, Vec<Assumption>),
+    SetConvention(String, String),
 }
 
 pub struct ExprPool {
@@ -123,37 +126,17 @@ impl ExprPool {
                 let body = self.from_expr(body);
                 self.intern(PooledExpr::FnDef(*name, params.clone(), body))
             }
-            Expr::Rule(lhs, rhs, _) => {
+            Expr::Rule(lhs, rhs, trust) => {
                 let lhs = self.from_expr(lhs);
                 let rhs = self.from_expr(rhs);
-                self.intern(PooledExpr::Rule(lhs, rhs))
+                self.intern(PooledExpr::Rule(lhs, rhs, *trust))
             }
-            Expr::Import(path) => {
-                let import_sym = self.synthetic("__import");
-                let args = path
-                    .iter()
-                    .map(|sym| self.intern(PooledExpr::Sym(*sym)))
-                    .collect();
-                self.intern(PooledExpr::Call(import_sym, args))
-            }
+            Expr::Import(path) => self.intern(PooledExpr::Import(path.clone())),
             Expr::Assume(sym, assumptions) => {
-                let assume_sym = self.synthetic("__assume");
-                let mut args = vec![self.intern(PooledExpr::Sym(*sym))];
-                for assumption in assumptions {
-                    let assumption_sym = self.synthetic(assumption_name(assumption));
-                    args.push(self.intern(PooledExpr::Sym(assumption_sym)));
-                }
-                self.intern(PooledExpr::Call(assume_sym, args))
+                self.intern(PooledExpr::Assume(*sym, assumptions.clone()))
             }
             Expr::SetConvention(field, value) => {
-                let set_convention_sym = self.synthetic("__set_convention");
-                let field = self.synthetic(field);
-                let value = self.synthetic(value);
-                let args = vec![
-                    self.intern(PooledExpr::Sym(field)),
-                    self.intern(PooledExpr::Sym(value)),
-                ];
-                self.intern(PooledExpr::Call(set_convention_sym, args))
+                self.intern(PooledExpr::SetConvention(field.clone(), value.clone()))
             }
             Expr::Piecewise(cases) => {
                 let cases = cases
@@ -198,12 +181,16 @@ impl ExprPool {
                 Expr::Complex(Box::new(self.to_expr(*re)), Box::new(self.to_expr(*im)))
             }
             PooledExpr::Sym(sym) => Expr::Sym(*sym),
-            PooledExpr::Add(terms) => Expr::add(terms.iter().map(|id| self.to_expr(*id)).collect()),
-            PooledExpr::Mul(factors) => {
-                Expr::mul(factors.iter().map(|id| self.to_expr(*id)).collect())
+            PooledExpr::Add(terms) => {
+                Expr::Add(terms.iter().map(|id| self.to_expr(*id)).collect())
             }
-            PooledExpr::Pow(base, exp) => Expr::pow(self.to_expr(*base), self.to_expr(*exp)),
-            PooledExpr::Neg(inner) => Expr::neg(self.to_expr(*inner)),
+            PooledExpr::Mul(factors) => {
+                Expr::Mul(factors.iter().map(|id| self.to_expr(*id)).collect())
+            }
+            PooledExpr::Pow(base, exp) => {
+                Expr::Pow(Box::new(self.to_expr(*base)), Box::new(self.to_expr(*exp)))
+            }
+            PooledExpr::Neg(inner) => Expr::Neg(Box::new(self.to_expr(*inner))),
             PooledExpr::Call(f, args) => self.call_to_expr(*f, args),
             PooledExpr::Indexed(base, indices) => {
                 Expr::Indexed(Box::new(self.to_expr(*base)), indices.clone())
@@ -230,11 +217,16 @@ impl ExprPool {
             PooledExpr::FnDef(name, params, body) => {
                 Expr::FnDef(*name, params.clone(), Box::new(self.to_expr(*body)))
             }
-            PooledExpr::Rule(lhs, rhs) => Expr::Rule(
+            PooledExpr::Rule(lhs, rhs, trust) => Expr::Rule(
                 Box::new(self.to_expr(*lhs)),
                 Box::new(self.to_expr(*rhs)),
-                TrustLevel::Unverified,
+                *trust,
             ),
+            PooledExpr::Import(path) => Expr::Import(path.clone()),
+            PooledExpr::Assume(sym, assumptions) => Expr::Assume(*sym, assumptions.clone()),
+            PooledExpr::SetConvention(field, value) => {
+                Expr::SetConvention(field.clone(), value.clone())
+            }
         }
     }
 
@@ -274,7 +266,7 @@ impl ExprPool {
 
     fn children(&self, id: ExprId) -> Vec<ExprId> {
         match self.get(id) {
-            PooledExpr::Complex(a, b) | PooledExpr::Pow(a, b) | PooledExpr::Rule(a, b) => {
+            PooledExpr::Complex(a, b) | PooledExpr::Pow(a, b) | PooledExpr::Rule(a, b, _) => {
                 vec![*a, *b]
             }
             PooledExpr::Neg(inner) | PooledExpr::Indexed(inner, _) | PooledExpr::FnDef(_, _, inner) => {
@@ -292,7 +284,10 @@ impl ExprPool {
             PooledExpr::Int(_)
             | PooledExpr::Rational(_)
             | PooledExpr::Float(_)
-            | PooledExpr::Sym(_) => Vec::new(),
+            | PooledExpr::Sym(_)
+            | PooledExpr::Import(_)
+            | PooledExpr::Assume(_, _)
+            | PooledExpr::SetConvention(_, _) => Vec::new(),
         }
     }
 
@@ -370,48 +365,7 @@ impl ExprPool {
     }
 
     fn call_to_expr(&self, f: lasso::Spur, args: &[ExprId]) -> Expr {
-        match self.synthetic_name(f) {
-            "__import" => Expr::Import(
-                args.iter()
-                    .filter_map(|arg| match self.get(*arg) {
-                        PooledExpr::Sym(sym) => Some(*sym),
-                        _ => None,
-                    })
-                    .collect(),
-            ),
-            "__assume" => {
-                let Some((first, rest)) = args.split_first() else {
-                    return Expr::Call(f, Vec::new());
-                };
-                let symbol = match self.get(*first) {
-                    PooledExpr::Sym(sym) => *sym,
-                    _ => return Expr::Call(f, args.iter().map(|id| self.to_expr(*id)).collect()),
-                };
-                let assumptions = rest
-                    .iter()
-                    .filter_map(|arg| match self.get(*arg) {
-                        PooledExpr::Sym(sym) => assumption_from_name(self.synthetic_name(*sym)),
-                        _ => None,
-                    })
-                    .collect();
-                Expr::Assume(symbol, assumptions)
-            }
-            "__set_convention" => match args {
-                [field, value] => {
-                    let field = match self.get(*field) {
-                        PooledExpr::Sym(sym) => self.synthetic_name(*sym).to_string(),
-                        _ => String::new(),
-                    };
-                    let value = match self.get(*value) {
-                        PooledExpr::Sym(sym) => self.synthetic_name(*sym).to_string(),
-                        _ => String::new(),
-                    };
-                    Expr::SetConvention(field, value)
-                }
-                _ => Expr::Call(f, args.iter().map(|id| self.to_expr(*id)).collect()),
-            },
-            _ => Expr::Call(f, args.iter().map(|id| self.to_expr(*id)).collect()),
-        }
+        Expr::Call(f, args.iter().map(|id| self.to_expr(*id)).collect())
     }
 
     fn synthetic_name(&self, sym: lasso::Spur) -> &str {
@@ -613,29 +567,4 @@ fn small_positive_int(expr: &PooledExpr) -> Option<usize> {
     };
     let value = num_traits::ToPrimitive::to_usize(n)?;
     (value < 100).then_some(value)
-}
-
-fn assumption_name(assumption: &Assumption) -> &'static str {
-    match assumption {
-        Assumption::Real => "real",
-        Assumption::Positive => "positive",
-        Assumption::Negative => "negative",
-        Assumption::NonZero => "nonzero",
-        Assumption::Integer => "integer",
-        Assumption::Even => "even",
-        Assumption::Odd => "odd",
-    }
-}
-
-fn assumption_from_name(name: &str) -> Option<Assumption> {
-    match name {
-        "real" => Some(Assumption::Real),
-        "positive" => Some(Assumption::Positive),
-        "negative" => Some(Assumption::Negative),
-        "nonzero" => Some(Assumption::NonZero),
-        "integer" => Some(Assumption::Integer),
-        "even" => Some(Assumption::Even),
-        "odd" => Some(Assumption::Odd),
-        _ => None,
-    }
 }
