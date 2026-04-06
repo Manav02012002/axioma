@@ -12,6 +12,7 @@ members = [
   "crates/ax-eval",
   "crates/ax-forms",
   "crates/ax-linalg",
+  "crates/ax-mcp",
   "crates/ax-notebook",
   "crates/ax-ode",
   "crates/ax-perm",

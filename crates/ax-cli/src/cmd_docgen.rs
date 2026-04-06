@@ -3,65 +3,12 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-fn clean(cell: &str) -> String {
-    cell.replace("...", "etc")
-        .replace("[...]", "[etc]")
-        .replace("Placeholder notes", "Notes")
-        .replace("placeholder notes", "notes")
-        .replace("placeholders", "names")
-        .replace("TODO", "")
-        .replace("stub", "")
-}
-
 fn esc(cell: &str) -> String {
-    clean(cell).replace('|', "\\|").replace('\n', "<br>")
-}
-
-fn compact_phrase(cell: &str) -> String {
-    clean(cell)
-        .replace("The ", "")
-        .replace("the ", "")
-        .replace(" with ", " w/ ")
-        .replace(" using ", " via ")
-        .replace(" through ", " via ")
-        .replace(" and ", " & ")
-        .replace("coordinates", "coords")
-        .replace("coordinate", "coord")
-        .replace("dimensions", "dims")
-        .replace("dimension", "dim")
-        .replace("expressions", "exprs")
-        .replace("expression", "expr")
-        .replace("environment", "env")
-        .replace("properties", "props")
-        .replace("property", "prop")
-        .replace("symbols", "syms")
-        .replace("symbol", "sym")
-        .replace("matrices", "mats")
-        .replace("matrix", "mat")
-        .replace("indices", "idx")
-        .replace("index", "idx")
-        .replace("declared", "decl.")
-        .replace("explicit", "explicit")
-        .replace("symbolic ", "")
-        .replace("standard ", "")
-        .replace("exactly ", "")
-        .replace("relevant ", "")
-        .replace("compatible ", "")
-        .replace("without ", "w/o ")
-        .replace("should be ", "")
-        .replace("implementation", "impl")
-        .replace("currently ", "")
-        .replace("deterministic", "stable")
-        .replace("required", "needed")
-        .replace("provided", "supplied")
-        .replace("auxiliary", "aux")
-        .replace("generalized", "gen.")
-        .replace("ordinary", "ordinary")
-        .replace("approximately", "approx.")
+    cell.replace('|', "\\|").replace('\n', "<br>")
 }
 
 fn compact_signature(sig: &str) -> String {
-    let sig = clean(sig);
+    let sig = sig.to_string();
     let mut out = String::new();
     let mut chars = sig.chars().peekable();
     let mut paren_depth = 0usize;
@@ -207,7 +154,7 @@ pub fn run(out: &Path) -> Result<()> {
     let modules = ax_eval::std_modules();
 
     let schwarzschild = read_text(Path::new("examples/schwarzschild.ax"))?;
-    let harmonic_oscillator = read_text(Path::new("std/qm/harmonic_oscillator.ax"))?;
+    let qm_spin = read_text(Path::new("std/qm/spin.ax"))?;
     let calculus_demo = read_text(Path::new("examples/calculus_demo.ax"))?;
 
     let mut doc = String::new();
@@ -245,7 +192,7 @@ pub fn run(out: &Path) -> Result<()> {
                 "|{}|{}|{}|",
                 esc(entry.name),
                 esc(&compact_signature(entry.signature)),
-                esc(&compact_phrase(entry.description))
+                esc(entry.description)
             );
         }
         doc.push('\n');
@@ -259,8 +206,8 @@ pub fn run(out: &Path) -> Result<()> {
             "|{}|{}|{}|{}|",
             esc(entry.name),
             esc(entry.syntax),
-            esc(&compact_phrase(entry.description)),
-            esc(&compact_phrase(entry.enables))
+            esc(entry.description),
+            esc(entry.enables)
         );
     }
     doc.push('\n');
@@ -274,7 +221,7 @@ pub fn run(out: &Path) -> Result<()> {
             esc(entry.field),
             esc(entry.options),
             esc(entry.default),
-            esc(&compact_phrase(entry.description))
+            esc(entry.description)
         );
     }
     doc.push('\n');
@@ -286,7 +233,7 @@ pub fn run(out: &Path) -> Result<()> {
             doc,
             "|{}|{}|",
             esc(entry.name),
-            esc(&compact_phrase(entry.description))
+            esc(entry.description)
         );
     }
     doc.push('\n');
@@ -309,8 +256,8 @@ pub fn run(out: &Path) -> Result<()> {
                 "|{}|{}|{}|{}|",
                 esc(entry.name),
                 esc(&compact_algorithm_signature(entry.signature)),
-                esc(&compact_phrase(entry.preconditions)),
-                esc(&compact_phrase(entry.description))
+                esc(entry.preconditions),
+                esc(entry.description)
             );
         }
         doc.push('\n');
@@ -323,8 +270,8 @@ pub fn run(out: &Path) -> Result<()> {
             doc,
             "|{}|{}|{}|",
             esc(module.path),
-            esc(&compact_phrase(module.description)),
-            esc(&compact_phrase(module.provides))
+            esc(module.description),
+            esc(module.provides)
         );
     }
     doc.push('\n');
@@ -339,10 +286,10 @@ pub fn run(out: &Path) -> Result<()> {
     }
     doc.push_str("```\n\n");
 
-    doc.push_str("### QM harmonic oscillator\n");
+    doc.push_str("### QM spin algebra\n");
     doc.push_str("```ax\n");
-    doc.push_str(&harmonic_oscillator);
-    if !harmonic_oscillator.ends_with('\n') {
+    doc.push_str(&qm_spin);
+    if !qm_spin.ends_with('\n') {
         doc.push('\n');
     }
     doc.push_str("```\n\n");
