@@ -4,6 +4,7 @@ mod cmd_ai_apply;
 mod cmd_ai_pack;
 
 mod cmd_codegen;
+pub mod cmd_docgen;
 mod cmd_fix;
 mod cmd_install;
 mod cmd_parse;
@@ -90,6 +91,10 @@ enum Command {
         target: String,
         #[arg(long)]
         fn_name: Option<String>,
+    },
+    Docgen {
+        #[arg(long, default_value = "share/axioma-llm-context.md")]
+        output: std::path::PathBuf,
     },
     Install {
         /// Package name or path
@@ -307,6 +312,10 @@ fn real_main() -> Result<()> {
         } => {
             let code = cmd_codegen::run(&file, &target, fn_name.as_deref())?;
             std::process::exit(code);
+        }
+        Command::Docgen { output } => {
+            cmd_docgen::run(&output)?;
+            Ok(())
         }
         Command::Install { package, path, git } => {
             cmd_install::run(&package, path.as_deref(), git.as_deref())?;

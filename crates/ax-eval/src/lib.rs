@@ -2,6 +2,7 @@
 
 pub mod integrate;
 pub mod limits;
+pub mod registry;
 pub mod series;
 pub mod simplify;
 
@@ -12,6 +13,12 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+
+pub use registry::{
+    algorithm_entries, assumption_entries, builtin_entries, convention_entries,
+    property_entries, std_modules, syntax_rules, AlgorithmEntry, AssumptionEntry,
+    BuiltinEntry, ConventionEntry, PropertyEntry, StdModule, SyntaxRule,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Env {
