@@ -502,6 +502,274 @@ pub fn rewrite_fixed_point_traced(
     current
 }
 
+pub fn apply_rule_with_compare(
+    rule: &RewriteRule,
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    index_to_family: &std::collections::HashMap<lasso::Spur, lasso::Spur>,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let pattern = pattern_to_expr_with_wildcard(
+        &rule.pattern,
+        interner.get_or_intern("_"),
+    );
+    let match_map =
+        ax_compare::pattern_match(&pattern, expr, properties, index_to_family, interner)?;
+    if let Some(condition) = rule.condition {
+        let bindings = match_map_to_bindings(&match_map);
+        if !condition(&bindings, interner) {
+            return None;
+        }
+    }
+    Some(ax_compare::apply_match_map(
+        &rule.replacement,
+        &match_map,
+        interner,
+    ))
+}
+
+pub fn rewrite_once_with_compare(
+    rules: &[RewriteRule],
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    index_to_family: &std::collections::HashMap<lasso::Spur, lasso::Spur>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let recursed = match expr {
+        Expr::Int(n) => Expr::Int(n.clone()),
+        Expr::Rational(r) => Expr::Rational(r.clone()),
+        Expr::Float(f) => Expr::Float(*f),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(rewrite_once_with_compare(
+                rules,
+                re,
+                properties,
+                index_to_family,
+                interner,
+            )),
+            Box::new(rewrite_once_with_compare(
+                rules,
+                im,
+                properties,
+                index_to_family,
+                interner,
+            )),
+        ),
+        Expr::Sym(s) => Expr::Sym(*s),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| {
+                    rewrite_once_with_compare(rules, term, properties, index_to_family, interner)
+                })
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| {
+                    rewrite_once_with_compare(rules, factor, properties, index_to_family, interner)
+                })
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            rewrite_once_with_compare(rules, base, properties, index_to_family, interner),
+            rewrite_once_with_compare(rules, exp, properties, index_to_family, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(rewrite_once_with_compare(
+            rules,
+            inner,
+            properties,
+            index_to_family,
+            interner,
+        )),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| {
+                    rewrite_once_with_compare(rules, arg, properties, index_to_family, interner)
+                })
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(rewrite_once_with_compare(
+                rules,
+                body,
+                properties,
+                index_to_family,
+                interner,
+            )),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(rewrite_once_with_compare(
+                rules,
+                lhs,
+                properties,
+                index_to_family,
+                interner,
+            )),
+            Box::new(rewrite_once_with_compare(
+                rules,
+                rhs,
+                properties,
+                index_to_family,
+                interner,
+            )),
+            *trust,
+        ),
+        Expr::Import(path) => Expr::Import(path.clone()),
+        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
+        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (
+                        rewrite_once_with_compare(
+                            rules,
+                            value,
+                            properties,
+                            index_to_family,
+                            interner,
+                        ),
+                        condition.clone(),
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(rewrite_once_with_compare(
+                rules,
+                base,
+                properties,
+                index_to_family,
+                interner,
+            )),
+            indices.clone(),
+        ),
+        Expr::Let(name, val, body) => Expr::Let(
+            *name,
+            Box::new(rewrite_once_with_compare(
+                rules,
+                val,
+                properties,
+                index_to_family,
+                interner,
+            )),
+            Box::new(rewrite_once_with_compare(
+                rules,
+                body,
+                properties,
+                index_to_family,
+                interner,
+            )),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| {
+                    rewrite_once_with_compare(rules, item, properties, index_to_family, interner)
+                })
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| {
+                            rewrite_once_with_compare(
+                                rules,
+                                cell,
+                                properties,
+                                index_to_family,
+                                interner,
+                            )
+                        })
+                        .collect()
+                })
+                .collect(),
+        ),
+    };
+
+    for rule in rules {
+        if let Some(rewritten) =
+            apply_rule_with_compare(rule, &recursed, properties, index_to_family, interner)
+        {
+            return rewritten;
+        }
+    }
+
+    recursed
+}
+
+pub fn rewrite_fixed_point_with_compare(
+    rules: &[RewriteRule],
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    index_to_family: &std::collections::HashMap<lasso::Spur, lasso::Spur>,
+    interner: &ax_ir::Interner,
+    max_iter: usize,
+) -> Expr {
+    let mut current = expr.clone();
+    for _ in 0..max_iter {
+        let next =
+            rewrite_once_with_compare(rules, &current, properties, index_to_family, interner);
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+pub fn pattern_to_expr(pattern: &Pattern) -> Expr {
+    pattern_to_expr_with_wildcard(pattern, lasso::Spur::default())
+}
+
+fn pattern_to_expr_with_wildcard(pattern: &Pattern, wildcard: lasso::Spur) -> Expr {
+    match pattern {
+        Pattern::Slot(sym) => Expr::Sym(*sym),
+        Pattern::Wildcard => Expr::Sym(wildcard),
+        Pattern::Exact(expr) => expr.clone(),
+        Pattern::Add(items) => Expr::add(
+            items
+                .iter()
+                .map(|item| pattern_to_expr_with_wildcard(item, wildcard))
+                .collect(),
+        ),
+        Pattern::Mul(items) => Expr::mul(
+            items
+                .iter()
+                .map(|item| pattern_to_expr_with_wildcard(item, wildcard))
+                .collect(),
+        ),
+        Pattern::Pow(base, exp) => Expr::pow(
+            pattern_to_expr_with_wildcard(base, wildcard),
+            pattern_to_expr_with_wildcard(exp, wildcard),
+        ),
+        Pattern::Neg(inner) => Expr::neg(pattern_to_expr_with_wildcard(inner, wildcard)),
+        Pattern::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| pattern_to_expr_with_wildcard(arg, wildcard))
+                .collect(),
+        ),
+    }
+}
+
+fn match_map_to_bindings(map: &ax_compare::MatchMap) -> Bindings {
+    let mut out = Bindings::new();
+    for (slot, expr) in &map.wildcard_map {
+        out.insert(*slot, expr.clone());
+    }
+    for (pattern_sym, target_sym) in &map.symbol_map {
+        out.entry(*pattern_sym).or_insert(Expr::Sym(*target_sym));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

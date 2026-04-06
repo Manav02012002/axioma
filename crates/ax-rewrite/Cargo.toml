@@ -6,7 +6,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ax-compare = { path = "../ax-compare" }
 ax-ir = { path = "../ax-ir" }
+ax-tensor = { path = "../ax-tensor" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }

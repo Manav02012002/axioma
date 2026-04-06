@@ -1756,7 +1756,18 @@ pub fn rewrite_with_trace(
     interner: &ax_ir::Interner,
 ) -> (Expr, ax_rewrite::RewriteTrace) {
     let mut trace = ax_rewrite::RewriteTrace::default();
-    let result = ax_rewrite::rewrite_fixed_point_traced(&env.rules, expr, interner, 100, &mut trace);
+    let result = if env.property_store.symbols().is_empty() {
+        ax_rewrite::rewrite_fixed_point_traced(&env.rules, expr, interner, 100, &mut trace)
+    } else {
+        ax_rewrite::rewrite_fixed_point_with_compare(
+            &env.rules,
+            expr,
+            &env.property_store,
+            &env.index_to_family,
+            interner,
+            100,
+        )
+    };
     (result, trace)
 }
 
@@ -4936,6 +4947,17 @@ pub fn substitute_with_indices(
     env: &Env,
     interner: &ax_ir::Interner,
 ) -> Expr {
+    if !env.property_store.symbols().is_empty() {
+        return ax_compare::substitute_with_compare(
+            expr,
+            target,
+            replacement,
+            &env.property_store,
+            &env.index_to_family,
+            interner,
+        );
+    }
+
     if let Some(mapping) = match_tensor_pattern(target, expr, env, interner) {
         let mut used_indices = HashSet::new();
         collect_index_names_set(expr, &mut used_indices);
