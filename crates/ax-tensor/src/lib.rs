@@ -22,6 +22,38 @@ pub trait ComponentEvalEnv {
     fn tensor_properties(&self) -> &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>;
 }
 
+pub trait PropertyLookup {
+    fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty>;
+    fn get_properties_with_indices(
+        &self,
+        name: lasso::Spur,
+        indices: &[ax_ir::Index],
+    ) -> Vec<&ax_ir::TensorProperty>;
+    fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool;
+}
+
+impl PropertyLookup for HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> {
+    fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
+        self.get(&name)
+            .map(|props| props.iter().collect())
+            .unwrap_or_default()
+    }
+
+    fn get_properties_with_indices(
+        &self,
+        name: lasso::Spur,
+        _indices: &[ax_ir::Index],
+    ) -> Vec<&ax_ir::TensorProperty> {
+        self.get_properties(name)
+    }
+
+    fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
+        self.get_properties(name)
+            .into_iter()
+            .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+    }
+}
+
 pub struct DefaultEvalEnv {
     pub coords: Vec<lasso::Spur>,
     pub coord_set: HashSet<lasso::Spur>,
@@ -162,7 +194,7 @@ pub fn build_generating_set(
 
 pub fn extract_factor_info(
     expr: &ax_ir::Expr,
-    tensor_properties: &std::collections::HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    tensor_properties: &dyn PropertyLookup,
     _interner: &ax_ir::Interner,
 ) -> Vec<TensorFactorInfo> {
     let factors = match expr {
@@ -176,7 +208,11 @@ pub fn extract_factor_info(
     for factor in factors {
         if let ax_ir::Expr::Indexed(base, indices) = factor {
             if let ax_ir::Expr::Sym(name) = base.as_ref() {
-                let props = tensor_properties.get(name).cloned().unwrap_or_default();
+                let props = tensor_properties
+                    .get_properties_with_indices(*name, indices)
+                    .into_iter()
+                    .cloned()
+                    .collect();
                 result.push(TensorFactorInfo {
                     name: *name,
                     n_indices: indices.len(),
@@ -426,7 +462,7 @@ fn flip_free_indices(
 
 fn canonicalise_product(
     expr: &Expr,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     let precanonical = canonicalize_indices(expr, tensor_properties, interner);
@@ -563,7 +599,7 @@ fn canonicalise_product(
 /// smallest index permutation consistent with the tensor symmetries.
 pub fn canonicalise(
     expr: &ax_ir::Expr,
-    tensor_properties: &std::collections::HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
     match expr {
@@ -589,7 +625,7 @@ pub fn canonicalise(
 /// Simplify a sum of tensor monomials using multi-term symmetry information.
 pub fn meld(
     expr: &ax_ir::Expr,
-    tensor_properties: &std::collections::HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
     match expr {
@@ -620,7 +656,7 @@ pub fn meld(
 
                 let factor_info =
                     extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
-                let tableaux = tableaux_from_properties(&factor_info);
+                let tableaux = tableaux_from_properties(&factor_info, tensor_properties);
 
                 let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
                 for (term, _) in group.iter() {
@@ -842,7 +878,7 @@ fn multiply_expr_by_rational(expr: Expr, coeff: BigRational) -> Expr {
 
 fn extract_factor_info_from_term(
     expr: &Expr,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Vec<TensorFactorInfo> {
     let wrapped = match expr {
@@ -854,11 +890,12 @@ fn extract_factor_info_from_term(
 
 pub fn tableaux_from_properties(
     factor_info: &[TensorFactorInfo],
+    properties: &dyn PropertyLookup,
 ) -> Vec<adjform::TableauInfo> {
     let mut result = Vec::new();
 
     for info in factor_info {
-        for prop in &info.properties {
+        for prop in properties.get_properties(info.name) {
             match prop {
                 ax_ir::TensorProperty::Symmetric(positions) => {
                     let abs: Vec<usize> =
@@ -1151,24 +1188,19 @@ fn evaluate_node(
     expr: &Expr,
     rules: &[ComponentRule],
     env: &dyn ComponentEvalEnv,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     match expr {
-        Expr::Add(terms) => handle_sum(terms, rules, env, tensor_properties, interner),
-        Expr::Mul(factors) => handle_prod(factors, rules, env, tensor_properties, interner),
-        Expr::Neg(e) => Expr::neg(evaluate_node(e, rules, env, tensor_properties, interner)),
+        Expr::Add(terms) => handle_sum(terms, rules, env, properties, interner),
+        Expr::Mul(factors) => handle_prod(factors, rules, env, properties, interner),
+        Expr::Neg(e) => Expr::neg(evaluate_node(e, rules, env, properties, interner)),
         Expr::Indexed(base, indices) => {
             if let Expr::Sym(tensor_name) = base.as_ref() {
-                let is_epsilon = env
-                    .tensor_properties()
-                    .get(tensor_name)
-                    .map(|props| {
-                        props.iter().any(|prop| {
-                            matches!(prop, ax_ir::TensorProperty::EpsilonTensor)
-                        })
-                    })
-                    .unwrap_or(false);
+                let is_epsilon = properties
+                    .get_properties_with_indices(*tensor_name, indices)
+                    .iter()
+                    .any(|prop| matches!(prop, ax_ir::TensorProperty::EpsilonTensor));
                 if is_epsilon {
                     let epsilon_value = handle_epsilon(expr, *tensor_name, env, interner);
                     if epsilon_value != *expr {
@@ -1176,7 +1208,7 @@ fn evaluate_node(
                     }
                 }
             }
-            handle_factor(expr, rules, env, tensor_properties, interner)
+            handle_factor(expr, rules, env, properties, interner)
         }
         Expr::Call(f, args) => {
             let f_name = interner.resolve(*f);
@@ -1187,13 +1219,13 @@ fn evaluate_node(
                     args,
                     rules,
                     env,
-                    tensor_properties,
+                    properties,
                     interner,
                 )
             } else {
                 let evaled_args: Vec<Expr> = args
                     .iter()
-                    .map(|a| evaluate_node(a, rules, env, tensor_properties, interner))
+                    .map(|a| evaluate_node(a, rules, env, properties, interner))
                     .collect();
                 Expr::Call(*f, evaled_args)
             }
@@ -1275,7 +1307,7 @@ fn lookup_component_rule(
     tensor_name: lasso::Spur,
     indices: &[Index],
     rules: &[ComponentRule],
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Option<Expr> {
     for rule in rules {
@@ -1299,12 +1331,11 @@ fn lookup_component_rule(
         }
     }
 
-    if let Some(props) = tensor_properties.get(&tensor_name) {
-        let index_names: Vec<lasso::Spur> = indices.iter().map(|i| i.name).collect();
-        let variances: Vec<ax_ir::Variance> = indices.iter().map(|i| i.variance.clone()).collect();
+    let index_names: Vec<lasso::Spur> = indices.iter().map(|i| i.name).collect();
+    let variances: Vec<ax_ir::Variance> = indices.iter().map(|i| i.variance.clone()).collect();
 
-        for prop in props {
-            match prop {
+    for prop in properties.get_properties_with_indices(tensor_name, indices) {
+        match prop {
                 ax_ir::TensorProperty::Symmetric(positions) => {
                     let symmetric_slots: Vec<usize> = positions
                         .iter()
@@ -1432,8 +1463,7 @@ fn lookup_component_rule(
                         }
                     }
                 }
-                _ => {}
-            }
+            _ => {}
         }
     }
 
@@ -1499,12 +1529,12 @@ fn handle_sum(
     terms: &[Expr],
     rules: &[ComponentRule],
     env: &dyn ComponentEvalEnv,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     let evaled: Vec<Expr> = terms
         .iter()
-        .map(|t| evaluate_node(t, rules, env, tensor_properties, interner))
+        .map(|t| evaluate_node(t, rules, env, properties, interner))
         .collect();
     let simplified = Expr::add(evaled);
     simplify_expr(simplified, interner)
@@ -1514,12 +1544,12 @@ fn handle_prod(
     factors: &[Expr],
     rules: &[ComponentRule],
     env: &dyn ComponentEvalEnv,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     let evaled: Vec<Expr> = factors
         .iter()
-        .map(|f| evaluate_node(f, rules, env, tensor_properties, interner))
+        .map(|f| evaluate_node(f, rules, env, properties, interner))
         .collect();
 
     let product = Expr::mul(evaled.clone());
@@ -1575,7 +1605,7 @@ fn handle_derivative(
     args: &[Expr],
     rules: &[ComponentRule],
     env: &dyn ComponentEvalEnv,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     if args.is_empty() {
@@ -1591,11 +1621,11 @@ fn handle_derivative(
                 inner_args,
                 rules,
                 env,
-                tensor_properties,
+                properties,
                 interner,
             )
         }
-        _ => evaluate_node(inner, rules, env, tensor_properties, interner),
+        _ => evaluate_node(inner, rules, env, properties, interner),
     };
 
     let deriv_indices: Vec<lasso::Spur> = args[1..]
@@ -1617,8 +1647,7 @@ fn handle_derivative(
     if deriv_indices.len() == 1 {
         let idx = deriv_indices[0];
         if has_abstract_indices(&inner_evaled) {
-            let expanded =
-                handle_factor(&inner_evaled, rules, env, tensor_properties, interner);
+            let expanded = handle_factor(&inner_evaled, rules, env, properties, interner);
             if has_abstract_indices(&expanded) {
                 return Expr::Call(deriv_sym, vec![expanded, Expr::Sym(idx)]);
             }
@@ -1654,7 +1683,7 @@ fn handle_factor(
     expr: &Expr,
     rules: &[ComponentRule],
     env: &dyn ComponentEvalEnv,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     if let Expr::Indexed(base, indices) = expr {
@@ -1687,7 +1716,7 @@ fn handle_factor(
                     expr: &Expr,
                     rules: &[ComponentRule],
                     env: &dyn ComponentEvalEnv,
-                    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+                    properties: &dyn PropertyLookup,
                     interner: &ax_ir::Interner,
                     assignment: &mut HashMap<lasso::Spur, lasso::Spur>,
                     out: &mut Vec<Expr>,
@@ -1698,7 +1727,7 @@ fn handle_factor(
                             &substituted,
                             rules,
                             env,
-                            tensor_properties,
+                            properties,
                             interner,
                         ));
                         return;
@@ -1713,7 +1742,7 @@ fn handle_factor(
                             expr,
                             rules,
                             env,
-                            tensor_properties,
+                            properties,
                             interner,
                             assignment,
                             out,
@@ -1730,7 +1759,7 @@ fn handle_factor(
                     expr,
                     rules,
                     env,
-                    tensor_properties,
+                    properties,
                     interner,
                     &mut assignment,
                     &mut terms,
@@ -1745,7 +1774,7 @@ fn handle_factor(
                     *tensor_name,
                     indices,
                     rules,
-                    tensor_properties,
+                    properties,
                     interner,
                 ) {
                     return value;
@@ -2007,7 +2036,7 @@ fn tensor_sort_key(expr: &Expr, interner: &ax_ir::Interner) -> (u8, String, Stri
 
 pub fn sort_product(
     expr: &ax_ir::Expr,
-    _tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    _tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
     match expr {
@@ -2643,7 +2672,7 @@ fn next_permutation_usize(arr: &mut [usize]) -> bool {
 
 pub fn canonicalize_indices(
     expr: &ax_ir::Expr,
-    properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
     match expr {
@@ -2653,9 +2682,8 @@ pub fn canonicalize_indices(
             let mut negate = false;
 
             if let Expr::Sym(sym) = &base_expr {
-                if let Some(props) = properties.get(sym) {
-                    for prop in props {
-                        match prop {
+                for prop in properties.get_properties_with_indices(*sym, &indices) {
+                    match prop {
                             ax_ir::TensorProperty::Symmetric(positions) => {
                                 let mut original = positions
                                     .iter()
@@ -2746,7 +2774,6 @@ pub fn canonicalize_indices(
                             | ax_ir::TensorProperty::SatisfiesBianchi
                             | ax_ir::TensorProperty::WeylTensor
                             | ax_ir::TensorProperty::DifferentialFormDegree(_) => {}
-                        }
                     }
                 }
             }
@@ -3167,34 +3194,32 @@ fn symmetrise_groups(expr: &Expr, groups: &[Vec<usize>], interner: &ax_ir::Inter
 /// Apply Young projection to a tensor based on its declared `TableauSymmetry` property.
 pub fn young_project_tensor(
     expr: &Expr,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     match expr {
         Expr::Indexed(base, _) => {
             if let Expr::Sym(name) = base.as_ref() {
-                if let Some(props) = tensor_properties.get(name) {
-                    for prop in props {
-                        if let ax_ir::TensorProperty::TableauSymmetry {
-                            shape,
-                            indices: tab_indices,
-                        } = prop
-                        {
-                            let mut cells: Vec<Vec<usize>> = Vec::new();
-                            let mut cursor = 0;
-                            for &row_len in shape {
-                                let mut row = Vec::new();
-                                for _ in 0..row_len {
-                                    if cursor < tab_indices.len() {
-                                        row.push(tab_indices[cursor]);
-                                        cursor += 1;
-                                    }
+                for prop in tensor_properties.get_properties(*name) {
+                    if let ax_ir::TensorProperty::TableauSymmetry {
+                        shape,
+                        indices: tab_indices,
+                    } = prop
+                    {
+                        let mut cells: Vec<Vec<usize>> = Vec::new();
+                        let mut cursor = 0;
+                        for &row_len in shape {
+                            let mut row = Vec::new();
+                            for _ in 0..row_len {
+                                if cursor < tab_indices.len() {
+                                    row.push(tab_indices[cursor]);
+                                    cursor += 1;
                                 }
-                                cells.push(row);
                             }
-                            let tableau = ax_young::YoungTableau { cells };
-                            return young_project(expr, &tableau, interner);
+                            cells.push(row);
                         }
+                        let tableau = ax_young::YoungTableau { cells };
+                        return young_project(expr, &tableau, interner);
                     }
                 }
             }
@@ -5521,12 +5546,12 @@ pub fn rewrite_indices(
 pub fn decompose(
     expr: &Expr,
     basis: &[Expr],
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &Interner,
 ) -> Expr {
     let canon_basis: Vec<Expr> = basis
         .iter()
-        .map(|b| canonicalise(b, tensor_properties, interner))
+        .map(|b| canonicalise(b, properties, interner))
         .collect();
 
     let terms: Vec<Expr> = match expr {
@@ -5539,7 +5564,7 @@ pub fn decompose(
     let mut residual: Vec<Expr> = Vec::new();
 
     for term in &terms {
-        let canon_term = canonicalise(term, tensor_properties, interner);
+        let canon_term = canonicalise(term, properties, interner);
         match try_direct_match(&canon_term, &canon_basis, interner) {
             Some((idx, ratio)) => {
                 coeffs[idx] = coeffs[idx].clone() + ratio;
@@ -5670,7 +5695,7 @@ fn tensor_structures_equal(a: &Expr, b: &Expr, _interner: &Interner) -> bool {
 pub fn decompose_product(
     expr: &Expr,
     dim: usize,
-    tensor_properties: &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    properties: &dyn PropertyLookup,
     interner: &Interner,
 ) -> Expr {
     // Collect exactly two Indexed factors from a product.
@@ -5754,12 +5779,12 @@ pub fn decompose_product(
     ]);
 
     let basis = vec![
-        canonicalise(&sym_part, tensor_properties, interner),
-        canonicalise(&antisym_part, tensor_properties, interner),
-        canonicalise(&trace_part, tensor_properties, interner),
+        canonicalise(&sym_part, properties, interner),
+        canonicalise(&antisym_part, properties, interner),
+        canonicalise(&trace_part, properties, interner),
     ];
 
-    decompose(expr, &basis, tensor_properties, interner)
+    decompose(expr, &basis, properties, interner)
 }
 
 // ─── expand_implicit ─────────────────────────────────────────────────────────

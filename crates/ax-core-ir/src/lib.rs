@@ -386,13 +386,13 @@ impl<'a> Cursor<'a> {
         }
 
         if self.consume_keyword("property") {
-            let tensor = self.parse_ident()?;
+            let tensor = self.parse_postfix()?;
             self.skip_ws();
-            let prop_name = self.parse_ident()?;
+            let prop_name = self.parse_postfix()?;
             let declare_sym = self.interner.get_or_intern("__declare_property");
             return Ok(ax_ir::Expr::Call(
                 declare_sym,
-                vec![ax_ir::Expr::Sym(tensor), ax_ir::Expr::Sym(prop_name)],
+                vec![tensor, prop_name],
             ));
         }
 
@@ -1344,6 +1344,20 @@ mod tests {
         let interner = ax_ir::Interner::new();
         let result = lower("property F antisymmetric", &interner);
         assert!(result.errors.is_empty(), "{:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_pattern_property_symmetric_positions() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("property T[a-, b-] symmetric([0, 1])", &interner);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        if let Some(ax_ir::Expr::Call(f, args)) = result.expr {
+            assert_eq!(interner.resolve(f), "__declare_property");
+            assert!(matches!(args[0], ax_ir::Expr::Indexed(_, _)));
+            assert!(matches!(args[1], ax_ir::Expr::Call(_, _)));
+        } else {
+            panic!("expected __declare_property call");
+        }
     }
 
     #[test]

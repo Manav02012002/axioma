@@ -3,6 +3,7 @@
 pub mod integrate;
 pub mod inspect;
 pub mod limits;
+pub mod property_store;
 pub mod registry;
 pub mod series;
 pub mod simplify;
@@ -22,6 +23,10 @@ pub use registry::{
     AssumptionEntry, BuiltinEntry, CallableEntry, ConventionEntry, EvalState, ParamDef,
     ParamType, PropertyEntry, StdModule, SyntaxRule,
 };
+pub use property_store::{
+    property_discriminant_matches, InheritanceRule, PropertyAttachment, PropertyPattern,
+    PropertyStore, SlotSpec, WeightCombine,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Env {
@@ -34,7 +39,9 @@ pub struct Env {
     pub coordinates: HashSet<lasso::Spur>,
     pub index_families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
     pub index_to_family: HashMap<lasso::Spur, lasso::Spur>,
+    /// Deprecated: use property_store instead. Kept for backward compatibility with external code.
     pub tensor_properties: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+    pub property_store: crate::property_store::PropertyStore,
     pub convention: ax_ir::Convention,
     /// Weights assigned to symbols. Map from (symbol, label) to weight value.
     /// Example: x::Weight(value=1, label=field) → weights[(x, "field")] = 1
@@ -54,6 +61,7 @@ impl Env {
             index_families: HashMap::new(),
             index_to_family: HashMap::new(),
             tensor_properties: HashMap::new(),
+            property_store: crate::property_store::PropertyStore::new(),
             convention: ax_ir::Convention::default(),
             weights: HashMap::new(),
         }
@@ -79,6 +87,7 @@ impl Env {
             index_families: self.index_families.clone(),
             index_to_family: self.index_to_family.clone(),
             tensor_properties: self.tensor_properties.clone(),
+            property_store: self.property_store.clone(),
             convention: self.convention.clone(),
             weights: self.weights.clone(),
         }
@@ -475,135 +484,186 @@ pub fn apply_property_declaration(
     if interner.resolve(*f) != "__declare_property" || args.len() != 2 {
         return None;
     }
-    let (Expr::Sym(tensor), Expr::Sym(prop)) = (&args[0], &args[1]) else {
-        return None;
+    let (tensor, pattern_slots) = match &args[0] {
+        Expr::Sym(tensor) => (*tensor, None),
+        Expr::Indexed(base, indices) => {
+            let Expr::Sym(tensor) = base.as_ref() else {
+                return None;
+            };
+            let slots: Vec<SlotSpec> = indices
+                .iter()
+                .map(|idx| SlotSpec {
+                    variance: idx.variance.clone(),
+                    family: env.index_to_family.get(&idx.name).copied(),
+                })
+                .collect();
+            (*tensor, Some(slots))
+        }
+        _ => return None,
     };
-    let prop_name = interner.resolve(*prop);
-    let entry = env.tensor_properties.entry(*tensor).or_default();
+    let (prop_name, prop_args) = match &args[1] {
+        Expr::Sym(prop) => (interner.resolve(*prop), &[][..]),
+        Expr::Call(prop, prop_args) => (interner.resolve(*prop), prop_args.as_slice()),
+        _ => return None,
+    };
+    let default_positions = vec![0, 1];
+    let parse_positions = |items: &[Expr]| -> Option<Vec<usize>> {
+        match items.first() {
+            Some(Expr::List(entries)) => entries
+                .iter()
+                .map(|entry| match entry {
+                    Expr::Int(n) => n.to_usize(),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }
+    };
+    let mut add_property = |property: ax_ir::TensorProperty| {
+        env.tensor_properties
+            .entry(tensor)
+            .or_default()
+            .push(property.clone());
+        if let Some(index_slots) = &pattern_slots {
+            env.property_store.declare(
+                PropertyPattern {
+                    base_name: tensor,
+                    index_slots: index_slots.clone(),
+                },
+                property,
+            );
+        } else {
+            env.property_store.declare_simple(tensor, property);
+        }
+    };
     match prop_name {
         "metric" => {
-            entry.push(ax_ir::TensorProperty::Metric);
-            entry.push(ax_ir::TensorProperty::Symmetric(vec![0, 1]));
+            add_property(ax_ir::TensorProperty::Metric);
+            add_property(ax_ir::TensorProperty::Symmetric(default_positions.clone()));
             Some(format!(
                 "attached property metric (symmetric) to {}",
-                interner.resolve(*tensor)
+                interner.resolve(tensor)
             ))
         }
         "symmetric" => {
-            entry.push(ax_ir::TensorProperty::Symmetric(vec![0, 1]));
+            add_property(ax_ir::TensorProperty::Symmetric(
+                parse_positions(prop_args).unwrap_or_else(|| default_positions.clone()),
+            ));
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "antisymmetric" => {
-            entry.push(ax_ir::TensorProperty::AntiSymmetric(vec![0, 1]));
+            add_property(ax_ir::TensorProperty::AntiSymmetric(
+                parse_positions(prop_args).unwrap_or_else(|| default_positions.clone()),
+            ));
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "inverse_metric" => {
-            entry.push(ax_ir::TensorProperty::InverseMetric);
+            add_property(ax_ir::TensorProperty::InverseMetric);
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "kronecker_delta" | "kronecker" => {
-            entry.push(ax_ir::TensorProperty::KroneckerDelta);
+            add_property(ax_ir::TensorProperty::KroneckerDelta);
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "epsilon" | "epsilon_tensor" => {
-            entry.push(ax_ir::TensorProperty::EpsilonTensor);
+            add_property(ax_ir::TensorProperty::EpsilonTensor);
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "riemann" | "riemann_symmetry" => {
-            entry.push(ax_ir::TensorProperty::RiemannSymmetry);
+            add_property(ax_ir::TensorProperty::RiemannSymmetry);
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "traceless" => {
-            entry.push(ax_ir::TensorProperty::Traceless);
+            add_property(ax_ir::TensorProperty::Traceless);
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "derivative" => {
-            entry.push(ax_ir::TensorProperty::Derivative);
+            add_property(ax_ir::TensorProperty::Derivative);
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "partial_derivative" => {
-            entry.push(ax_ir::TensorProperty::PartialDerivative);
+            add_property(ax_ir::TensorProperty::PartialDerivative);
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "covariant_derivative" => {
-            entry.push(ax_ir::TensorProperty::CovariantDerivative);
+            add_property(ax_ir::TensorProperty::CovariantDerivative);
             Some(format!(
                 "attached property {} to {}",
-                interner.resolve(*prop),
-                interner.resolve(*tensor)
+                prop_name,
+                interner.resolve(tensor)
             ))
         }
         "spinor" => {
-            entry.push(ax_ir::TensorProperty::Spinor);
-            Some(format!("attached property spinor to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::Spinor);
+            Some(format!("attached property spinor to {}", interner.resolve(tensor)))
         }
         "dirac_bar" | "diracbar" => {
-            entry.push(ax_ir::TensorProperty::DiracBar);
-            Some(format!("attached property dirac_bar to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::DiracBar);
+            Some(format!("attached property dirac_bar to {}", interner.resolve(tensor)))
         }
         "gamma_matrix" => {
-            entry.push(ax_ir::TensorProperty::GammaMatrixProp);
-            Some(format!("attached property gamma_matrix to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::GammaMatrixProp);
+            Some(format!("attached property gamma_matrix to {}", interner.resolve(tensor)))
         }
         "commuting" => {
-            entry.push(ax_ir::TensorProperty::Commuting);
-            Some(format!("attached property commuting to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::Commuting);
+            Some(format!("attached property commuting to {}", interner.resolve(tensor)))
         }
         "anticommuting" | "anti_commuting" => {
-            entry.push(ax_ir::TensorProperty::AntiCommuting);
-            Some(format!("attached property anticommuting to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::AntiCommuting);
+            Some(format!("attached property anticommuting to {}", interner.resolve(tensor)))
         }
         "noncommuting" | "non_commuting" => {
-            entry.push(ax_ir::TensorProperty::NonCommuting);
-            Some(format!("attached property noncommuting to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::NonCommuting);
+            Some(format!("attached property noncommuting to {}", interner.resolve(tensor)))
         }
         "bianchi" | "satisfies_bianchi" => {
-            entry.push(ax_ir::TensorProperty::SatisfiesBianchi);
-            Some(format!("attached property satisfies_bianchi to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::SatisfiesBianchi);
+            Some(format!("attached property satisfies_bianchi to {}", interner.resolve(tensor)))
         }
         "weyl" | "weyl_tensor" => {
-            entry.push(ax_ir::TensorProperty::WeylTensor);
-            Some(format!("attached property weyl_tensor to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::WeylTensor);
+            Some(format!("attached property weyl_tensor to {}", interner.resolve(tensor)))
         }
         "tableau_symmetry" => {
-            entry.push(ax_ir::TensorProperty::RiemannSymmetry);
-            Some(format!("attached property tableau_symmetry to {}", interner.resolve(*tensor)))
+            add_property(ax_ir::TensorProperty::RiemannSymmetry);
+            Some(format!("attached property tableau_symmetry to {}", interner.resolve(tensor)))
         }
         _ => None,
     }
@@ -662,10 +722,39 @@ pub fn apply_index_declaration(
             env.index_to_family.insert(*sym, *family_name);
         }
     }
+    env.property_store
+        .set_index_to_family(env.index_to_family.clone());
     Some(format!(
         "declared index family: {}",
         interner.resolve(*family_name)
     ))
+}
+
+fn symbols_with_property<F>(env: &Env, mut predicate: F) -> HashSet<lasso::Spur>
+where
+    F: FnMut(&ax_ir::TensorProperty) -> bool,
+{
+    env.property_store
+        .symbols()
+        .into_iter()
+        .filter(|sym| env.property_store.get_all(*sym).iter().any(|prop| predicate(prop)))
+        .collect()
+}
+
+fn explicit_depends_map(env: &Env) -> HashMap<lasso::Spur, Vec<lasso::Spur>> {
+    env.property_store
+        .symbols()
+        .into_iter()
+        .filter_map(|sym| {
+            env.property_store
+                .get_all(sym)
+                .into_iter()
+                .find_map(|prop| match prop {
+                    ax_ir::TensorProperty::Depends(deps) => Some((sym, deps.clone())),
+                    _ => None,
+                })
+        })
+        .collect()
 }
 
 fn parse_metric_signature(value: &str) -> Option<ax_ir::MetricSignature> {
@@ -1538,12 +1627,12 @@ fn equiv_description(a: &Expr, b: &Expr, env: &Env, interner: &ax_ir::Interner) 
 
     if contains_indexed_expr(&ta) || contains_indexed_expr(&tb) {
         let ca = ax_tensor::rename_dummies(
-            &ax_tensor::canonicalize_indices(&ta, &env.tensor_properties, interner),
+            &ax_tensor::canonicalize_indices(&ta, &env.property_store, interner),
             env,
             interner,
         );
         let cb = ax_tensor::rename_dummies(
-            &ax_tensor::canonicalize_indices(&tb, &env.tensor_properties, interner),
+            &ax_tensor::canonicalize_indices(&tb, &env.property_store, interner),
             env,
             interner,
         );
@@ -2370,7 +2459,7 @@ fn builtin_call(
         }
         "canonicalise" | "canonicalize" => {
             if args.len() == 1 {
-                let canonical = ax_tensor::canonicalise(&args[0], &env.tensor_properties, interner);
+                let canonical = ax_tensor::canonicalise(&args[0], &env.property_store, interner);
                 ax_tensor::rename_dummies(&canonical, env, interner)
             } else {
                 Expr::Call(f, args)
@@ -2402,7 +2491,7 @@ fn builtin_call(
         }
         "meld" => {
             if args.len() == 1 {
-                ax_tensor::meld(&args[0], &env.tensor_properties, interner)
+                ax_tensor::meld(&args[0], &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -2416,28 +2505,21 @@ fn builtin_call(
         }
         "sort_product" => {
             if args.len() == 1 {
-                ax_tensor::sort_product(&args[0], &env.tensor_properties, interner)
+                ax_tensor::sort_product(&args[0], &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }
         }
         "product_rule" | "leibniz" => {
             if args.len() == 1 {
-                let deriv_syms: HashSet<lasso::Spur> = env
-                    .tensor_properties
-                    .iter()
-                    .filter(|(_, props)| {
-                        props.iter().any(|p| {
-                            matches!(
-                                p,
-                                ax_ir::TensorProperty::Derivative
-                                    | ax_ir::TensorProperty::PartialDerivative
-                                    | ax_ir::TensorProperty::CovariantDerivative
-                            )
-                        })
-                    })
-                    .map(|(sym, _)| *sym)
-                    .collect();
+                let deriv_syms = symbols_with_property(env, |p| {
+                    matches!(
+                        p,
+                        ax_ir::TensorProperty::Derivative
+                            | ax_ir::TensorProperty::PartialDerivative
+                            | ax_ir::TensorProperty::CovariantDerivative
+                    )
+                });
                 ax_tensor::product_rule(&args[0], &deriv_syms, interner)
             } else {
                 Expr::Call(f, args)
@@ -2445,33 +2527,15 @@ fn builtin_call(
         }
         "unwrap" => {
             if args.len() == 1 {
-                let deriv_syms: HashSet<lasso::Spur> = env
-                    .tensor_properties
-                    .iter()
-                    .filter(|(_, props)| {
-                        props.iter().any(|p| {
-                            matches!(
-                                p,
-                                ax_ir::TensorProperty::Derivative
-                                    | ax_ir::TensorProperty::PartialDerivative
-                                    | ax_ir::TensorProperty::CovariantDerivative
-                            )
-                        })
-                    })
-                    .map(|(sym, _)| *sym)
-                    .collect();
-                let depends: HashMap<lasso::Spur, Vec<lasso::Spur>> = env
-                    .tensor_properties
-                    .iter()
-                    .filter_map(|(sym, props)| {
-                        for p in props {
-                            if let ax_ir::TensorProperty::Depends(deps) = p {
-                                return Some((*sym, deps.clone()));
-                            }
-                        }
-                        None
-                    })
-                    .collect();
+                let deriv_syms = symbols_with_property(env, |p| {
+                    matches!(
+                        p,
+                        ax_ir::TensorProperty::Derivative
+                            | ax_ir::TensorProperty::PartialDerivative
+                            | ax_ir::TensorProperty::CovariantDerivative
+                    )
+                });
+                let depends = explicit_depends_map(env);
                 ax_tensor::unwrap_derivatives(&args[0], &deriv_syms, &depends, interner)
             } else {
                 Expr::Call(f, args)
@@ -2480,21 +2544,14 @@ fn builtin_call(
         "integrate_by_parts" | "ibp" => {
             if args.len() >= 2 {
                 if let Expr::Sym(away) = &args[1] {
-                    let deriv_syms: HashSet<lasso::Spur> = env
-                        .tensor_properties
-                        .iter()
-                        .filter(|(_, props)| {
-                            props.iter().any(|p| {
-                                matches!(
-                                    p,
-                                    ax_ir::TensorProperty::Derivative
-                                        | ax_ir::TensorProperty::PartialDerivative
-                                        | ax_ir::TensorProperty::CovariantDerivative
-                                )
-                            })
-                        })
-                        .map(|(sym, _)| *sym)
-                        .collect();
+                    let deriv_syms = symbols_with_property(env, |p| {
+                        matches!(
+                            p,
+                            ax_ir::TensorProperty::Derivative
+                                | ax_ir::TensorProperty::PartialDerivative
+                                | ax_ir::TensorProperty::CovariantDerivative
+                        )
+                    });
                     ax_tensor::integrate_by_parts(&args[0], *away, &deriv_syms, interner)
                 } else {
                     Expr::Call(f, args)
@@ -2626,16 +2683,8 @@ fn builtin_call(
         }
         "explicit_indices" => {
             if !args.is_empty() {
-                let implicit: HashSet<lasso::Spur> = env
-                    .tensor_properties
-                    .iter()
-                    .filter(|(_, props)| {
-                        props
-                            .iter()
-                            .any(|p| matches!(p, ax_ir::TensorProperty::GammaMatrixProp))
-                    })
-                    .map(|(sym, _)| *sym)
-                    .collect();
+                let implicit =
+                    symbols_with_property(env, |p| matches!(p, ax_ir::TensorProperty::GammaMatrixProp));
                 let n_per: HashMap<lasso::Spur, usize> =
                     implicit.iter().map(|s| (*s, 2)).collect();
                 let avail: Vec<lasso::Spur> = (0..20)
@@ -2648,16 +2697,8 @@ fn builtin_call(
         }
         "expand_implicit" => {
             if !args.is_empty() {
-                let implicit: HashSet<lasso::Spur> = env
-                    .tensor_properties
-                    .iter()
-                    .filter(|(_, props)| {
-                        props
-                            .iter()
-                            .any(|p| matches!(p, ax_ir::TensorProperty::GammaMatrixProp))
-                    })
-                    .map(|(sym, _)| *sym)
-                    .collect();
+                let implicit =
+                    symbols_with_property(env, |p| matches!(p, ax_ir::TensorProperty::GammaMatrixProp));
                 let n_per: HashMap<lasso::Spur, usize> =
                     implicit.iter().map(|s| (*s, 2)).collect();
                 let avail: Vec<lasso::Spur> = (0..40)
@@ -2709,7 +2750,7 @@ fn builtin_call(
         }
         "young_project" => {
             if !args.is_empty() {
-                ax_tensor::young_project_tensor(&args[0], &env.tensor_properties, interner)
+                ax_tensor::young_project_tensor(&args[0], &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -2777,7 +2818,7 @@ fn builtin_call(
         "decompose" => {
             if args.len() >= 2 {
                 if let Expr::List(basis_exprs) = &args[1] {
-                    ax_tensor::decompose(&args[0], basis_exprs, &env.tensor_properties, interner)
+                    ax_tensor::decompose(&args[0], basis_exprs, &env.property_store, interner)
                 } else {
                     Expr::Call(f, args)
                 }
@@ -2791,7 +2832,7 @@ fn builtin_call(
                     .get(1)
                     .and_then(|e| if let Expr::Int(n) = e { n.to_usize() } else { None })
                     .unwrap_or(4);
-                ax_tensor::decompose_product(&args[0], dim, &env.tensor_properties, interner)
+                ax_tensor::decompose_product(&args[0], dim, &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -2819,8 +2860,10 @@ fn builtin_call(
                     let index_vals = HashMap::new();
                     let mut coords: Vec<_> = env.coordinates.iter().copied().collect();
                     coords.sort_by_key(|sym| interner.resolve(*sym).to_string());
-                    let eval_env =
-                        ax_tensor::DefaultEvalEnv::new(coords, env.tensor_properties.clone());
+                    let eval_env = ax_tensor::DefaultEvalEnv::new(
+                        coords,
+                        env.property_store.as_legacy_hashmap(),
+                    );
                     ax_tensor::evaluate_components(
                         &args[0],
                         &rules,
@@ -4470,7 +4513,7 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
                 })
                 .collect::<Vec<_>>();
             let indexed = Expr::Indexed(Box::new(eval(base, env, interner)), typed_indices);
-            let canonical = ax_tensor::canonicalize_indices(&indexed, &env.tensor_properties, interner);
+            let canonical = ax_tensor::canonicalize_indices(&indexed, &env.property_store, interner);
             let _ = if let Expr::Indexed(_, idxs) = &canonical {
                 ax_tensor::detect_contractions(idxs)
             } else {

@@ -1495,7 +1495,7 @@ fn handle_canonicalise(args: &[serde_json::Value], state: &mut dyn EvalState) ->
 fn handle_canonicalize_indices(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     expr_response(
-        ax_tensor::canonicalize_indices(&expr, &state.env().tensor_properties, state.interner()),
+        ax_tensor::canonicalize_indices(&expr, &state.env().property_store, state.interner()),
         state,
     )
 }
@@ -1631,13 +1631,13 @@ fn handle_diff_component_tensor(args: &[serde_json::Value], state: &mut dyn Eval
 fn handle_decompose_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let basis = list_from_id(args, 1, "basis", state)?;
-    expr_response(ax_tensor::decompose(&expr, &basis, &state.env().tensor_properties, state.interner()), state)
+    expr_response(ax_tensor::decompose(&expr, &basis, &state.env().property_store, state.interner()), state)
 }
 
 fn handle_decompose_product_tensor(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let dim = args.get(1).and_then(|v| v.as_u64()).map(|n| n as usize).unwrap_or(4);
-    expr_response(ax_tensor::decompose_product(&expr, dim, &state.env().tensor_properties, state.interner()), state)
+    expr_response(ax_tensor::decompose_product(&expr, dim, &state.env().property_store, state.interner()), state)
 }
 
 fn handle_metric_pipeline_christoffel(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
