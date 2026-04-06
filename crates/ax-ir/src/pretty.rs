@@ -159,14 +159,13 @@ fn render(expr: &Expr, interner: &Interner) -> String {
                 )
             }
         ),
-        Expr::SetConvention(field, value) => format!(
-            "convention {} {}",
-            field,
-            render_convention_value(value)
-        ),
+        Expr::SetConvention(field, value) => {
+            format!("convention {} {}", field, render_convention_value(value))
+        }
         Expr::Piecewise(cases) => format!(
             "piecewise({})",
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| format!(
                     "{}, {}",
                     render(value, interner),

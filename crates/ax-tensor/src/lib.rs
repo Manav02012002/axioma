@@ -4,8 +4,8 @@ pub mod adjform;
 pub mod index_classifier;
 pub mod pooled_canon;
 
-use ax_perm::{Perm, SGS};
 use ax_ir::{Expr, Index, Interner};
+use ax_perm::{Perm, SGS};
 use index_classifier::{classify_indices, IndexClassification};
 use num_bigint::BigInt;
 use num_rational::BigRational;
@@ -181,10 +181,7 @@ pub fn build_generating_set(
             if factors[i].name == factors[j].name && factors[i].n_indices == factors[j].n_indices {
                 let mut generator: Perm = (0..degree).collect();
                 for k in 0..factors[i].n_indices {
-                    generator.swap(
-                        factors[i].start_position + k,
-                        factors[j].start_position + k,
-                    );
+                    generator.swap(factors[i].start_position + k, factors[j].start_position + k);
                 }
                 generators.push(generator);
             }
@@ -242,7 +239,9 @@ pub fn extract_factor_info(
     result
 }
 
-fn repeated_sets_from_classification(classification: &IndexClassification) -> Vec<ax_perm::RepeatedSet> {
+fn repeated_sets_from_classification(
+    classification: &IndexClassification,
+) -> Vec<ax_perm::RepeatedSet> {
     let dummy_slots: HashSet<usize> = classification
         .dummy
         .iter()
@@ -271,10 +270,7 @@ fn repeated_sets_from_classification(classification: &IndexClassification) -> Ve
         .collect()
 }
 
-fn metric_symmetry_for_slots(
-    positions: &[usize],
-    factor_info: &[TensorFactorInfo],
-) -> i32 {
+fn metric_symmetry_for_slots(positions: &[usize], factor_info: &[TensorFactorInfo]) -> i32 {
     let mut symmetry = 1;
 
     for &pos in positions {
@@ -562,17 +558,13 @@ fn canonicalise_product(
         })
         .collect();
 
-    let (canon_perm, canon_sign) = if generators.is_empty() && dummy_sets.is_empty() && repeated_sets.is_empty() {
-        (extended_perm.clone(), 1)
-    } else {
-        let sgs = ax_perm::schreier_sims(&[], &generators, degree);
-        ax_perm::canonical_perm_with_sets(
-            &extended_perm,
-            &sgs,
-            &dummy_sets,
-            &repeated_sets,
-        )
-    };
+    let (canon_perm, canon_sign) =
+        if generators.is_empty() && dummy_sets.is_empty() && repeated_sets.is_empty() {
+            (extended_perm.clone(), 1)
+        } else {
+            let sgs = ax_perm::schreier_sims(&[], &generators, degree);
+            ax_perm::canonical_perm_with_sets(&extended_perm, &sgs, &dummy_sets, &repeated_sets)
+        };
 
     if canon_sign == -1 && canon_perm[..total_indices] == extended_perm[..total_indices] {
         return Expr::zero();
@@ -870,8 +862,10 @@ pub fn meld(
 
                     let mut dependent = false;
                     if let Some(coeffs) = solve_rational_system(&matrix, &rhs_vec) {
-                        let all_adjforms: BTreeSet<&adjform::Adjform> =
-                            projections[..=i].iter().flat_map(|p| p.terms.keys()).collect();
+                        let all_adjforms: BTreeSet<&adjform::Adjform> = projections[..=i]
+                            .iter()
+                            .flat_map(|p| p.terms.keys())
+                            .collect();
 
                         let mut valid = true;
                         for adj in &all_adjforms {
@@ -1049,8 +1043,10 @@ pub fn meld_parallel(
 
                     let mut dependent = false;
                     if let Some(coeffs) = solve_rational_system(&matrix, &rhs_vec) {
-                        let all_adjforms: BTreeSet<&adjform::Adjform> =
-                            projections[..=i].iter().flat_map(|p| p.terms.keys()).collect();
+                        let all_adjforms: BTreeSet<&adjform::Adjform> = projections[..=i]
+                            .iter()
+                            .flat_map(|p| p.terms.keys())
+                            .collect();
 
                         let mut valid = true;
                         for adj in &all_adjforms {
@@ -1306,7 +1302,12 @@ pub fn solve_rational_system(
     let mut pivot_row = 0usize;
     for col in 0..cols {
         let mut found = None;
-        for (row, aug_row) in aug.iter().enumerate().skip(pivot_row).take(rows - pivot_row) {
+        for (row, aug_row) in aug
+            .iter()
+            .enumerate()
+            .skip(pivot_row)
+            .take(rows - pivot_row)
+        {
             if aug_row[col] != zero {
                 found = Some(row);
                 break;
@@ -1364,10 +1365,7 @@ pub fn solve_rational_system(
     Some(x)
 }
 
-fn substitute_indices(
-    expr: &Expr,
-    assignment: &HashMap<lasso::Spur, lasso::Spur>,
-) -> Expr {
+fn substitute_indices(expr: &Expr, assignment: &HashMap<lasso::Spur, lasso::Spur>) -> Expr {
     match expr {
         Expr::Indexed(base, indices) => {
             let new_indices: Vec<ax_ir::Index> = indices
@@ -1436,17 +1434,18 @@ fn substitute_indices(
         ),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
-                .map(|row| row.iter().map(|cell| substitute_indices(cell, assignment)).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| substitute_indices(cell, assignment))
+                        .collect()
+                })
                 .collect(),
         ),
         _ => expr.clone(),
     }
 }
 
-fn evaluate_with_rules(
-    expr: &Expr,
-    rules: &[ComponentRule],
-) -> Expr {
+fn evaluate_with_rules(expr: &Expr, rules: &[ComponentRule]) -> Expr {
     match expr {
         Expr::Indexed(base, indices) => {
             if let Expr::Sym(tensor_name) = base.as_ref() {
@@ -1488,7 +1487,10 @@ fn evaluate_with_rules(
                 .collect(),
         ),
         Expr::Neg(inner) => Expr::neg(evaluate_with_rules(inner, rules)),
-        Expr::Pow(base, exp) => Expr::pow(evaluate_with_rules(base, rules), evaluate_with_rules(exp, rules)),
+        Expr::Pow(base, exp) => Expr::pow(
+            evaluate_with_rules(base, rules),
+            evaluate_with_rules(exp, rules),
+        ),
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()
@@ -1516,10 +1518,19 @@ fn evaluate_with_rules(
             Box::new(evaluate_with_rules(value, rules)),
             Box::new(evaluate_with_rules(body, rules)),
         ),
-        Expr::List(items) => Expr::List(items.iter().map(|item| evaluate_with_rules(item, rules)).collect()),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| evaluate_with_rules(item, rules))
+                .collect(),
+        ),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
-                .map(|row| row.iter().map(|cell| evaluate_with_rules(cell, rules)).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| evaluate_with_rules(cell, rules))
+                        .collect()
+                })
                 .collect(),
         ),
         _ => expr.clone(),
@@ -1564,15 +1575,7 @@ fn evaluate_node(
         Expr::Call(f, args) => {
             let f_name = interner.resolve(*f);
             if is_derivative_name(f_name) {
-                handle_derivative(
-                    expr,
-                    *f,
-                    args,
-                    rules,
-                    env,
-                    properties,
-                    interner,
-                )
+                handle_derivative(expr, *f, args, rules, env, properties, interner)
             } else {
                 let evaled_args: Vec<Expr> = args
                     .iter()
@@ -1607,7 +1610,8 @@ fn handle_epsilon(
                 .tensor_properties()
                 .get(sym)
                 .map(|props| {
-                    props.iter()
+                    props
+                        .iter()
                         .any(|prop| matches!(prop, ax_ir::TensorProperty::EpsilonTensor))
                 })
                 .unwrap_or(false);
@@ -1687,79 +1691,121 @@ fn lookup_component_rule(
 
     for prop in properties.get_properties_with_indices(tensor_name, indices) {
         match prop {
-                ax_ir::TensorProperty::Symmetric(positions) => {
-                    let symmetric_slots: Vec<usize> = positions
-                        .iter()
-                        .filter(|&&p| p < index_names.len())
-                        .copied()
-                        .collect();
-                    if symmetric_slots.len() < 2 {
-                        continue;
+            ax_ir::TensorProperty::Symmetric(positions) => {
+                let symmetric_slots: Vec<usize> = positions
+                    .iter()
+                    .filter(|&&p| p < index_names.len())
+                    .copied()
+                    .collect();
+                if symmetric_slots.len() < 2 {
+                    continue;
+                }
+
+                let mut slot_values: Vec<lasso::Spur> =
+                    symmetric_slots.iter().map(|&p| index_names[p]).collect();
+                slot_values.sort_by_key(|s| interner.resolve(*s).to_string());
+
+                loop {
+                    let mut trial = index_names.clone();
+                    for (i, &slot) in symmetric_slots.iter().enumerate() {
+                        trial[slot] = slot_values[i];
                     }
 
-                    let mut slot_values: Vec<lasso::Spur> =
-                        symmetric_slots.iter().map(|&p| index_names[p]).collect();
-                    slot_values.sort_by_key(|s| interner.resolve(*s).to_string());
-
-                    loop {
-                        let mut trial = index_names.clone();
-                        for (i, &slot) in symmetric_slots.iter().enumerate() {
-                            trial[slot] = slot_values[i];
-                        }
-
-                        for rule in rules {
-                            if rule.tensor == tensor_name && rule.indices.len() == indices.len() {
-                                let matches = rule
-                                    .indices
-                                    .iter()
-                                    .zip(trial.iter().zip(variances.iter()))
-                                    .all(|((rv, rvar), (&tv, variance))| {
-                                        *rv == tv && *rvar == *variance
-                                    });
-                                if matches {
-                                    return Some(rule.value.clone());
-                                }
+                    for rule in rules {
+                        if rule.tensor == tensor_name && rule.indices.len() == indices.len() {
+                            let matches = rule
+                                .indices
+                                .iter()
+                                .zip(trial.iter().zip(variances.iter()))
+                                .all(|((rv, rvar), (&tv, variance))| {
+                                    *rv == tv && *rvar == *variance
+                                });
+                            if matches {
+                                return Some(rule.value.clone());
                             }
                         }
+                    }
 
-                        if !next_permutation_by_key(&mut slot_values, interner) {
-                            break;
-                        }
+                    if !next_permutation_by_key(&mut slot_values, interner) {
+                        break;
                     }
                 }
-                ax_ir::TensorProperty::AntiSymmetric(positions) => {
-                    let symmetric_slots: Vec<usize> = positions
-                        .iter()
-                        .filter(|&&p| p < index_names.len())
-                        .copied()
-                        .collect();
-                    if symmetric_slots.len() < 2 {
-                        continue;
+            }
+            ax_ir::TensorProperty::AntiSymmetric(positions) => {
+                let symmetric_slots: Vec<usize> = positions
+                    .iter()
+                    .filter(|&&p| p < index_names.len())
+                    .copied()
+                    .collect();
+                if symmetric_slots.len() < 2 {
+                    continue;
+                }
+
+                let original_values: Vec<lasso::Spur> =
+                    symmetric_slots.iter().map(|&p| index_names[p]).collect();
+                let mut slot_values = original_values.clone();
+                slot_values.sort_by_key(|s| interner.resolve(*s).to_string());
+
+                loop {
+                    let mut trial = index_names.clone();
+                    for (i, &slot) in symmetric_slots.iter().enumerate() {
+                        trial[slot] = slot_values[i];
                     }
 
-                    let original_values: Vec<lasso::Spur> =
-                        symmetric_slots.iter().map(|&p| index_names[p]).collect();
-                    let mut slot_values = original_values.clone();
-                    slot_values.sort_by_key(|s| interner.resolve(*s).to_string());
-
-                    loop {
-                        let mut trial = index_names.clone();
-                        for (i, &slot) in symmetric_slots.iter().enumerate() {
-                            trial[slot] = slot_values[i];
+                    for rule in rules {
+                        if rule.tensor == tensor_name && rule.indices.len() == indices.len() {
+                            let matches = rule
+                                .indices
+                                .iter()
+                                .zip(trial.iter().zip(variances.iter()))
+                                .all(|((rv, rvar), (&tv, variance))| {
+                                    *rv == tv && *rvar == *variance
+                                });
+                            if matches {
+                                let sign = permutation_sign_between(&original_values, &slot_values);
+                                return Some(if sign < 0 {
+                                    Expr::neg(rule.value.clone())
+                                } else {
+                                    rule.value.clone()
+                                });
+                            }
                         }
+                    }
+
+                    if !next_permutation_by_key(&mut slot_values, interner) {
+                        break;
+                    }
+                }
+            }
+            ax_ir::TensorProperty::RiemannSymmetry => {
+                if indices.len() == 4 {
+                    let riemann_perms: [([usize; 4], i32); 8] = [
+                        ([0, 1, 2, 3], 1),
+                        ([1, 0, 2, 3], -1),
+                        ([0, 1, 3, 2], -1),
+                        ([1, 0, 3, 2], 1),
+                        ([2, 3, 0, 1], 1),
+                        ([3, 2, 0, 1], -1),
+                        ([2, 3, 1, 0], -1),
+                        ([3, 2, 1, 0], 1),
+                    ];
+
+                    for (perm, sign) in riemann_perms {
+                        let trial: Vec<lasso::Spur> =
+                            perm.iter().map(|&p| index_names[p]).collect();
+                        let trial_vars: Vec<ax_ir::Variance> =
+                            perm.iter().map(|&p| variances[p].clone()).collect();
 
                         for rule in rules {
-                            if rule.tensor == tensor_name && rule.indices.len() == indices.len() {
+                            if rule.tensor == tensor_name && rule.indices.len() == 4 {
                                 let matches = rule
                                     .indices
                                     .iter()
-                                    .zip(trial.iter().zip(variances.iter()))
+                                    .zip(trial.iter().zip(trial_vars.iter()))
                                     .all(|((rv, rvar), (&tv, variance))| {
                                         *rv == tv && *rvar == *variance
                                     });
                                 if matches {
-                                    let sign =
-                                        permutation_sign_between(&original_values, &slot_values);
                                     return Some(if sign < 0 {
                                         Expr::neg(rule.value.clone())
                                     } else {
@@ -1768,52 +1814,9 @@ fn lookup_component_rule(
                                 }
                             }
                         }
-
-                        if !next_permutation_by_key(&mut slot_values, interner) {
-                            break;
-                        }
                     }
                 }
-                ax_ir::TensorProperty::RiemannSymmetry => {
-                    if indices.len() == 4 {
-                        let riemann_perms: [([usize; 4], i32); 8] = [
-                            ([0, 1, 2, 3], 1),
-                            ([1, 0, 2, 3], -1),
-                            ([0, 1, 3, 2], -1),
-                            ([1, 0, 3, 2], 1),
-                            ([2, 3, 0, 1], 1),
-                            ([3, 2, 0, 1], -1),
-                            ([2, 3, 1, 0], -1),
-                            ([3, 2, 1, 0], 1),
-                        ];
-
-                        for (perm, sign) in riemann_perms {
-                            let trial: Vec<lasso::Spur> =
-                                perm.iter().map(|&p| index_names[p]).collect();
-                            let trial_vars: Vec<ax_ir::Variance> =
-                                perm.iter().map(|&p| variances[p].clone()).collect();
-
-                            for rule in rules {
-                                if rule.tensor == tensor_name && rule.indices.len() == 4 {
-                                    let matches = rule
-                                        .indices
-                                        .iter()
-                                        .zip(trial.iter().zip(trial_vars.iter()))
-                                        .all(|((rv, rvar), (&tv, variance))| {
-                                            *rv == tv && *rvar == *variance
-                                        });
-                                    if matches {
-                                        return Some(if sign < 0 {
-                                            Expr::neg(rule.value.clone())
-                                        } else {
-                                            rule.value.clone()
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            }
             _ => {}
         }
     }
@@ -1966,15 +1969,7 @@ fn handle_derivative(
     let inner = &args[0];
     let inner_evaled = match inner {
         Expr::Call(f, inner_args) if is_derivative_name(interner.resolve(*f)) => {
-            handle_derivative(
-                inner,
-                *f,
-                inner_args,
-                rules,
-                env,
-                properties,
-                interner,
-            )
+            handle_derivative(inner, *f, inner_args, rules, env, properties, interner)
         }
         _ => evaluate_node(inner, rules, env, properties, interner),
     };
@@ -2121,13 +2116,9 @@ fn handle_factor(
 
             let all_concrete = indices.iter().all(|idx| env.is_coordinate(idx.name));
             if all_concrete {
-                if let Some(value) = lookup_component_rule(
-                    *tensor_name,
-                    indices,
-                    rules,
-                    properties,
-                    interner,
-                ) {
+                if let Some(value) =
+                    lookup_component_rule(*tensor_name, indices, rules, properties, interner)
+                {
                     return value;
                 }
                 return Expr::zero();
@@ -2269,15 +2260,16 @@ impl SymbolicMatrix {
     }
 
     pub fn symbolic_inverse(&self, interner: &ax_ir::Interner) -> Self {
-        let is_diagonal = (0..self.dim).all(|row| {
-            (0..self.dim).all(|col| row == col || self.data[row][col] == Expr::zero())
-        });
+        let is_diagonal = (0..self.dim)
+            .all(|row| (0..self.dim).all(|col| row == col || self.data[row][col] == Expr::zero()));
 
         if is_diagonal {
             let mut inverse = Self::new(self.dim);
             for i in 0..self.dim {
-                inverse.data[i][i] =
-                    simplify_expr(Expr::pow(self.data[i][i].clone(), Expr::Int((-1).into())), interner);
+                inverse.data[i][i] = simplify_expr(
+                    Expr::pow(self.data[i][i].clone(), Expr::Int((-1).into())),
+                    interner,
+                );
             }
             return inverse;
         }
@@ -2378,7 +2370,10 @@ fn tensor_sort_key(expr: &Expr, interner: &ax_ir::Interner) -> (u8, String, Stri
             (2, base_name, first_index)
         }
         Expr::Call(f, args) => {
-            let first_arg = args.first().map(|arg| format!("{arg:?}")).unwrap_or_default();
+            let first_arg = args
+                .first()
+                .map(|arg| format!("{arg:?}"))
+                .unwrap_or_default();
             (2, interner.resolve(*f).to_string(), first_arg)
         }
         _ => (4, format!("{expr:?}"), String::new()),
@@ -2433,7 +2428,12 @@ pub fn sort_product(
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases
                 .iter()
-                .map(|(value, cond)| (sort_product(value, _tensor_properties, interner), cond.clone()))
+                .map(|(value, cond)| {
+                    (
+                        sort_product(value, _tensor_properties, interner),
+                        cond.clone(),
+                    )
+                })
                 .collect(),
         ),
         Expr::Let(name, value, body) => Expr::Let(
@@ -2493,10 +2493,7 @@ pub fn product_rule(
                     .collect(),
             ),
             Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Expr::zero(),
-            _ => Expr::Call(
-                *f,
-                vec![product_rule(&args[0], derivative_syms, interner)],
-            ),
+            _ => Expr::Call(*f, vec![product_rule(&args[0], derivative_syms, interner)]),
         },
         Expr::Add(terms) => Expr::add(
             terms
@@ -2565,10 +2562,7 @@ pub fn product_rule(
     }
 }
 
-pub fn tensor_distribute(
-    expr: &ax_ir::Expr,
-    interner: &ax_ir::Interner,
-) -> ax_ir::Expr {
+pub fn tensor_distribute(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
     match expr {
         Expr::Mul(factors) => {
             let distributed_factors: Vec<Expr> = factors
@@ -2705,7 +2699,9 @@ pub fn epsilon_to_delta(
                 return Expr::mul(
                     factors
                         .iter()
-                        .map(|factor| epsilon_to_delta(factor, epsilon_sym, delta_sym, dim, interner))
+                        .map(|factor| {
+                            epsilon_to_delta(factor, epsilon_sym, delta_sym, dim, interner)
+                        })
                         .collect(),
                 );
             }
@@ -2758,9 +2754,7 @@ pub fn epsilon_to_delta(
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| *j != *i1 && *j != *i2)
-                .map(|(_, factor)| {
-                    epsilon_to_delta(factor, epsilon_sym, delta_sym, dim, interner)
-                })
+                .map(|(_, factor)| epsilon_to_delta(factor, epsilon_sym, delta_sym, dim, interner))
                 .collect();
             remaining.push(coeff);
             remaining.push(delta_product);
@@ -2796,7 +2790,13 @@ pub fn epsilon_to_delta(
         Expr::FnDef(name, params, body) => Expr::FnDef(
             *name,
             params.clone(),
-            Box::new(epsilon_to_delta(body, epsilon_sym, delta_sym, dim, interner)),
+            Box::new(epsilon_to_delta(
+                body,
+                epsilon_sym,
+                delta_sym,
+                dim,
+                interner,
+            )),
         ),
         Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(epsilon_to_delta(lhs, epsilon_sym, delta_sym, dim, interner)),
@@ -2807,14 +2807,29 @@ pub fn epsilon_to_delta(
             cases
                 .iter()
                 .map(|(value, cond)| {
-                    (epsilon_to_delta(value, epsilon_sym, delta_sym, dim, interner), cond.clone())
+                    (
+                        epsilon_to_delta(value, epsilon_sym, delta_sym, dim, interner),
+                        cond.clone(),
+                    )
                 })
                 .collect(),
         ),
         Expr::Let(name, value, body) => Expr::Let(
             *name,
-            Box::new(epsilon_to_delta(value, epsilon_sym, delta_sym, dim, interner)),
-            Box::new(epsilon_to_delta(body, epsilon_sym, delta_sym, dim, interner)),
+            Box::new(epsilon_to_delta(
+                value,
+                epsilon_sym,
+                delta_sym,
+                dim,
+                interner,
+            )),
+            Box::new(epsilon_to_delta(
+                body,
+                epsilon_sym,
+                delta_sym,
+                dim,
+                interner,
+            )),
         ),
         Expr::List(items) => Expr::List(
             items
@@ -3035,105 +3050,116 @@ pub fn canonicalize_indices(
             if let Expr::Sym(sym) = &base_expr {
                 for prop in properties.get_properties_with_indices(*sym, &indices) {
                     match prop {
-                            ax_ir::TensorProperty::Symmetric(positions) => {
-                                let mut original = positions
-                                    .iter()
-                                    .filter_map(|&pos| indices.get(pos).cloned())
-                                    .collect::<Vec<_>>();
-                                let mut sorted = original.clone();
-                                sorted.sort_by_key(|idx| sort_key(idx, interner));
-                                for (slot, value) in positions.iter().zip(sorted.iter()) {
-                                    if let Some(target) = indices.get_mut(*slot) {
-                                        *target = value.clone();
-                                    }
-                                }
-                                original.clear();
-                            }
-                            ax_ir::TensorProperty::AntiSymmetric(positions) => {
-                                let original = positions
-                                    .iter()
-                                    .filter_map(|&pos| indices.get(pos).cloned())
-                                    .collect::<Vec<_>>();
-                                if original.len() >= 2 {
-                                    for i in 0..original.len() {
-                                        for j in (i + 1)..original.len() {
-                                            if original[i] == original[j] {
-                                                return Expr::zero();
-                                            }
-                                        }
-                                    }
-                                }
-                                let mut sorted = original.clone();
-                                sorted.sort_by_key(|idx| sort_key(idx, interner));
-                                if permutation_parity(&original, &sorted) {
-                                    negate = !negate;
-                                }
-                                for (slot, value) in positions.iter().zip(sorted.iter()) {
-                                    if let Some(target) = indices.get_mut(*slot) {
-                                        *target = value.clone();
-                                    }
+                        ax_ir::TensorProperty::Symmetric(positions) => {
+                            let mut original = positions
+                                .iter()
+                                .filter_map(|&pos| indices.get(pos).cloned())
+                                .collect::<Vec<_>>();
+                            let mut sorted = original.clone();
+                            sorted.sort_by_key(|idx| sort_key(idx, interner));
+                            for (slot, value) in positions.iter().zip(sorted.iter()) {
+                                if let Some(target) = indices.get_mut(*slot) {
+                                    *target = value.clone();
                                 }
                             }
-                            ax_ir::TensorProperty::RiemannSymmetry => {
-                                if indices.len() == 4 {
-                                    let pairs = [vec![0usize, 1usize], vec![2usize, 3usize]];
-                                    for positions in pairs {
-                                        let original = positions
-                                            .iter()
-                                            .filter_map(|&pos| indices.get(pos).cloned())
-                                            .collect::<Vec<_>>();
-                                        if original[0] == original[1] {
+                            original.clear();
+                        }
+                        ax_ir::TensorProperty::AntiSymmetric(positions) => {
+                            let original = positions
+                                .iter()
+                                .filter_map(|&pos| indices.get(pos).cloned())
+                                .collect::<Vec<_>>();
+                            if original.len() >= 2 {
+                                for i in 0..original.len() {
+                                    for j in (i + 1)..original.len() {
+                                        if original[i] == original[j] {
                                             return Expr::zero();
                                         }
-                                        let mut sorted = original.clone();
-                                        sorted.sort_by_key(|idx| sort_key(idx, interner));
-                                        if permutation_parity(&original, &sorted) {
-                                            negate = !negate;
-                                        }
-                                        for (slot, value) in positions.iter().zip(sorted.iter()) {
-                                            indices[*slot] = value.clone();
-                                        }
-                                    }
-
-                                    let left = vec![indices[0].clone(), indices[1].clone()];
-                                    let right = vec![indices[2].clone(), indices[3].clone()];
-                                    let left_key = left.iter().map(|i| sort_key(i, interner)).collect::<Vec<_>>();
-                                    let right_key = right.iter().map(|i| sort_key(i, interner)).collect::<Vec<_>>();
-                                    if right_key < left_key {
-                                        indices.swap(0, 2);
-                                        indices.swap(1, 3);
                                     }
                                 }
                             }
-                            ax_ir::TensorProperty::Traceless
-                            | ax_ir::TensorProperty::Metric
-                            | ax_ir::TensorProperty::InverseMetric
-                            | ax_ir::TensorProperty::KroneckerDelta
-                            | ax_ir::TensorProperty::EpsilonTensor
-                            | ax_ir::TensorProperty::Derivative
-                            | ax_ir::TensorProperty::PartialDerivative
-                            | ax_ir::TensorProperty::CovariantDerivative
-                            | ax_ir::TensorProperty::Depends(_)
-                            | ax_ir::TensorProperty::Spinor
-                            | ax_ir::TensorProperty::DiracBar
-                            | ax_ir::TensorProperty::GammaMatrixProp
-                            | ax_ir::TensorProperty::Commuting
-                            | ax_ir::TensorProperty::AntiCommuting
-                            | ax_ir::TensorProperty::NonCommuting
-                            | ax_ir::TensorProperty::SortOrder(_)
-                            | ax_ir::TensorProperty::TableauSymmetry { .. }
-                            | ax_ir::TensorProperty::SatisfiesBianchi
-                            | ax_ir::TensorProperty::WeylTensor
-                            | ax_ir::TensorProperty::DifferentialFormDegree(_) => {}
+                            let mut sorted = original.clone();
+                            sorted.sort_by_key(|idx| sort_key(idx, interner));
+                            if permutation_parity(&original, &sorted) {
+                                negate = !negate;
+                            }
+                            for (slot, value) in positions.iter().zip(sorted.iter()) {
+                                if let Some(target) = indices.get_mut(*slot) {
+                                    *target = value.clone();
+                                }
+                            }
+                        }
+                        ax_ir::TensorProperty::RiemannSymmetry => {
+                            if indices.len() == 4 {
+                                let pairs = [vec![0usize, 1usize], vec![2usize, 3usize]];
+                                for positions in pairs {
+                                    let original = positions
+                                        .iter()
+                                        .filter_map(|&pos| indices.get(pos).cloned())
+                                        .collect::<Vec<_>>();
+                                    if original[0] == original[1] {
+                                        return Expr::zero();
+                                    }
+                                    let mut sorted = original.clone();
+                                    sorted.sort_by_key(|idx| sort_key(idx, interner));
+                                    if permutation_parity(&original, &sorted) {
+                                        negate = !negate;
+                                    }
+                                    for (slot, value) in positions.iter().zip(sorted.iter()) {
+                                        indices[*slot] = value.clone();
+                                    }
+                                }
+
+                                let left = vec![indices[0].clone(), indices[1].clone()];
+                                let right = vec![indices[2].clone(), indices[3].clone()];
+                                let left_key = left
+                                    .iter()
+                                    .map(|i| sort_key(i, interner))
+                                    .collect::<Vec<_>>();
+                                let right_key = right
+                                    .iter()
+                                    .map(|i| sort_key(i, interner))
+                                    .collect::<Vec<_>>();
+                                if right_key < left_key {
+                                    indices.swap(0, 2);
+                                    indices.swap(1, 3);
+                                }
+                            }
+                        }
+                        ax_ir::TensorProperty::Traceless
+                        | ax_ir::TensorProperty::Metric
+                        | ax_ir::TensorProperty::InverseMetric
+                        | ax_ir::TensorProperty::KroneckerDelta
+                        | ax_ir::TensorProperty::EpsilonTensor
+                        | ax_ir::TensorProperty::Derivative
+                        | ax_ir::TensorProperty::PartialDerivative
+                        | ax_ir::TensorProperty::CovariantDerivative
+                        | ax_ir::TensorProperty::Depends(_)
+                        | ax_ir::TensorProperty::Spinor
+                        | ax_ir::TensorProperty::DiracBar
+                        | ax_ir::TensorProperty::GammaMatrixProp
+                        | ax_ir::TensorProperty::Commuting
+                        | ax_ir::TensorProperty::AntiCommuting
+                        | ax_ir::TensorProperty::NonCommuting
+                        | ax_ir::TensorProperty::SortOrder(_)
+                        | ax_ir::TensorProperty::TableauSymmetry { .. }
+                        | ax_ir::TensorProperty::SatisfiesBianchi
+                        | ax_ir::TensorProperty::WeylTensor
+                        | ax_ir::TensorProperty::DifferentialFormDegree(_) => {}
                     }
                 }
             }
 
             let out = Expr::Indexed(Box::new(base_expr), indices);
-            if negate { Expr::neg(out) } else { out }
+            if negate {
+                Expr::neg(out)
+            } else {
+                out
+            }
         }
         Expr::Add(terms) => Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .map(|term| canonicalize_indices(term, properties, interner))
                 .collect(),
         ),
@@ -3169,8 +3195,14 @@ pub fn canonicalize_indices(
             *trust,
         ),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
-                .map(|(value, cond)| (canonicalize_indices(value, properties, interner), cond.clone()))
+            cases
+                .iter()
+                .map(|(value, cond)| {
+                    (
+                        canonicalize_indices(value, properties, interner),
+                        cond.clone(),
+                    )
+                })
                 .collect(),
         ),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
@@ -3309,7 +3341,8 @@ pub fn rename_dummies<E: DummyRenameEnv>(
 
     match expr {
         Expr::Add(terms) => Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .map(|term| rename_dummies(term, env, interner))
                 .collect(),
         ),
@@ -3748,8 +3781,7 @@ pub fn eliminate_kronecker(
                         && right_var == ax_ir::Variance::Down
                     {
                         (right_name, left_name)
-                    } else if left_var == ax_ir::Variance::Down
-                        && right_var == ax_ir::Variance::Up
+                    } else if left_var == ax_ir::Variance::Down && right_var == ax_ir::Variance::Up
                     {
                         (left_name, right_name)
                     } else {
@@ -3831,7 +3863,8 @@ pub fn eliminate_metric(
                         },
                         _ => None,
                     };
-                    let Some((sym, left_name, left_var, right_name, right_var)) = metric_info else {
+                    let Some((sym, left_name, left_var, right_name, right_var)) = metric_info
+                    else {
                         continue;
                     };
 
@@ -3883,7 +3916,11 @@ pub fn eliminate_metric(
                             if i == j {
                                 continue;
                             }
-                            if has_index_with_variance(&remaining[j], contract_idx, &target_variance) {
+                            if has_index_with_variance(
+                                &remaining[j],
+                                contract_idx,
+                                &target_variance,
+                            ) {
                                 remaining[j] = replace_index_with_variance(
                                     &remaining[j],
                                     contract_idx,
@@ -3997,9 +4034,12 @@ pub fn eliminate_vielbein(
                 .map(|t| eliminate_vielbein(t, vielbein_sym, inv_vielbein_sym, interner))
                 .collect(),
         ),
-        Expr::Neg(e) => {
-            Expr::neg(eliminate_vielbein(e, vielbein_sym, inv_vielbein_sym, interner))
-        }
+        Expr::Neg(e) => Expr::neg(eliminate_vielbein(
+            e,
+            vielbein_sym,
+            inv_vielbein_sym,
+            interner,
+        )),
         _ => expr.clone(),
     }
 }
@@ -4041,9 +4081,10 @@ pub fn diff_component(
     fn diff(expr: &Expr, var: lasso::Spur, interner: &Interner) -> Expr {
         match expr {
             Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Expr::zero(),
-            Expr::Complex(re, im) => {
-                Expr::Complex(Box::new(diff(re, var, interner)), Box::new(diff(im, var, interner)))
-            }
+            Expr::Complex(re, im) => Expr::Complex(
+                Box::new(diff(re, var, interner)),
+                Box::new(diff(im, var, interner)),
+            ),
             Expr::Sym(s) => {
                 if *s == var {
                     Expr::one()
@@ -4117,7 +4158,8 @@ pub fn diff_component(
             Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
             Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
             Expr::Piecewise(cases) => Expr::Piecewise(
-                cases.iter()
+                cases
+                    .iter()
                     .map(|(value, condition)| (diff(value, var, interner), condition.clone()))
                     .collect(),
             ),
@@ -4383,7 +4425,8 @@ fn eval_expr(expr: &Expr) -> Expr {
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (eval_expr(value), condition.clone()))
                 .collect(),
         ),
@@ -4417,7 +4460,10 @@ fn node_count(expr: &Expr) -> usize {
         Expr::Assume(_, assumptions) => 1 + assumptions.len(),
         Expr::SetConvention(field, value) => 1 + field.len() + value.len(),
         Expr::Piecewise(cases) => {
-            1 + cases.iter().map(|(value, _)| node_count(value)).sum::<usize>()
+            1 + cases
+                .iter()
+                .map(|(value, _)| node_count(value))
+                .sum::<usize>()
         }
         Expr::Indexed(base, _) => 1 + node_count(base),
         Expr::Let(_, val, body) => 1 + node_count(val) + node_count(body),
@@ -4517,7 +4563,8 @@ fn expand_expr(expr: &Expr, interner: &Interner) -> Expr {
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (expand_expr(value, interner), condition.clone()))
                 .collect(),
         ),
@@ -4669,7 +4716,8 @@ pub(crate) fn collect_terms_expr(expr: &Expr, interner: &Interner) -> Expr {
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (collect_terms_expr(value, interner), condition.clone()))
                 .collect(),
         ),
@@ -4975,11 +5023,7 @@ pub fn geodesic_equations(
                 let dot_k = Expr::Sym(
                     interner.get_or_intern(&format!("dot_{}", interner.resolve(coords[k]))),
                 );
-                terms.push(Expr::mul(vec![
-                    gamma[i][j][k].clone(),
-                    dot_j,
-                    dot_k,
-                ]));
+                terms.push(Expr::mul(vec![gamma[i][j][k].clone(), dot_j, dot_k]));
             }
         }
         out[i] = simplify_expr(Expr::neg(Expr::add(terms)), interner);
@@ -5085,8 +5129,7 @@ pub fn unwrap_derivatives(
                 Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Expr::zero(),
                 // Recurse into anything else
                 other => {
-                    let inner =
-                        unwrap_derivatives(other, derivative_syms, depends, interner);
+                    let inner = unwrap_derivatives(other, derivative_syms, depends, interner);
                     Expr::Call(*f, vec![inner])
                 }
             }
@@ -5103,17 +5146,12 @@ pub fn unwrap_derivatives(
                 .map(|fac| unwrap_derivatives(fac, derivative_syms, depends, interner))
                 .collect(),
         ),
-        Expr::Neg(e) => {
-            Expr::neg(unwrap_derivatives(e, derivative_syms, depends, interner))
-        }
+        Expr::Neg(e) => Expr::neg(unwrap_derivatives(e, derivative_syms, depends, interner)),
         _ => expr.clone(),
     }
 }
 
-fn depends_on_anything(
-    expr: &Expr,
-    depends: &HashMap<lasso::Spur, Vec<lasso::Spur>>,
-) -> bool {
+fn depends_on_anything(expr: &Expr, depends: &HashMap<lasso::Spur, Vec<lasso::Spur>>) -> bool {
     match expr {
         Expr::Sym(s) => depends.contains_key(s),
         Expr::Indexed(base, _) => {
@@ -5186,9 +5224,7 @@ pub fn integrate_by_parts(
                 .map(|t| integrate_by_parts(t, away_from, derivative_syms, interner))
                 .collect(),
         ),
-        Expr::Neg(e) => {
-            Expr::neg(integrate_by_parts(e, away_from, derivative_syms, interner))
-        }
+        Expr::Neg(e) => Expr::neg(integrate_by_parts(e, away_from, derivative_syms, interner)),
         _ => expr.clone(),
     }
 }
@@ -5260,12 +5296,14 @@ pub fn keep_weight(
         Expr::Add(terms) => {
             let kept: Vec<Expr> = terms
                 .iter()
-                .filter(|t| {
-                    compute_weight(t, weights, label, interner) == Some(target_weight)
-                })
+                .filter(|t| compute_weight(t, weights, label, interner) == Some(target_weight))
                 .cloned()
                 .collect();
-            if kept.is_empty() { Expr::zero() } else { Expr::add(kept) }
+            if kept.is_empty() {
+                Expr::zero()
+            } else {
+                Expr::add(kept)
+            }
         }
         _ => {
             if compute_weight(expr, weights, label, interner) == Some(target_weight) {
@@ -5289,12 +5327,14 @@ pub fn drop_weight(
         Expr::Add(terms) => {
             let kept: Vec<Expr> = terms
                 .iter()
-                .filter(|t| {
-                    compute_weight(t, weights, label, interner) != Some(target_weight)
-                })
+                .filter(|t| compute_weight(t, weights, label, interner) != Some(target_weight))
                 .cloned()
                 .collect();
-            if kept.is_empty() { Expr::zero() } else { Expr::add(kept) }
+            if kept.is_empty() {
+                Expr::zero()
+            } else {
+                Expr::add(kept)
+            }
         }
         _ => {
             if compute_weight(expr, weights, label, interner) == Some(target_weight) {
@@ -5321,8 +5361,12 @@ pub fn complete_inverse_metric(
 
     let mut g = SymbolicMatrix::new(dim);
     for rule in metric_rules {
-        if rule.tensor != metric_sym { continue; }
-        if rule.indices.len() != 2 { continue; }
+        if rule.tensor != metric_sym {
+            continue;
+        }
+        if rule.indices.len() != 2 {
+            continue;
+        }
 
         let i = coordinates.iter().position(|c| *c == rule.indices[0].0);
         let j = coordinates.iter().position(|c| *c == rule.indices[1].0);
@@ -5383,9 +5427,13 @@ pub fn einsteinify(
             let mut used = std::collections::HashSet::new();
 
             for i in 0..all_indices.len() {
-                if used.contains(&i) { continue; }
+                if used.contains(&i) {
+                    continue;
+                }
                 for j in (i + 1)..all_indices.len() {
-                    if used.contains(&j) { continue; }
+                    if used.contains(&j) {
+                        continue;
+                    }
                     if all_indices[i].2.name == all_indices[j].2.name
                         && all_indices[i].2.variance == all_indices[j].2.variance
                     {
@@ -5667,7 +5715,11 @@ pub fn explicit_indices(
                     Expr::Sym(s) => Some(*s),
                     Expr::Call(f, _) => Some(*f),
                     Expr::Indexed(base, _) => {
-                        if let Expr::Sym(s) = base.as_ref() { Some(*s) } else { None }
+                        if let Expr::Sym(s) = base.as_ref() {
+                            Some(*s)
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 };
@@ -5800,8 +5852,8 @@ pub fn rewrite_indices(
                                 continue; // already correct variance
                             }
 
-                            let dummy_name = interner
-                                .get_or_intern(&format!("_rw{}", dummy_counter));
+                            let dummy_name =
+                                interner.get_or_intern(&format!("_rw{}", dummy_counter));
                             dummy_counter += 1;
 
                             // Lowering (Up → Down): insert g_{orig, dummy}, tensor gets dummy Up
@@ -5860,17 +5912,13 @@ pub fn rewrite_indices(
         Expr::Mul(factors) => Expr::mul(
             factors
                 .iter()
-                .map(|f| {
-                    rewrite_indices(f, target_tensors, metric_sym, inv_metric_sym, interner)
-                })
+                .map(|f| rewrite_indices(f, target_tensors, metric_sym, inv_metric_sym, interner))
                 .collect(),
         ),
         Expr::Add(terms) => Expr::add(
             terms
                 .iter()
-                .map(|t| {
-                    rewrite_indices(t, target_tensors, metric_sym, inv_metric_sym, interner)
-                })
+                .map(|t| rewrite_indices(t, target_tensors, metric_sym, inv_metric_sym, interner))
                 .collect(),
         ),
         Expr::Neg(e) => Expr::neg(rewrite_indices(
@@ -6013,13 +6061,17 @@ fn tensor_structures_equal(a: &Expr, b: &Expr, _interner: &Interner) -> bool {
         (Expr::Indexed(ba, ia), Expr::Indexed(bb, ib)) => {
             ba == bb
                 && ia.len() == ib.len()
-                && ia.iter().zip(ib.iter()).all(|(x, y)| {
-                    x.name == y.name && x.variance == y.variance
-                })
+                && ia
+                    .iter()
+                    .zip(ib.iter())
+                    .all(|(x, y)| x.name == y.name && x.variance == y.variance)
         }
         (Expr::Mul(fa), Expr::Mul(fb)) => {
             fa.len() == fb.len()
-                && fa.iter().zip(fb.iter()).all(|(x, y)| tensor_structures_equal(x, y, _interner))
+                && fa
+                    .iter()
+                    .zip(fb.iter())
+                    .all(|(x, y)| tensor_structures_equal(x, y, _interner))
         }
         (Expr::Sym(a), Expr::Sym(b)) => a == b,
         _ => a == b,
@@ -6066,9 +6118,7 @@ pub fn decompose_product(
     }
 
     let (idx_a, idx_b) = match (indexed[0], indexed[1]) {
-        (Expr::Indexed(_, ia), Expr::Indexed(_, ib)) if ia.len() == 2 && ib.len() == 2 => {
-            (ia, ib)
-        }
+        (Expr::Indexed(_, ia), Expr::Indexed(_, ib)) if ia.len() == 2 && ib.len() == 2 => (ia, ib),
         _ => return expr.clone(),
     };
 
@@ -6089,8 +6139,16 @@ pub fn decompose_product(
         Expr::Indexed(
             Box::new(Expr::Sym(g)),
             vec![
-                ax_ir::Index { name: i1, variance: v1, index_type: None },
-                ax_ir::Index { name: i2, variance: v2, index_type: None },
+                ax_ir::Index {
+                    name: i1,
+                    variance: v1,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: i2,
+                    variance: v2,
+                    index_type: None,
+                },
             ],
         )
     };
@@ -6106,10 +6164,7 @@ pub fn decompose_product(
         mk_g(b, va_b.clone(), c, va_c.clone()),
     ]);
     // g_{ab} g_{cd}
-    let g_ab_cd = Expr::mul(vec![
-        mk_g(a, va_a, b, va_b),
-        mk_g(c, va_c, d, va_d),
-    ]);
+    let g_ab_cd = Expr::mul(vec![mk_g(a, va_a, b, va_b), mk_g(c, va_c, d, va_d)]);
 
     // Symmetric part: (1/2)(g_ac g_bd + g_ad g_bc)
     let sym_part = Expr::mul(vec![
@@ -6125,7 +6180,10 @@ pub fn decompose_product(
 
     // Trace part with dimension factor
     let trace_part = Expr::mul(vec![
-        Expr::Rational(BigRational::new(1.into(), num_bigint::BigInt::from(dim as i64))),
+        Expr::Rational(BigRational::new(
+            1.into(),
+            num_bigint::BigInt::from(dim as i64),
+        )),
         g_ab_cd,
     ]);
 
@@ -6156,9 +6214,13 @@ pub fn expand_implicit(
     interner: &Interner,
 ) -> Expr {
     match expr {
-        Expr::Mul(_) | Expr::Sym(_) => {
-            explicit_indices(expr, implicit_index_tensors, available_indices, n_indices_per_tensor, interner)
-        }
+        Expr::Mul(_) | Expr::Sym(_) => explicit_indices(
+            expr,
+            implicit_index_tensors,
+            available_indices,
+            n_indices_per_tensor,
+            interner,
+        ),
         Expr::Add(terms) => Expr::add(
             terms
                 .iter()
@@ -6169,7 +6231,13 @@ pub fn expand_implicit(
                     let term_indices: Vec<lasso::Spur> = (offset..offset + 20)
                         .map(|j| interner.get_or_intern(&format!("_exp{}", j)))
                         .collect();
-                    expand_implicit(term, implicit_index_tensors, &term_indices, n_indices_per_tensor, interner)
+                    expand_implicit(
+                        term,
+                        implicit_index_tensors,
+                        &term_indices,
+                        n_indices_per_tensor,
+                        interner,
+                    )
                 })
                 .collect(),
         ),
@@ -6183,7 +6251,15 @@ pub fn expand_implicit(
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()
-                .map(|a| expand_implicit(a, implicit_index_tensors, available_indices, n_indices_per_tensor, interner))
+                .map(|a| {
+                    expand_implicit(
+                        a,
+                        implicit_index_tensors,
+                        available_indices,
+                        n_indices_per_tensor,
+                        interner,
+                    )
+                })
                 .collect(),
         ),
         _ => expr.clone(),
@@ -6206,8 +6282,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(a_sym)),
             vec![
-                Index { name: mu, variance: Variance::Down, index_type: None },
-                Index { name: nu, variance: Variance::Up, index_type: None },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: nu,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
             ],
         );
         let ic = index_classifier::classify_indices(&expr);
@@ -6227,13 +6311,25 @@ mod tests {
         let expr = Expr::mul(vec![
             Expr::Indexed(
                 Box::new(Expr::Sym(a_sym)),
-                vec![Index { name: mu, variance: Variance::Down, index_type: None }],
+                vec![Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
             ),
             Expr::Indexed(
                 Box::new(Expr::Sym(b_sym)),
                 vec![
-                    Index { name: mu, variance: Variance::Up, index_type: None },
-                    Index { name: nu, variance: Variance::Down, index_type: None },
+                    Index {
+                        name: mu,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                    Index {
+                        name: nu,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
                 ],
             ),
         ]);
@@ -6249,7 +6345,11 @@ mod tests {
         let mu = interner.get_or_intern("mu");
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(interner.get_or_intern("T"))),
-            vec![Index { name: mu, variance: Variance::Down, index_type: None }],
+            vec![Index {
+                name: mu,
+                variance: Variance::Down,
+                index_type: None,
+            }],
         );
         let ic = index_classifier::classify_indices(&expr);
         let fresh = index_classifier::get_fresh_dummy(&ic, "d", &interner);
@@ -6389,12 +6489,8 @@ mod tests {
         ]);
 
         let gamma = christoffel_from_metric(&g, &coords, &interner);
-        let riemann = riemann_from_christoffel(
-            &gamma,
-            &coords,
-            &interner,
-            &ax_ir::Convention::default(),
-        );
+        let riemann =
+            riemann_from_christoffel(&gamma, &coords, &interner, &ax_ir::Convention::default());
         let k = kretschner_scalar(&riemann, &g, &interner);
         assert_eq!(k, Expr::zero());
     }
@@ -6906,19 +7002,51 @@ mod tests {
         let e1 = Expr::Indexed(
             Box::new(Expr::Sym(eps)),
             vec![
-                ax_ir::Index { name: a, variance: ax_ir::Variance::Up, index_type: None },
-                ax_ir::Index { name: b, variance: ax_ir::Variance::Up, index_type: None },
-                ax_ir::Index { name: c, variance: ax_ir::Variance::Up, index_type: None },
-                ax_ir::Index { name: d, variance: ax_ir::Variance::Up, index_type: None },
+                ax_ir::Index {
+                    name: a,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: b,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: c,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: d,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
             ],
         );
         let e2 = Expr::Indexed(
             Box::new(Expr::Sym(eps)),
             vec![
-                ax_ir::Index { name: a, variance: ax_ir::Variance::Down, index_type: None },
-                ax_ir::Index { name: b, variance: ax_ir::Variance::Down, index_type: None },
-                ax_ir::Index { name: c, variance: ax_ir::Variance::Down, index_type: None },
-                ax_ir::Index { name: d, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index {
+                    name: a,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: b,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: c,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: d,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let product = Expr::mul(vec![e1, e2]);
@@ -6957,8 +7085,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t_sym)),
             vec![
-                ax_ir::Index { name: mu, variance: ax_ir::Variance::Up, index_type: None },
-                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Up,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
             ],
         );
 
@@ -6993,8 +7129,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(g)),
             vec![
-                Index { name: mu, variance: Variance::Down, index_type: None },
-                Index { name: mu, variance: Variance::Down, index_type: None },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
 
@@ -7031,8 +7175,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(g)),
             vec![
-                Index { name: t, variance: Variance::Down, index_type: None },
-                Index { name: r, variance: Variance::Down, index_type: None },
+                Index {
+                    name: t,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: r,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
 
@@ -7072,8 +7224,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(g)),
             vec![
-                Index { name: r, variance: Variance::Down, index_type: None },
-                Index { name: t, variance: Variance::Down, index_type: None },
+                Index {
+                    name: r,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: t,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
 
@@ -7105,8 +7265,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(f)),
             vec![
-                Index { name: r, variance: Variance::Down, index_type: None },
-                Index { name: t, variance: Variance::Down, index_type: None },
+                Index {
+                    name: r,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: t,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
 
@@ -7133,9 +7301,21 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(eps)),
             vec![
-                Index { name: x, variance: Variance::Down, index_type: None },
-                Index { name: y, variance: Variance::Down, index_type: None },
-                Index { name: z, variance: Variance::Down, index_type: None },
+                Index {
+                    name: x,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: y,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: z,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = handle_epsilon(&expr, eps, &env, &interner);
@@ -7144,9 +7324,21 @@ mod tests {
         let expr2 = Expr::Indexed(
             Box::new(Expr::Sym(eps)),
             vec![
-                Index { name: y, variance: Variance::Down, index_type: None },
-                Index { name: x, variance: Variance::Down, index_type: None },
-                Index { name: z, variance: Variance::Down, index_type: None },
+                Index {
+                    name: y,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: x,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: z,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result2 = handle_epsilon(&expr2, eps, &env, &interner);
@@ -7155,9 +7347,21 @@ mod tests {
         let expr3 = Expr::Indexed(
             Box::new(Expr::Sym(eps)),
             vec![
-                Index { name: x, variance: Variance::Down, index_type: None },
-                Index { name: x, variance: Variance::Down, index_type: None },
-                Index { name: z, variance: Variance::Down, index_type: None },
+                Index {
+                    name: x,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: x,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: z,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result3 = handle_epsilon(&expr3, eps, &env, &interner);
@@ -7172,10 +7376,7 @@ mod tests {
 
         let inner = Expr::Call(
             d,
-            vec![
-                Expr::pow(Expr::Sym(r), Expr::Int(2.into())),
-                Expr::Sym(r),
-            ],
+            vec![Expr::pow(Expr::Sym(r), Expr::Int(2.into())), Expr::Sym(r)],
         );
         let outer = Expr::Call(d, vec![inner, Expr::Sym(r)]);
 
@@ -7194,7 +7395,10 @@ mod tests {
         let expr = Expr::Call(
             d,
             vec![
-                Expr::mul(vec![Expr::Sym(x), Expr::pow(Expr::Sym(x), Expr::Int(2.into()))]),
+                Expr::mul(vec![
+                    Expr::Sym(x),
+                    Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+                ]),
                 Expr::Sym(x),
             ],
         );
@@ -7202,7 +7406,13 @@ mod tests {
         let env = DefaultEvalEnv::new(vec![x], HashMap::new());
         let result = evaluate_components_v2(&expr, &[], &env, &interner);
         let simplified = simplify_expr(result, &interner);
-        assert_eq!(simplified, Expr::mul(vec![Expr::Int(3.into()), Expr::pow(Expr::Sym(x), Expr::Int(2.into()))]));
+        assert_eq!(
+            simplified,
+            Expr::mul(vec![
+                Expr::Int(3.into()),
+                Expr::pow(Expr::Sym(x), Expr::Int(2.into()))
+            ])
+        );
     }
 
     #[test]
@@ -7238,15 +7448,28 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(g_sym)),
             vec![
-                ax_ir::Index { name: nu, variance: ax_ir::Variance::Down, index_type: None },
-                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index {
+                    name: nu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = canonicalise(&expr, &props, &interner);
         if let Expr::Indexed(_, indices) = &result {
             let first = interner.resolve(indices[0].name);
             let second = interner.resolve(indices[1].name);
-            assert!(first <= second, "expected canonical order, got {} {}", first, second);
+            assert!(
+                first <= second,
+                "expected canonical order, got {} {}",
+                first,
+                second
+            );
         } else {
             panic!("expected Indexed, got {:?}", result);
         }
@@ -7326,13 +7549,24 @@ mod tests {
         let mu = interner.get_or_intern("mu");
 
         let mut props = HashMap::new();
-        props.insert(f_sym, vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])]);
+        props.insert(
+            f_sym,
+            vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])],
+        );
 
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(f_sym)),
             vec![
-                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
-                ax_ir::Index { name: mu, variance: ax_ir::Variance::Down, index_type: None },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: mu,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = canonicalise(&expr, &props, &interner);
@@ -7347,7 +7581,10 @@ mod tests {
         let b = interner.get_or_intern("b");
 
         let mut props = HashMap::new();
-        props.insert(f_sym, vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])]);
+        props.insert(
+            f_sym,
+            vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])],
+        );
 
         let t1 = Expr::Indexed(
             Box::new(Expr::Sym(f_sym)),
@@ -7405,10 +7642,26 @@ mod tests {
             Expr::Indexed(
                 Box::new(Expr::Sym(r)),
                 vec![
-                    Index { name: i0, variance: Variance::Down, index_type: None },
-                    Index { name: i1, variance: Variance::Down, index_type: None },
-                    Index { name: i2, variance: Variance::Down, index_type: None },
-                    Index { name: i3, variance: Variance::Down, index_type: None },
+                    Index {
+                        name: i0,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i1,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i2,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i3,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
                 ],
             )
         };
@@ -7588,13 +7841,10 @@ mod tests {
         derivs.insert(d);
         let mut depends = HashMap::new();
         depends.insert(phi, vec![]); // phi is in the depends map → it depends on something
-        // a is NOT in depends → it's a constant
+                                     // a is NOT in depends → it's a constant
 
         // D(a * phi) → a * D(phi)
-        let expr = Expr::Call(
-            d,
-            vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(phi)])],
-        );
+        let expr = Expr::Call(d, vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(phi)])]);
         let result = unwrap_derivatives(&expr, &derivs, &depends, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
         // a should be outside the derivative
@@ -7627,10 +7877,7 @@ mod tests {
         derivs.insert(d);
 
         // D(A) * B → -A * D(B)
-        let expr = Expr::mul(vec![
-            Expr::Call(d, vec![Expr::Sym(a)]),
-            Expr::Sym(b),
-        ]);
+        let expr = Expr::mul(vec![Expr::Call(d, vec![Expr::Sym(a)]), Expr::Sym(b)]);
         let result = integrate_by_parts(&expr, a, &derivs, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains('B') && pp.contains('A'), "got: {pp}");
@@ -7655,7 +7902,10 @@ mod tests {
         ]);
         let result = integrate_by_parts(&expr, a, &derivs, &interner);
         // Result should be a sum of two negated terms
-        assert!(matches!(result, Expr::Add(_)), "expected Add, got: {result:?}");
+        assert!(
+            matches!(result, Expr::Add(_)),
+            "expected Add, got: {result:?}"
+        );
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains('B') && pp.contains('C'), "got: {pp}");
     }
@@ -7788,13 +8038,23 @@ mod tests {
         let b = interner.get_or_intern("b");
 
         // Column tableau with 2 rows: antisymmetrise in positions (0, 1)
-        let tableau = ax_young::YoungTableau { cells: vec![vec![0], vec![1]] };
+        let tableau = ax_young::YoungTableau {
+            cells: vec![vec![0], vec![1]],
+        };
 
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t)),
             vec![
-                Index { name: a, variance: Variance::Down, index_type: None },
-                Index { name: b, variance: Variance::Down, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
 
@@ -7811,13 +8071,23 @@ mod tests {
         let b = interner.get_or_intern("b");
 
         // Row tableau with 1 row: symmetrise in positions (0, 1)
-        let tableau = ax_young::YoungTableau { cells: vec![vec![0, 1]] };
+        let tableau = ax_young::YoungTableau {
+            cells: vec![vec![0, 1]],
+        };
 
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t)),
             vec![
-                Index { name: a, variance: Variance::Down, index_type: None },
-                Index { name: b, variance: Variance::Down, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
 
@@ -7825,7 +8095,10 @@ mod tests {
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains("T"), "got: {pp}");
         // Symmetric result should contain both orderings summed
-        assert!(matches!(result, Expr::Add(_) | Expr::Mul(_)), "got: {result:?}");
+        assert!(
+            matches!(result, Expr::Add(_) | Expr::Mul(_)),
+            "got: {result:?}"
+        );
     }
 
     #[test]
@@ -7841,15 +8114,31 @@ mod tests {
         let d1 = Expr::Indexed(
             Box::new(Expr::Sym(delta)),
             vec![
-                Index { name: a, variance: Variance::Up, index_type: None },
-                Index { name: b, variance: Variance::Down, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let d2 = Expr::Indexed(
             Box::new(Expr::Sym(delta)),
             vec![
-                Index { name: b, variance: Variance::Up, index_type: None },
-                Index { name: c, variance: Variance::Down, index_type: None },
+                Index {
+                    name: b,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: c,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let expr = Expr::mul(vec![d1, d2]);
@@ -7887,8 +8176,16 @@ mod tests {
         let d = Expr::Indexed(
             Box::new(Expr::Sym(delta)),
             vec![
-                Index { name: a, variance: Variance::Up, index_type: None },
-                Index { name: a, variance: Variance::Down, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = reduce_delta(&d, delta, dim, &interner);
@@ -7907,11 +8204,19 @@ mod tests {
         let expr = Expr::mul(vec![
             Expr::Indexed(
                 Box::new(Expr::Sym(t)),
-                vec![Index { name: a, variance: Variance::Up, index_type: None }],
+                vec![Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
             ),
             Expr::Indexed(
                 Box::new(Expr::Sym(s)),
-                vec![Index { name: a, variance: Variance::Up, index_type: None }],
+                vec![Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
             ),
         ]);
         let result = einsteinify(&expr, None, &interner);
@@ -7948,11 +8253,19 @@ mod tests {
         let expr = Expr::mul(vec![
             Expr::Indexed(
                 Box::new(Expr::Sym(t)),
-                vec![Index { name: a, variance: Variance::Down, index_type: None }],
+                vec![Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
             ),
             Expr::Indexed(
                 Box::new(Expr::Sym(s)),
-                vec![Index { name: a, variance: Variance::Down, index_type: None }],
+                vec![Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
             ),
         ]);
         let result = einsteinify(&expr, None, &interner);
@@ -7990,11 +8303,19 @@ mod tests {
         let expr = Expr::mul(vec![
             Expr::Indexed(
                 Box::new(Expr::Sym(t)),
-                vec![Index { name: a, variance: Variance::Up, index_type: None }],
+                vec![Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
             ),
             Expr::Indexed(
                 Box::new(Expr::Sym(s)),
-                vec![Index { name: a, variance: Variance::Down, index_type: None }],
+                vec![Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
             ),
         ]);
         let result = einsteinify(&expr, None, &interner);
@@ -8012,7 +8333,11 @@ mod tests {
         // T[mu-] split mu → {0} + {i}  gives T[0-] + T[i-]
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t_sym)),
-            vec![Index { name: mu, variance: Variance::Down, index_type: None }],
+            vec![Index {
+                name: mu,
+                variance: Variance::Down,
+                index_type: None,
+            }],
         );
         let result = split_index(&expr, &[mu], &[t0], &[i], &interner);
         if let Expr::Add(terms) = &result {
@@ -8035,8 +8360,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t_sym)),
             vec![
-                Index { name: mu, variance: Variance::Down, index_type: None },
-                Index { name: nu, variance: Variance::Down, index_type: None },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: nu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = split_index(&expr, &[mu, nu], &[t0], &[i], &interner);
@@ -8059,7 +8392,11 @@ mod tests {
         // T[nu-] doesn't contain mu — unchanged
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t_sym)),
-            vec![Index { name: nu, variance: Variance::Down, index_type: None }],
+            vec![Index {
+                name: nu,
+                variance: Variance::Down,
+                index_type: None,
+            }],
         );
         let result = split_index(&expr, &[mu], &[t0], &[i], &interner);
         assert_eq!(result, expr);
@@ -8079,8 +8416,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t_sym)),
             vec![
-                Index { name: mu, variance: Variance::Up, index_type: None },
-                Index { name: mu, variance: Variance::Down, index_type: None },
+                Index {
+                    name: mu,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
@@ -8104,8 +8449,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t_sym)),
             vec![
-                Index { name: mu, variance: Variance::Up, index_type: None },
-                Index { name: mu, variance: Variance::Down, index_type: None },
+                Index {
+                    name: mu,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = expand_dummies(&expr, &coords, &interner);
@@ -8115,8 +8468,14 @@ mod tests {
             for term in terms {
                 if let Expr::Indexed(_, indices) = term {
                     assert_eq!(indices.len(), 2);
-                    assert_eq!(indices[0].name, indices[1].name, "both indices should be the same coordinate");
-                    assert_ne!(indices[0].variance, indices[1].variance, "variances should differ");
+                    assert_eq!(
+                        indices[0].name, indices[1].name,
+                        "both indices should be the same coordinate"
+                    );
+                    assert_ne!(
+                        indices[0].variance, indices[1].variance,
+                        "variances should differ"
+                    );
                 } else {
                     panic!("expected Indexed term, got {:?}", term);
                 }
@@ -8139,12 +8498,23 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t_sym)),
             vec![
-                Index { name: a, variance: Variance::Down, index_type: None },
-                Index { name: b, variance: Variance::Down, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
-        assert_eq!(result, expr, "free-index expression should be returned unchanged");
+        assert_eq!(
+            result, expr,
+            "free-index expression should be returned unchanged"
+        );
     }
 
     #[test]
@@ -8161,16 +8531,35 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t_sym)),
             vec![
-                Index { name: mu, variance: Variance::Up, index_type: None },
-                Index { name: mu, variance: Variance::Down, index_type: None },
-                Index { name: nu, variance: Variance::Up, index_type: None },
-                Index { name: nu, variance: Variance::Down, index_type: None },
+                Index {
+                    name: mu,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: nu,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: nu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
         // Should have 2×2 = 4 terms
         let count = count_add_terms(&result);
-        assert_eq!(count, 4, "two dummy pairs over 2 coords should give 4 terms, got {count}");
+        assert_eq!(
+            count, 4,
+            "two dummy pairs over 2 coords should give 4 terms, got {count}"
+        );
     }
 
     #[test]
@@ -8186,16 +8575,27 @@ mod tests {
         let expr = Expr::mul(vec![
             Expr::Indexed(
                 Box::new(Expr::Sym(a_sym)),
-                vec![Index { name: mu, variance: Variance::Up, index_type: None }],
+                vec![Index {
+                    name: mu,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
             ),
             Expr::Indexed(
                 Box::new(Expr::Sym(b_sym)),
-                vec![Index { name: mu, variance: Variance::Down, index_type: None }],
+                vec![Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
             ),
         ]);
         let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
         let count = count_add_terms(&result);
-        assert_eq!(count, 2, "A[mu+]*B[mu-] over 2 coords should give 2 terms, got {count}");
+        assert_eq!(
+            count, 2,
+            "A[mu+]*B[mu-] over 2 coords should give 2 terms, got {count}"
+        );
     }
 
     #[test]
@@ -8211,8 +8611,20 @@ mod tests {
             Expr::Indexed(
                 Box::new(Expr::Sym(sym)),
                 vec![
-                    Index { name: mu, variance: var.clone(), index_type: None },
-                    Index { name: mu, variance: if var == Variance::Up { Variance::Down } else { Variance::Up }, index_type: None },
+                    Index {
+                        name: mu,
+                        variance: var.clone(),
+                        index_type: None,
+                    },
+                    Index {
+                        name: mu,
+                        variance: if var == Variance::Up {
+                            Variance::Down
+                        } else {
+                            Variance::Up
+                        },
+                        index_type: None,
+                    },
                 ],
             )
         };
@@ -8221,7 +8633,10 @@ mod tests {
         let expr = Expr::add(vec![mk(t_sym, Variance::Up), mk(s_sym, Variance::Up)]);
         let result = expand_dummies(&expr, &[t_coord, r_coord], &interner);
         let count = count_add_terms(&result);
-        assert_eq!(count, 4, "sum of two traces over 2 coords should give 4 terms, got {count}");
+        assert_eq!(
+            count, 4,
+            "sum of two traces over 2 coords should give 4 terms, got {count}"
+        );
     }
 
     fn count_add_terms(expr: &Expr) -> usize {
@@ -8245,8 +8660,7 @@ mod tests {
         let mut implicit = HashSet::new();
         implicit.insert(a);
         implicit.insert(b);
-        let n_per: HashMap<lasso::Spur, usize> =
-            vec![(a, 2), (b, 2)].into_iter().collect();
+        let n_per: HashMap<lasso::Spur, usize> = vec![(a, 2), (b, 2)].into_iter().collect();
         let avail = vec![i0, i1, i2];
 
         // A * B → A[_i0+, _i1-] * B[_i1+, _i2-]
@@ -8302,15 +8716,17 @@ mod tests {
         implicit.insert(a);
         implicit.insert(b);
         implicit.insert(c);
-        let n_per: HashMap<lasso::Spur, usize> =
-            vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
+        let n_per: HashMap<lasso::Spur, usize> = vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
 
         let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
         let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
 
         if let Expr::Mul(factors) = &result {
             assert_eq!(
-                factors.iter().filter(|f| matches!(f, Expr::Indexed(_, _))).count(),
+                factors
+                    .iter()
+                    .filter(|f| matches!(f, Expr::Indexed(_, _)))
+                    .count(),
                 3,
                 "all three factors should be indexed"
             );
@@ -8329,7 +8745,11 @@ mod tests {
             }
             let contractions: Vec<_> = up.iter().filter(|u| down.contains(u)).collect();
             // A-B contraction + B-C contraction = 2 contracted pairs
-            assert_eq!(contractions.len(), 2, "expected 2 contracted index pairs for A*B*C");
+            assert_eq!(
+                contractions.len(),
+                2,
+                "expected 2 contracted index pairs for A*B*C"
+            );
         } else {
             panic!("expected Mul, got {:?}", result);
         }
@@ -8347,7 +8767,10 @@ mod tests {
 
         let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
         let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
-        assert_eq!(result, expr, "expression without implicit tensors should be unchanged");
+        assert_eq!(
+            result, expr,
+            "expression without implicit tensors should be unchanged"
+        );
     }
 
     #[test]
@@ -8363,8 +8786,7 @@ mod tests {
         let mut implicit = HashSet::new();
         implicit.insert(a);
         implicit.insert(b);
-        let n_per: HashMap<lasso::Spur, usize> =
-            vec![(a, 2), (b, 2)].into_iter().collect();
+        let n_per: HashMap<lasso::Spur, usize> = vec![(a, 2), (b, 2)].into_iter().collect();
 
         let expr = Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(a), Expr::Sym(b)]);
         let result = explicit_indices(&expr, &implicit, &avail, &n_per, &interner);
@@ -8398,8 +8820,7 @@ mod tests {
         let mut implicit = HashSet::new();
         implicit.insert(a);
         implicit.insert(b);
-        let n_per: HashMap<lasso::Spur, usize> =
-            vec![(a, 2), (b, 2)].into_iter().collect();
+        let n_per: HashMap<lasso::Spur, usize> = vec![(a, 2), (b, 2)].into_iter().collect();
 
         let product = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
         let expr = Expr::add(vec![product.clone(), product]);
@@ -8408,7 +8829,11 @@ mod tests {
         // Each branch of the sum should be a Mul with two Indexed factors
         let check = |term: &Expr| {
             if let Expr::Mul(factors) = term {
-                factors.iter().filter(|f| matches!(f, Expr::Indexed(_, _))).count() == 2
+                factors
+                    .iter()
+                    .filter(|f| matches!(f, Expr::Indexed(_, _)))
+                    .count()
+                    == 2
             } else {
                 false
             }
@@ -8416,7 +8841,11 @@ mod tests {
         match &result {
             Expr::Add(terms) => {
                 for t in terms {
-                    assert!(check(t), "each sum term should have two indexed factors, got {:?}", t);
+                    assert!(
+                        check(t),
+                        "each sum term should have two indexed factors, got {:?}",
+                        t
+                    );
                 }
             }
             // If Expr::add collapsed identical terms into 2*(...), that's fine too
@@ -8443,8 +8872,7 @@ mod tests {
         let mut implicit = HashSet::new();
         implicit.insert(a);
         implicit.insert(b);
-        let n_per: HashMap<lasso::Spur, usize> =
-            vec![(a, 2), (b, 2)].into_iter().collect();
+        let n_per: HashMap<lasso::Spur, usize> = vec![(a, 2), (b, 2)].into_iter().collect();
         let avail = vec![i0, i1, i2];
 
         let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
@@ -8466,7 +8894,8 @@ mod tests {
             let (a_up, a_dn) = indexed[0];
             let (b_up, b_dn) = indexed[1];
             assert_eq!(
-                a_dn, b_up,
+                a_dn,
+                b_up,
                 "A's lower index ({}) should match B's upper index ({})",
                 interner.resolve(a_dn),
                 interner.resolve(b_up)
@@ -8490,7 +8919,11 @@ mod tests {
         // T[a+] with target Down → g[a-, _rw0-] * T[_rw0+]
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t)),
-            vec![Index { name: a, variance: Variance::Up, index_type: None }],
+            vec![Index {
+                name: a,
+                variance: Variance::Up,
+                index_type: None,
+            }],
         );
         let mut targets = HashMap::new();
         targets.insert(t, vec![Variance::Down]);
@@ -8514,7 +8947,11 @@ mod tests {
         // T[a-] with target Up → ginv[a+, _rw0+] * T[_rw0-]
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t)),
-            vec![Index { name: a, variance: Variance::Down, index_type: None }],
+            vec![Index {
+                name: a,
+                variance: Variance::Down,
+                index_type: None,
+            }],
         );
         let mut targets = HashMap::new();
         targets.insert(t, vec![Variance::Up]);
@@ -8546,8 +8983,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t)),
             vec![
-                Index { name: a, variance: Variance::Up, index_type: None },
-                Index { name: b, variance: Variance::Up, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
             ],
         );
         let mut targets = HashMap::new();
@@ -8557,14 +9002,17 @@ mod tests {
         if let Expr::Mul(factors) = &result {
             assert_eq!(factors.len(), 3, "expected g * g * T for two lowerings");
             // Two metric factors + the tensor
-            let metric_count = factors.iter().filter(|f| {
-                if let Expr::Indexed(base, _) = f {
-                    if let Expr::Sym(s) = base.as_ref() {
-                        return interner.resolve(*s) == "g";
+            let metric_count = factors
+                .iter()
+                .filter(|f| {
+                    if let Expr::Indexed(base, _) = f {
+                        if let Expr::Sym(s) = base.as_ref() {
+                            return interner.resolve(*s) == "g";
+                        }
                     }
-                }
-                false
-            }).count();
+                    false
+                })
+                .count();
             assert_eq!(metric_count, 2, "expected two metric factors");
         } else {
             panic!("expected Mul, got {:?}", result);
@@ -8582,13 +9030,20 @@ mod tests {
         // T[a-] with target Down — already correct, no change
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t)),
-            vec![Index { name: a, variance: Variance::Down, index_type: None }],
+            vec![Index {
+                name: a,
+                variance: Variance::Down,
+                index_type: None,
+            }],
         );
         let mut targets = HashMap::new();
         targets.insert(t, vec![Variance::Down]);
 
         let result = rewrite_indices(&expr, &targets, g, ginv, &interner);
-        assert_eq!(result, expr, "already-correct expression should be unchanged");
+        assert_eq!(
+            result, expr,
+            "already-correct expression should be unchanged"
+        );
     }
 
     #[test]
@@ -8601,7 +9056,11 @@ mod tests {
 
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t)),
-            vec![Index { name: a, variance: Variance::Up, index_type: None }],
+            vec![Index {
+                name: a,
+                variance: Variance::Up,
+                index_type: None,
+            }],
         );
         // targets is empty — T is not registered
         let targets = HashMap::new();
@@ -8623,8 +9082,16 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(t)),
             vec![
-                Index { name: a, variance: Variance::Up, index_type: None },
-                Index { name: b, variance: Variance::Up, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
             ],
         );
         let mut targets = HashMap::new();
@@ -8647,7 +9114,8 @@ mod tests {
             }
             assert_eq!(dummy_names.len(), 2, "expected 2 dummy index names");
             assert_ne!(
-                dummy_names[0], dummy_names[1],
+                dummy_names[0],
+                dummy_names[1],
                 "dummy indices should be distinct: both are '{}'",
                 interner.resolve(dummy_names[0])
             );
@@ -8665,10 +9133,16 @@ mod tests {
         let ginv = interner.get_or_intern("ginv");
         let a = interner.get_or_intern("a");
 
-        let mk = |sym| Expr::Indexed(
-            Box::new(Expr::Sym(sym)),
-            vec![Index { name: a, variance: Variance::Up, index_type: None }],
-        );
+        let mk = |sym| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(sym)),
+                vec![Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            )
+        };
         let mut targets = HashMap::new();
         targets.insert(t, vec![Variance::Down]);
         targets.insert(s, vec![Variance::Down]);
@@ -8706,13 +9180,25 @@ mod tests {
             Expr::Indexed(
                 Box::new(Expr::Sym(e)),
                 vec![
-                    Index { name: a, variance: Variance::Up, index_type: None },
-                    Index { name: mu, variance: Variance::Down, index_type: None },
+                    Index {
+                        name: a,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                    Index {
+                        name: mu,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
                 ],
             ),
             Expr::Indexed(
                 Box::new(Expr::Sym(t)),
-                vec![Index { name: mu, variance: Variance::Up, index_type: None }],
+                vec![Index {
+                    name: mu,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
             ),
         ]);
         let result = eliminate_vielbein(&expr, e, einv, &interner);
@@ -8739,13 +9225,25 @@ mod tests {
             Expr::Indexed(
                 Box::new(Expr::Sym(einv)),
                 vec![
-                    Index { name: mu, variance: Variance::Up, index_type: None },
-                    Index { name: a, variance: Variance::Down, index_type: None },
+                    Index {
+                        name: mu,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                    Index {
+                        name: a,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
                 ],
             ),
             Expr::Indexed(
                 Box::new(Expr::Sym(t)),
-                vec![Index { name: a, variance: Variance::Up, index_type: None }],
+                vec![Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
             ),
         ]);
         let result = eliminate_vielbein(&expr, e, einv, &interner);
@@ -8769,21 +9267,39 @@ mod tests {
         let mu = interner.get_or_intern("mu");
         let nu = interner.get_or_intern("nu");
 
-        let mk_e = |up, dn| Expr::Indexed(
-            Box::new(Expr::Sym(e)),
-            vec![
-                Index { name: up, variance: Variance::Up, index_type: None },
-                Index { name: dn, variance: Variance::Down, index_type: None },
-            ],
-        );
+        let mk_e = |up, dn| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(e)),
+                vec![
+                    Index {
+                        name: up,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                    Index {
+                        name: dn,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            )
+        };
         let expr = Expr::mul(vec![
             mk_e(a, mu),
             mk_e(b, nu),
             Expr::Indexed(
                 Box::new(Expr::Sym(t)),
                 vec![
-                    Index { name: mu, variance: Variance::Up, index_type: None },
-                    Index { name: nu, variance: Variance::Up, index_type: None },
+                    Index {
+                        name: mu,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                    Index {
+                        name: nu,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
                 ],
             ),
         ]);
@@ -8792,7 +9308,11 @@ mod tests {
             assert_eq!(**base, Expr::Sym(t));
             assert_eq!(indices.len(), 2);
             let names: Vec<lasso::Spur> = indices.iter().map(|i| i.name).collect();
-            assert!(names.contains(&a) && names.contains(&b), "expected a and b, got {:?}", names);
+            assert!(
+                names.contains(&a) && names.contains(&b),
+                "expected a and b, got {:?}",
+                names
+            );
         } else {
             panic!("expected Indexed T[a+,b+], got {:?}", result);
         }
@@ -8810,12 +9330,23 @@ mod tests {
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(e)),
             vec![
-                Index { name: a, variance: Variance::Up, index_type: None },
-                Index { name: mu, variance: Variance::Down, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: mu,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
             ],
         );
         let result = eliminate_vielbein(&expr, e, einv, &interner);
-        assert_eq!(result, expr, "lone vielbein with no contraction partner should be unchanged");
+        assert_eq!(
+            result, expr,
+            "lone vielbein with no contraction partner should be unchanged"
+        );
     }
 
     #[test]
@@ -8828,19 +9359,33 @@ mod tests {
         let a = interner.get_or_intern("a");
         let mu = interner.get_or_intern("mu");
 
-        let mk_term = |sym| Expr::mul(vec![
-            Expr::Indexed(
-                Box::new(Expr::Sym(e)),
-                vec![
-                    Index { name: a, variance: Variance::Up, index_type: None },
-                    Index { name: mu, variance: Variance::Down, index_type: None },
-                ],
-            ),
-            Expr::Indexed(
-                Box::new(Expr::Sym(sym)),
-                vec![Index { name: mu, variance: Variance::Up, index_type: None }],
-            ),
-        ]);
+        let mk_term = |sym| {
+            Expr::mul(vec![
+                Expr::Indexed(
+                    Box::new(Expr::Sym(e)),
+                    vec![
+                        Index {
+                            name: a,
+                            variance: Variance::Up,
+                            index_type: None,
+                        },
+                        Index {
+                            name: mu,
+                            variance: Variance::Down,
+                            index_type: None,
+                        },
+                    ],
+                ),
+                Expr::Indexed(
+                    Box::new(Expr::Sym(sym)),
+                    vec![Index {
+                        name: mu,
+                        variance: Variance::Up,
+                        index_type: None,
+                    }],
+                ),
+            ])
+        };
         let expr = Expr::add(vec![mk_term(t), mk_term(s)]);
         let result = eliminate_vielbein(&expr, e, einv, &interner);
 
@@ -8877,10 +9422,26 @@ mod tests {
             Expr::Indexed(
                 Box::new(Expr::Sym(r)),
                 vec![
-                    Index { name: i0, variance: Variance::Down, index_type: None },
-                    Index { name: i1, variance: Variance::Down, index_type: None },
-                    Index { name: i2, variance: Variance::Down, index_type: None },
-                    Index { name: i3, variance: Variance::Down, index_type: None },
+                    Index {
+                        name: i0,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i1,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i2,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i3,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
                 ],
             )
         };
@@ -8924,8 +9485,16 @@ mod tests {
             Expr::Indexed(
                 Box::new(Expr::Sym(g)),
                 vec![
-                    Index { name: i1, variance: v1, index_type: None },
-                    Index { name: i2, variance: v2, index_type: None },
+                    Index {
+                        name: i1,
+                        variance: v1,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i2,
+                        variance: v2,
+                        index_type: None,
+                    },
                 ],
             )
         };
@@ -8946,7 +9515,10 @@ mod tests {
                 assert!(!terms.is_empty(), "decomposed result should have terms");
             }
             Expr::Mul(_) => {} // single-term result is also fine
-            other => panic!("expected Add or Mul from decompose_product, got {:?}", other),
+            other => panic!(
+                "expected Add or Mul from decompose_product, got {:?}",
+                other
+            ),
         }
     }
 
@@ -8961,8 +9533,7 @@ mod tests {
         implicit.insert(a);
         implicit.insert(b);
         implicit.insert(c);
-        let n_per: HashMap<lasso::Spur, usize> =
-            vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
+        let n_per: HashMap<lasso::Spur, usize> = vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
         let avail: Vec<lasso::Spur> = (0..10)
             .map(|i| interner.get_or_intern(&format!("_e{}", i)))
             .collect();
@@ -8976,7 +9547,11 @@ mod tests {
                 .iter()
                 .filter(|f| matches!(f, Expr::Indexed(_, _)))
                 .count();
-            assert_eq!(indexed_count, 3, "all three should have explicit indices: {:?}", result);
+            assert_eq!(
+                indexed_count, 3,
+                "all three should have explicit indices: {:?}",
+                result
+            );
         } else {
             panic!("expected Mul, got {:?}", result);
         }
@@ -8996,8 +9571,7 @@ mod tests {
         implicit.insert(a);
         implicit.insert(b);
         implicit.insert(c);
-        let n_per: HashMap<lasso::Spur, usize> =
-            vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
+        let n_per: HashMap<lasso::Spur, usize> = vec![(a, 2), (b, 2), (c, 2)].into_iter().collect();
         let avail: Vec<lasso::Spur> = (0..10)
             .map(|i| interner.get_or_intern(&format!("_e{}", i)))
             .collect();
@@ -9011,9 +9585,17 @@ mod tests {
 
         // Both terms should have been expanded (have Indexed factors inside Mul).
         if let Expr::Add(terms) = &result {
-            assert_eq!(terms.len(), 2, "should still have 2 terms after expanding distinct products");
+            assert_eq!(
+                terms.len(),
+                2,
+                "should still have 2 terms after expanding distinct products"
+            );
             for term in terms {
-                assert!(matches!(term, Expr::Mul(_)), "each term should be Mul: {:?}", term);
+                assert!(
+                    matches!(term, Expr::Mul(_)),
+                    "each term should be Mul: {:?}",
+                    term
+                );
             }
         } else {
             panic!("expected Add, got {:?}", result);

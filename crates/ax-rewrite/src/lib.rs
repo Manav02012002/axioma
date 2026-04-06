@@ -203,9 +203,10 @@ pub fn substitute(template: &Expr, binds: &Bindings) -> Expr {
         Expr::Int(n) => Expr::Int(n.clone()),
         Expr::Rational(r) => Expr::Rational(r.clone()),
         Expr::Float(f) => Expr::Float(*f),
-        Expr::Complex(re, im) => {
-            Expr::Complex(Box::new(substitute(re, binds)), Box::new(substitute(im, binds)))
-        }
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(substitute(re, binds)),
+            Box::new(substitute(im, binds)),
+        ),
         Expr::Sym(s) => binds.get(s).cloned().unwrap_or(Expr::Sym(*s)),
         Expr::Add(terms) => Expr::add(terms.iter().map(|t| substitute(t, binds)).collect()),
         Expr::Mul(factors) => Expr::mul(factors.iter().map(|f| substitute(f, binds)).collect()),
@@ -224,7 +225,8 @@ pub fn substitute(template: &Expr, binds: &Bindings) -> Expr {
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (substitute(value, binds), condition.clone()))
                 .collect(),
         ),
@@ -331,7 +333,8 @@ pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> 
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (rewrite_once(rules, value, interner), condition.clone()))
                 .collect(),
         ),
@@ -509,10 +512,7 @@ pub fn apply_rule_with_compare(
     index_to_family: &std::collections::HashMap<lasso::Spur, lasso::Spur>,
     interner: &ax_ir::Interner,
 ) -> Option<Expr> {
-    let pattern = pattern_to_expr_with_wildcard(
-        &rule.pattern,
-        interner.get_or_intern("_"),
-    );
+    let pattern = pattern_to_expr_with_wildcard(&rule.pattern, interner.get_or_intern("_"));
     let match_map =
         ax_compare::pattern_match(&pattern, expr, properties, index_to_family, interner)?;
     if let Some(condition) = rule.condition {

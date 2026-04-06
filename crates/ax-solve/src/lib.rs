@@ -26,7 +26,11 @@ fn rational_to_f64(r: &BigRational) -> f64 {
 }
 
 fn gcd_i64(a: i64, b: i64) -> i64 {
-    if b == 0 { a.abs() } else { gcd_i64(b, a % b) }
+    if b == 0 {
+        a.abs()
+    } else {
+        gcd_i64(b, a % b)
+    }
 }
 
 fn rationalize_f64(x: f64) -> Expr {
@@ -430,7 +434,8 @@ fn solve_cubic(coeffs: &[Expr], _interner: &ax_ir::Interner) -> Vec<Expr> {
 
     let p = &b - &(&a * &a) / BigRational::from_integer(3.into());
     let q = &c - &(&a * &b) / BigRational::from_integer(3.into())
-        + BigRational::from_integer(2.into()) * &(&a * &a * &a) / BigRational::from_integer(27.into());
+        + BigRational::from_integer(2.into()) * &(&a * &a * &a)
+            / BigRational::from_integer(27.into());
     let disc = -(BigRational::from_integer(4.into()) * &p * &p * &p
         + BigRational::from_integer(27.into()) * &q * &q);
 
@@ -469,7 +474,12 @@ fn solve_cubic(coeffs: &[Expr], _interner: &ax_ir::Interner) -> Vec<Expr> {
     }
 }
 
-fn eval_numeric_at(expr: &Expr, var: lasso::Spur, val: f64, interner: &ax_ir::Interner) -> Option<f64> {
+fn eval_numeric_at(
+    expr: &Expr,
+    var: lasso::Spur,
+    val: f64,
+    interner: &ax_ir::Interner,
+) -> Option<f64> {
     match expr {
         Expr::Int(n) => n.to_f64(),
         Expr::Rational(r) => Some(rational_to_f64(r)),
@@ -517,15 +527,27 @@ fn eval_numeric_at(expr: &Expr, var: lasso::Spur, val: f64, interner: &ax_ir::In
                 ("sinh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.sinh()),
                 ("cosh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.cosh()),
                 ("tanh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.tanh()),
-                ("asin" | "arcsin", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.asin()),
-                ("acos" | "arccos", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.acos()),
-                ("atan" | "arctan", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.atan()),
+                ("asin" | "arcsin", [arg]) => {
+                    Some(eval_numeric_at(arg, var, val, interner)?.asin())
+                }
+                ("acos" | "arccos", [arg]) => {
+                    Some(eval_numeric_at(arg, var, val, interner)?.acos())
+                }
+                ("atan" | "arctan", [arg]) => {
+                    Some(eval_numeric_at(arg, var, val, interner)?.atan())
+                }
                 ("sec", [arg]) => Some(1.0 / eval_numeric_at(arg, var, val, interner)?.cos()),
                 ("csc", [arg]) => Some(1.0 / eval_numeric_at(arg, var, val, interner)?.sin()),
                 ("cot", [arg]) => Some(1.0 / eval_numeric_at(arg, var, val, interner)?.tan()),
-                ("asinh" | "arcsinh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.asinh()),
-                ("acosh" | "arccosh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.acosh()),
-                ("atanh" | "arctanh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.atanh()),
+                ("asinh" | "arcsinh", [arg]) => {
+                    Some(eval_numeric_at(arg, var, val, interner)?.asinh())
+                }
+                ("acosh" | "arccosh", [arg]) => {
+                    Some(eval_numeric_at(arg, var, val, interner)?.acosh())
+                }
+                ("atanh" | "arctanh", [arg]) => {
+                    Some(eval_numeric_at(arg, var, val, interner)?.atanh())
+                }
                 ("abs", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.abs()),
                 ("sign" | "sgn", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.signum()),
                 ("atan2", [y, x]) => Some(

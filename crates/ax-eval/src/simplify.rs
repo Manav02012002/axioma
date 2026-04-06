@@ -52,10 +52,7 @@ fn is_nontrivial_slot(
     )
 }
 
-fn is_nontrivial_x_slot(
-    bindings: &ax_rewrite::Bindings,
-    interner: &ax_ir::Interner,
-) -> bool {
+fn is_nontrivial_x_slot(bindings: &ax_rewrite::Bindings, interner: &ax_ir::Interner) -> bool {
     let slot = interner.get_or_intern("x_");
     is_nontrivial_slot(bindings, slot, interner)
 }
@@ -81,7 +78,10 @@ fn build_trig_rules(interner: &ax_ir::Interner) -> Vec<ax_rewrite::RewriteRule> 
     vec![
         ax_rewrite::RewriteRule {
             name: "pythag_sin_cos".into(),
-            pattern: add_pat(vec![pow_pat(sin_x_pat.clone(), 2), pow_pat(cos_x_pat.clone(), 2)]),
+            pattern: add_pat(vec![
+                pow_pat(sin_x_pat.clone(), 2),
+                pow_pat(cos_x_pat.clone(), 2),
+            ]),
             replacement: Expr::one(),
             condition: None,
             trust_level: ax_ir::TrustLevel::Exact,
@@ -148,7 +148,10 @@ fn build_trig_rules(interner: &ax_ir::Interner) -> Vec<ax_rewrite::RewriteRule> 
                     slot_pat(x_slot),
                 ]),
             ),
-            replacement: Expr::add(vec![square(cos_x.clone()), Expr::neg(square(sin_x.clone()))]),
+            replacement: Expr::add(vec![
+                square(cos_x.clone()),
+                Expr::neg(square(sin_x.clone())),
+            ]),
             condition: None,
             trust_level: ax_ir::TrustLevel::Exact,
         },
@@ -463,7 +466,8 @@ pub fn expand(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (expand(value, interner), condition.clone()))
                 .collect(),
         ),
@@ -619,7 +623,8 @@ pub fn collect_terms(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (collect_terms(value, interner), condition.clone()))
                 .collect(),
         ),
@@ -662,9 +667,10 @@ fn trim_poly(coeffs: &mut Vec<Expr>) {
 }
 
 fn poly_degree(coeffs: &[Expr]) -> Option<usize> {
-    coeffs
-        .iter()
-        .rposition(|coeff| !matches!(coeff, Expr::Int(n) if n.is_zero()) && !matches!(coeff, Expr::Rational(r) if r.is_zero()))
+    coeffs.iter().rposition(|coeff| {
+        !matches!(coeff, Expr::Int(n) if n.is_zero())
+            && !matches!(coeff, Expr::Rational(r) if r.is_zero())
+    })
 }
 
 fn collect_syms(expr: &Expr, out: &mut BTreeSet<lasso::Spur>) {
@@ -713,7 +719,12 @@ fn collect_syms(expr: &Expr, out: &mut BTreeSet<lasso::Spur>) {
                 }
             }
         }
-        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) | Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => {}
+        Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_) => {}
     }
 }
 
@@ -722,7 +733,9 @@ fn poly_from_coeffs(coeffs: &[Expr], var: lasso::Spur) -> Expr {
         .iter()
         .enumerate()
         .filter_map(|(degree, coeff)| {
-            if matches!(coeff, Expr::Int(n) if n.is_zero()) || matches!(coeff, Expr::Rational(r) if r.is_zero()) {
+            if matches!(coeff, Expr::Int(n) if n.is_zero())
+                || matches!(coeff, Expr::Rational(r) if r.is_zero())
+            {
                 return None;
             }
             let term = match degree {
@@ -750,8 +763,13 @@ fn extract_numer_denom(expr: &Expr) -> (Expr, Expr) {
             let mut denom = Vec::new();
             for factor in factors {
                 match factor {
-                    Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if n.is_negative()) => {
-                        let n = if let Expr::Int(n) = exp.as_ref() { n } else { unreachable!() };
+                    Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if n.is_negative()) =>
+                    {
+                        let n = if let Expr::Int(n) = exp.as_ref() {
+                            n
+                        } else {
+                            unreachable!()
+                        };
                         denom.push(Expr::pow((**base).clone(), Expr::Int((-n).clone())));
                     }
                     Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Neg(_)) => {
@@ -766,7 +784,8 @@ fn extract_numer_denom(expr: &Expr) -> (Expr, Expr) {
         }
         Expr::Add(terms) => {
             let extracted = terms.iter().map(extract_numer_denom).collect::<Vec<_>>();
-            let common_denom = Expr::mul(extracted.iter().map(|(_, denom)| denom.clone()).collect());
+            let common_denom =
+                Expr::mul(extracted.iter().map(|(_, denom)| denom.clone()).collect());
             let combined_numer = Expr::add(
                 extracted
                     .iter()
@@ -775,13 +794,11 @@ fn extract_numer_denom(expr: &Expr) -> (Expr, Expr) {
                         let others = extracted
                             .iter()
                             .enumerate()
-                            .filter_map(|(j, (_, denom))| if idx == j { None } else { Some(denom.clone()) })
+                            .filter_map(
+                                |(j, (_, denom))| if idx == j { None } else { Some(denom.clone()) },
+                            )
                             .collect::<Vec<_>>();
-                        Expr::mul(
-                            std::iter::once(numer.clone())
-                                .chain(others)
-                                .collect(),
-                        )
+                        Expr::mul(std::iter::once(numer.clone()).chain(others).collect())
                     })
                     .collect(),
             );
@@ -882,17 +899,16 @@ fn extract_linear_root(
     let a0 = coeffs[0].clone();
     let a1 = coeffs[1].clone();
     Some(eval(
-        &Expr::mul(vec![Expr::neg(a0), Expr::pow(a1, Expr::Int((-1i64).into()))]),
+        &Expr::mul(vec![
+            Expr::neg(a0),
+            Expr::pow(a1, Expr::Int((-1i64).into())),
+        ]),
         &Env::new(),
         interner,
     ))
 }
 
-fn factor_polynomial(
-    poly: &Expr,
-    var: lasso::Spur,
-    interner: &ax_ir::Interner,
-) -> Vec<Expr> {
+fn factor_polynomial(poly: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Vec<Expr> {
     let expanded = expand(poly, interner);
     let Some(mut coeffs) = ax_solve::extract_polynomial(&expanded, var, interner) else {
         return vec![poly.clone()];
@@ -904,16 +920,15 @@ fn factor_polynomial(
 
     let mut remaining = coeffs.clone();
     let mut factors = Vec::new();
-    let candidates = candidate_rational_roots(&remaining[0], remaining.last().unwrap_or(&Expr::one()));
+    let candidates =
+        candidate_rational_roots(&remaining[0], remaining.last().unwrap_or(&Expr::one()));
 
     for candidate in &candidates {
         let Some(candidate_r) = expr_to_rational(candidate) else {
             continue;
         };
         loop {
-            if !eval_poly_at(&remaining, &candidate_r)
-                .is_some_and(|value| value.is_zero())
-            {
+            if !eval_poly_at(&remaining, &candidate_r).is_some_and(|value| value.is_zero()) {
                 break;
             }
 
@@ -1022,12 +1037,7 @@ fn candidate_rational_roots(constant: &Expr, leading: &Expr) -> Vec<Expr> {
     candidates
 }
 
-fn substitute_sym(
-    expr: &Expr,
-    var: lasso::Spur,
-    value: &Expr,
-    interner: &ax_ir::Interner,
-) -> Expr {
+fn substitute_sym(expr: &Expr, var: lasso::Spur, value: &Expr, interner: &ax_ir::Interner) -> Expr {
     crate::symbolic_substitute(expr, &Expr::Sym(var), value, interner)
 }
 
@@ -1108,7 +1118,10 @@ fn poly_div_rem(
     };
     let divisor_lead = divisor[divisor_degree].clone();
 
-    while let (Some(rem_degree), true) = (poly_degree(&remainder), poly_degree(&remainder).unwrap_or(0) >= divisor_degree) {
+    while let (Some(rem_degree), true) = (
+        poly_degree(&remainder),
+        poly_degree(&remainder).unwrap_or(0) >= divisor_degree,
+    ) {
         let degree_diff = rem_degree - divisor_degree;
         let lead_factor = eval(
             &Expr::mul(vec![
@@ -1129,7 +1142,10 @@ fn poly_div_rem(
         }
         for i in 0..subtraction.len() {
             remainder[i] = eval(
-                &Expr::add(vec![remainder[i].clone(), Expr::neg(subtraction[i].clone())]),
+                &Expr::add(vec![
+                    remainder[i].clone(),
+                    Expr::neg(subtraction[i].clone()),
+                ]),
                 &Env::new(),
                 interner,
             );
@@ -1157,7 +1173,9 @@ fn poly_gcd(a: &Expr, b: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) ->
     {
         let (_, mut remainder) = poly_div_rem(&lhs, &rhs, interner);
         trim_poly(&mut remainder);
-        if poly_degree(&remainder).is_none() && matches!(remainder.first(), Some(Expr::Int(n)) if n.is_zero()) {
+        if poly_degree(&remainder).is_none()
+            && matches!(remainder.first(), Some(Expr::Int(n)) if n.is_zero())
+        {
             lhs = rhs;
             break;
         }
@@ -1206,7 +1224,10 @@ fn cancel_common(numer: &Expr, denom: &Expr, interner: &ax_ir::Interner) -> (Exp
             let (qn, rn) = poly_div_rem(&n_coeffs, &g_coeffs, interner);
             let (qd, rd) = poly_div_rem(&d_coeffs, &g_coeffs, interner);
             let zero_rem = |coeffs: &[Expr]| {
-                coeffs.iter().all(|c| matches!(c, Expr::Int(n) if n.is_zero()) || matches!(c, Expr::Rational(r) if r.is_zero()))
+                coeffs.iter().all(|c| {
+                    matches!(c, Expr::Int(n) if n.is_zero())
+                        || matches!(c, Expr::Rational(r) if r.is_zero())
+                })
             };
             if zero_rem(&rn) && zero_rem(&rd) {
                 return (poly_from_coeffs(&qn, sym), poly_from_coeffs(&qd, sym));
@@ -1309,7 +1330,9 @@ pub fn log_simplify(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
                     }
                 }
                 match factor {
-                    Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => coeff_parts.push(factor.clone()),
+                    Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => {
+                        coeff_parts.push(factor.clone())
+                    }
                     _ => other_parts.push(factor.clone()),
                 }
             }
@@ -1498,11 +1521,7 @@ pub fn trig_simplify(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::E
 /// a*x + a*y → a*(x + y)
 ///
 /// If `targets` is empty, automatically detect common factors.
-pub fn factor_out(
-    expr: &Expr,
-    targets: &[lasso::Spur],
-    interner: &ax_ir::Interner,
-) -> Expr {
+pub fn factor_out(expr: &Expr, targets: &[lasso::Spur], interner: &ax_ir::Interner) -> Expr {
     match expr {
         Expr::Add(terms) if terms.len() >= 2 => {
             let targets_to_try: Vec<lasso::Spur> = if targets.is_empty() {
@@ -1538,10 +1557,7 @@ pub fn factor_out(
                         let factor = if p == 1 {
                             Expr::Sym(*target)
                         } else {
-                            Expr::pow(
-                                Expr::Sym(*target),
-                                Expr::Int(num_bigint::BigInt::from(p)),
-                            )
+                            Expr::pow(Expr::Sym(*target), Expr::Int(num_bigint::BigInt::from(p)))
                         };
                         return Expr::mul(vec![factor, factor_out(&inner, targets, interner)]);
                     }
@@ -1557,11 +1573,7 @@ pub fn factor_out(
 /// Group terms that share specified pre-factors.
 ///
 /// x*a + x*b + y → x*(a + b) + y
-pub fn factor_in(
-    expr: &Expr,
-    targets: &[lasso::Spur],
-    interner: &ax_ir::Interner,
-) -> Expr {
+pub fn factor_in(expr: &Expr, targets: &[lasso::Spur], interner: &ax_ir::Interner) -> Expr {
     factor_out(expr, targets, interner)
 }
 
@@ -1646,7 +1658,10 @@ fn power_of_factor(expr: &Expr, sym: lasso::Spur) -> Option<i64> {
             }
             None
         }
-        Expr::Mul(factors) => factors.iter().filter_map(|f| power_of_factor(f, sym)).next(),
+        Expr::Mul(factors) => factors
+            .iter()
+            .filter_map(|f| power_of_factor(f, sym))
+            .next(),
         Expr::Neg(e) => power_of_factor(e, sym),
         _ => Some(0),
     }
@@ -1827,10 +1842,14 @@ mod tests {
         assert!(result.is_some(), "should decompose 1/(x(x+1))");
 
         if let Some(pf) = result {
-            let val = crate::symbolic_substitute(&pf, &Expr::Sym(x), &Expr::Int(2.into()), &interner);
+            let val =
+                crate::symbolic_substitute(&pf, &Expr::Sym(x), &Expr::Int(2.into()), &interner);
             let simplified = crate::eval(&val, &crate::Env::new(), &interner);
             let expected = Expr::Rational(BigRational::new(1.into(), 6.into()));
-            assert_eq!(simplified, expected, "partial fractions at x=2 should give 1/6");
+            assert_eq!(
+                simplified, expected,
+                "partial fractions at x=2 should give 1/6"
+            );
         }
     }
 
@@ -1863,10 +1882,7 @@ mod tests {
         ]);
         let result = factor_out(&expr, &[], &interner);
         if let Expr::Mul(factors) = &result {
-            assert!(
-                factors.iter().any(|f| *f == Expr::Sym(a)),
-                "got {result:?}"
-            );
+            assert!(factors.iter().any(|f| *f == Expr::Sym(a)), "got {result:?}");
         } else {
             panic!("expected Mul, got {result:?}");
         }
@@ -1921,7 +1937,10 @@ mod tests {
             Expr::mul(vec![a2.clone(), Expr::Sym(y)]),
         ]);
         let result = factor_out(&expr, &[a], &interner);
-        assert!(matches!(result, Expr::Mul(_)), "expected Mul, got {result:?}");
+        assert!(
+            matches!(result, Expr::Mul(_)),
+            "expected Mul, got {result:?}"
+        );
     }
 
     #[test]

@@ -22,7 +22,12 @@ fn node_count(expr: &Expr) -> usize {
         Expr::Import(path) => 1 + path.len(),
         Expr::Assume(_, assumptions) => 1 + assumptions.len(),
         Expr::SetConvention(field, value) => 1 + field.len() + value.len(),
-        Expr::Piecewise(cases) => 1 + cases.iter().map(|(value, _)| node_count(value)).sum::<usize>(),
+        Expr::Piecewise(cases) => {
+            1 + cases
+                .iter()
+                .map(|(value, _)| node_count(value))
+                .sum::<usize>()
+        }
         Expr::Indexed(base, _) => 1 + node_count(base),
         Expr::Let(_, val, body) => 1 + node_count(val) + node_count(body),
         Expr::Matrix(rows) => 1 + rows.iter().flatten().map(node_count).sum::<usize>(),
@@ -112,12 +117,8 @@ fn schwarzschild_ricci_is_zero() {
     let (g, coords) = build_schwarzschild(&interner);
 
     let gamma = christoffel_from_metric(&g, &coords, &interner);
-    let riemann = riemann_from_christoffel(
-        &gamma,
-        &coords,
-        &interner,
-        &ax_ir::Convention::default(),
-    );
+    let riemann =
+        riemann_from_christoffel(&gamma, &coords, &interner, &ax_ir::Convention::default());
     let ricci = ricci_from_riemann(&riemann, 4, &interner, &ax_ir::Convention::default());
 
     let mut nonzero = vec![];
@@ -166,8 +167,9 @@ fn schwarzschild_ricci_zero_both_conventions() {
         for row in ricci.iter().take(4) {
             for component in row.iter().take(4) {
                 let numeric = ax_eval::eval(component, &env, &interner);
-                let value = numeric_eval(&numeric)
-                    .unwrap_or_else(|| panic!("expected numeric Ricci component, got {:?}", numeric));
+                let value = numeric_eval(&numeric).unwrap_or_else(|| {
+                    panic!("expected numeric Ricci component, got {:?}", numeric)
+                });
                 assert!(value.abs() < 1e-9, "component = {value}");
             }
         }

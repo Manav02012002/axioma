@@ -100,11 +100,13 @@ pub fn run(file: &Path, target: &str, fn_name: Option<&str>) -> Result<i32> {
             Expr::Let(name, val, body) => {
                 let evaled_val = ax_eval::eval(val, &env, &interner);
                 env.bindings.insert(*name, evaled_val.clone());
-                last_expr = Some(if matches!(body.as_ref(), Expr::Sym(sym) if *sym == *name) {
-                    evaled_val
-                } else {
-                    ax_eval::eval(body, &env, &interner)
-                });
+                last_expr = Some(
+                    if matches!(body.as_ref(), Expr::Sym(sym) if *sym == *name) {
+                        evaled_val
+                    } else {
+                        ax_eval::eval(body, &env, &interner)
+                    },
+                );
             }
             _ => {
                 let result = ax_eval::eval(&expr, &env, &interner);
@@ -112,7 +114,10 @@ pub fn run(file: &Path, target: &str, fn_name: Option<&str>) -> Result<i32> {
                     continue;
                 }
                 if let Expr::Assume(var, assumptions) = &result {
-                    env.assumptions.entry(*var).or_default().extend(assumptions.clone());
+                    env.assumptions
+                        .entry(*var)
+                        .or_default()
+                        .extend(assumptions.clone());
                     continue;
                 }
                 if let Expr::FnDef(name, _, _) = &result {

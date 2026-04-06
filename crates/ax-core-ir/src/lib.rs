@@ -390,10 +390,7 @@ impl<'a> Cursor<'a> {
             self.skip_ws();
             let prop_name = self.parse_postfix()?;
             let declare_sym = self.interner.get_or_intern("__declare_property");
-            return Ok(ax_ir::Expr::Call(
-                declare_sym,
-                vec![tensor, prop_name],
-            ));
+            return Ok(ax_ir::Expr::Call(declare_sym, vec![tensor, prop_name]));
         }
 
         if self.consume_keyword("weight") {
@@ -1048,10 +1045,9 @@ pub fn latex_to_axioma(input: &str) -> String {
                 }
                 // Greek letters and named differential operators: pass through as-is
                 "partial" | "nabla" | "Gamma" | "gamma" | "epsilon" | "delta" | "sigma"
-                | "alpha" | "beta" | "mu" | "nu" | "rho" | "lambda" | "theta" | "phi"
-                | "psi" | "chi" | "omega" | "pi" | "tau" | "kappa" | "eta" | "zeta"
-                | "xi" | "Pi" | "Sigma" | "Omega" | "Delta" | "Lambda" | "Theta" | "Phi"
-                | "Psi" | "Xi" => {
+                | "alpha" | "beta" | "mu" | "nu" | "rho" | "lambda" | "theta" | "phi" | "psi"
+                | "chi" | "omega" | "pi" | "tau" | "kappa" | "eta" | "zeta" | "xi" | "Pi"
+                | "Sigma" | "Omega" | "Delta" | "Lambda" | "Theta" | "Phi" | "Psi" | "Xi" => {
                     result.push_str(cmd);
                     i = cmd_end;
                 }
@@ -1076,8 +1072,7 @@ pub fn latex_to_axioma(input: &str) -> String {
 
                 let indices: Vec<&str> = index_content.split_whitespace().collect();
                 if !indices.is_empty() {
-                    let needs_open =
-                        !result.ends_with(']') && !result.ends_with(',');
+                    let needs_open = !result.ends_with(']') && !result.ends_with(',');
                     if needs_open && !result.ends_with('[') {
                         result.push('[');
                     } else if result.ends_with(']') {

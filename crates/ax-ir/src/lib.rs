@@ -5,8 +5,8 @@ pub mod pretty;
 
 pub use expr::{
     Assumption, Condition, Convention, Expr, FourierSign, Grading, Index, IndexFamily,
-    IndexPosition, LeviCivitaNorm, MetricSignature, RicciContraction, RiemannSign,
-    TensorProperty, TrustLevel, Variance,
+    IndexPosition, LeviCivitaNorm, MetricSignature, RicciContraction, RiemannSign, TensorProperty,
+    TrustLevel, Variance,
 };
 pub use intern::Interner;
 pub use pool::{ExprBuilder, ExprId, ExprPool, PooledExpr};

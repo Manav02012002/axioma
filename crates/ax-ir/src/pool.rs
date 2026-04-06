@@ -106,7 +106,10 @@ impl ExprPool {
                 self.intern(PooledExpr::Add(terms))
             }
             Expr::Mul(factors) => {
-                let factors = factors.iter().map(|factor| self.from_expr(factor)).collect();
+                let factors = factors
+                    .iter()
+                    .map(|factor| self.from_expr(factor))
+                    .collect();
                 self.intern(PooledExpr::Mul(factors))
             }
             Expr::Pow(base, exp) => {
@@ -181,9 +184,7 @@ impl ExprPool {
                 Expr::Complex(Box::new(self.to_expr(*re)), Box::new(self.to_expr(*im)))
             }
             PooledExpr::Sym(sym) => Expr::Sym(*sym),
-            PooledExpr::Add(terms) => {
-                Expr::Add(terms.iter().map(|id| self.to_expr(*id)).collect())
-            }
+            PooledExpr::Add(terms) => Expr::Add(terms.iter().map(|id| self.to_expr(*id)).collect()),
             PooledExpr::Mul(factors) => {
                 Expr::Mul(factors.iter().map(|id| self.to_expr(*id)).collect())
             }
@@ -195,7 +196,9 @@ impl ExprPool {
             PooledExpr::Indexed(base, indices) => {
                 Expr::Indexed(Box::new(self.to_expr(*base)), indices.clone())
             }
-            PooledExpr::List(items) => Expr::List(items.iter().map(|id| self.to_expr(*id)).collect()),
+            PooledExpr::List(items) => {
+                Expr::List(items.iter().map(|id| self.to_expr(*id)).collect())
+            }
             PooledExpr::Matrix(rows) => Expr::Matrix(
                 rows.iter()
                     .map(|row| row.iter().map(|id| self.to_expr(*id)).collect())
@@ -249,7 +252,8 @@ impl ExprPool {
         if !visited.insert(id) {
             return 0;
         }
-        1 + self.children(id)
+        1 + self
+            .children(id)
             .into_iter()
             .map(|child| self.node_count_inner(child, visited))
             .sum::<usize>()
@@ -269,7 +273,9 @@ impl ExprPool {
             PooledExpr::Complex(a, b) | PooledExpr::Pow(a, b) | PooledExpr::Rule(a, b, _) => {
                 vec![*a, *b]
             }
-            PooledExpr::Neg(inner) | PooledExpr::Indexed(inner, _) | PooledExpr::FnDef(_, _, inner) => {
+            PooledExpr::Neg(inner)
+            | PooledExpr::Indexed(inner, _)
+            | PooledExpr::FnDef(_, _, inner) => {
                 vec![*inner]
             }
             PooledExpr::Add(items)
@@ -277,9 +283,10 @@ impl ExprPool {
             | PooledExpr::Call(_, items)
             | PooledExpr::List(items) => items.clone(),
             PooledExpr::Matrix(rows) => rows.iter().flatten().copied().collect(),
-            PooledExpr::Piecewise(cases) => {
-                cases.iter().flat_map(|(value, cond)| [*value, *cond]).collect()
-            }
+            PooledExpr::Piecewise(cases) => cases
+                .iter()
+                .flat_map(|(value, cond)| [*value, *cond])
+                .collect(),
             PooledExpr::Let(_, value, body) => vec![*value, *body],
             PooledExpr::Int(_)
             | PooledExpr::Rational(_)

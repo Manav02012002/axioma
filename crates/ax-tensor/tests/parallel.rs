@@ -5,8 +5,8 @@ fn parallel_canon_matches_sequential_riemann_sum() {
     let mut props = std::collections::HashMap::new();
     props.insert(r, vec![ax_ir::TensorProperty::RiemannSymmetry]);
     let index_names: Vec<lasso::Spur> = [
-        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
-        "q", "s", "u", "v",
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "s",
+        "u", "v",
     ]
     .iter()
     .map(|s| interner.get_or_intern(s))

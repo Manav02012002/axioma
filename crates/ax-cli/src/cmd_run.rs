@@ -191,11 +191,14 @@ pub fn execute_expr(
     if let Expr::Call(f, args) = expr {
         if interner.resolve(*f) == "__declare_weight" && args.len() >= 2 {
             if let (Expr::Sym(sym), Expr::Int(w)) = (&args[0], &args[1]) {
-                let label = args.get(2)
-                    .and_then(|e| if let Expr::Sym(s) = e {
-                        Some(interner.resolve(*s).to_string())
-                    } else {
-                        None
+                let label = args
+                    .get(2)
+                    .and_then(|e| {
+                        if let Expr::Sym(s) = e {
+                            Some(interner.resolve(*s).to_string())
+                        } else {
+                            None
+                        }
                     })
                     .unwrap_or_default();
                 // Convert BigInt to i64 via string parse

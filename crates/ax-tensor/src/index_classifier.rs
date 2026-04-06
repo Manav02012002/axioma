@@ -36,7 +36,13 @@ pub fn classify_indices(expr: &Expr) -> IndexClassification {
         if occs.len() == 1 {
             free.push((*name, occs[0].0, occs[0].1.clone()));
         } else if occs.len() == 2 && occs[0].1.variance != occs[1].1.variance {
-            dummy.push((*name, occs[0].0, occs[1].0, occs[0].1.clone(), occs[1].1.clone()));
+            dummy.push((
+                *name,
+                occs[0].0,
+                occs[1].0,
+                occs[0].1.clone(),
+                occs[1].1.clone(),
+            ));
         } else {
             for (p, idx) in occs {
                 free.push((*name, *p, idx.clone()));

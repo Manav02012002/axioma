@@ -2025,6 +2025,16 @@ fn centry(
     }
 }
 
+fn handle_eval_syntax_entry(
+    _args: &[serde_json::Value],
+    _state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    Err(
+        "This registry entry is source-level Axioma syntax; call eval with the corresponding code."
+            .to_string(),
+    )
+}
+
 fn require_arg<'a>(
     args: &'a [serde_json::Value],
     idx: usize,
@@ -3540,7 +3550,10 @@ fn handle_metric_pipeline_christoffel(
     )?;
     if let Some(obj) = response.as_object_mut() {
         obj.insert("christoffel_id".to_string(), serde_json::json!(metric_id));
-        obj.insert("nonzero_count".to_string(), serde_json::json!(nonzero_count));
+        obj.insert(
+            "nonzero_count".to_string(),
+            serde_json::json!(nonzero_count),
+        );
     }
     Ok(response)
 }
@@ -5029,7 +5042,10 @@ fn handle_graded_declare(
             .ok_or_else(|| "numeric grading must be an integer".to_string())?,
         _ => return Err("grading must be a string or integer".to_string()),
     };
-    state.env_mut().graded_table.declare(symbol, grading.clone());
+    state
+        .env_mut()
+        .graded_table
+        .declare(symbol, grading.clone());
     Ok(serde_json::json!({
         "symbol": state.interner().resolve(symbol),
         "grading": format!("{:?}", grading)
@@ -5081,10 +5097,12 @@ fn theta_monomial_from_json(
     }
     let theta_count = items[0]
         .as_u64()
-        .ok_or_else(|| "theta count must be an integer".to_string())? as usize;
+        .ok_or_else(|| "theta count must be an integer".to_string())?
+        as usize;
     let theta_bar_count = items[1]
         .as_u64()
-        .ok_or_else(|| "theta_bar count must be an integer".to_string())? as usize;
+        .ok_or_else(|| "theta_bar count must be an integer".to_string())?
+        as usize;
     if theta_count > setup.theta.len() || theta_bar_count > setup.theta_bar.len() {
         return Err("theta_spec exceeds available N=1 theta coordinates".to_string());
     }
@@ -5135,106 +5153,203 @@ fn handle_superfield_named(
     let symbol = symbol_arg(args, 0, "name", state)?;
     let (setup, _) = active_superspace_for_state(state);
     let expansion = match name {
-        "expand_superfield" => ax_graded::superspace::expand_superfield(symbol, &setup, state.interner()),
+        "expand_superfield" => {
+            ax_graded::superspace::expand_superfield(symbol, &setup, state.interner())
+        }
         "chiral_superfield" => {
-            let expanded = ax_graded::superspace::expand_superfield(symbol, &setup, state.interner());
+            let expanded =
+                ax_graded::superspace::expand_superfield(symbol, &setup, state.interner());
             ax_graded::superspace::chiral_constraint(&expanded, &setup, state.interner())
         }
         "antichiral_superfield" => {
-            let expanded = ax_graded::superspace::expand_superfield(symbol, &setup, state.interner());
+            let expanded =
+                ax_graded::superspace::expand_superfield(symbol, &setup, state.interner());
             ax_graded::superspace::antichiral_constraint(&expanded, &setup, state.interner())
         }
-        "vector_superfield_wz" => ax_graded::superspace::vector_superfield_wz_gauge(symbol, &setup, state.interner()),
+        "vector_superfield_wz" => {
+            ax_graded::superspace::vector_superfield_wz_gauge(symbol, &setup, state.interner())
+        }
         _ => unreachable!(),
     };
     superfield_expr_response(expansion, &setup, state)
 }
 
-fn handle_expand_superfield_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_expand_superfield_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     handle_superfield_named("expand_superfield", args, state)
 }
-fn handle_chiral_superfield_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_chiral_superfield_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     handle_superfield_named("chiral_superfield", args, state)
 }
-fn handle_antichiral_superfield_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_antichiral_superfield_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     handle_superfield_named("antichiral_superfield", args, state)
 }
-fn handle_vector_superfield_wz_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_vector_superfield_wz_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     handle_superfield_named("vector_superfield_wz", args, state)
 }
 
-fn handle_extract_component_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_extract_component_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let (setup, table) = active_superspace_for_state(state);
     let theta = theta_monomial_from_json(require_arg(args, 1, "theta_spec")?, &setup)?;
-    expr_response(ax_graded::superspace::extract_component(&expr, &theta, &setup, &table, state.interner()), state)
+    expr_response(
+        ax_graded::superspace::extract_component(&expr, &theta, &setup, &table, state.interner()),
+        state,
+    )
 }
 
-fn handle_d_alpha_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_d_alpha_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let alpha = int_arg(args, 1, "alpha")? as usize;
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(ax_graded::d_algebra::apply_d_alpha(&expr, alpha, &setup, &table, state.interner()), state)
+    expr_response(
+        ax_graded::d_algebra::apply_d_alpha(&expr, alpha, &setup, &table, state.interner()),
+        state,
+    )
 }
 
-fn handle_d_bar_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_d_bar_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let alpha = int_arg(args, 1, "alpha_dot")? as usize;
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(ax_graded::d_algebra::apply_d_bar_alpha_dot(&expr, alpha, &setup, &table, state.interner()), state)
+    expr_response(
+        ax_graded::d_algebra::apply_d_bar_alpha_dot(&expr, alpha, &setup, &table, state.interner()),
+        state,
+    )
 }
 
-fn handle_d_squared_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_d_squared_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(ax_graded::d_algebra::d_squared(&expr, &setup, &table, state.interner()), state)
+    expr_response(
+        ax_graded::d_algebra::d_squared(&expr, &setup, &table, state.interner()),
+        state,
+    )
 }
 
-fn handle_d_bar_squared_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_d_bar_squared_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(ax_graded::d_algebra::d_bar_squared(&expr, &setup, &table, state.interner()), state)
+    expr_response(
+        ax_graded::d_algebra::d_bar_squared(&expr, &setup, &table, state.interner()),
+        state,
+    )
 }
 
-fn handle_superspace_integrate_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_superspace_integrate_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    let measure = match string_arg(args, 1, "measure")?.to_ascii_lowercase().as_str() {
+    let measure = match string_arg(args, 1, "measure")?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "full" => ax_graded::d_algebra::SuperspaceMeasure::FullSuperspace,
         "chiral" => ax_graded::d_algebra::SuperspaceMeasure::Chiral,
         "antichiral" | "anti_chiral" => ax_graded::d_algebra::SuperspaceMeasure::AntiChiral,
         other => return Err(format!("unknown superspace measure '{other}'")),
     };
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(ax_graded::d_algebra::superspace_integrate(&expr, measure, &setup, &table, state.interner()), state)
+    expr_response(
+        ax_graded::d_algebra::superspace_integrate(
+            &expr,
+            measure,
+            &setup,
+            &table,
+            state.interner(),
+        ),
+        state,
+    )
 }
 
-fn handle_setup_brst_ym_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_setup_brst_ym_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let gauge = symbol_arg(args, 0, "A", state)?;
     let ghost = symbol_arg(args, 1, "c", state)?;
     let antighost = symbol_arg(args, 2, "cbar", state)?;
     let aux = symbol_arg(args, 3, "B", state)?;
     let coupling = symbol_arg(args, 4, "g", state)?;
-    let (setup, table) = ax_graded::brst::setup_yang_mills_brst(gauge, ghost, antighost, aux, coupling, state.interner());
+    let (setup, table) = ax_graded::brst::setup_yang_mills_brst(
+        gauge,
+        ghost,
+        antighost,
+        aux,
+        coupling,
+        state.interner(),
+    );
     state.env_mut().brst_setup = Some(setup);
     state.env_mut().graded_table = table;
     Ok(serde_json::json!({ "status": "ok", "theory": "yang_mills_brst" }))
 }
 
-fn handle_brst_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_brst_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    let setup = state.env().brst_setup.clone().ok_or_else(|| "BRST setup is not initialized; call setup_brst_ym first".to_string())?;
-    expr_response(ax_graded::brst::apply_brst(&expr, &setup, &state.env().graded_table, state.interner()), state)
+    let setup = state
+        .env()
+        .brst_setup
+        .clone()
+        .ok_or_else(|| "BRST setup is not initialized; call setup_brst_ym first".to_string())?;
+    expr_response(
+        ax_graded::brst::apply_brst(&expr, &setup, &state.env().graded_table, state.interner()),
+        state,
+    )
 }
 
-fn handle_brst_check_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_brst_check_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    let setup = state.env().brst_setup.clone().ok_or_else(|| "BRST setup is not initialized; call setup_brst_ym first".to_string())?;
-    let applied = ax_graded::brst::apply_brst(&expr, &setup, &state.env().graded_table, state.interner());
-    let simplified = ax_graded::graded_simplify(&applied, &state.env().graded_table, state.interner());
-    Ok(serde_json::json!({ "closed": simplified == ax_ir::Expr::zero(), "result": state.render_unicode(&simplified) }))
+    let setup = state
+        .env()
+        .brst_setup
+        .clone()
+        .ok_or_else(|| "BRST setup is not initialized; call setup_brst_ym first".to_string())?;
+    let applied =
+        ax_graded::brst::apply_brst(&expr, &setup, &state.env().graded_table, state.interner());
+    let simplified =
+        ax_graded::graded_simplify(&applied, &state.env().graded_table, state.interner());
+    Ok(
+        serde_json::json!({ "closed": simplified == ax_ir::Expr::zero(), "result": state.render_unicode(&simplified) }),
+    )
 }
 
-fn handle_ghost_number_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_ghost_number_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     match ax_graded::brst::ghost_number(&expr, &state.env().graded_table) {
         Some(n) => Ok(serde_json::json!({ "ghost_number": n })),
@@ -5242,10 +5357,21 @@ fn handle_ghost_number_entry(args: &[serde_json::Value], state: &mut dyn EvalSta
     }
 }
 
-fn handle_filter_ghost_entry(args: &[serde_json::Value], state: &mut dyn EvalState) -> Result<serde_json::Value, String> {
+fn handle_filter_ghost_entry(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let target = int_arg(args, 1, "n")? as i32;
-    expr_response(ax_graded::brst::filter_by_ghost_number(&expr, target, &state.env().graded_table, state.interner()), state)
+    expr_response(
+        ax_graded::brst::filter_by_ghost_number(
+            &expr,
+            target,
+            &state.env().graded_table,
+            state.interner(),
+        ),
+        state,
+    )
 }
 
 pub fn callable_entries() -> Vec<CallableEntry> {
@@ -5253,7 +5379,10 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         |params: Vec<ParamDef>| -> &'static [ParamDef] { Box::leak(params.into_boxed_slice()) };
     vec![
         centry("eval", "Parse and evaluate an Axioma code snippet.", ps(vec![pdef("code", ParamType::Code, true, "Axioma code or expression.")]), handle_eval_code),
+        centry("import", "Import an Axioma std module via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Import declaration code.")]), handle_eval_syntax_entry),
+        centry("assume", "Declare assumptions via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Assumption declaration code.")]), handle_eval_syntax_entry),
         centry("diff", "Symbolic differentiation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Differentiation variable.")]), handle_diff),
+        centry("differentiate", "Symbolic differentiation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Differentiation variable.")]), handle_diff),
         centry("integrate", "Indefinite symbolic integration.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Integration variable.")]), handle_integrate),
         centry("double_integral", "Iterated double integration.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("x", ParamType::Symbol, true, "Inner integration variable."), pdef("y", ParamType::Symbol, true, "Outer integration variable.")]), handle_double_integral),
         centry("dblint", "Alias for double_integral.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("x", ParamType::Symbol, true, "Inner integration variable."), pdef("y", ParamType::Symbol, true, "Outer integration variable.")]), handle_double_integral),
@@ -5275,6 +5404,9 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("factor_out", "Factor common symbols from a sum.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("targets", ParamType::SymbolList, false, "Optional target symbols to factor.")]), handle_factor_out),
         centry("factor_in", "Group terms with common prefactors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("targets", ParamType::SymbolList, false, "Optional target symbols to factor.")]), handle_factor_in),
         centry("subs", "Symbolic substitution.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("target", ParamType::Code, true, "Target pattern expression."), pdef("replacement", ParamType::Code, true, "Replacement expression.")]), handle_subs),
+        centry("symbolic_substitute", "Symbolic substitution.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("target", ParamType::Code, true, "Target pattern expression."), pdef("replacement", ParamType::Code, true, "Replacement expression.")]), handle_subs),
+        centry("multi_substitute", "Repeated symbolic substitution via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Substitution expression code.")]), handle_eval_syntax_entry),
+        centry("substitute_with_indices", "Index-aware symbolic substitution.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("target", ParamType::Code, true, "Target pattern expression."), pdef("replacement", ParamType::Code, true, "Replacement expression.")]), handle_subs),
         centry("rewrite", "Apply registered rewrite rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_rewrite),
         centry("zoom", "Split an expression into matching and remainder parts.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("pattern", ParamType::Code, true, "Pattern expression.")]), handle_zoom),
         centry("unzoom", "Recombine a focus expression and its remainder.", ps(vec![pdef("focus", ParamType::ExprId, true, "Focus expression id."), pdef("remainder", ParamType::ExprId, true, "Remainder expression id.")]), handle_unzoom),
@@ -5373,11 +5505,14 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("ghost_number", "Compute ghost number.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_ghost_number_entry),
         centry("filter_ghost", "Filter a sum by ghost number.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("n", ParamType::Integer, true, "Ghost number.")]), handle_filter_ghost_entry),
         centry("canonicalise", "Canonical tensor simplification.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_canonicalise),
+        centry("canonicalize", "Canonical tensor simplification.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_canonicalise),
         centry("canonicalize_indices", "Canonicalize index ordering with tensor properties.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_canonicalize_indices),
         centry("meld", "Combine indexed sum terms using symmetry identities.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_meld),
         centry("sort_product", "Sort tensor-product factors canonically.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_sort_product),
         centry("product_rule", "Apply the tensor Leibniz rule.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_product_rule_tensor),
+        centry("leibniz", "Apply the tensor Leibniz rule.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_product_rule_tensor),
         centry("tensor_distribute", "Distribute tensor products over sums.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_tensor_distribute),
+        centry("tdistribute", "Distribute tensor products over sums.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_tensor_distribute),
         centry("eliminate_kronecker", "Contract Kronecker deltas.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_eliminate_kronecker),
         centry("eliminate_metric", "Contract metric or inverse-metric factors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_eliminate_metric),
         centry("eliminate_vielbein", "Simplify vielbein contractions.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_eliminate_vielbein),
@@ -5393,69 +5528,144 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("young_project_tensor", "Project onto Young-tableau symmetry.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_young_project),
         centry("reduce_delta", "Reduce expanded deltas back to compact form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_reduce_delta),
         centry("symmetrise", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
+        centry("symmetrize", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
+        centry("sym", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
         centry("antisymmetrise", "Antisymmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_antisymmetrise_tensor),
+        centry("antisymmetrize", "Antisymmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_antisymmetrise_tensor),
+        centry("asym", "Antisymmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_antisymmetrise_tensor),
         centry("decompose", "Decompose an expression in a supplied basis.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("basis", ParamType::ExprId, true, "Stored list of basis expressions.")]), handle_decompose_tensor),
         centry("decompose_product", "Decompose a tensor product by dimension.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("dim", ParamType::Integer, false, "Optional dimension.")]), handle_decompose_product_tensor),
         centry("unwrap_derivatives", "Pull constant factors out of derivative operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_unwrap_derivatives_tensor),
+        centry("unwrap", "Pull constant factors out of derivative operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_unwrap_derivatives_tensor),
         centry("drop_weight", "Drop terms with a chosen symbolic weight.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("label", ParamType::Code, true, "Weight label."), pdef("value", ParamType::Integer, true, "Weight value to drop.")]), handle_drop_weight_tensor),
         centry("keep_weight", "Keep only terms with a chosen symbolic weight.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("label", ParamType::Code, true, "Weight label."), pdef("value", ParamType::Integer, true, "Weight value to keep.")]), handle_keep_weight_tensor),
         centry("lower_free_indices", "Lower free indices.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_lower_free_indices),
+        centry("lower_indices", "Lower free indices.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_lower_free_indices),
         centry("raise_free_indices", "Raise free indices.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_raise_free_indices),
+        centry("raise_indices", "Raise free indices.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_raise_free_indices),
         centry("rewrite_indices", "Rewrite free-index variances for a tensor.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("tensor", ParamType::Symbol, true, "Target tensor symbol."), pdef("variances", ParamType::Code, true, "Array of variance strings up/down.")]), handle_rewrite_indices_tensor),
         centry("evaluate_components", "Evaluate tensor components from rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("rules", ParamType::ExprId, true, "Stored rules list.")]), handle_evaluate_components_tensor),
+        centry("evaluate", "Evaluate tensor components from rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("rules", ParamType::ExprId, true, "Stored rules list.")]), handle_evaluate_components_tensor),
+        centry("eval_components", "Evaluate tensor components from rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("rules", ParamType::ExprId, true, "Stored rules list.")]), handle_evaluate_components_tensor),
         centry("complete_inverse_metric", "Complete inverse-metric component rules.", ps(vec![pdef("rules", ParamType::ExprId, true, "Stored component rules list."), pdef("metric", ParamType::Symbol, true, "Metric symbol."), pdef("inverse_metric", ParamType::Symbol, true, "Inverse-metric symbol."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_complete_inverse_metric),
         centry("diff_component", "Differentiate a tensor component expression.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Differentiation variable.")]), handle_diff_component_tensor),
         centry("christoffel", "Compute Christoffel symbols from a stored metric.", ps(vec![pdef("metric_id", ParamType::Code, true, "Stored metric id.")]), handle_metric_pipeline_christoffel),
+        centry("christoffel_from_metric", "Compute Christoffel symbols from a stored metric.", ps(vec![pdef("metric_id", ParamType::Code, true, "Stored metric id.")]), handle_metric_pipeline_christoffel),
         centry("riemann", "Compute a Riemann tensor from stored Christoffel symbols.", ps(vec![pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id.")]), handle_riemann_from_christoffel),
+        centry("riemann_from_christoffel", "Compute a Riemann tensor from stored Christoffel symbols.", ps(vec![pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id.")]), handle_riemann_from_christoffel),
         centry("ricci", "Contract a stored Riemann tensor to the Ricci tensor.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_ricci_from_riemann),
+        centry("ricci_from_riemann", "Contract a stored Riemann tensor to the Ricci tensor.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_ricci_from_riemann),
         centry("ricci_scalar", "Contract a Ricci tensor with an inverse metric.", ps(vec![pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."), pdef("metric_inverse", ParamType::ExprId, true, "Stored inverse metric matrix expression id.")]), handle_ricci_scalar_gr),
         centry("einstein_tensor", "Build the Einstein tensor from metric, Ricci tensor, and Ricci scalar.", ps(vec![pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."), pdef("scalar", ParamType::ExprId, true, "Stored scalar expression id."), pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id.")]), handle_einstein_tensor_gr),
+        centry("einstein", "Build the Einstein tensor from metric, Ricci tensor, and Ricci scalar.", ps(vec![pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."), pdef("scalar", ParamType::ExprId, true, "Stored scalar expression id."), pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id.")]), handle_einstein_tensor_gr),
         centry("kretschner_scalar", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
+        centry("kretschner", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
         centry("covariant_derivative_vector", "Covariant derivative of a vector.", ps(vec![pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_vector_gr),
+        centry("covariant_diff", "Covariant derivative of a vector.", ps(vec![pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_vector_gr),
         centry("covariant_derivative_covector", "Covariant derivative of a covector.", ps(vec![pdef("covector", ParamType::ExprId, true, "Stored covector expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_covector_gr),
         centry("covariant_derivative_tensor2", "Covariant derivative of a rank-2 tensor.", ps(vec![pdef("tensor", ParamType::ExprId, true, "Stored matrix expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_tensor2_gr),
         centry("geodesic_equations", "Geodesic equations from a connection.", ps(vec![pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id.")]), handle_geodesic_equations_gr),
+        centry("geodesic", "Geodesic equations from a connection.", ps(vec![pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id.")]), handle_geodesic_equations_gr),
         centry("lie_derivative_scalar", "Lie derivative of a scalar field.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored scalar expression id."), pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_lie_derivative_scalar_gr),
+        centry("lie_derivative", "Lie derivative of a scalar field.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored scalar expression id."), pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_lie_derivative_scalar_gr),
         centry("lie_derivative_vector", "Lie derivative of a vector field.", ps(vec![pdef("field", ParamType::ExprId, true, "Stored vector expression id."), pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_lie_derivative_vector_gr),
         centry("pauli_x", "Return the Pauli sigma_x matrix.", ps(vec![]), handle_pauli_x),
+        centry("sigma_x", "Return the Pauli sigma_x matrix.", ps(vec![]), handle_pauli_x),
         centry("pauli_y", "Return the Pauli sigma_y matrix.", ps(vec![]), handle_pauli_y),
+        centry("sigma_y", "Return the Pauli sigma_y matrix.", ps(vec![]), handle_pauli_y),
         centry("pauli_z", "Return the Pauli sigma_z matrix.", ps(vec![]), handle_pauli_z),
+        centry("sigma_z", "Return the Pauli sigma_z matrix.", ps(vec![]), handle_pauli_z),
         centry("gamma5", "Return the Dirac gamma_5 matrix.", ps(vec![]), handle_gamma5),
         centry("gamma_trace", "Trace a gamma-matrix chain.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored gamma expression or index list id.")]), handle_gamma_trace_qm),
+        centry("gamma5_trace", "Trace a gamma-matrix chain.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored gamma expression or index list id.")]), handle_gamma_trace_qm),
         centry("join_gamma", "Join adjacent gamma factors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_join_gamma_qm),
+        centry("join_gammas_in_expr", "Join adjacent gamma factors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_join_gamma_qm),
         centry("split_gamma", "Split compact gamma chains.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_split_gamma_qm),
         centry("fierz", "Perform a Fierz rearrangement.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_fierz_qm),
         centry("commutator", "Operator commutator.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored expression id."), pdef("rhs", ParamType::ExprId, true, "Stored expression id.")]), handle_commutator_qm),
         centry("anticommutator", "Operator anticommutator.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored expression id."), pdef("rhs", ParamType::ExprId, true, "Stored expression id.")]), handle_anticommutator_qm),
         centry("density_matrix", "Build a density matrix from a state vector.", ps(vec![pdef("state", ParamType::ExprId, true, "Stored state-vector expression id.")]), handle_density_matrix_qm),
+        centry("density", "Build a density matrix from a state vector.", ps(vec![pdef("state", ParamType::ExprId, true, "Stored state-vector expression id.")]), handle_density_matrix_qm),
         centry("partial_trace", "Take a subsystem partial trace.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix id."), pdef("dim_a", ParamType::Integer, true, "Subsystem A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem B dimension."), pdef("which", ParamType::StringEnum(&["A", "B"]), true, "Subsystem to trace out.")]), handle_partial_trace_qm),
         centry("braket", "Bra-ket inner product.", ps(vec![pdef("bra", ParamType::ExprId, true, "Stored bra/list expression id."), pdef("ket", ParamType::ExprId, true, "Stored ket/list expression id.")]), handle_braket_qm),
         centry("outer", "Outer-product operator.", ps(vec![pdef("left", ParamType::ExprId, true, "Stored vector id."), pdef("right", ParamType::ExprId, true, "Stored vector id.")]), handle_outer_qm),
         centry("normal_order", "Normal-order creation and annihilation operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_normal_order_qm),
         centry("wick_expand", "Apply Wick expansion.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_wick_expand_qm),
+        centry("wick", "Apply Wick expansion.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_wick_expand_qm),
         centry("grassmann_simplify", "Simplify with Grassmann grading rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_grassmann_simplify_qm),
+        centry("grassmann", "Simplify with Grassmann grading rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_grassmann_simplify_qm),
         centry("wedge", "Wedge product of differential forms.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored form expression id."), pdef("rhs", ParamType::ExprId, true, "Stored form expression id.")]), handle_wedge_forms),
+        centry("wedge_1_1", "Wedge product of differential forms.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored form expression id."), pdef("rhs", ParamType::ExprId, true, "Stored form expression id.")]), handle_wedge_forms),
         centry("exterior_derivative", "Exterior derivative of a differential form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored form expression id.")]), handle_exterior_derivative_forms),
+        centry("exterior_d", "Exterior derivative of a differential form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored form expression id.")]), handle_exterior_derivative_forms),
+        centry("d", "Exterior derivative of a differential form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored form expression id.")]), handle_exterior_derivative_forms),
         centry("hodge_dual", "Hodge dual with respect to a metric.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored form expression id."), pdef("rhs", ParamType::ExprId, true, "Stored metric expression id.")]), handle_hodge_dual_forms),
+        centry("hodge_star", "Hodge dual with respect to a metric.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored form expression id."), pdef("rhs", ParamType::ExprId, true, "Stored metric expression id.")]), handle_hodge_dual_forms),
         centry("functional_derivative", "Functional derivative with respect to a field.", ps(vec![pdef("lagrangian", ParamType::ExprId, true, "Stored Lagrangian id."), pdef("field", ParamType::Symbol, true, "Field symbol."), pdef("field_derivatives", ParamType::SymbolList, true, "Field derivative symbols."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_functional_derivative_variational),
+        centry("euler_lagrange", "Functional derivative with respect to a field.", ps(vec![pdef("lagrangian", ParamType::ExprId, true, "Stored Lagrangian id."), pdef("field", ParamType::Symbol, true, "Field symbol."), pdef("field_derivatives", ParamType::SymbolList, true, "Field derivative symbols."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_functional_derivative_variational),
         centry("euler_lagrange_system", "Euler-Lagrange equations for several fields.", ps(vec![pdef("lagrangian", ParamType::ExprId, true, "Stored Lagrangian id."), pdef("fields", ParamType::Code, true, "JSON array of [field, derivs] entries."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_euler_lagrange_system_variational),
         centry("vary_action", "Formal variation of an action density.", ps(vec![pdef("lagrangian", ParamType::ExprId, true, "Stored Lagrangian id."), pdef("field", ParamType::Symbol, true, "Field symbol."), pdef("variation", ParamType::Symbol, true, "Variation symbol."), pdef("field_derivatives", ParamType::SymbolList, true, "Field derivative symbols."), pdef("variation_derivatives", ParamType::SymbolList, true, "Variation derivative symbols.")]), handle_vary_action_variational),
+        centry("vary", "Formal variation of an action density.", ps(vec![pdef("lagrangian", ParamType::ExprId, true, "Stored Lagrangian id."), pdef("field", ParamType::Symbol, true, "Field symbol."), pdef("variation", ParamType::Symbol, true, "Variation symbol."), pdef("field_derivatives", ParamType::SymbolList, true, "Field derivative symbols."), pdef("variation_derivatives", ParamType::SymbolList, true, "Variation derivative symbols.")]), handle_vary_action_variational),
         centry("solve", "Solve a univariate equation.", ps(vec![pdef("equation", ParamType::Code, true, "Equation expression."), pdef("variable", ParamType::Symbol, true, "Unknown symbol.")]), handle_solve_general),
         centry("solve_linear_system", "Solve a linear system.", ps(vec![pdef("equations", ParamType::Code, true, "JSON array of equation strings."), pdef("variables", ParamType::SymbolList, true, "Unknown symbols.")]), handle_solve_linear_system_general),
         centry("solve_ode", "Solve a supported first-order ODE.", ps(vec![pdef("equation", ParamType::ExprId, true, "Stored ODE rhs/expression id."), pdef("dependent", ParamType::Symbol, true, "Dependent variable."), pdef("independent", ParamType::Symbol, true, "Independent variable.")]), handle_solve_ode_ode),
+        centry("dsolve", "Solve a supported first-order ODE.", ps(vec![pdef("equation", ParamType::ExprId, true, "Stored ODE rhs/expression id."), pdef("dependent", ParamType::Symbol, true, "Dependent variable."), pdef("independent", ParamType::Symbol, true, "Independent variable.")]), handle_solve_ode_ode),
         centry("rk4", "Numerical fourth-order Runge-Kutta integration.", ps(vec![pdef("f", ParamType::ExprId, true, "Stored RHS expression id."), pdef("x", ParamType::Symbol, true, "Independent variable."), pdef("y", ParamType::Symbol, true, "Dependent variable."), pdef("x0", ParamType::Float, true, "Initial x."), pdef("y0", ParamType::Float, true, "Initial y."), pdef("x_end", ParamType::Float, true, "Final x."), pdef("steps", ParamType::Integer, false, "Optional step count.")]), handle_rk4_ode),
         centry("rk4_system", "Numerical fourth-order Runge-Kutta for coupled systems.", ps(vec![pdef("functions", ParamType::ExprId, true, "Stored list of RHS expressions."), pdef("independent", ParamType::Symbol, true, "Independent variable."), pdef("dependents", ParamType::SymbolList, true, "Dependent variables."), pdef("x0", ParamType::Float, true, "Initial x."), pdef("y0s", ParamType::Code, true, "JSON array of initial values."), pdef("x_end", ParamType::Float, true, "Final x."), pdef("steps", ParamType::Integer, false, "Optional step count.")]), handle_rk4_system_ode),
         centry("first_order_form", "Convert a higher-order ODE into first-order form.", ps(vec![pdef("ode", ParamType::ExprId, true, "Stored ODE expression id."), pdef("dependent", ParamType::Symbol, true, "Dependent variable."), pdef("independent", ParamType::Symbol, true, "Independent variable.")]), handle_first_order_form_ode),
         centry("classify_pde", "Classify a second-order PDE by its discriminant.", ps(vec![pdef("A", ParamType::ExprId, true, "Coefficient A."), pdef("B", ParamType::ExprId, true, "Coefficient B."), pdef("C", ParamType::ExprId, true, "Coefficient C.")]), handle_classify_pde_ode),
         centry("separate_variables", "Return a separated-variables ansatz.", ps(vec![pdef("pde_type", ParamType::Code, true, "PDE family name."), pdef("spatial", ParamType::Symbol, true, "Spatial variable."), pdef("temporal", ParamType::Symbol, true, "Temporal variable."), pdef("coefficient", ParamType::Code, false, "Optional PDE coefficient.")]), handle_separate_variables_ode),
+        centry("separation", "Return a separated-variables ansatz.", ps(vec![pdef("pde_type", ParamType::Code, true, "PDE family name."), pdef("spatial", ParamType::Symbol, true, "Spatial variable."), pdef("temporal", ParamType::Symbol, true, "Temporal variable."), pdef("coefficient", ParamType::Code, false, "Optional PDE coefficient.")]), handle_separate_variables_ode),
         centry("determinant", "Determinant of a symbolic matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_determinant_linalg),
+        centry("det", "Determinant of a symbolic matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_determinant_linalg),
         centry("inverse", "Inverse of a symbolic matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_inverse_linalg),
+        centry("inv", "Inverse of a symbolic matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_inverse_linalg),
         centry("trace", "Trace of a symbolic matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_trace_linalg),
+        centry("trace_mat", "Trace of a symbolic matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_trace_linalg),
         centry("eigenvalues_symbolic", "Characteristic polynomial of a symbolic matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_eigenvalues_symbolic_linalg),
+        centry("eigenvalues", "Characteristic polynomial of a symbolic matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_eigenvalues_symbolic_linalg),
         centry("tensor_product", "Kronecker product of two matrices.", ps(vec![pdef("a", ParamType::ExprId, true, "Stored matrix id."), pdef("b", ParamType::ExprId, true, "Stored matrix id.")]), handle_tensor_product_linalg),
         centry("matmul", "Matrix multiplication.", ps(vec![pdef("a", ParamType::ExprId, true, "Stored matrix id."), pdef("b", ParamType::ExprId, true, "Stored matrix id.")]), handle_matmul_linalg),
         centry("transpose", "Transpose of a matrix.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix id.")]), handle_transpose_linalg),
         centry("identity_matrix", "Identity matrix of size n.", ps(vec![pdef("n", ParamType::Integer, true, "Matrix dimension.")]), handle_identity_matrix_linalg),
+        centry("identity", "Identity matrix of size n.", ps(vec![pdef("n", ParamType::Integer, true, "Matrix dimension.")]), handle_identity_matrix_linalg),
+        centry("metric", "Define and store a symbolic metric with coordinates, or declare a metric property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Metric declaration code.")]), handle_eval_syntax_entry),
+        centry("diag", "Construct a diagonal matrix via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Diagonal matrix expression code.")]), handle_eval_syntax_entry),
+        centry("dim", "Declare an index-family dimension via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Dimension declaration code.")]), handle_eval_syntax_entry),
+        centry("convert", "Convert units via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Unit-conversion expression code.")]), handle_eval_syntax_entry),
+        centry("check_units", "Check dimensional consistency via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Unit-check expression code.")]), handle_eval_syntax_entry),
+        centry("plot", "Plot an expression via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Plot expression code.")]), handle_eval_syntax_entry),
+        centry("symmetric", "Declare a symmetric tensor property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("antisymmetric", "Declare an antisymmetric tensor property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("inverse_metric", "Declare an inverse-metric property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("kronecker_delta", "Declare a Kronecker-delta property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("kronecker", "Declare a Kronecker-delta property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("epsilon", "Declare an epsilon-tensor property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("epsilon_tensor", "Declare an epsilon-tensor property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("riemann_symmetry", "Declare Riemann tensor symmetry via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("traceless", "Declare a traceless tensor property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("derivative", "Declare a derivative operator property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("partial_derivative", "Declare a partial-derivative operator property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("covariant_derivative", "Declare a covariant-derivative operator property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("spinor", "Declare a spinor property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("dirac_bar", "Declare a Dirac-bar property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("diracbar", "Declare a Dirac-bar property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("gamma_matrix", "Declare a gamma-matrix property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("gamma", "Construct or declare gamma-matrix expressions via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Gamma expression code.")]), handle_eval_syntax_entry),
+        centry("commuting", "Declare a commuting operator property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("anticommuting", "Declare an anticommuting operator property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("anti_commuting", "Declare an anticommuting operator property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("noncommuting", "Declare a noncommuting operator property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("non_commuting", "Declare a noncommuting operator property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("bianchi", "Declare a Bianchi-identity property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("satisfies_bianchi", "Declare a Bianchi-identity property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("weyl", "Declare a Weyl tensor property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("weyl_tensor", "Declare a Weyl tensor property via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("tableau_symmetry", "Declare Young-tableau symmetry via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Property declaration code.")]), handle_eval_syntax_entry),
+        centry("ket", "Construct a ket via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Ket expression code.")]), handle_eval_syntax_entry),
+        centry("bra", "Construct a bra via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Bra expression code.")]), handle_eval_syntax_entry),
+        centry("creation", "Declare a creation operator via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Operator declaration code.")]), handle_eval_syntax_entry),
+        centry("annihilation", "Declare an annihilation operator via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Operator declaration code.")]), handle_eval_syntax_entry),
         centry("declare_property", "Declare a tensor property on a symbol.", ps(vec![pdef("symbol", ParamType::Symbol, true, "Target symbol."), pdef("property", ParamType::Code, true, "Property string.")]), handle_declare_property),
         centry("declare_indices", "Declare an index family.", ps(vec![pdef("family", ParamType::Symbol, true, "Family name."), pdef("indices", ParamType::SymbolList, true, "Index symbols."), pdef("dimension", ParamType::Integer, false, "Optional family dimension.")]), handle_declare_indices),
         centry("declare_coordinates", "Declare active coordinate symbols.", ps(vec![pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_declare_coordinates),

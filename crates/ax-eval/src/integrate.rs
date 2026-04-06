@@ -123,7 +123,8 @@ fn substitute_symbol(expr: &Expr, from: lasso::Spur, to: &Expr) -> Expr {
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (substitute_symbol(value, from, to), condition.clone()))
                 .collect(),
         ),
@@ -622,7 +623,10 @@ fn table_integrate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) ->
                     one_half(),
                     call1(
                         "log",
-                        Expr::add(vec![Expr::one(), Expr::pow(Expr::Sym(var), Expr::Int(2.into()))]),
+                        Expr::add(vec![
+                            Expr::one(),
+                            Expr::pow(Expr::Sym(var), Expr::Int(2.into())),
+                        ]),
                         interner,
                     ),
                 ])),
@@ -669,20 +673,14 @@ fn table_integrate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) ->
             {
                 Some(Expr::add(vec![
                     call1("cos", Expr::Sym(var), interner),
-                    Expr::mul(vec![
-                        Expr::Sym(var),
-                        call1("sin", Expr::Sym(var), interner),
-                    ]),
+                    Expr::mul(vec![Expr::Sym(var), call1("sin", Expr::Sym(var), interner)]),
                 ]))
             } else if factors[1] == Expr::Sym(var)
                 && is_named_unary_call(&factors[0], "cos", var, interner)
             {
                 Some(Expr::add(vec![
                     call1("cos", Expr::Sym(var), interner),
-                    Expr::mul(vec![
-                        Expr::Sym(var),
-                        call1("sin", Expr::Sym(var), interner),
-                    ]),
+                    Expr::mul(vec![Expr::Sym(var), call1("sin", Expr::Sym(var), interner)]),
                 ]))
             } else if factors[0] == Expr::Sym(var)
                 && is_named_unary_call(&factors[1], "log", var, interner)
@@ -873,7 +871,8 @@ pub fn integrate(expr: &ax_ir::Expr, var: lasso::Spur, interner: &ax_ir::Interne
         Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
         Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
         Expr::Piecewise(cases) => Expr::Piecewise(
-            cases.iter()
+            cases
+                .iter()
                 .map(|(value, condition)| (integrate(value, var, interner), condition.clone()))
                 .collect(),
         ),
@@ -957,7 +956,11 @@ mod tests {
         let expr = Expr::Call(sec_sym, vec![Expr::Sym(x)]);
         let result = integrate(&expr, x, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
-        assert!(pp.contains("log"), "∫sec(x)dx should contain log, got: {}", pp);
+        assert!(
+            pp.contains("log"),
+            "∫sec(x)dx should contain log, got: {}",
+            pp
+        );
     }
 
     #[test]
@@ -968,7 +971,11 @@ mod tests {
         let expr = Expr::Call(sinh_sym, vec![Expr::Sym(x)]);
         let result = integrate(&expr, x, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
-        assert!(pp.contains("cosh"), "∫sinh(x)dx should be cosh(x), got: {}", pp);
+        assert!(
+            pp.contains("cosh"),
+            "∫sinh(x)dx should be cosh(x), got: {}",
+            pp
+        );
     }
 
     #[test]

@@ -915,11 +915,7 @@ pub fn apply_superspace_setup(
     }
 }
 
-pub fn apply_brst_setup(
-    expr: &Expr,
-    env: &mut Env,
-    interner: &ax_ir::Interner,
-) -> Option<String> {
+pub fn apply_brst_setup(expr: &Expr, env: &mut Env, interner: &ax_ir::Interner) -> Option<String> {
     let Expr::Call(f, args) = expr else {
         return None;
     };
@@ -3514,14 +3510,19 @@ fn builtin_call(
             if args.len() == 1 {
                 match usize_from_expr(&args[0]) {
                     Some(1) => Expr::Sym(interner.get_or_intern("superspace_n1")),
-                    Some(_) => Expr::Sym(interner.get_or_intern("N_gt_1_superspace_not_yet_implemented")),
+                    Some(_) => {
+                        Expr::Sym(interner.get_or_intern("N_gt_1_superspace_not_yet_implemented"))
+                    }
                     None => Expr::Call(f, args),
                 }
             } else {
                 Expr::Call(f, args)
             }
         }
-        "expand_superfield" | "chiral_superfield" | "antichiral_superfield" | "vector_superfield_wz" => {
+        "expand_superfield"
+        | "chiral_superfield"
+        | "antichiral_superfield"
+        | "vector_superfield_wz" => {
             if args.len() == 1 {
                 if let Some(name_sym) = symbol_from_expr(&args[0]) {
                     let (setup, _) = active_superspace(env, interner);
@@ -3530,15 +3531,23 @@ fn builtin_call(
                             ax_graded::superspace::expand_superfield(name_sym, &setup, interner)
                         }
                         "chiral_superfield" => {
-                            let expanded = ax_graded::superspace::expand_superfield(name_sym, &setup, interner);
+                            let expanded = ax_graded::superspace::expand_superfield(
+                                name_sym, &setup, interner,
+                            );
                             ax_graded::superspace::chiral_constraint(&expanded, &setup, interner)
                         }
                         "antichiral_superfield" => {
-                            let expanded = ax_graded::superspace::expand_superfield(name_sym, &setup, interner);
-                            ax_graded::superspace::antichiral_constraint(&expanded, &setup, interner)
+                            let expanded = ax_graded::superspace::expand_superfield(
+                                name_sym, &setup, interner,
+                            );
+                            ax_graded::superspace::antichiral_constraint(
+                                &expanded, &setup, interner,
+                            )
                         }
                         "vector_superfield_wz" => {
-                            ax_graded::superspace::vector_superfield_wz_gauge(name_sym, &setup, interner)
+                            ax_graded::superspace::vector_superfield_wz_gauge(
+                                name_sym, &setup, interner,
+                            )
                         }
                         _ => unreachable!(),
                     };
@@ -3554,7 +3563,9 @@ fn builtin_call(
             if args.len() == 2 {
                 let (setup, table) = active_superspace(env, interner);
                 if let Some(theta) = theta_monomial_from_spec(&args[1], &setup) {
-                    ax_graded::superspace::extract_component(&args[0], &theta, &setup, &table, interner)
+                    ax_graded::superspace::extract_component(
+                        &args[0], &theta, &setup, &table, interner,
+                    )
                 } else {
                     Expr::Call(f, args)
                 }
@@ -3567,9 +3578,13 @@ fn builtin_call(
                 let (setup, table) = active_superspace(env, interner);
                 if let Some(alpha) = usize_from_expr(&args[1]) {
                     if name == "d_alpha" {
-                        ax_graded::d_algebra::apply_d_alpha(&args[0], alpha, &setup, &table, interner)
+                        ax_graded::d_algebra::apply_d_alpha(
+                            &args[0], alpha, &setup, &table, interner,
+                        )
                     } else {
-                        ax_graded::d_algebra::apply_d_bar_alpha_dot(&args[0], alpha, &setup, &table, interner)
+                        ax_graded::d_algebra::apply_d_bar_alpha_dot(
+                            &args[0], alpha, &setup, &table, interner,
+                        )
                     }
                 } else {
                     Expr::Call(f, args)
@@ -3593,13 +3608,20 @@ fn builtin_call(
         "superspace_integrate" => {
             if args.len() == 2 {
                 let (setup, table) = active_superspace(env, interner);
-                let measure = match name_from_expr(&args[1], interner).map(|s| s.to_ascii_lowercase()) {
-                    Some(s) if s == "full" => ax_graded::d_algebra::SuperspaceMeasure::FullSuperspace,
-                    Some(s) if s == "chiral" => ax_graded::d_algebra::SuperspaceMeasure::Chiral,
-                    Some(s) if s == "antichiral" || s == "anti_chiral" => ax_graded::d_algebra::SuperspaceMeasure::AntiChiral,
-                    _ => return Expr::Call(f, args),
-                };
-                ax_graded::d_algebra::superspace_integrate(&args[0], measure, &setup, &table, interner)
+                let measure =
+                    match name_from_expr(&args[1], interner).map(|s| s.to_ascii_lowercase()) {
+                        Some(s) if s == "full" => {
+                            ax_graded::d_algebra::SuperspaceMeasure::FullSuperspace
+                        }
+                        Some(s) if s == "chiral" => ax_graded::d_algebra::SuperspaceMeasure::Chiral,
+                        Some(s) if s == "antichiral" || s == "anti_chiral" => {
+                            ax_graded::d_algebra::SuperspaceMeasure::AntiChiral
+                        }
+                        _ => return Expr::Call(f, args),
+                    };
+                ax_graded::d_algebra::superspace_integrate(
+                    &args[0], measure, &setup, &table, interner,
+                )
             } else {
                 Expr::Call(f, args)
             }
@@ -3625,9 +3647,15 @@ fn builtin_call(
         "brst_check" => {
             if args.len() == 1 {
                 if let Some(setup) = &env.brst_setup {
-                    let applied = ax_graded::brst::apply_brst(&args[0], setup, &env.graded_table, interner);
-                    let simplified = ax_graded::graded_simplify(&applied, &env.graded_table, interner);
-                    Expr::Sym(interner.get_or_intern(if simplified == Expr::zero() { "true" } else { "false" }))
+                    let applied =
+                        ax_graded::brst::apply_brst(&args[0], setup, &env.graded_table, interner);
+                    let simplified =
+                        ax_graded::graded_simplify(&applied, &env.graded_table, interner);
+                    Expr::Sym(interner.get_or_intern(if simplified == Expr::zero() {
+                        "true"
+                    } else {
+                        "false"
+                    }))
                 } else {
                     Expr::Call(f, args)
                 }
@@ -3639,7 +3667,9 @@ fn builtin_call(
             if args.len() == 1 {
                 ax_graded::brst::ghost_number(&args[0], &env.graded_table)
                     .map(|n| Expr::Int(BigInt::from(n)))
-                    .unwrap_or_else(|| Expr::Sym(interner.get_or_intern("inconsistent_ghost_number")))
+                    .unwrap_or_else(|| {
+                        Expr::Sym(interner.get_or_intern("inconsistent_ghost_number"))
+                    })
             } else {
                 Expr::Call(f, args)
             }
@@ -3648,7 +3678,12 @@ fn builtin_call(
             if args.len() == 2 {
                 if let Expr::Int(n) = &args[1] {
                     if let Some(target) = n.to_i32() {
-                        ax_graded::brst::filter_by_ghost_number(&args[0], target, &env.graded_table, interner)
+                        ax_graded::brst::filter_by_ghost_number(
+                            &args[0],
+                            target,
+                            &env.graded_table,
+                            interner,
+                        )
                     } else {
                         Expr::Call(f, args)
                     }

@@ -21,7 +21,11 @@ fn setup() -> (Interner, HashMap<lasso::Spur, Vec<TensorProperty>>) {
 }
 
 fn make_down_index(name: lasso::Spur) -> Index {
-    Index { name, variance: Variance::Down, index_type: None }
+    Index {
+        name,
+        variance: Variance::Down,
+        index_type: None,
+    }
 }
 
 fn make_riemann(
@@ -132,9 +136,18 @@ fn bianchi_identity_via_canonicalise() {
     );
 
     // The three canonical forms are all distinct (different index orderings).
-    assert_ne!(c1, c2, "distinct Bianchi terms should have distinct canonical forms");
-    assert_ne!(c2, c3, "distinct Bianchi terms should have distinct canonical forms");
-    assert_ne!(c1, c3, "distinct Bianchi terms should have distinct canonical forms");
+    assert_ne!(
+        c1, c2,
+        "distinct Bianchi terms should have distinct canonical forms"
+    );
+    assert_ne!(
+        c2, c3,
+        "distinct Bianchi terms should have distinct canonical forms"
+    );
+    assert_ne!(
+        c1, c3,
+        "distinct Bianchi terms should have distinct canonical forms"
+    );
 
     // ── 5. meld reduces terms sharing the same structure key ─────────────────
     // The pair-antisymmetry identities are also detected by meld:
@@ -254,12 +267,24 @@ fn antisymmetric_trace_is_zero() {
     let expr = Expr::Indexed(
         Box::new(Expr::Sym(f)),
         vec![
-            Index { name: mu, variance: Variance::Down, index_type: None },
-            Index { name: mu, variance: Variance::Down, index_type: None },
+            Index {
+                name: mu,
+                variance: Variance::Down,
+                index_type: None,
+            },
+            Index {
+                name: mu,
+                variance: Variance::Down,
+                index_type: None,
+            },
         ],
     );
     let result = ax_tensor::canonicalise(&expr, &props, &interner);
-    assert_eq!(result, Expr::zero(), "F_{{μμ}} should be zero for antisymmetric F");
+    assert_eq!(
+        result,
+        Expr::zero(),
+        "F_{{μμ}} should be zero for antisymmetric F"
+    );
 }
 
 #[test]
@@ -301,8 +326,16 @@ fn symmetric_tensor_canonical_order() {
     let expr = Expr::Indexed(
         Box::new(Expr::Sym(g)),
         vec![
-            Index { name: b, variance: Variance::Down, index_type: None },
-            Index { name: a, variance: Variance::Down, index_type: None },
+            Index {
+                name: b,
+                variance: Variance::Down,
+                index_type: None,
+            },
+            Index {
+                name: a,
+                variance: Variance::Down,
+                index_type: None,
+            },
         ],
     );
     let result = ax_tensor::canonicalise(&expr, &props, &interner);
@@ -316,7 +349,10 @@ fn symmetric_tensor_canonical_order() {
             second
         );
     } else {
-        panic!("expected Indexed, got: {}", ax_ir::pretty_print(&result, &interner));
+        panic!(
+            "expected Indexed, got: {}",
+            ax_ir::pretty_print(&result, &interner)
+        );
     }
 }
 

@@ -24,11 +24,13 @@ fn candidate_last_expr(
         Expr::Import(_) | Expr::SetConvention(_, _) => None,
         Expr::Let(name, val, body) => {
             let evaled = ax_eval::eval(val, env, interner);
-            Some(if matches!(body.as_ref(), Expr::Sym(sym) if *sym == *name) {
-                evaled
-            } else {
-                ax_eval::eval(body, env, interner)
-            })
+            Some(
+                if matches!(body.as_ref(), Expr::Sym(sym) if *sym == *name) {
+                    evaled
+                } else {
+                    ax_eval::eval(body, env, interner)
+                },
+            )
         }
         _ => {
             let result = ax_eval::eval(expr, env, interner);
@@ -47,11 +49,7 @@ fn candidate_last_expr(
     }
 }
 
-fn trust_for_expr(
-    expr: &Expr,
-    env: &ax_eval::Env,
-    interner: &ax_ir::Interner,
-) -> Option<String> {
+fn trust_for_expr(expr: &Expr, env: &ax_eval::Env, interner: &ax_ir::Interner) -> Option<String> {
     match expr {
         Expr::Call(f, args) if interner.resolve(*f) == "rewrite" && args.len() == 1 => {
             let (_, trace) = ax_eval::rewrite_with_trace(&args[0], env, interner);
@@ -109,11 +107,7 @@ fn print_assumptions(env: &ax_eval::Env, interner: &ax_ir::Interner) {
     }
 }
 
-fn inspect_target_expr(
-    text: &str,
-    env: &ax_eval::Env,
-    interner: &ax_ir::Interner,
-) -> Result<Expr> {
+fn inspect_target_expr(text: &str, env: &ax_eval::Env, interner: &ax_ir::Interner) -> Result<Expr> {
     let effective_input = if text.contains('\\') || text.contains("_{") || text.contains("^{") {
         ax_core_ir::latex_to_axioma(text)
     } else {
@@ -121,14 +115,12 @@ fn inspect_target_expr(
     };
     let lowered = ax_core_ir::lower(&effective_input, interner);
     if !lowered.errors.is_empty() {
-        return Err(anyhow::anyhow!(
-            lowered
-                .errors
-                .into_iter()
-                .map(|error| error.message)
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
+        return Err(anyhow::anyhow!(lowered
+            .errors
+            .into_iter()
+            .map(|error| error.message)
+            .collect::<Vec<_>>()
+            .join("; ")));
     }
     let expr = lowered
         .expr
@@ -201,7 +193,10 @@ fn print_suggest_result(result: &ax_eval::suggest::SuggestResult) {
         println!();
         println!("Missing properties:");
         for missing in &result.missing {
-            println!("  → {} has no declared properties; consider: {}", missing.symbol, missing.suggestion);
+            println!(
+                "  → {} has no declared properties; consider: {}",
+                missing.symbol, missing.suggestion
+            );
         }
     }
 }

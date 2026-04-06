@@ -61,16 +61,14 @@ fn extract_fraction(expr: &Expr) -> Option<(Expr, Expr)> {
             let mut denom_parts = Vec::new();
             for factor in factors {
                 match factor {
-                    Expr::Pow(base, exp)
-                        if matches!(exp.as_ref(), Expr::Int(n) if *n == (-1).into()) =>
+                    Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if *n == (-1).into()) =>
                     {
                         denom_parts.push(base.as_ref().clone());
                     }
-                    Expr::Pow(base, exp)
-                        if matches!(exp.as_ref(), Expr::Neg(inner) if matches!(inner.as_ref(), Expr::Int(_))) =>
-                    {
+                    Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Neg(inner) if matches!(inner.as_ref(), Expr::Int(_))) => {
                         if let Expr::Neg(inner) = exp.as_ref() {
-                            denom_parts.push(Expr::pow(base.as_ref().clone(), inner.as_ref().clone()));
+                            denom_parts
+                                .push(Expr::pow(base.as_ref().clone(), inner.as_ref().clone()));
                         }
                     }
                     _ => numer_parts.push(factor.clone()),
@@ -108,9 +106,7 @@ fn expr_contains_var(expr: &Expr, var: lasso::Spur) -> bool {
         Expr::Complex(re, im) => expr_contains_var(re, var) || expr_contains_var(im, var),
         Expr::FnDef(_, _, body) => expr_contains_var(body, var),
         Expr::Rule(lhs, rhs, _) => expr_contains_var(lhs, var) || expr_contains_var(rhs, var),
-        Expr::Piecewise(cases) => cases
-            .iter()
-            .any(|(value, _)| expr_contains_var(value, var)),
+        Expr::Piecewise(cases) => cases.iter().any(|(value, _)| expr_contains_var(value, var)),
         Expr::Let(_, value, body) => expr_contains_var(value, var) || expr_contains_var(body, var),
         Expr::Indexed(base, _) => expr_contains_var(base, var),
         Expr::Matrix(rows) => rows
@@ -130,7 +126,11 @@ fn degree_of_var(expr: &Expr, var: lasso::Spur) -> Option<usize> {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Some(0),
         Expr::Sym(s) => Some(if *s == var { 1 } else { 0 }),
         Expr::Neg(inner) => degree_of_var(inner, var),
-        Expr::Add(terms) => terms.iter().map(|term| degree_of_var(term, var)).max().flatten(),
+        Expr::Add(terms) => terms
+            .iter()
+            .map(|term| degree_of_var(term, var))
+            .max()
+            .flatten(),
         Expr::Mul(factors) => {
             let mut degree = 0usize;
             for factor in factors {
@@ -209,7 +209,9 @@ fn matches_special_limit(
         if let Some((numer, denom)) = extract_fraction(expr) {
             if denom == Expr::Sym(var) {
                 match numer {
-                    Expr::Call(f, ref args) if f == sin_sym && args.as_slice() == [Expr::Sym(var)] => {
+                    Expr::Call(f, ref args)
+                        if f == sin_sym && args.as_slice() == [Expr::Sym(var)] =>
+                    {
                         return Some(Expr::one());
                     }
                     Expr::Add(ref terms) if terms.len() == 2 => {
@@ -337,17 +339,13 @@ fn rational_limit_at_infinity(
     })
 }
 
-pub fn limit(
-    expr: &Expr,
-    var: lasso::Spur,
-    point: &Expr,
-    interner: &ax_ir::Interner,
-) -> Expr {
+pub fn limit(expr: &Expr, var: lasso::Spur, point: &Expr, interner: &ax_ir::Interner) -> Expr {
     if let Some(special) = matches_special_limit(expr, var, point, interner) {
         return special;
     }
 
-    if matches!(point, Expr::Sym(s) if matches!(interner.resolve(*s), "inf" | "infty" | "neg_inf")) {
+    if matches!(point, Expr::Sym(s) if matches!(interner.resolve(*s), "inf" | "infty" | "neg_inf"))
+    {
         if let Some(result) = rational_limit_at_infinity(expr, var, interner) {
             return result;
         }
@@ -416,7 +414,11 @@ mod tests {
     fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
-        assert!(result.errors.is_empty(), "lower errors: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "lower errors: {:?}",
+            result.errors
+        );
         let expr = result.expr.expect("expected expression");
         let env = crate::Env::new();
         (crate::eval(&expr, &env, &interner), interner)

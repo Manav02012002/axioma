@@ -3,8 +3,6 @@
 use ax_ir::Expr;
 use ax_tensor::SymbolicMatrix;
 use num_bigint::BigInt;
-use num_rational::BigRational;
-use num_traits::One;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
@@ -23,20 +21,38 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
                 .map(|term| simplify_expr(term, interner))
                 .collect(),
         ),
-        Expr::Mul(factors) => Expr::mul(
-            factors
+        Expr::Mul(factors) => Expr::mul({
+            let mut simplified = factors
                 .into_iter()
                 .map(|factor| simplify_expr(factor, interner))
-                .collect(),
+                .collect::<Vec<_>>();
+            simplified.sort_by_key(|expr| format!("{expr:?}"));
+            simplified
+        }),
+        Expr::Pow(base, exp) => Expr::pow(
+            simplify_expr(*base, interner),
+            simplify_expr(*exp, interner),
         ),
-        Expr::Pow(base, exp) => Expr::pow(simplify_expr(*base, interner), simplify_expr(*exp, interner)),
         Expr::Neg(inner) => Expr::neg(simplify_expr(*inner, interner)),
-        Expr::Call(f, args) => Expr::Call(
-            f,
-            args.into_iter()
+        Expr::Call(f, args) => {
+            let args = args
+                .into_iter()
                 .map(|arg| simplify_expr(arg, interner))
-                .collect(),
-        ),
+                .collect::<Vec<_>>();
+            let abs = interner.get_or_intern("abs");
+            let sqrt = interner.get_or_intern("sqrt");
+            if f == abs && args.len() == 1 {
+                match &args[0] {
+                    Expr::Int(n) if *n >= BigInt::from(0) => return args[0].clone(),
+                    Expr::Int(n) => return Expr::Int(-n.clone()),
+                    _ => {}
+                }
+            }
+            if f == sqrt && args.len() == 1 && args[0] == Expr::one() {
+                return Expr::one();
+            }
+            Expr::Call(f, args)
+        }
         Expr::FnDef(name, params, body) => {
             Expr::FnDef(name, params, Box::new(simplify_expr(*body, interner)))
         }
@@ -53,7 +69,9 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
                 .map(|(value, condition)| (simplify_expr(value, interner), condition))
                 .collect(),
         ),
-        Expr::Indexed(base, indices) => Expr::Indexed(Box::new(simplify_expr(*base, interner)), indices),
+        Expr::Indexed(base, indices) => {
+            Expr::Indexed(Box::new(simplify_expr(*base, interner)), indices)
+        }
         Expr::Let(name, val, body) => Expr::Let(
             name,
             Box::new(simplify_expr(*val, interner)),
@@ -67,20 +85,31 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
         ),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.into_iter()
-                .map(|row| row.into_iter().map(|cell| simplify_expr(cell, interner)).collect())
+                .map(|row| {
+                    row.into_iter()
+                        .map(|cell| simplify_expr(cell, interner))
+                        .collect()
+                })
                 .collect(),
         ),
         other => other,
     }
 }
 
-fn add_component(map: &mut BTreeMap<Vec<usize>, Expr>, key: Vec<usize>, value: Expr, interner: &ax_ir::Interner) {
+fn add_component(
+    map: &mut BTreeMap<Vec<usize>, Expr>,
+    key: Vec<usize>,
+    value: Expr,
+    interner: &ax_ir::Interner,
+) {
     let value = simplify_expr(value, interner);
     if value == Expr::zero() {
         return;
     }
     map.entry(key)
-        .and_modify(|existing| *existing = simplify_expr(Expr::add(vec![existing.clone(), value.clone()]), interner))
+        .and_modify(|existing| {
+            *existing = simplify_expr(Expr::add(vec![existing.clone(), value.clone()]), interner)
+        })
         .or_insert(value);
 }
 
@@ -93,7 +122,11 @@ pub fn permutation_sign(perm: &[usize]) -> i32 {
             }
         }
     }
-    if inversions % 2 == 0 { 1 } else { -1 }
+    if inversions % 2 == 0 {
+        1
+    } else {
+        -1
+    }
 }
 
 pub fn wedge(a: &DiffForm, b: &DiffForm, interner: &ax_ir::Interner) -> DiffForm {
@@ -165,11 +198,7 @@ pub fn exterior_derivative(
     }
 }
 
-pub fn hodge_dual(
-    form: &DiffForm,
-    g: &SymbolicMatrix,
-    interner: &ax_ir::Interner,
-) -> DiffForm {
+pub fn hodge_dual(form: &DiffForm, g: &SymbolicMatrix, interner: &ax_ir::Interner) -> DiffForm {
     assert_eq!(form.dim, g.dim);
 
     let ginv = g.symbolic_inverse(interner);
@@ -191,11 +220,6 @@ pub fn hodge_dual(
         let mut factors = vec![sqrt_abs_det_g.clone(), value.clone()];
         for idx in basis {
             factors.push(ginv.get(*idx, *idx).clone());
-        }
-
-        let k_fact = (1..=form.degree).fold(BigInt::one(), |acc, n| acc * BigInt::from(n as i64));
-        if k_fact != BigInt::one() {
-            factors.push(Expr::Rational(BigRational::new(BigInt::one(), k_fact)));
         }
 
         let mut term = Expr::mul(factors);
@@ -268,7 +292,11 @@ pub fn scalar_form(expr: &Expr, dim: usize) -> DiffForm {
 
 pub fn form_to_expr(form: &DiffForm) -> Expr {
     match form.degree {
-        0 => form.components.get(&Vec::new()).cloned().unwrap_or_else(Expr::zero),
+        0 => form
+            .components
+            .get(&Vec::new())
+            .cloned()
+            .unwrap_or_else(Expr::zero),
         1 => {
             let mut items = vec![Expr::zero(); form.dim];
             for (basis, value) in &form.components {
@@ -296,7 +324,8 @@ pub fn form_to_expr(form: &DiffForm) -> Expr {
                 .map(|(basis, value)| {
                     Expr::List(vec![
                         Expr::List(
-                            basis.iter()
+                            basis
+                                .iter()
                                 .map(|idx| Expr::Int((*idx as i64).into()))
                                 .collect(),
                         ),

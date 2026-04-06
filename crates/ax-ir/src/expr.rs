@@ -73,7 +73,10 @@ pub enum TensorProperty {
     AntiCommuting,
     NonCommuting,
     SortOrder(Vec<Sym>),
-    TableauSymmetry { shape: Vec<usize>, indices: Vec<usize> },
+    TableauSymmetry {
+        shape: Vec<usize>,
+        indices: Vec<usize>,
+    },
     SatisfiesBianchi,
     WeylTensor,
     DifferentialFormDegree(usize),
@@ -431,10 +434,7 @@ impl Expr {
             }
         }
 
-        if flat
-            .iter()
-            .any(is_zero_expr)
-        {
+        if flat.iter().any(is_zero_expr) {
             return Expr::zero();
         }
 

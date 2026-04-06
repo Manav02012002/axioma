@@ -90,13 +90,16 @@ fn mandelstam_expansion_roundtrip() {
     let s12 = SpinorExpr::s(Label::new(1), Label::new(2));
     let expanded = expand_mandelstam(&s12);
     let collected = collect_mandelstam(&expanded);
-    assert!(equivalent(&collected, &s12), "roundtrip failed: {:?}", collected);
+    assert!(
+        equivalent(&collected, &s12),
+        "roundtrip failed: {:?}",
+        collected
+    );
 }
 
 #[test]
 fn chain_single_momentum() {
-    let chain =
-        SpinorExpr::AngleSquareChain(Label::new(1), vec![Label::new(2)], Label::new(3));
+    let chain = SpinorExpr::AngleSquareChain(Label::new(1), vec![Label::new(2)], Label::new(3));
     let expanded = expand_chain(&chain);
     let expected = SpinorExpr::Product(vec![SpinorTerm {
         coefficient: BigRational::one(),
@@ -122,9 +125,5 @@ fn four_particle_mandelstam_relation() {
     let sum = SpinorExpr::Sum(vec![s, t, u]);
     let result = apply_momentum_conservation(&sum, 4, Label::new(4));
     let simplified = spinor_simplify(&result, 4);
-    assert!(
-        result_is_zero(&simplified),
-        "s+t+u != 0: {:?}",
-        simplified
-    );
+    assert!(result_is_zero(&simplified), "s+t+u != 0: {:?}", simplified);
 }

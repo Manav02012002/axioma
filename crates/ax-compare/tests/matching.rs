@@ -11,7 +11,10 @@ fn make_interner_and_props() -> (Interner, HashMap<lasso::Spur, Vec<TensorProper
     let g = interner.get_or_intern("g");
     props.insert(
         g,
-        vec![TensorProperty::Symmetric(vec![0, 1]), TensorProperty::Metric],
+        vec![
+            TensorProperty::Symmetric(vec![0, 1]),
+            TensorProperty::Metric,
+        ],
     );
     (interner, props)
 }
@@ -67,7 +70,10 @@ fn commutative_mul_match() {
     let pattern = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
     let target = Expr::mul(vec![Expr::Sym(b), Expr::Sym(a)]);
     let result = pattern_match(&pattern, &target, &props, &families, &interner);
-    assert!(result.is_some(), "A*B should match B*A for commuting symbols");
+    assert!(
+        result.is_some(),
+        "A*B should match B*A for commuting symbols"
+    );
 }
 
 #[test]

@@ -53,7 +53,8 @@ impl PropertyStore {
     }
 
     pub fn declare(&mut self, pattern: PropertyPattern, property: TensorProperty) {
-        self.attachments.push(PropertyAttachment { pattern, property });
+        self.attachments
+            .push(PropertyAttachment { pattern, property });
     }
 
     pub fn declare_simple(&mut self, name: lasso::Spur, property: TensorProperty) {
@@ -122,7 +123,9 @@ impl PropertyStore {
                         }
                         match slot.family {
                             None => true,
-                            Some(family) => index_families.get(&index.name).copied() == Some(family),
+                            Some(family) => {
+                                index_families.get(&index.name).copied() == Some(family)
+                            }
                         }
                     })
             })
@@ -157,17 +160,20 @@ impl PropertyStore {
         explicit_weights: &HashMap<(lasso::Spur, String), i64>,
     ) -> i64 {
         let combine = self.inheritance_rules.iter().find_map(|rule| match rule {
-            InheritanceRule::WeightInherit { label: rule_label, combine }
-                if rule_label == label =>
-            {
-                Some(combine)
-            }
+            InheritanceRule::WeightInherit {
+                label: rule_label,
+                combine,
+            } if rule_label == label => Some(combine),
             _ => None,
         });
 
         match combine {
-            Some(WeightCombine::Additive) => self.compute_weight_additive(expr, label, explicit_weights),
-            Some(WeightCombine::Multiplicative) => self.compute_weight_multiplicative(expr, label, explicit_weights),
+            Some(WeightCombine::Additive) => {
+                self.compute_weight_additive(expr, label, explicit_weights)
+            }
+            Some(WeightCombine::Multiplicative) => {
+                self.compute_weight_multiplicative(expr, label, explicit_weights)
+            }
             None => 0,
         }
     }
@@ -269,7 +275,8 @@ impl PropertyStore {
                 .unwrap_or(0),
             Expr::Pow(base, exp) => {
                 if let Expr::Int(n) = exp.as_ref() {
-                    let base_weight = self.compute_weight_multiplicative(base, label, explicit_weights);
+                    let base_weight =
+                        self.compute_weight_multiplicative(base, label, explicit_weights);
                     let power = n.to_i64().unwrap_or(0);
                     if power < 0 {
                         0
@@ -284,7 +291,9 @@ impl PropertyStore {
             Expr::Call(_, args) => args.iter().fold(1, |acc, arg| {
                 acc * self.compute_weight_multiplicative(arg, label, explicit_weights)
             }),
-            Expr::Indexed(base, _) => self.compute_weight_multiplicative(base, label, explicit_weights),
+            Expr::Indexed(base, _) => {
+                self.compute_weight_multiplicative(base, label, explicit_weights)
+            }
             _ => 0,
         }
     }

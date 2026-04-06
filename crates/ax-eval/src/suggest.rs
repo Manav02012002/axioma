@@ -20,7 +20,9 @@ pub struct SuggestResult {
 fn contains_indexed(expr: &Expr) -> bool {
     match expr {
         Expr::Indexed(_, _) => true,
-        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => terms.iter().any(contains_indexed),
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            terms.iter().any(contains_indexed)
+        }
         Expr::Matrix(rows) => rows.iter().flatten().any(contains_indexed),
         Expr::Pow(base, exp) => contains_indexed(base) || contains_indexed(exp),
         Expr::Neg(inner) => contains_indexed(inner),
@@ -30,8 +32,13 @@ fn contains_indexed(expr: &Expr) -> bool {
         Expr::Rule(lhs, rhs, _) => contains_indexed(lhs) || contains_indexed(rhs),
         Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_indexed(value)),
         Expr::Let(_, value, body) => contains_indexed(value) || contains_indexed(body),
-        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) | Expr::Sym(_)
-        | Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
+        Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Sym(_)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_) => false,
     }
 }
 
@@ -41,14 +48,18 @@ fn contains_named_call(expr: &Expr, names: &[&str], interner: &ax_ir::Interner) 
             if names.contains(&interner.resolve(*f)) {
                 true
             } else {
-                args.iter().any(|arg| contains_named_call(arg, names, interner))
+                args.iter()
+                    .any(|arg| contains_named_call(arg, names, interner))
             }
         }
         Expr::Indexed(base, _) => contains_named_call(base, names, interner),
-        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
-            terms.iter().any(|term| contains_named_call(term, names, interner))
-        }
-        Expr::Matrix(rows) => rows.iter().flatten().any(|cell| contains_named_call(cell, names, interner)),
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => terms
+            .iter()
+            .any(|term| contains_named_call(term, names, interner)),
+        Expr::Matrix(rows) => rows
+            .iter()
+            .flatten()
+            .any(|cell| contains_named_call(cell, names, interner)),
         Expr::Pow(base, exp) => {
             contains_named_call(base, names, interner) || contains_named_call(exp, names, interner)
         }
@@ -57,16 +68,32 @@ fn contains_named_call(expr: &Expr, names: &[&str], interner: &ax_ir::Interner) 
             contains_named_call(re, names, interner) || contains_named_call(im, names, interner)
         }
         Expr::FnDef(_, _, body) => contains_named_call(body, names, interner),
-        Expr::Rule(lhs, rhs, _) => contains_named_call(lhs, names, interner) || contains_named_call(rhs, names, interner),
-        Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_named_call(value, names, interner)),
-        Expr::Let(_, value, body) => contains_named_call(value, names, interner) || contains_named_call(body, names, interner),
-        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) | Expr::Sym(_)
-        | Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
+        Expr::Rule(lhs, rhs, _) => {
+            contains_named_call(lhs, names, interner) || contains_named_call(rhs, names, interner)
+        }
+        Expr::Piecewise(cases) => cases
+            .iter()
+            .any(|(value, _)| contains_named_call(value, names, interner)),
+        Expr::Let(_, value, body) => {
+            contains_named_call(value, names, interner)
+                || contains_named_call(body, names, interner)
+        }
+        Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Sym(_)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_) => false,
     }
 }
 
 fn contains_derivative_call(expr: &Expr, interner: &ax_ir::Interner) -> bool {
-    contains_named_call(expr, &["partial", "nabla", "D", "d", "diff", "partial_derivative"], interner)
+    contains_named_call(
+        expr,
+        &["partial", "nabla", "D", "d", "diff", "partial_derivative"],
+        interner,
+    )
 }
 
 fn collect_indices(expr: &Expr, out: &mut Vec<ax_ir::Index>) {
@@ -115,8 +142,13 @@ fn collect_indices(expr: &Expr, out: &mut Vec<ax_ir::Index>) {
             collect_indices(value, out);
             collect_indices(body, out);
         }
-        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) | Expr::Sym(_)
-        | Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => {}
+        Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Sym(_)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_) => {}
     }
 }
 
@@ -169,8 +201,13 @@ fn collect_indexed_base_symbols(expr: &Expr, out: &mut Vec<ax_ir::expr::Sym>) {
             collect_indexed_base_symbols(value, out);
             collect_indexed_base_symbols(body, out);
         }
-        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) | Expr::Sym(_)
-        | Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => {}
+        Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Sym(_)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_) => {}
     }
 }
 
@@ -222,40 +259,54 @@ pub fn suggest_for_expr(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> S
                 let name = interner.resolve(*sym).to_string();
                 missing.push(MissingProperty {
                     symbol: name.clone(),
-                    suggestion: format!("declare symmetry properties for {name} to enable canonicalise"),
+                    suggestion: format!(
+                        "declare symmetry properties for {name} to enable canonicalise"
+                    ),
                 });
             } else {
-                    for prop in props {
-                        match prop {
-                            ax_ir::TensorProperty::RiemannSymmetry => {
-                                has_symmetry = true;
-                                symmetry_reason = "expression has tensors with RiemannSymmetry".to_string();
-                            }
-                            ax_ir::TensorProperty::Symmetric(_) => {
-                                has_symmetry = true;
-                                if symmetry_reason == "expression has tensors with symmetry properties" {
-                                    symmetry_reason = "expression has tensors with Symmetric properties".to_string();
-                                }
-                            }
-                            ax_ir::TensorProperty::AntiSymmetric(_) => {
-                                has_symmetry = true;
-                                if symmetry_reason == "expression has tensors with symmetry properties" {
-                                    symmetry_reason = "expression has tensors with AntiSymmetric properties".to_string();
-                                }
-                            }
-                            ax_ir::TensorProperty::Metric => has_metric = true,
-                            ax_ir::TensorProperty::KroneckerDelta => has_delta = true,
-                            ax_ir::TensorProperty::EpsilonTensor => has_epsilon = true,
-                            _ => {}
+                for prop in props {
+                    match prop {
+                        ax_ir::TensorProperty::RiemannSymmetry => {
+                            has_symmetry = true;
+                            symmetry_reason =
+                                "expression has tensors with RiemannSymmetry".to_string();
                         }
+                        ax_ir::TensorProperty::Symmetric(_) => {
+                            has_symmetry = true;
+                            if symmetry_reason == "expression has tensors with symmetry properties"
+                            {
+                                symmetry_reason =
+                                    "expression has tensors with Symmetric properties".to_string();
+                            }
+                        }
+                        ax_ir::TensorProperty::AntiSymmetric(_) => {
+                            has_symmetry = true;
+                            if symmetry_reason == "expression has tensors with symmetry properties"
+                            {
+                                symmetry_reason =
+                                    "expression has tensors with AntiSymmetric properties"
+                                        .to_string();
+                            }
+                        }
+                        ax_ir::TensorProperty::Metric => has_metric = true,
+                        ax_ir::TensorProperty::KroneckerDelta => has_delta = true,
+                        ax_ir::TensorProperty::EpsilonTensor => has_epsilon = true,
+                        _ => {}
                     }
+                }
             }
         }
 
         if has_symmetry {
-            add_suggestion(&mut suggestions, &mut seen, "canonicalise", &symmetry_reason);
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "canonicalise",
+                &symmetry_reason,
+            );
         }
-        if matches!(expr, Expr::Add(terms) if terms.len() > 1 && terms.iter().all(contains_indexed)) {
+        if matches!(expr, Expr::Add(terms) if terms.len() > 1 && terms.iter().all(contains_indexed))
+        {
             add_suggestion(
                 &mut suggestions,
                 &mut seen,
@@ -270,61 +321,142 @@ pub fn suggest_for_expr(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> S
             );
         }
         if has_metric {
-            add_suggestion(&mut suggestions, &mut seen, "eliminate_metric", "expression contains metric tensors");
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "eliminate_metric",
+                "expression contains metric tensors",
+            );
         }
         if has_delta {
-            add_suggestion(&mut suggestions, &mut seen, "eliminate_kronecker", "expression contains Kronecker deltas");
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "eliminate_kronecker",
+                "expression contains Kronecker deltas",
+            );
         }
         if has_epsilon {
-            add_suggestion(&mut suggestions, &mut seen, "epsilon_to_delta", "expression contains epsilon tensors");
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "epsilon_to_delta",
+                "expression contains epsilon tensors",
+            );
         }
         if matches!(expr, Expr::Mul(factors) if factors.iter().any(contains_indexed)) {
-            add_suggestion(&mut suggestions, &mut seen, "sort_product", "expression is a product of indexed terms");
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "sort_product",
+                "expression is a product of indexed terms",
+            );
         }
         if has_dummy_indices {
-            add_suggestion(&mut suggestions, &mut seen, "rename_dummies", "expression contains dummy index pairs");
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "rename_dummies",
+                "expression contains dummy index pairs",
+            );
         }
     }
 
     if let Expr::Add(terms) = expr {
-        add_suggestion(&mut suggestions, &mut seen, "simplify", "general simplification for sums");
-        add_suggestion(&mut suggestions, &mut seen, "collect_terms", "expression is a sum");
+        add_suggestion(
+            &mut suggestions,
+            &mut seen,
+            "simplify",
+            "general simplification for sums",
+        );
+        add_suggestion(
+            &mut suggestions,
+            &mut seen,
+            "collect_terms",
+            "expression is a sum",
+        );
         if terms.len() > 4 {
-            add_suggestion(&mut suggestions, &mut seen, "factor_out", "expression has many additive terms");
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "factor_out",
+                "expression has many additive terms",
+            );
         }
     }
 
     if let Expr::Mul(factors) = expr {
-        if factors.iter().any(|factor| contains_derivative_call(factor, interner)) {
-            add_suggestion(&mut suggestions, &mut seen, "product_rule", "product contains a derivative call");
-            add_suggestion(&mut suggestions, &mut seen, "unwrap", "product contains a derivative call");
+        if factors
+            .iter()
+            .any(|factor| contains_derivative_call(factor, interner))
+        {
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "product_rule",
+                "product contains a derivative call",
+            );
+            add_suggestion(
+                &mut suggestions,
+                &mut seen,
+                "unwrap",
+                "product contains a derivative call",
+            );
         }
     }
 
     if contains_named_call(
         expr,
         &[
-            "sin", "cos", "tan", "sec", "csc", "cot", "asin", "arcsin", "acos", "arccos",
-            "atan", "arctan", "sinh", "cosh", "tanh", "asinh", "arcsinh", "acosh",
-            "arccosh", "atanh", "arctanh",
+            "sin", "cos", "tan", "sec", "csc", "cot", "asin", "arcsin", "acos", "arccos", "atan",
+            "arctan", "sinh", "cosh", "tanh", "asinh", "arcsinh", "acosh", "arccosh", "atanh",
+            "arctanh",
         ],
         interner,
     ) {
-        add_suggestion(&mut suggestions, &mut seen, "trig_simplify", "expression contains trigonometric functions");
+        add_suggestion(
+            &mut suggestions,
+            &mut seen,
+            "trig_simplify",
+            "expression contains trigonometric functions",
+        );
     }
 
     if matches!(expr, Expr::Call(f, _) if interner.resolve(*f) == "christoffel")
         || contains_named_call(expr, &["christoffel"], interner)
     {
-        add_suggestion(&mut suggestions, &mut seen, "riemann", "expression contains Christoffel symbols");
+        add_suggestion(
+            &mut suggestions,
+            &mut seen,
+            "riemann",
+            "expression contains Christoffel symbols",
+        );
     }
 
     if contains_named_call(expr, &["gamma"], interner) {
-        add_suggestion(&mut suggestions, &mut seen, "join_gamma", "expression contains gamma matrix calls");
-        add_suggestion(&mut suggestions, &mut seen, "gamma_trace", "expression contains gamma matrix calls");
+        add_suggestion(
+            &mut suggestions,
+            &mut seen,
+            "join_gamma",
+            "expression contains gamma matrix calls",
+        );
+        add_suggestion(
+            &mut suggestions,
+            &mut seen,
+            "gamma_trace",
+            "expression contains gamma matrix calls",
+        );
     }
 
-    add_suggestion(&mut suggestions, &mut seen, "simplify", "general simplification");
+    add_suggestion(
+        &mut suggestions,
+        &mut seen,
+        "simplify",
+        "general simplification",
+    );
 
-    SuggestResult { suggestions, missing }
+    SuggestResult {
+        suggestions,
+        missing,
+    }
 }

@@ -12,9 +12,9 @@ mod cmd_render;
 mod cmd_repl;
 mod cmd_run;
 use anyhow::{bail, Context, Result};
-use ax_context::load_project_paths;
 #[cfg(feature = "plugins")]
 use ax_context::load_config;
+use ax_context::load_project_paths;
 #[cfg(feature = "plugins")]
 use ax_plugin_api::{PluginRequest, PluginResponse};
 #[cfg(feature = "plugins")]

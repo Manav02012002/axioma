@@ -187,7 +187,10 @@ fn migrate_from_hashmap() {
     let mut old: HashMap<lasso::Spur, Vec<TensorProperty>> = HashMap::new();
     old.insert(
         g,
-        vec![TensorProperty::Metric, TensorProperty::Symmetric(vec![0, 1])],
+        vec![
+            TensorProperty::Metric,
+            TensorProperty::Symmetric(vec![0, 1]),
+        ],
     );
     let families: HashMap<lasso::Spur, lasso::Spur> = HashMap::new();
     let store = PropertyStore::migrate_from_hashmap(&old, &families);

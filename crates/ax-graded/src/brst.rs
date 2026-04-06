@@ -66,10 +66,7 @@ pub fn setup_yang_mills_brst(
 
     let partial = interner.get_or_intern("partial");
     let brst_rules = vec![
-        (
-            gauge_field,
-            Expr::Call(partial, vec![Expr::Sym(ghost)]),
-        ),
+        (gauge_field, Expr::Call(partial, vec![Expr::Sym(ghost)])),
         (ghost, Expr::zero()),
         (antighost, Expr::Sym(nakanishi_lautrup)),
         (nakanishi_lautrup, Expr::zero()),

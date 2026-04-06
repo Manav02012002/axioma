@@ -12,11 +12,15 @@ pub enum OperatorKind {
 #[derive(Clone, Debug)]
 pub enum GammaEntry {
     Gamma(lasso::Spur),
+    Index(usize),
     Gamma5,
     Identity,
 }
 
-fn operator_kind(expr: &Expr, operators: &HashMap<lasso::Spur, OperatorKind>) -> Option<OperatorKind> {
+fn operator_kind(
+    expr: &Expr,
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+) -> Option<OperatorKind> {
     match expr {
         Expr::Sym(sym) => operators.get(sym).copied(),
         _ => None,
@@ -47,7 +51,8 @@ pub fn normal_order_simple(
             Expr::mul(other)
         }
         Expr::Add(terms) => Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .map(|term| normal_order_simple(term, operators, interner))
                 .collect(),
         ),
@@ -80,7 +85,10 @@ pub fn normal_order_simple(
             cases
                 .iter()
                 .map(|(value, condition)| {
-                    (normal_order_simple(value, operators, interner), condition.clone())
+                    (
+                        normal_order_simple(value, operators, interner),
+                        condition.clone(),
+                    )
                 })
                 .collect(),
         ),
@@ -94,7 +102,8 @@ pub fn normal_order_simple(
             Box::new(normal_order_simple(body, operators, interner)),
         ),
         Expr::List(items) => Expr::List(
-            items.iter()
+            items
+                .iter()
                 .map(|item| normal_order_simple(item, operators, interner))
                 .collect(),
         ),
@@ -125,7 +134,11 @@ pub fn wick_expand_single(
     contractions: &HashMap<(lasso::Spur, lasso::Spur), ax_ir::Expr>,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
-    let mut terms = vec![normal_order_simple(&Expr::mul(factors.to_vec()), operators, interner)];
+    let mut terms = vec![normal_order_simple(
+        &Expr::mul(factors.to_vec()),
+        operators,
+        interner,
+    )];
 
     for i in 0..factors.len() {
         for j in (i + 1)..factors.len() {
@@ -163,7 +176,8 @@ pub fn wick_expand(
     match expr {
         Expr::Mul(factors) => wick_expand_single(factors, operators, contractions, interner),
         Expr::Add(terms) => Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .map(|term| wick_expand(term, operators, contractions, interner))
                 .collect(),
         ),
@@ -251,14 +265,34 @@ pub fn gamma_matrices_dirac(_interner: &ax_ir::Interner) -> Vec<Vec<Vec<ax_ir::E
         vec![
             vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()],
             vec![Expr::zero(), Expr::one(), Expr::zero(), Expr::zero()],
-            vec![Expr::zero(), Expr::zero(), Expr::neg(Expr::one()), Expr::zero()],
-            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::neg(Expr::one())],
+            vec![
+                Expr::zero(),
+                Expr::zero(),
+                Expr::neg(Expr::one()),
+                Expr::zero(),
+            ],
+            vec![
+                Expr::zero(),
+                Expr::zero(),
+                Expr::zero(),
+                Expr::neg(Expr::one()),
+            ],
         ],
         vec![
             vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::one()],
             vec![Expr::zero(), Expr::zero(), Expr::one(), Expr::zero()],
-            vec![Expr::zero(), Expr::neg(Expr::one()), Expr::zero(), Expr::zero()],
-            vec![Expr::neg(Expr::one()), Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![
+                Expr::zero(),
+                Expr::neg(Expr::one()),
+                Expr::zero(),
+                Expr::zero(),
+            ],
+            vec![
+                Expr::neg(Expr::one()),
+                Expr::zero(),
+                Expr::zero(),
+                Expr::zero(),
+            ],
         ],
         vec![
             vec![Expr::zero(), Expr::zero(), Expr::zero(), neg_i.clone()],
@@ -268,8 +302,18 @@ pub fn gamma_matrices_dirac(_interner: &ax_ir::Interner) -> Vec<Vec<Vec<ax_ir::E
         ],
         vec![
             vec![Expr::zero(), Expr::zero(), Expr::one(), Expr::zero()],
-            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::neg(Expr::one())],
-            vec![Expr::neg(Expr::one()), Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![
+                Expr::zero(),
+                Expr::zero(),
+                Expr::zero(),
+                Expr::neg(Expr::one()),
+            ],
+            vec![
+                Expr::neg(Expr::one()),
+                Expr::zero(),
+                Expr::zero(),
+                Expr::zero(),
+            ],
             vec![Expr::zero(), Expr::one(), Expr::zero(), Expr::zero()],
         ],
     ]
@@ -358,18 +402,38 @@ pub fn gamma_trace(
     metric: &ax_tensor::SymbolicMatrix,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
-    let _ = metric;
     let metric_sym = interner.get_or_intern("g");
     let epsilon_sym = interner.get_or_intern("epsilon");
 
     let mut gamma_indices = Vec::new();
+    let mut numeric_indices = Vec::new();
+    let mut has_symbolic_indices = false;
+    let mut has_numeric_indices = false;
     let mut gamma5_count = 0usize;
     for entry in indices {
         match entry {
-            GammaEntry::Gamma(sym) => gamma_indices.push(*sym),
+            GammaEntry::Gamma(sym) => {
+                gamma_indices.push(*sym);
+                has_symbolic_indices = true;
+            }
+            GammaEntry::Index(index) => {
+                numeric_indices.push(*index);
+                has_numeric_indices = true;
+            }
             GammaEntry::Gamma5 => gamma5_count += 1,
             GammaEntry::Identity => {}
         }
+    }
+
+    if has_numeric_indices && !has_symbolic_indices && gamma5_count == 0 {
+        return gamma_trace_numeric(&numeric_indices, metric);
+    }
+
+    if has_numeric_indices {
+        gamma_indices.extend(numeric_indices.into_iter().map(|index| {
+            let name = format!("mu{index}");
+            interner.get_or_intern(&name)
+        }));
     }
 
     if gamma5_count > 1 {
@@ -402,6 +466,41 @@ pub fn gamma_trace(
     gamma_trace_recursive(&gamma_indices, metric_sym, interner)
 }
 
+fn gamma_trace_numeric(indices: &[usize], metric: &ax_tensor::SymbolicMatrix) -> Expr {
+    let n = indices.len();
+    if n == 0 {
+        return Expr::Int(4.into());
+    }
+    if n % 2 != 0 {
+        return Expr::zero();
+    }
+    if n == 2 {
+        return Expr::mul(vec![
+            Expr::Int(4.into()),
+            metric.get(indices[0], indices[1]).clone(),
+        ]);
+    }
+
+    let first = indices[0];
+    let mut terms = Vec::new();
+    for k in 1..n {
+        let metric_factor = metric.get(first, indices[k]).clone();
+        let remaining = indices[1..]
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != k - 1)
+            .map(|(_, index)| *index)
+            .collect::<Vec<_>>();
+        let term = Expr::mul(vec![metric_factor, gamma_trace_numeric(&remaining, metric)]);
+        if (k - 1) % 2 == 0 {
+            terms.push(term);
+        } else {
+            terms.push(Expr::neg(term));
+        }
+    }
+    simplify_expr(Expr::add(terms))
+}
+
 pub fn commutator(
     a: &[Vec<ax_ir::Expr>],
     b: &[Vec<ax_ir::Expr>],
@@ -432,7 +531,11 @@ fn half() -> Expr {
 pub fn angular_momentum_matrices(
     j: &ax_ir::Expr,
     interner: &ax_ir::Interner,
-) -> Option<(Vec<Vec<ax_ir::Expr>>, Vec<Vec<ax_ir::Expr>>, Vec<Vec<ax_ir::Expr>>)> {
+) -> Option<(
+    Vec<Vec<ax_ir::Expr>>,
+    Vec<Vec<ax_ir::Expr>>,
+    Vec<Vec<ax_ir::Expr>>,
+)> {
     match j {
         Expr::Rational(r) if *r == num_rational::BigRational::new(1.into(), 2.into()) => {
             let hx = ax_linalg::mat_scale(&half(), &pauli_x(interner));
@@ -596,8 +699,16 @@ fn join_single_with_multi(
         let metric = Expr::Indexed(
             Box::new(Expr::Sym(metric_sym)),
             vec![
-                Index { name: a, variance: Variance::Up, index_type: None },
-                Index { name: bs[k], variance: Variance::Up, index_type: None },
+                Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                },
+                Index {
+                    name: bs[k],
+                    variance: Variance::Up,
+                    index_type: None,
+                },
             ],
         );
 
@@ -646,10 +757,21 @@ fn join_single_with_expr(
                     if *f == gamma_sym {
                         let gamma_indices: Vec<lasso::Spur> = args
                             .iter()
-                            .filter_map(|arg| if let Expr::Sym(s) = arg { Some(*s) } else { None })
+                            .filter_map(|arg| {
+                                if let Expr::Sym(s) = arg {
+                                    Some(*s)
+                                } else {
+                                    None
+                                }
+                            })
                             .collect();
-                        let joined =
-                            join_single_with_multi(a, &gamma_indices, gamma_sym, metric_sym, interner);
+                        let joined = join_single_with_multi(
+                            a,
+                            &gamma_indices,
+                            gamma_sym,
+                            metric_sym,
+                            interner,
+                        );
                         let mut rest: Vec<Expr> = factors
                             .iter()
                             .enumerate()
@@ -666,16 +788,20 @@ fn join_single_with_expr(
             new_factors.extend(factors.iter().cloned());
             Expr::mul(new_factors)
         }
-        Expr::Neg(e) => {
-            Expr::neg(join_single_with_expr(a, e, gamma_sym, metric_sym, interner))
-        }
+        Expr::Neg(e) => Expr::neg(join_single_with_expr(a, e, gamma_sym, metric_sym, interner)),
         _ => {
             // Check if expr itself is a gamma call
             if let Expr::Call(f, args) = expr {
                 if *f == gamma_sym {
                     let gamma_indices: Vec<lasso::Spur> = args
                         .iter()
-                        .filter_map(|arg| if let Expr::Sym(s) = arg { Some(*s) } else { None })
+                        .filter_map(|arg| {
+                            if let Expr::Sym(s) = arg {
+                                Some(*s)
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
                     return join_single_with_multi(
                         a,
@@ -698,7 +824,13 @@ fn make_gamma(indices: &[lasso::Spur], gamma_sym: lasso::Spur) -> Expr {
 /// Extract gamma indices from a `gamma(a, b, ...)` Call expression.
 fn gamma_indices(args: &[Expr]) -> Vec<lasso::Spur> {
     args.iter()
-        .filter_map(|arg| if let Expr::Sym(s) = arg { Some(*s) } else { None })
+        .filter_map(|arg| {
+            if let Expr::Sym(s) = arg {
+                Some(*s)
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -725,8 +857,7 @@ pub fn join_gammas_in_expr(
                         if *f1 == gamma_sym && *f2 == gamma_sym {
                             let i1 = gamma_indices(a1);
                             let i2 = gamma_indices(a2);
-                            let joined =
-                                join_gamma_pair(&i1, &i2, gamma_sym, metric_sym, interner);
+                            let joined = join_gamma_pair(&i1, &i2, gamma_sym, metric_sym, interner);
                             result.pop();
                             // The joined expression may be an Add — wrap in a group
                             // by pushing the whole joined expression, then distributing
@@ -751,9 +882,7 @@ pub fn join_gammas_in_expr(
                 .map(|t| join_gammas_in_expr(t, gamma_sym, metric_sym, interner))
                 .collect(),
         ),
-        Expr::Neg(e) => {
-            Expr::neg(join_gammas_in_expr(e, gamma_sym, metric_sym, interner))
-        }
+        Expr::Neg(e) => Expr::neg(join_gammas_in_expr(e, gamma_sym, metric_sym, interner)),
         _ => expr.clone(),
     }
 }
@@ -784,7 +913,11 @@ pub fn fierz_coefficients(dim: usize) -> Vec<(num_rational::BigRational, usize)>
     let mut result = Vec::new();
 
     for k in 0..=dim {
-        let sign = if (k * (k + 1) / 2) % 2 == 0 { 1i64 } else { -1i64 };
+        let sign = if (k * (k + 1) / 2) % 2 == 0 {
+            1i64
+        } else {
+            -1i64
+        };
         let binom = binomial(dim, k);
         let coeff = num_rational::BigRational::new(
             (sign * binom as i64).into(),
@@ -833,11 +966,7 @@ pub fn fierz_rearrange(
 /// Apply Fierz identity to an expression.
 ///
 /// Returns a sum of `c_k * gamma_basis(k)` terms representing the Fierz expansion.
-pub fn fierz(
-    expr: &ax_ir::Expr,
-    dim: usize,
-    interner: &ax_ir::Interner,
-) -> ax_ir::Expr {
+pub fn fierz(expr: &ax_ir::Expr, dim: usize, interner: &ax_ir::Interner) -> ax_ir::Expr {
     let _ = expr;
     let coeffs = fierz_coefficients(dim);
     let terms: Vec<ax_ir::Expr> = coeffs
@@ -959,7 +1088,11 @@ pub fn split_gamma(
 
                 let contraction = Expr::mul(vec![metric, sub_gamma]);
                 // Subtract the contraction: − (±contraction)
-                let signed = if negate { contraction } else { Expr::neg(contraction) };
+                let signed = if negate {
+                    contraction
+                } else {
+                    Expr::neg(contraction)
+                };
                 all_terms.push(signed);
             }
 
@@ -977,9 +1110,7 @@ pub fn split_gamma(
                 .map(|t| split_gamma(t, gamma_sym, metric_sym, on_back, interner))
                 .collect(),
         ),
-        Expr::Neg(e) => {
-            Expr::neg(split_gamma(e, gamma_sym, metric_sym, on_back, interner))
-        }
+        Expr::Neg(e) => Expr::neg(split_gamma(e, gamma_sym, metric_sym, on_back, interner)),
         _ => expr.clone(),
     }
 }
@@ -1110,7 +1241,11 @@ mod tests {
         // γ^a γ^b = γ^{ab} + g^{ab}
         let result = join_gamma_pair(&[a], &[b], gamma, g, &interner);
         if let Expr::Add(terms) = &result {
-            assert_eq!(terms.len(), 2, "expected γ^{{ab}} + g^{{ab}}, got {terms:?}");
+            assert_eq!(
+                terms.len(),
+                2,
+                "expected γ^{{ab}} + g^{{ab}}, got {terms:?}"
+            );
         } else {
             panic!("expected Add, got {result:?}");
         }
@@ -1160,7 +1295,10 @@ mod tests {
             Expr::Call(gamma, vec![Expr::Sym(b)]),
         ]);
         let result = join_gammas_in_expr(&expr, gamma, g, &interner);
-        assert!(matches!(result, Expr::Add(_)), "expected Add, got {result:?}");
+        assert!(
+            matches!(result, Expr::Add(_)),
+            "expected Add, got {result:?}"
+        );
     }
 
     #[test]
@@ -1262,7 +1400,11 @@ mod tests {
         let result = split_gamma(&expr, gamma, g, true, &interner);
 
         if let Expr::Add(terms) = &result {
-            assert_eq!(terms.len(), 2, "gamma(a,b) split should give 2 terms: main + one contraction");
+            assert_eq!(
+                terms.len(),
+                2,
+                "gamma(a,b) split should give 2 terms: main + one contraction"
+            );
             // First term should be a Mul (gamma(a) * gamma(b))
             assert!(
                 matches!(&terms[0], Expr::Mul(_)),
@@ -1316,11 +1458,18 @@ mod tests {
         let c = interner.get_or_intern("c");
         let d = interner.get_or_intern("d");
 
-        let expr = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c), Expr::Sym(d)]);
+        let expr = Expr::Call(
+            gamma,
+            vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c), Expr::Sym(d)],
+        );
         let result = split_gamma(&expr, gamma, g, true, &interner);
 
         if let Expr::Add(terms) = &result {
-            assert_eq!(terms.len(), 4, "4-index gamma split should give 4 terms (1 main + 3 contractions)");
+            assert_eq!(
+                terms.len(),
+                4,
+                "4-index gamma split should give 4 terms (1 main + 3 contractions)"
+            );
         } else {
             panic!("expected Add, got {:?}", result);
         }

@@ -122,11 +122,7 @@ fn merge_spur_binding(
     }
 }
 
-fn merge_expr_binding(
-    map: &mut HashMap<lasso::Spur, Expr>,
-    key: lasso::Spur,
-    value: Expr,
-) -> bool {
+fn merge_expr_binding(map: &mut HashMap<lasso::Spur, Expr>, key: lasso::Spur, value: Expr) -> bool {
     match map.get(&key) {
         Some(existing) => *existing == value,
         None => {
@@ -341,7 +337,10 @@ impl<'a> ExprComparator<'a> {
                 }
                 true
             }
-            (Expr::Indexed(pattern_base, pattern_indices), Expr::Indexed(target_base, target_indices)) => {
+            (
+                Expr::Indexed(pattern_base, pattern_indices),
+                Expr::Indexed(target_base, target_indices),
+            ) => {
                 if pattern_indices.len() != target_indices.len()
                     || !self.subtree_compare(pattern_base, target_base, map)
                 {
@@ -475,12 +474,7 @@ impl<'a> ExprComparator<'a> {
         true
     }
 
-    fn match_ordered_exprs(
-        &self,
-        patterns: &[Expr],
-        targets: &[Expr],
-        map: &mut MatchMap,
-    ) -> bool {
+    fn match_ordered_exprs(&self, patterns: &[Expr], targets: &[Expr], map: &mut MatchMap) -> bool {
         if patterns.len() != targets.len() {
             return false;
         }
@@ -558,12 +552,7 @@ impl<'a> ExprComparator<'a> {
         }
     }
 
-    fn try_match_unordered(
-        &self,
-        patterns: &[Expr],
-        targets: &[Expr],
-        map: &mut MatchMap,
-    ) -> bool {
+    fn try_match_unordered(&self, patterns: &[Expr], targets: &[Expr], map: &mut MatchMap) -> bool {
         let mut used = vec![false; targets.len()];
         let mut trial = map.clone();
         if self.try_match_unordered_inner(patterns, targets, 0, &mut used, &mut trial) {
@@ -614,8 +603,7 @@ impl<'a> ExprComparator<'a> {
     ) -> bool {
         if pos == patterns.len() {
             let sign = permutation_sign(target_order);
-            return sign >= 0
-                || bind_multiplier(map, BigRational::from_integer((-1).into()));
+            return sign >= 0 || bind_multiplier(map, BigRational::from_integer((-1).into()));
         }
         for target_pos in 0..targets.len() {
             if used[target_pos] {
@@ -648,10 +636,11 @@ impl<'a> ExprComparator<'a> {
         for factor in factors {
             let kind = if self.factors_anticommute(factor, factor) {
                 FactorKind::AntiCommuting
-            } else if groups
-                .last()
-                .is_some_and(|last| last.factors.iter().all(|prev| self.factors_commute(prev, factor)))
-            {
+            } else if groups.last().is_some_and(|last| {
+                last.factors
+                    .iter()
+                    .all(|prev| self.factors_commute(prev, factor))
+            }) {
                 FactorKind::Commuting
             } else if factor_kind(factor, self.properties) == FactorKind::Commuting {
                 FactorKind::Commuting
@@ -661,12 +650,14 @@ impl<'a> ExprComparator<'a> {
 
             if let Some(last) = groups.last_mut() {
                 let can_join = match (last.kind, kind) {
-                    (FactorKind::Commuting, FactorKind::Commuting) => {
-                        last.factors.iter().all(|prev| self.factors_commute(prev, factor))
-                    }
-                    (FactorKind::AntiCommuting, FactorKind::AntiCommuting) => {
-                        last.factors.iter().all(|prev| self.factors_anticommute(prev, factor))
-                    }
+                    (FactorKind::Commuting, FactorKind::Commuting) => last
+                        .factors
+                        .iter()
+                        .all(|prev| self.factors_commute(prev, factor)),
+                    (FactorKind::AntiCommuting, FactorKind::AntiCommuting) => last
+                        .factors
+                        .iter()
+                        .all(|prev| self.factors_anticommute(prev, factor)),
                     (FactorKind::NonCommuting, FactorKind::NonCommuting) => false,
                     _ => false,
                 };
@@ -746,8 +737,10 @@ impl<'a> ExprComparator<'a> {
         }
 
         if pattern_structure.is_empty() {
-            let target_dummy_names: HashSet<lasso::Spur> =
-                dummy_pairs(target).into_iter().map(|(name, _)| name).collect();
+            let target_dummy_names: HashSet<lasso::Spur> = dummy_pairs(target)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
             return dummy_pairs(pattern).into_iter().all(|(pattern_name, _)| {
                 map.index_map
                     .get(&pattern_name)
@@ -760,14 +753,12 @@ impl<'a> ExprComparator<'a> {
             .map(|(a, b, name)| canonical_contraction_key(a, b, name))
             .collect();
 
-        pattern_structure
-            .into_iter()
-            .all(|(a, b, pattern_name)| {
-                map.index_map
-                    .get(&pattern_name)
-                    .map(|target_name| canonical_contraction_key(a, b, *target_name))
-                    .is_some_and(|key| target_keys.contains(&key))
-            })
+        pattern_structure.into_iter().all(|(a, b, pattern_name)| {
+            map.index_map
+                .get(&pattern_name)
+                .map(|target_name| canonical_contraction_key(a, b, *target_name))
+                .is_some_and(|key| target_keys.contains(&key))
+        })
     }
 
     fn index_names_family_compatible(
@@ -865,8 +856,12 @@ pub fn classify_indices(expr: &Expr) -> (Vec<lasso::Spur>, Vec<lasso::Spur>) {
         if variances.len() == 1 {
             free.push(name);
         } else if variances.len() == 2
-            && variances.iter().any(|variance| matches!(variance, Variance::Up))
-            && variances.iter().any(|variance| matches!(variance, Variance::Down))
+            && variances
+                .iter()
+                .any(|variance| matches!(variance, Variance::Up))
+            && variances
+                .iter()
+                .any(|variance| matches!(variance, Variance::Down))
         {
             dummy.push(name);
         } else {
@@ -893,8 +888,12 @@ pub fn dummy_pairs(expr: &Expr) -> Vec<(lasso::Spur, lasso::Spur)> {
         .filter(|name| {
             let variances = &by_name[name];
             variances.len() == 2
-                && variances.iter().any(|variance| matches!(variance, Variance::Up))
-                && variances.iter().any(|variance| matches!(variance, Variance::Down))
+                && variances
+                    .iter()
+                    .any(|variance| matches!(variance, Variance::Up))
+                && variances
+                    .iter()
+                    .any(|variance| matches!(variance, Variance::Down))
         })
         .map(|name| (name, name))
         .collect()
@@ -908,15 +907,22 @@ pub fn contraction_structure(expr: &Expr) -> Vec<(usize, usize, lasso::Spur)> {
     let mut by_name: HashMap<lasso::Spur, Vec<(usize, Variance)>> = HashMap::new();
     for (factor_pos, factor) in factors.iter().enumerate() {
         for (name, variance) in collect_indices(factor) {
-            by_name.entry(name).or_default().push((factor_pos, variance));
+            by_name
+                .entry(name)
+                .or_default()
+                .push((factor_pos, variance));
         }
     }
 
     let mut out = Vec::new();
     for (name, occurrences) in by_name {
         if occurrences.len() == 2
-            && occurrences.iter().any(|(_, variance)| matches!(variance, Variance::Up))
-            && occurrences.iter().any(|(_, variance)| matches!(variance, Variance::Down))
+            && occurrences
+                .iter()
+                .any(|(_, variance)| matches!(variance, Variance::Up))
+            && occurrences
+                .iter()
+                .any(|(_, variance)| matches!(variance, Variance::Down))
         {
             out.push((occurrences[0].0, occurrences[1].0, name));
         }
@@ -1117,7 +1123,11 @@ fn permutation_sign(order: &[usize]) -> i32 {
             }
         }
     }
-    if inversions % 2 == 0 { 1 } else { -1 }
+    if inversions % 2 == 0 {
+        1
+    } else {
+        -1
+    }
 }
 
 fn permutation_sign_to_sorted(items: &[Expr]) -> i32 {
@@ -1127,13 +1137,8 @@ fn permutation_sign_to_sorted(items: &[Expr]) -> i32 {
     permutation_sign(&order)
 }
 
-fn property_discriminant_set(
-    props: Vec<&TensorProperty>,
-) -> HashSet<Discriminant<TensorProperty>> {
-    props
-        .into_iter()
-        .map(std::mem::discriminant)
-        .collect()
+fn property_discriminant_set(props: Vec<&TensorProperty>) -> HashSet<Discriminant<TensorProperty>> {
+    props.into_iter().map(std::mem::discriminant).collect()
 }
 
 pub fn pattern_match(
@@ -1243,7 +1248,10 @@ fn apply_match_map_inner(template: &Expr, map: &MatchMap, interner: &Interner) -
             branches
                 .iter()
                 .map(|(value, condition)| {
-                    (apply_match_map_inner(value, map, interner), condition.clone())
+                    (
+                        apply_match_map_inner(value, map, interner),
+                        condition.clone(),
+                    )
                 })
                 .collect(),
         ),
@@ -1361,8 +1369,22 @@ pub fn substitute_with_compare(
             )
         }
         Expr::Pow(base, exp) => Expr::pow(
-            substitute_with_compare(base, pattern, replacement, properties, index_to_family, interner),
-            substitute_with_compare(exp, pattern, replacement, properties, index_to_family, interner),
+            substitute_with_compare(
+                base,
+                pattern,
+                replacement,
+                properties,
+                index_to_family,
+                interner,
+            ),
+            substitute_with_compare(
+                exp,
+                pattern,
+                replacement,
+                properties,
+                index_to_family,
+                interner,
+            ),
         ),
         Expr::Neg(inner) => Expr::neg(substitute_with_compare(
             inner,
@@ -1566,7 +1588,11 @@ fn substitute_sequence_in_terms(
         }
     }
 
-    Some(if additive { Expr::add(out) } else { Expr::mul(out) })
+    Some(if additive {
+        Expr::add(out)
+    } else {
+        Expr::mul(out)
+    })
 }
 
 fn match_term_subset(
@@ -1588,13 +1614,18 @@ fn match_term_subset(
             continue;
         }
         let mut candidate = map.clone();
-        if pattern_match(&pattern_terms[pos], &terms[target_pos], properties, index_to_family, interner)
-            .and_then(|term_map| candidate.compose(&term_map))
-            .is_some_and(|composed| {
-                candidate = composed;
-                true
-            })
-        {
+        if pattern_match(
+            &pattern_terms[pos],
+            &terms[target_pos],
+            properties,
+            index_to_family,
+            interner,
+        )
+        .and_then(|term_map| candidate.compose(&term_map))
+        .is_some_and(|composed| {
+            candidate = composed;
+            true
+        }) {
             used[target_pos] = true;
             selected.push(target_pos);
             if match_term_subset(
@@ -1667,9 +1698,7 @@ pub fn expr_canonical_order(
         (Expr::Sym(lhs), Expr::Sym(rhs)) => interner.resolve(*lhs).cmp(interner.resolve(*rhs)),
         (Expr::Add(lhs), Expr::Add(rhs))
         | (Expr::Mul(lhs), Expr::Mul(rhs))
-        | (Expr::List(lhs), Expr::List(rhs)) => {
-            compare_expr_slices(lhs, rhs, properties, interner)
-        }
+        | (Expr::List(lhs), Expr::List(rhs)) => compare_expr_slices(lhs, rhs, properties, interner),
         (Expr::Pow(lhs_base, lhs_exp), Expr::Pow(rhs_base, rhs_exp))
         | (Expr::Complex(lhs_base, lhs_exp), Expr::Complex(rhs_base, rhs_exp)) => {
             expr_canonical_order(lhs_base, rhs_base, properties, interner)
@@ -1684,10 +1713,8 @@ pub fn expr_canonical_order(
             expr_canonical_order(lhs_base, rhs_base, properties, interner)
                 .then_with(|| compare_indices(lhs_indices, rhs_indices, interner))
         }
-        (Expr::Matrix(lhs_rows), Expr::Matrix(rhs_rows)) => lhs_rows
-            .len()
-            .cmp(&rhs_rows.len())
-            .then_with(|| {
+        (Expr::Matrix(lhs_rows), Expr::Matrix(rhs_rows)) => {
+            lhs_rows.len().cmp(&rhs_rows.len()).then_with(|| {
                 for (lhs_row, rhs_row) in lhs_rows.iter().zip(rhs_rows) {
                     let cmp = compare_expr_slices(lhs_row, rhs_row, properties, interner);
                     if cmp != Ordering::Equal {
@@ -1695,19 +1722,20 @@ pub fn expr_canonical_order(
                     }
                 }
                 Ordering::Equal
-            }),
-        (Expr::FnDef(lhs_name, lhs_params, lhs_body), Expr::FnDef(rhs_name, rhs_params, rhs_body)) => {
-            interner
-                .resolve(*lhs_name)
-                .cmp(interner.resolve(*rhs_name))
-                .then_with(|| compare_symbols(lhs_params, rhs_params, interner))
-                .then_with(|| expr_canonical_order(lhs_body, rhs_body, properties, interner))
+            })
         }
-        (Expr::Rule(lhs_l, lhs_r, lhs_t), Expr::Rule(rhs_l, rhs_r, rhs_t)) => {
-            format!("{lhs_t:?}").cmp(&format!("{rhs_t:?}"))
-                .then_with(|| expr_canonical_order(lhs_l, rhs_l, properties, interner))
-                .then_with(|| expr_canonical_order(lhs_r, rhs_r, properties, interner))
-        }
+        (
+            Expr::FnDef(lhs_name, lhs_params, lhs_body),
+            Expr::FnDef(rhs_name, rhs_params, rhs_body),
+        ) => interner
+            .resolve(*lhs_name)
+            .cmp(interner.resolve(*rhs_name))
+            .then_with(|| compare_symbols(lhs_params, rhs_params, interner))
+            .then_with(|| expr_canonical_order(lhs_body, rhs_body, properties, interner)),
+        (Expr::Rule(lhs_l, lhs_r, lhs_t), Expr::Rule(rhs_l, rhs_r, rhs_t)) => format!("{lhs_t:?}")
+            .cmp(&format!("{rhs_t:?}"))
+            .then_with(|| expr_canonical_order(lhs_l, rhs_l, properties, interner))
+            .then_with(|| expr_canonical_order(lhs_r, rhs_r, properties, interner)),
         (Expr::Import(lhs), Expr::Import(rhs)) => compare_symbols(lhs, rhs, interner),
         (Expr::Assume(lhs_sym, lhs_assumptions), Expr::Assume(rhs_sym, rhs_assumptions)) => {
             interner
@@ -1718,21 +1746,16 @@ pub fn expr_canonical_order(
         (Expr::SetConvention(lhs_f, lhs_v), Expr::SetConvention(rhs_f, rhs_v)) => {
             lhs_f.cmp(rhs_f).then_with(|| lhs_v.cmp(rhs_v))
         }
-        (Expr::Piecewise(lhs), Expr::Piecewise(rhs)) => lhs
-            .len()
-            .cmp(&rhs.len())
-            .then_with(|| {
-                for ((lhs_value, lhs_condition), (rhs_value, rhs_condition)) in lhs.iter().zip(rhs) {
-                    let cmp = expr_canonical_order(lhs_value, rhs_value, properties, interner)
-                        .then_with(|| {
-                            format!("{lhs_condition:?}").cmp(&format!("{rhs_condition:?}"))
-                        });
-                    if cmp != Ordering::Equal {
-                        return cmp;
-                    }
+        (Expr::Piecewise(lhs), Expr::Piecewise(rhs)) => lhs.len().cmp(&rhs.len()).then_with(|| {
+            for ((lhs_value, lhs_condition), (rhs_value, rhs_condition)) in lhs.iter().zip(rhs) {
+                let cmp = expr_canonical_order(lhs_value, rhs_value, properties, interner)
+                    .then_with(|| format!("{lhs_condition:?}").cmp(&format!("{rhs_condition:?}")));
+                if cmp != Ordering::Equal {
+                    return cmp;
                 }
-                Ordering::Equal
-            }),
+            }
+            Ordering::Equal
+        }),
         (Expr::Let(lhs_name, lhs_value, lhs_body), Expr::Let(rhs_name, rhs_value, rhs_body)) => {
             interner
                 .resolve(*lhs_name)
@@ -1804,7 +1827,9 @@ fn compare_indices(lhs: &[Index], rhs: &[Index], interner: &Interner) -> Orderin
             let cmp = interner
                 .resolve(lhs_idx.name)
                 .cmp(interner.resolve(rhs_idx.name))
-                .then_with(|| variance_rank(&lhs_idx.variance).cmp(&variance_rank(&rhs_idx.variance)))
+                .then_with(|| {
+                    variance_rank(&lhs_idx.variance).cmp(&variance_rank(&rhs_idx.variance))
+                })
                 .then_with(|| compare_index_type(lhs_idx.index_type, rhs_idx.index_type, interner));
             if cmp != Ordering::Equal {
                 return cmp;

@@ -326,8 +326,16 @@ mod tests {
         let mu = int.get_or_intern("mu");
         let nu = int.get_or_intern("nu");
         let indices = vec![
-            Index { name: mu, variance: Variance::Down, index_type: None },
-            Index { name: nu, variance: Variance::Down, index_type: None },
+            Index {
+                name: mu,
+                variance: Variance::Down,
+                index_type: None,
+            },
+            Index {
+                name: nu,
+                variance: Variance::Down,
+                index_type: None,
+            },
         ];
         let adj = Adjform::from_indices(&indices);
         assert!(adj.is_free(0));
@@ -340,8 +348,16 @@ mod tests {
         let int = make_interner();
         let mu = int.get_or_intern("mu");
         let indices = vec![
-            Index { name: mu, variance: Variance::Up, index_type: None },
-            Index { name: mu, variance: Variance::Down, index_type: None },
+            Index {
+                name: mu,
+                variance: Variance::Up,
+                index_type: None,
+            },
+            Index {
+                name: mu,
+                variance: Variance::Down,
+                index_type: None,
+            },
         ];
         let adj = Adjform::from_indices(&indices);
         assert!(adj.is_dummy(0));
@@ -355,7 +371,8 @@ mod tests {
         let adj1 = Adjform { data: vec![-1, -2] };
         let adj2 = Adjform { data: vec![-2, -1] };
 
-        let mut pa = ProjectedAdjform::from_adjform(adj1.clone(), BigRational::from_integer(1.into()));
+        let mut pa =
+            ProjectedAdjform::from_adjform(adj1.clone(), BigRational::from_integer(1.into()));
         pa.add(adj2.clone(), BigRational::from_integer(1.into()));
         assert_eq!(pa.len(), 2);
 

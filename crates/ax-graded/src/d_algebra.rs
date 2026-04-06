@@ -142,10 +142,14 @@ fn contains_symbol(expr: &Expr, variable: Spur) -> bool {
         Expr::Matrix(rows) => rows
             .iter()
             .any(|row| row.iter().any(|cell| contains_symbol(cell, variable))),
-        Expr::Let(_, value, body) => contains_symbol(value, variable) || contains_symbol(body, variable),
+        Expr::Let(_, value, body) => {
+            contains_symbol(value, variable) || contains_symbol(body, variable)
+        }
         Expr::FnDef(_, _, body) => contains_symbol(body, variable),
         Expr::Rule(lhs, rhs, _) => contains_symbol(lhs, variable) || contains_symbol(rhs, variable),
-        Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_symbol(value, variable)),
+        Expr::Piecewise(cases) => cases
+            .iter()
+            .any(|(value, _)| contains_symbol(value, variable)),
         Expr::Int(_)
         | Expr::Rational(_)
         | Expr::Float(_)

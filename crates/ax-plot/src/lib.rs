@@ -80,14 +80,7 @@ fn format_tick(value: f64) -> String {
     }
 }
 
-fn to_svg_coords(
-    x: f64,
-    y: f64,
-    x_min: f64,
-    x_max: f64,
-    y_min: f64,
-    y_max: f64,
-) -> (f64, f64) {
+fn to_svg_coords(x: f64, y: f64, x_min: f64, x_max: f64, y_min: f64, y_max: f64) -> (f64, f64) {
     let sx = PLOT_LEFT + (x - x_min) / (x_max - x_min) * (PLOT_RIGHT - PLOT_LEFT);
     let sy = PLOT_BOTTOM - (y - y_min) / (y_max - y_min) * (PLOT_BOTTOM - PLOT_TOP);
     (sx, sy)
@@ -184,12 +177,7 @@ fn compute_bounds(data_sets: &[Vec<(f64, f64)>]) -> (f64, f64, f64, f64) {
 
     let y_pad = (y_max - y_min).abs() * 0.1;
     let x_pad = (x_max - x_min).abs() * 0.05;
-    (
-        x_min - x_pad,
-        x_max + x_pad,
-        y_min - y_pad,
-        y_max + y_pad,
-    )
+    (x_min - x_pad, x_max + x_pad, y_min - y_pad, y_max + y_pad)
 }
 
 fn polyline_segments(
@@ -278,7 +266,10 @@ fn render_plot(
     series: &[(&[(f64, f64)], &str, &str)],
     explicit_bounds: Option<(f64, f64, f64, f64)>,
 ) -> String {
-    let all_data = series.iter().map(|(points, _, _)| points.to_vec()).collect::<Vec<_>>();
+    let all_data = series
+        .iter()
+        .map(|(points, _, _)| points.to_vec())
+        .collect::<Vec<_>>();
     let (x_min, x_max, y_min, y_max) = explicit_bounds.unwrap_or_else(|| compute_bounds(&all_data));
 
     let mut svg = format!(
@@ -387,7 +378,11 @@ pub fn plot_parametric(
 pub fn plot_data(points: &[(f64, f64)], title: &str) -> String {
     let plot_points = points.to_vec();
     let (x_min, x_max, y_min, y_max) = compute_bounds(std::slice::from_ref(&plot_points));
-    let mut svg = render_plot(title, &[(&plot_points, "#2563eb", title)], Some((x_min, x_max, y_min, y_max)));
+    let mut svg = render_plot(
+        title,
+        &[(&plot_points, "#2563eb", title)],
+        Some((x_min, x_max, y_min, y_max)),
+    );
     let insert_at = svg.rfind("</svg>").unwrap_or(svg.len());
     let mut overlays = String::new();
     for &(x, y) in points {

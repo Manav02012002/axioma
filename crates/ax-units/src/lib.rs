@@ -101,10 +101,16 @@ pub fn pow_unit(unit: &Unit, power: i64) -> Unit {
         BigRational::one()
     } else if power > 0 {
         let p = u32::try_from(power).unwrap_or(0);
-        BigRational::new(unit.scale.numer().clone().pow(p), unit.scale.denom().clone().pow(p))
+        BigRational::new(
+            unit.scale.numer().clone().pow(p),
+            unit.scale.denom().clone().pow(p),
+        )
     } else {
         let p = u32::try_from(-power).unwrap_or(0);
-        BigRational::new(unit.scale.denom().clone().pow(p), unit.scale.numer().clone().pow(p))
+        BigRational::new(
+            unit.scale.denom().clone().pow(p),
+            unit.scale.numer().clone().pow(p),
+        )
     };
 
     Unit {
@@ -125,15 +131,30 @@ fn dimensionless() -> Unit {
 pub fn si_units(interner: &ax_ir::Interner) -> HashMap<lasso::Spur, Unit> {
     let mut units = HashMap::new();
 
-    units.insert(interner.get_or_intern("m"), unit_single(BaseDimension::Length));
-    units.insert(interner.get_or_intern("kg"), unit_single(BaseDimension::Mass));
-    units.insert(interner.get_or_intern("s"), unit_single(BaseDimension::Time));
-    units.insert(interner.get_or_intern("A"), unit_single(BaseDimension::Current));
+    units.insert(
+        interner.get_or_intern("m"),
+        unit_single(BaseDimension::Length),
+    );
+    units.insert(
+        interner.get_or_intern("kg"),
+        unit_single(BaseDimension::Mass),
+    );
+    units.insert(
+        interner.get_or_intern("s"),
+        unit_single(BaseDimension::Time),
+    );
+    units.insert(
+        interner.get_or_intern("A"),
+        unit_single(BaseDimension::Current),
+    );
     units.insert(
         interner.get_or_intern("K"),
         unit_single(BaseDimension::Temperature),
     );
-    units.insert(interner.get_or_intern("mol"), unit_single(BaseDimension::Amount));
+    units.insert(
+        interner.get_or_intern("mol"),
+        unit_single(BaseDimension::Amount),
+    );
     units.insert(
         interner.get_or_intern("cd"),
         unit_single(BaseDimension::Luminosity),
@@ -191,7 +212,10 @@ pub fn si_units(interner: &ax_ir::Interner) -> HashMap<lasso::Spur, Unit> {
 
     units.insert(
         interner.get_or_intern("km"),
-        unit_scaled(BaseDimension::Length, BigRational::from_integer(1000.into())),
+        unit_scaled(
+            BaseDimension::Length,
+            BigRational::from_integer(1000.into()),
+        ),
     );
     units.insert(
         interner.get_or_intern("cm"),
@@ -262,7 +286,9 @@ pub fn check_dimensions(
     interner: &ax_ir::Interner,
 ) -> Result<Unit, String> {
     match expr {
-        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Complex(_, _) => Ok(dimensionless()),
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Complex(_, _) => {
+            Ok(dimensionless())
+        }
         Expr::Sym(sym) => Ok(units_env.get(sym).cloned().unwrap_or_else(dimensionless)),
         Expr::Neg(inner) => check_dimensions(inner, units_env, interner),
         Expr::Add(terms) => {
@@ -301,7 +327,10 @@ pub fn check_dimensions(
                     if base_unit.dimensions.is_empty() {
                         Ok(dimensionless())
                     } else {
-                        Err("non-integer powers of dimensionful quantities are not supported".into())
+                        Err(
+                            "non-integer powers of dimensionful quantities are not supported"
+                                .into(),
+                        )
                     }
                 }
             }

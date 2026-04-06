@@ -31,7 +31,11 @@ pub fn to_python(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> String {
         Expr::Rational(r) => format!("{}/{}", r.numer(), r.denom()),
         Expr::Float(f) => format!("{:.17}", f),
         Expr::Complex(re, im) => {
-            format!("complex({}, {})", to_python(re, interner), to_python(im, interner))
+            format!(
+                "complex({}, {})",
+                to_python(re, interner),
+                to_python(im, interner)
+            )
         }
         Expr::Sym(s) => render_sym(*s, interner),
         Expr::Add(terms) => terms
@@ -52,7 +56,11 @@ pub fn to_python(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> String {
             {
                 format!("math.sqrt({})", to_python(base, interner))
             } else {
-                format!("{}**{}", to_python(base, interner), to_python(exp, interner))
+                format!(
+                    "{}**{}",
+                    to_python(base, interner),
+                    to_python(exp, interner)
+                )
             }
         }
         Expr::Neg(inner) => format!("-({})", to_python(inner, interner)),
@@ -197,7 +205,9 @@ pub fn to_cpp(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> String {
             .map(|factor| to_cpp(factor, interner))
             .collect::<Vec<_>>()
             .join(" * "),
-        Expr::Pow(base, exp) => format!("pow({}, {})", to_cpp(base, interner), to_cpp(exp, interner)),
+        Expr::Pow(base, exp) => {
+            format!("pow({}, {})", to_cpp(base, interner), to_cpp(exp, interner))
+        }
         Expr::Neg(inner) => format!("-({})", to_cpp(inner, interner)),
         Expr::Call(f, args) => {
             let name = interner.resolve(*f);

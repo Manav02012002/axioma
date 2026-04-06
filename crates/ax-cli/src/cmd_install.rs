@@ -19,7 +19,10 @@ pub fn run(package: &str, path: Option<&str>, git: Option<&str>) -> Result<()> {
 
     let has_ax_files = contains_ax_files(dep_root)?;
     if !has_ax_files {
-        bail!("dependency path does not contain any .ax files: {}", dep_root.display());
+        bail!(
+            "dependency path does not contain any .ax files: {}",
+            dep_root.display()
+        );
     }
 
     let config_path = std::env::current_dir()?.join("axioma.toml");
@@ -40,11 +43,17 @@ pub fn run(package: &str, path: Option<&str>, git: Option<&str>) -> Result<()> {
         .ok_or_else(|| anyhow!("[dependencies] must be a table"))?;
 
     let mut dep_entry = toml::map::Map::new();
-    dep_entry.insert("path".to_string(), toml::Value::String(dep_path.to_string()));
+    dep_entry.insert(
+        "path".to_string(),
+        toml::Value::String(dep_path.to_string()),
+    );
     deps_table.insert(package.to_string(), toml::Value::Table(dep_entry));
 
     std::fs::write(&config_path, toml::to_string_pretty(&doc)?)?;
-    println!("installed dependency `{package}` from {}", dep_root.display());
+    println!(
+        "installed dependency `{package}` from {}",
+        dep_root.display()
+    );
     Ok(())
 }
 

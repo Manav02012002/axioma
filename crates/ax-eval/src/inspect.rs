@@ -70,8 +70,13 @@ fn collect_indices(expr: &Expr, out: &mut Vec<ax_ir::Index>) {
             collect_indices(value, out);
             collect_indices(body, out);
         }
-        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) | Expr::Sym(_)
-        | Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => {}
+        Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Sym(_)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_) => {}
     }
 }
 
@@ -119,8 +124,12 @@ fn collect_symbols(expr: &Expr, out: &mut Vec<ax_ir::expr::Sym>) {
             collect_symbols(value, out);
             collect_symbols(body, out);
         }
-        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) | Expr::Int(_)
-        | Expr::Rational(_) | Expr::Float(_) => {}
+        Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_) => {}
     }
 }
 
@@ -144,7 +153,12 @@ fn node_count(expr: &Expr) -> usize {
         Expr::Call(_, args) => 1 + args.iter().map(node_count).sum::<usize>(),
         Expr::FnDef(_, _, body) => 1 + node_count(body),
         Expr::Rule(lhs, rhs, _) => 1 + node_count(lhs) + node_count(rhs),
-        Expr::Piecewise(cases) => 1 + cases.iter().map(|(value, _)| node_count(value)).sum::<usize>(),
+        Expr::Piecewise(cases) => {
+            1 + cases
+                .iter()
+                .map(|(value, _)| node_count(value))
+                .sum::<usize>()
+        }
         Expr::Let(_, value, body) => 1 + node_count(value) + node_count(body),
     }
 }

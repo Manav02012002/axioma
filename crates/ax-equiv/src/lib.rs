@@ -24,7 +24,11 @@ fn to_f64(expr: &Expr) -> Option<f64> {
         Expr::Complex(re, im) => {
             let re = to_f64(re)?;
             let im = to_f64(im)?;
-            if im == 0.0 { Some(re) } else { None }
+            if im == 0.0 {
+                Some(re)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -41,7 +45,11 @@ fn numeric_eval_expr(expr: &Expr, env: &ax_eval::Env, interner: &ax_ir::Interner
         Expr::Complex(re, im) => {
             let re = numeric_eval_expr(re, env, interner)?;
             let im = numeric_eval_expr(im, env, interner)?;
-            if im == 0.0 { Some(re) } else { None }
+            if im == 0.0 {
+                Some(re)
+            } else {
+                None
+            }
         }
         Expr::Sym(s) => {
             if let Some(bound) = env.lookup(*s) {
@@ -168,10 +176,16 @@ fn collect_syms(expr: &ax_ir::Expr, out: &mut Vec<lasso::Spur>) {
     }
 }
 
-fn unbound_symbols(expr: &ax_ir::Expr, env: &ax_eval::Env, interner: &ax_ir::Interner) -> Vec<lasso::Spur> {
+fn unbound_symbols(
+    expr: &ax_ir::Expr,
+    env: &ax_eval::Env,
+    interner: &ax_ir::Interner,
+) -> Vec<lasso::Spur> {
     let mut syms = Vec::new();
     collect_syms(expr, &mut syms);
-    let reserved: HashSet<&str> = ["pi", "e", "i", "inf", "infty", "neg_inf"].into_iter().collect();
+    let reserved: HashSet<&str> = ["pi", "e", "i", "inf", "infty", "neg_inf"]
+        .into_iter()
+        .collect();
     syms.retain(|s| env.lookup(*s).is_none() && !reserved.contains(interner.resolve(*s)));
     syms.sort();
     syms.dedup();
@@ -250,7 +264,10 @@ pub fn check_equiv(
         return EquivResult::Equal;
     }
 
-    let diff = canonical_simplify(&Expr::add(vec![sa.clone(), Expr::neg(sb.clone())]), interner);
+    let diff = canonical_simplify(
+        &Expr::add(vec![sa.clone(), Expr::neg(sb.clone())]),
+        interner,
+    );
     if diff == Expr::zero() {
         return EquivResult::Equal;
     }
@@ -286,7 +303,7 @@ pub fn check_equiv(
         match sample_check(&ta, &tb, &syms, env, interner, 5) {
             Some(true) => {
                 return EquivResult::EqualUnderAssumptions(vec![
-                    "numerically verified at 5 points".into(),
+                    "numerically verified at 5 points".into()
                 ])
             }
             Some(false) => return EquivResult::NotEqual,
@@ -349,13 +366,19 @@ mod tests {
         let interner = ax_ir::Interner::new();
         let env = ax_eval::Env::new();
         let x = interner.get_or_intern("x");
-        let a = Expr::pow(Expr::add(vec![Expr::Sym(x), Expr::one()]), Expr::Int(2.into()));
+        let a = Expr::pow(
+            Expr::add(vec![Expr::Sym(x), Expr::one()]),
+            Expr::Int(2.into()),
+        );
         let b = Expr::add(vec![
             Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
             Expr::mul(vec![Expr::Int(2.into()), Expr::Sym(x)]),
             Expr::one(),
         ]);
         let result = check_equiv(&a, &b, &env, &interner);
-        assert!(matches!(result, EquivResult::Equal | EquivResult::EqualUnderAssumptions(_)));
+        assert!(matches!(
+            result,
+            EquivResult::Equal | EquivResult::EqualUnderAssumptions(_)
+        ));
     }
 }

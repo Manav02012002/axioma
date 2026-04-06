@@ -1785,12 +1785,7 @@ fn term_matches_two_brackets(
             && matches_bracket_exact(&term.factors[1], a, b, kind))
 }
 
-fn matches_bracket_exact(
-    factor: &SpinorFactor,
-    a: Label,
-    b: Label,
-    kind: BracketKind,
-) -> bool {
+fn matches_bracket_exact(factor: &SpinorFactor, a: Label, b: Label, kind: BracketKind) -> bool {
     match (kind, factor) {
         (BracketKind::Angle, SpinorFactor::Angle(x, y))
         | (BracketKind::Square, SpinorFactor::Square(x, y)) => *x == a && *y == b,

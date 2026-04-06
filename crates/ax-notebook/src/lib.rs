@@ -250,7 +250,9 @@ fn handle_import(
 
     for expr in lowered.exprs {
         match &expr {
-            Expr::Import(import_path) => handle_import(import_path, env, interner, &nested_search_paths)?,
+            Expr::Import(import_path) => {
+                handle_import(import_path, env, interner, &nested_search_paths)?
+            }
             Expr::Let(name, val, _) => {
                 let evaled_val = ax_eval::eval(val, env, interner);
                 env.bindings.insert(*name, evaled_val);
@@ -264,7 +266,10 @@ fn handle_import(
                 let _ = ax_eval::register_rule(&result, env, interner);
             }
             Expr::Assume(var, assumptions) => {
-                env.assumptions.entry(*var).or_default().extend(assumptions.clone());
+                env.assumptions
+                    .entry(*var)
+                    .or_default()
+                    .extend(assumptions.clone());
             }
             Expr::SetConvention(_, _) => {
                 let _ = ax_eval::apply_set_convention(&expr, env);
@@ -399,7 +404,10 @@ pub fn handle_eval(
             continue;
         }
         if let Expr::Assume(var, assumptions) = &result {
-            env.assumptions.entry(*var).or_default().extend(assumptions.clone());
+            env.assumptions
+                .entry(*var)
+                .or_default()
+                .extend(assumptions.clone());
             last_unicode = Some(assume_message(*var, assumptions, interner));
             last_latex = None;
             continue;
@@ -420,17 +428,17 @@ pub fn handle_eval(
             last_unicode = Some("plot saved to axioma_plot.svg".to_string());
             last_latex = None;
         } else {
-        last_unicode = Some(ax_render::to_unicode(&result, interner));
-        last_latex = Some(ax_render::to_latex(&result, interner));
-        if let Some(target) = rewrite_target {
-            let (_, trace) = ax_eval::rewrite_with_trace(&target, env, interner);
-            let trust = ax_eval::describe_rewrite_trace(&trace);
-            last_unicode = Some(match last_unicode.take() {
-                Some(text) => format!("{text}\n{trust}"),
-                None => trust,
-            });
+            last_unicode = Some(ax_render::to_unicode(&result, interner));
+            last_latex = Some(ax_render::to_latex(&result, interner));
+            if let Some(target) = rewrite_target {
+                let (_, trace) = ax_eval::rewrite_with_trace(&target, env, interner);
+                let trust = ax_eval::describe_rewrite_trace(&trace);
+                last_unicode = Some(match last_unicode.take() {
+                    Some(text) => format!("{text}\n{trust}"),
+                    None => trust,
+                });
+            }
         }
-    }
     }
 
     EvalResponse {
@@ -469,7 +477,9 @@ pub fn start_server(port: u16) -> Result<()> {
                 let latex =
                     export_latex_with_meta(&req.cells, req.title.as_deref(), req.author.as_deref());
                 let response = Response::from_string(latex)
-                    .with_header(Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap())
+                    .with_header(
+                        Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
+                    )
                     .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
                 let _ = request.respond(response);
             }
@@ -479,7 +489,9 @@ pub fn start_server(port: u16) -> Result<()> {
                 let req = serde_json::from_str::<ExportRequest>(&body).unwrap_or_default();
                 let html = export_html_with_title(&req.cells, req.title.as_deref());
                 let response = Response::from_string(html)
-                    .with_header(Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap())
+                    .with_header(
+                        Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
+                    )
                     .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
                 let _ = request.respond(response);
             }

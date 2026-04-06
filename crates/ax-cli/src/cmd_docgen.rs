@@ -229,12 +229,7 @@ pub fn run(out: &Path) -> Result<()> {
     doc.push_str("## Assumptions\n");
     push_table_header(&mut doc, &["name", "description"]);
     for entry in assumptions {
-        let _ = writeln!(
-            doc,
-            "|{}|{}|",
-            esc(entry.name),
-            esc(entry.description)
-        );
+        let _ = writeln!(doc, "|{}|{}|", esc(entry.name), esc(entry.description));
     }
     doc.push('\n');
 
@@ -249,7 +244,10 @@ pub fn run(out: &Path) -> Result<()> {
     for (category, mut entries) in algos_by_category {
         entries.sort_by(|a, b| a.name.cmp(b.name).then(a.signature.cmp(b.signature)));
         let _ = writeln!(doc, "### {}", esc(category));
-        push_table_header(&mut doc, &["name", "signature", "preconditions", "description"]);
+        push_table_header(
+            &mut doc,
+            &["name", "signature", "preconditions", "description"],
+        );
         for entry in entries {
             let _ = writeln!(
                 doc,

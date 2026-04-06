@@ -42,10 +42,18 @@ impl McpState {
 }
 
 impl EvalState for McpState {
-    fn interner(&self) -> &ax_ir::Interner { &self.interner }
-    fn interner_mut(&mut self) -> &mut ax_ir::Interner { &mut self.interner }
-    fn env(&self) -> &ax_eval::Env { &self.env }
-    fn env_mut(&mut self) -> &mut ax_eval::Env { &mut self.env }
+    fn interner(&self) -> &ax_ir::Interner {
+        &self.interner
+    }
+    fn interner_mut(&mut self) -> &mut ax_ir::Interner {
+        &mut self.interner
+    }
+    fn env(&self) -> &ax_eval::Env {
+        &self.env
+    }
+    fn env_mut(&mut self) -> &mut ax_eval::Env {
+        &mut self.env
+    }
 
     fn store_expr(&mut self, expr: Expr) -> String {
         let id = self.alloc_expr_id();
@@ -56,7 +64,9 @@ impl EvalState for McpState {
         id
     }
 
-    fn get_expr(&self, id: &str) -> Option<&Expr> { self.expressions.get(id) }
+    fn get_expr(&self, id: &str) -> Option<&Expr> {
+        self.expressions.get(id)
+    }
 
     fn parse_code(&mut self, code: &str) -> Result<Expr, String> {
         let mut sources = vec![code.to_string()];
@@ -97,40 +107,70 @@ impl EvalState for McpState {
         Ok(ax_eval::eval(&expr, &self.env, &self.interner))
     }
 
-    fn render_latex(&self, expr: &Expr) -> String { ax_render::to_latex(expr, &self.interner) }
-    fn render_unicode(&self, expr: &Expr) -> String { ax_render::to_unicode(expr, &self.interner) }
+    fn render_latex(&self, expr: &Expr) -> String {
+        ax_render::to_latex(expr, &self.interner)
+    }
+    fn render_unicode(&self, expr: &Expr) -> String {
+        ax_render::to_unicode(expr, &self.interner)
+    }
 
     fn get_metric(&self, id: &str) -> Option<&(ax_tensor::SymbolicMatrix, Vec<ax_ir::expr::Sym>)> {
         self.metrics.get(id)
     }
-    fn store_metric(&mut self, id: String, metric: ax_tensor::SymbolicMatrix, coords: Vec<ax_ir::expr::Sym>) {
+    fn store_metric(
+        &mut self,
+        id: String,
+        metric: ax_tensor::SymbolicMatrix,
+        coords: Vec<ax_ir::expr::Sym>,
+    ) {
         self.metrics.insert(id, (metric, coords));
     }
-    fn get_christoffel(&self, id: &str) -> Option<&Vec<Vec<Vec<Expr>>>> { self.christoffels.get(id) }
-    fn store_christoffel(&mut self, id: String, chris: Vec<Vec<Vec<Expr>>>) { self.christoffels.insert(id, chris); }
-    fn get_riemann(&self, id: &str) -> Option<&Vec<Vec<Vec<Vec<Expr>>>>> { self.riemanns.get(id) }
-    fn store_riemann(&mut self, id: String, riem: Vec<Vec<Vec<Vec<Expr>>>>) { self.riemanns.insert(id, riem); }
-    fn get_ricci(&self, id: &str) -> Option<&Vec<Vec<Expr>>> { self.riccis.get(id) }
+    fn get_christoffel(&self, id: &str) -> Option<&Vec<Vec<Vec<Expr>>>> {
+        self.christoffels.get(id)
+    }
+    fn store_christoffel(&mut self, id: String, chris: Vec<Vec<Vec<Expr>>>) {
+        self.christoffels.insert(id, chris);
+    }
+    fn get_riemann(&self, id: &str) -> Option<&Vec<Vec<Vec<Vec<Expr>>>>> {
+        self.riemanns.get(id)
+    }
+    fn store_riemann(&mut self, id: String, riem: Vec<Vec<Vec<Vec<Expr>>>>) {
+        self.riemanns.insert(id, riem);
+    }
+    fn get_ricci(&self, id: &str) -> Option<&Vec<Vec<Expr>>> {
+        self.riccis.get(id)
+    }
     fn store_ricci(&mut self, id: String, ric: Vec<Vec<Expr>>) {
         self.matrices.insert(id.clone(), ric.clone());
         self.riccis.insert(id, ric);
     }
     fn get_matrix_data(&self, id: &str) -> Option<Vec<Vec<Expr>>> {
-        self.matrices.get(id).cloned().or_else(|| match self.expressions.get(id) {
-            Some(Expr::Matrix(rows)) => Some(rows.clone()),
-            _ => None,
-        })
+        self.matrices
+            .get(id)
+            .cloned()
+            .or_else(|| match self.expressions.get(id) {
+                Some(Expr::Matrix(rows)) => Some(rows.clone()),
+                _ => None,
+            })
     }
 }
 
 fn param_type_to_schema(param_type: &ParamType, description: &str) -> Value {
     match param_type {
-        ParamType::ExprId | ParamType::Code | ParamType::Symbol => json!({"type": "string", "description": description}),
-        ParamType::SymbolList => json!({"type": "array", "items": {"type": "string"}, "description": description}),
+        ParamType::ExprId | ParamType::Code | ParamType::Symbol => {
+            json!({"type": "string", "description": description})
+        }
+        ParamType::SymbolList => {
+            json!({"type": "array", "items": {"type": "string"}, "description": description})
+        }
         ParamType::Integer => json!({"type": "integer", "description": description}),
         ParamType::Float => json!({"type": "number", "description": description}),
-        ParamType::StringEnum(opts) => json!({"type": "string", "enum": opts, "description": description}),
-        ParamType::Matrix => json!({"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": description}),
+        ParamType::StringEnum(opts) => {
+            json!({"type": "string", "enum": opts, "description": description})
+        }
+        ParamType::Matrix => {
+            json!({"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": description})
+        }
         ParamType::Optional(inner) => param_type_to_schema(inner, description),
     }
 }
@@ -142,9 +182,19 @@ fn tool_definitions() -> Vec<Value> {
             let properties: Map<String, Value> = entry
                 .parameters
                 .iter()
-                .map(|p| (p.name.to_string(), param_type_to_schema(&p.param_type, p.description)))
+                .map(|p| {
+                    (
+                        p.name.to_string(),
+                        param_type_to_schema(&p.param_type, p.description),
+                    )
+                })
                 .collect();
-            let required: Vec<&str> = entry.parameters.iter().filter(|p| p.required).map(|p| p.name).collect();
+            let required: Vec<&str> = entry
+                .parameters
+                .iter()
+                .filter(|p| p.required)
+                .map(|p| p.name)
+                .collect();
             json!({
                 "name": format!("axioma_{}", entry.name),
                 "description": entry.description,
@@ -219,7 +269,10 @@ fn handle_request(state: &mut McpState, request: &Value) -> Value {
             let Some(name) = params.get("name").and_then(Value::as_str) else {
                 return make_error_response(id, -32602, "missing tool name");
             };
-            let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             make_result_response(id, handle_tools_call(state, name, &arguments))
         }
         _ => make_error_response(id, -32601, "method not found"),

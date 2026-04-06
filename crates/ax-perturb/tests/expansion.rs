@@ -27,12 +27,7 @@ fn zeroth_order_is_background() {
     let setup = setup_2d(&interner);
     let g = Expr::Sym(interner.get_or_intern("g"));
     let expanded = perturb_expand(&g, &setup, &interner);
-    let order0 = &expanded
-        .orders
-        .iter()
-        .find(|o| o.order == 0)
-        .unwrap()
-        .expr;
+    let order0 = &expanded.orders.iter().find(|o| o.order == 0).unwrap().expr;
     assert_eq!(*order0, Expr::Sym(interner.get_or_intern("g0")));
 }
 
@@ -42,12 +37,7 @@ fn first_order_is_epsilon_times_perturbation() {
     let setup = setup_2d(&interner);
     let g = Expr::Sym(interner.get_or_intern("g"));
     let expanded = perturb_expand(&g, &setup, &interner);
-    let order1 = &expanded
-        .orders
-        .iter()
-        .find(|o| o.order == 1)
-        .unwrap()
-        .expr;
+    let order1 = &expanded.orders.iter().find(|o| o.order == 1).unwrap().expr;
     assert_eq!(*order1, Expr::Sym(interner.get_or_intern("h")));
 }
 
@@ -58,12 +48,7 @@ fn product_expansion_order_tracking() {
     let g = Expr::Sym(interner.get_or_intern("g"));
     let gg = Expr::mul(vec![g.clone(), g.clone()]);
     let expanded = perturb_expand(&gg, &setup, &interner);
-    let order0 = &expanded
-        .orders
-        .iter()
-        .find(|o| o.order == 0)
-        .unwrap()
-        .expr;
+    let order0 = &expanded.orders.iter().find(|o| o.order == 0).unwrap().expr;
     let g0 = Expr::Sym(interner.get_or_intern("g0"));
     let expected0 = Expr::mul(vec![g0.clone(), g0.clone()]);
     assert_eq!(*order0, expected0, "order 0 of g*g should be g0*g0");
@@ -87,12 +72,7 @@ fn inverse_metric_order1_structure() {
     let interner = Interner::new();
     let setup = setup_2d(&interner);
     let expanded = perturb_inverse_metric(&setup, &interner);
-    let order1 = &expanded
-        .orders
-        .iter()
-        .find(|o| o.order == 1)
-        .unwrap()
-        .expr;
+    let order1 = &expanded.orders.iter().find(|o| o.order == 1).unwrap().expr;
     let order1_str = format!("{:?}", order1);
     assert!(
         order1_str.contains("g0inv") || order1_str.contains("Neg"),

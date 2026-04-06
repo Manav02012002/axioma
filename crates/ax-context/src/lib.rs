@@ -136,6 +136,9 @@ gr-utils = { version = "0.2" }
 "#;
         let cfg: AxiomaConfig = toml::from_str(toml_str).unwrap();
         assert!(cfg.dependencies.contains_key("my-rules"));
-        assert_eq!(cfg.dependencies["my-rules"].path.as_deref(), Some("../my-rules"));
+        assert_eq!(
+            cfg.dependencies["my-rules"].path.as_deref(),
+            Some("../my-rules")
+        );
     }
 }

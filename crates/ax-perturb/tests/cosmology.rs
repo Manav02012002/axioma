@@ -9,10 +9,18 @@ fn substitute(expr: &Expr, bindings: &HashMap<lasso::Spur, Expr>) -> Expr {
             .get(sym)
             .cloned()
             .unwrap_or_else(|| Expr::Sym(*sym)),
-        Expr::Add(terms) => Expr::add(terms.iter().map(|term| substitute(term, bindings)).collect()),
-        Expr::Mul(factors) => {
-            Expr::mul(factors.iter().map(|factor| substitute(factor, bindings)).collect())
-        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| substitute(term, bindings))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| substitute(factor, bindings))
+                .collect(),
+        ),
         Expr::Pow(base, exp) => Expr::pow(substitute(base, bindings), substitute(exp, bindings)),
         Expr::Neg(inner) => Expr::neg(substitute(inner, bindings)),
         Expr::Call(f, args) => Expr::Call(

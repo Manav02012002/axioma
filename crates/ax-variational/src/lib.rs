@@ -20,10 +20,9 @@ fn simplify_expr(expr: Expr) -> Expr {
         Expr::Mul(factors) => Expr::mul(factors.into_iter().map(simplify_expr).collect()),
         Expr::Pow(base, exp) => Expr::pow(simplify_expr(*base), simplify_expr(*exp)),
         Expr::Neg(inner) => Expr::neg(simplify_expr(*inner)),
-        Expr::Complex(re, im) => Expr::Complex(
-            Box::new(simplify_expr(*re)),
-            Box::new(simplify_expr(*im)),
-        ),
+        Expr::Complex(re, im) => {
+            Expr::Complex(Box::new(simplify_expr(*re)), Box::new(simplify_expr(*im)))
+        }
         Expr::Call(f, args) => Expr::Call(f, args.into_iter().map(simplify_expr).collect()),
         Expr::FnDef(name, params, body) => {
             Expr::FnDef(name, params, Box::new(simplify_expr(*body)))

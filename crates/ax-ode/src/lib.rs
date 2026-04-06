@@ -62,7 +62,12 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
             Box::new(simplify_expr(*re, interner)),
             Box::new(simplify_expr(*im, interner)),
         ),
-        Expr::Add(terms) => Expr::add(terms.into_iter().map(|t| simplify_expr(t, interner)).collect()),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .into_iter()
+                .map(|t| simplify_expr(t, interner))
+                .collect(),
+        ),
         Expr::Mul(factors) => {
             let simplified = factors
                 .into_iter()
@@ -70,7 +75,8 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
                 .collect::<Vec<_>>();
             let mut grouped: Vec<(Expr, usize)> = Vec::new();
             for factor in simplified {
-                if let Some((_, count)) = grouped.iter_mut().find(|(existing, _)| *existing == factor)
+                if let Some((_, count)) =
+                    grouped.iter_mut().find(|(existing, _)| *existing == factor)
                 {
                     *count += 1;
                 } else {
@@ -90,7 +96,10 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
                     .collect(),
             )
         }
-        Expr::Pow(base, exp) => Expr::pow(simplify_expr(*base, interner), simplify_expr(*exp, interner)),
+        Expr::Pow(base, exp) => Expr::pow(
+            simplify_expr(*base, interner),
+            simplify_expr(*exp, interner),
+        ),
         Expr::Neg(inner) => Expr::neg(simplify_expr(*inner, interner)),
         other => other,
     }
@@ -126,7 +135,10 @@ fn eval_expr_simple(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Ex
             }
         }
         Expr::Add(terms) => {
-            let simplified: Vec<Expr> = terms.iter().map(|t| eval_expr_simple(t, interner)).collect();
+            let simplified: Vec<Expr> = terms
+                .iter()
+                .map(|t| eval_expr_simple(t, interner))
+                .collect();
             if simplified.iter().all(|e| expr_to_rational(e).is_some()) {
                 let sum = simplified
                     .iter()
@@ -138,7 +150,10 @@ fn eval_expr_simple(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Ex
             }
         }
         Expr::Mul(factors) => {
-            let simplified: Vec<Expr> = factors.iter().map(|f| eval_expr_simple(f, interner)).collect();
+            let simplified: Vec<Expr> = factors
+                .iter()
+                .map(|f| eval_expr_simple(f, interner))
+                .collect();
             if simplified.iter().all(|e| expr_to_rational(e).is_some()) {
                 let product = simplified
                     .iter()
@@ -241,11 +256,17 @@ pub fn separate_variables(
             let spatial = Expr::add(vec![
                 Expr::mul(vec![
                     Expr::Sym(a_const),
-                    Expr::Call(sin_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                    Expr::Call(
+                        sin_sym,
+                        vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])],
+                    ),
                 ]),
                 Expr::mul(vec![
                     Expr::Sym(b_const),
-                    Expr::Call(cos_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                    Expr::Call(
+                        cos_sym,
+                        vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])],
+                    ),
                 ]),
             ]);
 
@@ -253,7 +274,10 @@ pub fn separate_variables(
             let temporal = Expr::add(vec![
                 Expr::mul(vec![
                     Expr::Sym(c_const),
-                    Expr::Call(sin_sym, vec![Expr::mul(vec![ck.clone(), Expr::Sym(temporal_var)])]),
+                    Expr::Call(
+                        sin_sym,
+                        vec![Expr::mul(vec![ck.clone(), Expr::Sym(temporal_var)])],
+                    ),
                 ]),
                 Expr::mul(vec![
                     Expr::Sym(d_const),
@@ -272,11 +296,17 @@ pub fn separate_variables(
             let spatial = Expr::add(vec![
                 Expr::mul(vec![
                     Expr::Sym(a_const),
-                    Expr::Call(sin_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                    Expr::Call(
+                        sin_sym,
+                        vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])],
+                    ),
                 ]),
                 Expr::mul(vec![
                     Expr::Sym(b_const),
-                    Expr::Call(cos_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                    Expr::Call(
+                        cos_sym,
+                        vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])],
+                    ),
                 ]),
             ]);
 
@@ -298,11 +328,17 @@ pub fn separate_variables(
             let spatial = Expr::add(vec![
                 Expr::mul(vec![
                     Expr::Sym(a_const),
-                    Expr::Call(sin_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                    Expr::Call(
+                        sin_sym,
+                        vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])],
+                    ),
                 ]),
                 Expr::mul(vec![
                     Expr::Sym(b_const),
-                    Expr::Call(cos_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])]),
+                    Expr::Call(
+                        cos_sym,
+                        vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(spatial_var)])],
+                    ),
                 ]),
             ]);
 
@@ -311,11 +347,17 @@ pub fn separate_variables(
             let temporal = Expr::add(vec![
                 Expr::mul(vec![
                     Expr::Sym(c_const),
-                    Expr::Call(sinh_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(temporal_var)])]),
+                    Expr::Call(
+                        sinh_sym,
+                        vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(temporal_var)])],
+                    ),
                 ]),
                 Expr::mul(vec![
                     Expr::Sym(d_const),
-                    Expr::Call(cosh_sym, vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(temporal_var)])]),
+                    Expr::Call(
+                        cosh_sym,
+                        vec![Expr::mul(vec![Expr::Sym(k), Expr::Sym(temporal_var)])],
+                    ),
                 ]),
             ]);
 
@@ -335,7 +377,11 @@ pub fn separate_variables(
     }
 }
 
-fn eval_numeric(expr: &Expr, bindings: &HashMap<lasso::Spur, f64>, interner: &ax_ir::Interner) -> Option<f64> {
+fn eval_numeric(
+    expr: &Expr,
+    bindings: &HashMap<lasso::Spur, f64>,
+    interner: &ax_ir::Interner,
+) -> Option<f64> {
     match expr {
         Expr::Int(n) => num_traits::ToPrimitive::to_f64(n),
         Expr::Rational(r) => Some(
@@ -346,7 +392,11 @@ fn eval_numeric(expr: &Expr, bindings: &HashMap<lasso::Spur, f64>, interner: &ax
         Expr::Complex(re, im) => {
             let re = eval_numeric(re, bindings, interner)?;
             let im = eval_numeric(im, bindings, interner)?;
-            if im == 0.0 { Some(re) } else { None }
+            if im == 0.0 {
+                Some(re)
+            } else {
+                None
+            }
         }
         Expr::Sym(sym) => bindings.get(sym).copied(),
         Expr::Add(terms) => {
@@ -363,7 +413,9 @@ fn eval_numeric(expr: &Expr, bindings: &HashMap<lasso::Spur, f64>, interner: &ax
             }
             Some(acc)
         }
-        Expr::Pow(base, exp) => Some(eval_numeric(base, bindings, interner)?.powf(eval_numeric(exp, bindings, interner)?)),
+        Expr::Pow(base, exp) => Some(
+            eval_numeric(base, bindings, interner)?.powf(eval_numeric(exp, bindings, interner)?),
+        ),
         Expr::Neg(inner) => Some(-eval_numeric(inner, bindings, interner)?),
         Expr::Call(f, args) if args.len() == 1 => {
             let arg = eval_numeric(&args[0], bindings, interner)?;
@@ -673,7 +725,11 @@ pub fn first_order_form(
 
     // If no diff() calls are present, treat the expression as the rhs of a
     // 2nd-order ODE (the most common calling convention for this function).
-    let max_order = if detected_order == 0 { 2 } else { detected_order };
+    let max_order = if detected_order == 0 {
+        2
+    } else {
+        detected_order
+    };
 
     if max_order <= 1 {
         // Already first order — nothing to do.
@@ -791,10 +847,16 @@ fn substitute_expr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
     }
     match expr {
         Expr::Add(terms) => Expr::add(
-            terms.iter().map(|t| substitute_expr(t, target, replacement)).collect(),
+            terms
+                .iter()
+                .map(|t| substitute_expr(t, target, replacement))
+                .collect(),
         ),
         Expr::Mul(factors) => Expr::mul(
-            factors.iter().map(|f| substitute_expr(f, target, replacement)).collect(),
+            factors
+                .iter()
+                .map(|f| substitute_expr(f, target, replacement))
+                .collect(),
         ),
         Expr::Pow(base, exp) => Expr::pow(
             substitute_expr(base, target, replacement),
@@ -803,7 +865,9 @@ fn substitute_expr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
         Expr::Neg(inner) => Expr::neg(substitute_expr(inner, target, replacement)),
         Expr::Call(f, args) => Expr::Call(
             *f,
-            args.iter().map(|a| substitute_expr(a, target, replacement)).collect(),
+            args.iter()
+                .map(|a| substitute_expr(a, target, replacement))
+                .collect(),
         ),
         other => other.clone(),
     }
@@ -833,7 +897,11 @@ mod tests {
         let result = rk4(&f, x, y, 0.0, 1.0, 1.0, 100, &interner);
         assert!(!result.is_empty());
         let last = result.last().unwrap();
-        assert!((last.1 - std::f64::consts::E).abs() < 0.01, "got y(1) = {}", last.1);
+        assert!(
+            (last.1 - std::f64::consts::E).abs() < 0.01,
+            "got y(1) = {}",
+            last.1
+        );
     }
 
     #[test]
@@ -876,7 +944,11 @@ mod tests {
         let ode = Expr::add(vec![d2, Expr::Sym(x)]);
 
         let system = first_order_form(&ode, x, t, &interner);
-        assert_eq!(system.len(), 2, "expected 2 first-order equations from diff form");
+        assert_eq!(
+            system.len(),
+            2,
+            "expected 2 first-order equations from diff form"
+        );
 
         let x_d1 = interner.get_or_intern("x_d1");
         assert_eq!(system[0].0, Expr::Sym(x));
@@ -893,7 +965,10 @@ mod tests {
         // diff(x, t) = -x  → max_order = 1 → return empty
         let ode = Expr::Call(diff_sym, vec![Expr::Sym(x), Expr::Sym(t)]);
         let system = first_order_form(&ode, x, t, &interner);
-        assert!(system.is_empty(), "first-order ODE should return empty system");
+        assert!(
+            system.is_empty(),
+            "first-order ODE should return empty system"
+        );
     }
 
     #[test]
@@ -958,6 +1033,10 @@ mod tests {
         let sol = separate_variables(PdeType::Hyperbolic, x, t, &Expr::Sym(c), &interner);
         assert_eq!(sol.pde_type, PdeType::Hyperbolic);
         let pp = ax_ir::pretty_print(&sol.spatial, &interner);
-        assert!(pp.contains("sin") && pp.contains("cos"), "spatial should have sin and cos: {}", pp);
+        assert!(
+            pp.contains("sin") && pp.contains("cos"),
+            "spatial should have sin and cos: {}",
+            pp
+        );
     }
 }
