@@ -375,6 +375,82 @@ fn table_integrate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) ->
                 call1("cos", Expr::Sym(var), interner),
                 interner,
             ))),
+            ("sec", Expr::Sym(s)) if *s == var => Some(call1(
+                "log",
+                call1(
+                    "abs",
+                    Expr::add(vec![
+                        call1("sec", Expr::Sym(var), interner),
+                        call1("tan", Expr::Sym(var), interner),
+                    ]),
+                    interner,
+                ),
+                interner,
+            )),
+            ("csc", Expr::Sym(s)) if *s == var => Some(Expr::neg(call1(
+                "log",
+                call1(
+                    "abs",
+                    Expr::add(vec![
+                        call1("csc", Expr::Sym(var), interner),
+                        call1("cot", Expr::Sym(var), interner),
+                    ]),
+                    interner,
+                ),
+                interner,
+            ))),
+            ("cot", Expr::Sym(s)) if *s == var => Some(call1(
+                "log",
+                call1("abs", call1("sin", Expr::Sym(var), interner), interner),
+                interner,
+            )),
+            ("sinh", Expr::Sym(s)) if *s == var => Some(call1("cosh", Expr::Sym(var), interner)),
+            ("cosh", Expr::Sym(s)) if *s == var => Some(call1("sinh", Expr::Sym(var), interner)),
+            ("tanh", Expr::Sym(s)) if *s == var => Some(call1(
+                "log",
+                call1("cosh", Expr::Sym(var), interner),
+                interner,
+            )),
+            ("asin" | "arcsin", Expr::Sym(s)) if *s == var => Some(Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Sym(var),
+                    call1("arcsin", Expr::Sym(var), interner),
+                ]),
+                Expr::pow(
+                    Expr::add(vec![
+                        Expr::one(),
+                        Expr::neg(Expr::pow(Expr::Sym(var), Expr::Int(2.into()))),
+                    ]),
+                    one_half(),
+                ),
+            ])),
+            ("acos" | "arccos", Expr::Sym(s)) if *s == var => Some(Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Sym(var),
+                    call1("arccos", Expr::Sym(var), interner),
+                ]),
+                Expr::neg(Expr::pow(
+                    Expr::add(vec![
+                        Expr::one(),
+                        Expr::neg(Expr::pow(Expr::Sym(var), Expr::Int(2.into()))),
+                    ]),
+                    one_half(),
+                )),
+            ])),
+            ("atan" | "arctan", Expr::Sym(s)) if *s == var => Some(Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Sym(var),
+                    call1("arctan", Expr::Sym(var), interner),
+                ]),
+                Expr::neg(Expr::mul(vec![
+                    one_half(),
+                    call1(
+                        "log",
+                        Expr::add(vec![Expr::one(), Expr::pow(Expr::Sym(var), Expr::Int(2.into()))]),
+                        interner,
+                    ),
+                ])),
+            ])),
             _ => None,
         },
         Expr::Mul(factors) if factors.len() == 2 => {
@@ -391,6 +467,68 @@ fn table_integrate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) ->
                 Some(Expr::mul(vec![
                     Expr::add(vec![Expr::Sym(var), Expr::neg(Expr::one())]),
                     call1("exp", Expr::Sym(var), interner),
+                ]))
+            } else if factors[0] == Expr::Sym(var)
+                && is_named_unary_call(&factors[1], "sin", var, interner)
+            {
+                Some(Expr::add(vec![
+                    call1("sin", Expr::Sym(var), interner),
+                    Expr::neg(Expr::mul(vec![
+                        Expr::Sym(var),
+                        call1("cos", Expr::Sym(var), interner),
+                    ])),
+                ]))
+            } else if factors[1] == Expr::Sym(var)
+                && is_named_unary_call(&factors[0], "sin", var, interner)
+            {
+                Some(Expr::add(vec![
+                    call1("sin", Expr::Sym(var), interner),
+                    Expr::neg(Expr::mul(vec![
+                        Expr::Sym(var),
+                        call1("cos", Expr::Sym(var), interner),
+                    ])),
+                ]))
+            } else if factors[0] == Expr::Sym(var)
+                && is_named_unary_call(&factors[1], "cos", var, interner)
+            {
+                Some(Expr::add(vec![
+                    call1("cos", Expr::Sym(var), interner),
+                    Expr::mul(vec![
+                        Expr::Sym(var),
+                        call1("sin", Expr::Sym(var), interner),
+                    ]),
+                ]))
+            } else if factors[1] == Expr::Sym(var)
+                && is_named_unary_call(&factors[0], "cos", var, interner)
+            {
+                Some(Expr::add(vec![
+                    call1("cos", Expr::Sym(var), interner),
+                    Expr::mul(vec![
+                        Expr::Sym(var),
+                        call1("sin", Expr::Sym(var), interner),
+                    ]),
+                ]))
+            } else if factors[0] == Expr::Sym(var)
+                && is_named_unary_call(&factors[1], "log", var, interner)
+            {
+                Some(Expr::mul(vec![
+                    Expr::pow(Expr::Sym(var), Expr::Int(2.into())),
+                    one_half(),
+                    Expr::add(vec![
+                        call1("log", Expr::Sym(var), interner),
+                        Expr::neg(one_half()),
+                    ]),
+                ]))
+            } else if factors[1] == Expr::Sym(var)
+                && is_named_unary_call(&factors[0], "log", var, interner)
+            {
+                Some(Expr::mul(vec![
+                    Expr::pow(Expr::Sym(var), Expr::Int(2.into())),
+                    one_half(),
+                    Expr::add(vec![
+                        call1("log", Expr::Sym(var), interner),
+                        Expr::neg(one_half()),
+                    ]),
                 ]))
             } else {
                 None
@@ -565,6 +703,9 @@ pub fn integrate(expr: &ax_ir::Expr, var: lasso::Spur, interner: &ax_ir::Interne
 
 #[cfg(test)]
 mod tests {
+    use super::integrate;
+    use ax_ir::Expr;
+
     fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
@@ -625,5 +766,57 @@ mod tests {
         let (e, int) = eval_src("integrate(1/(1 + x^2), x);");
         let pp = ax_ir::pretty_print(&e, &int);
         assert!(pp.contains("arctan") || pp.contains("atan"), "got: {}", pp);
+    }
+
+    #[test]
+    fn integrate_sec() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let sec_sym = interner.get_or_intern("sec");
+        let expr = Expr::Call(sec_sym, vec![Expr::Sym(x)]);
+        let result = integrate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("log"), "∫sec(x)dx should contain log, got: {}", pp);
+    }
+
+    #[test]
+    fn integrate_sinh() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let sinh_sym = interner.get_or_intern("sinh");
+        let expr = Expr::Call(sinh_sym, vec![Expr::Sym(x)]);
+        let result = integrate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("cosh"), "∫sinh(x)dx should be cosh(x), got: {}", pp);
+    }
+
+    #[test]
+    fn integrate_x_sin_x() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let sin_sym = interner.get_or_intern("sin");
+        let expr = Expr::mul(vec![Expr::Sym(x), Expr::Call(sin_sym, vec![Expr::Sym(x)])]);
+        let result = integrate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            pp.contains("cos") || pp.contains("sin"),
+            "∫x·sin(x)dx should be evaluated, got: {}",
+            pp
+        );
+    }
+
+    #[test]
+    fn integrate_arctan() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let atan_sym = interner.get_or_intern("arctan");
+        let expr = Expr::Call(atan_sym, vec![Expr::Sym(x)]);
+        let result = integrate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            pp.contains("arctan") || pp.contains("atan"),
+            "∫arctan(x)dx should contain arctan, got: {}",
+            pp
+        );
     }
 }

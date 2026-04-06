@@ -21,6 +21,52 @@ fn expr_from_rational(r: BigRational) -> Expr {
     }
 }
 
+fn rational_to_f64(r: &BigRational) -> f64 {
+    r.numer().to_f64().unwrap_or(0.0) / r.denom().to_f64().unwrap_or(1.0)
+}
+
+fn gcd_i64(a: i64, b: i64) -> i64 {
+    if b == 0 { a.abs() } else { gcd_i64(b, a % b) }
+}
+
+fn rationalize_f64(x: f64) -> Expr {
+    if !x.is_finite() {
+        return Expr::Float(x);
+    }
+    let nearest = x.round();
+    if (x - nearest).abs() < 1e-10 {
+        return Expr::Int((nearest as i64).into());
+    }
+
+    let rounded = (x * 1000.0).round() / 1000.0;
+    if (x - rounded).abs() < 1e-10 {
+        let numer = (rounded * 1000.0).round() as i64;
+        let denom = 1000i64;
+        let g = gcd_i64(numer.abs(), denom);
+        if denom / g == 1 {
+            Expr::Int((numer / g).into())
+        } else {
+            Expr::Rational(BigRational::new((numer / g).into(), (denom / g).into()))
+        }
+    } else {
+        Expr::Float(x)
+    }
+}
+
+fn divide_exprs_as_rational(numer: &Expr, denom: &Expr) -> BigRational {
+    let n = match numer {
+        Expr::Int(n) => BigRational::from_integer(n.clone()),
+        Expr::Rational(r) => r.clone(),
+        _ => BigRational::zero(),
+    };
+    let d = match denom {
+        Expr::Int(n) => BigRational::from_integer(n.clone()),
+        Expr::Rational(r) => r.clone(),
+        _ => BigRational::one(),
+    };
+    n / d
+}
+
 fn is_zero(expr: &Expr) -> bool {
     matches!(expr, Expr::Int(n) if n.is_zero()) || matches!(expr, Expr::Rational(r) if r.is_zero())
 }
@@ -377,6 +423,169 @@ pub fn poly_divide(
     accum.into_iter().map(expr_from_rational).collect()
 }
 
+fn solve_cubic(coeffs: &[Expr], _interner: &ax_ir::Interner) -> Vec<Expr> {
+    let a = divide_exprs_as_rational(&coeffs[2], &coeffs[3]);
+    let b = divide_exprs_as_rational(&coeffs[1], &coeffs[3]);
+    let c = divide_exprs_as_rational(&coeffs[0], &coeffs[3]);
+
+    let p = &b - &(&a * &a) / BigRational::from_integer(3.into());
+    let q = &c - &(&a * &b) / BigRational::from_integer(3.into())
+        + BigRational::from_integer(2.into()) * &(&a * &a * &a) / BigRational::from_integer(27.into());
+    let disc = -(BigRational::from_integer(4.into()) * &p * &p * &p
+        + BigRational::from_integer(27.into()) * &q * &q);
+
+    let p_f = rational_to_f64(&p);
+    let q_f = rational_to_f64(&q);
+    let a_f = rational_to_f64(&a);
+
+    if disc > BigRational::zero() {
+        let m = (-p_f / 3.0).sqrt();
+        let cos_arg = ((-q_f / 2.0) / (m * m * m)).clamp(-1.0, 1.0);
+        let theta = cos_arg.acos() / 3.0;
+        (0..3)
+            .map(|k| {
+                let t = 2.0 * m * (theta + 2.0 * std::f64::consts::PI * k as f64 / 3.0).cos();
+                let x = t - a_f / 3.0;
+                rationalize_f64(x)
+            })
+            .collect()
+    } else {
+        let inner = (q_f / 2.0).powi(2) + (p_f / 3.0).powi(3);
+        if inner >= 0.0 {
+            let sqrt_inner = inner.sqrt();
+            let u = (-q_f / 2.0 + sqrt_inner).cbrt();
+            let v = (-q_f / 2.0 - sqrt_inner).cbrt();
+            let t = u + v;
+            let x = t - a_f / 3.0;
+            vec![rationalize_f64(x)]
+        } else {
+            let m = (-p_f / 3.0).sqrt();
+            let cos_arg = (-q_f / (2.0 * m.powi(3))).clamp(-1.0, 1.0);
+            let theta = cos_arg.acos() / 3.0;
+            let t = 2.0 * m * theta.cos();
+            let x = t - a_f / 3.0;
+            vec![rationalize_f64(x)]
+        }
+    }
+}
+
+fn eval_numeric_at(expr: &Expr, var: lasso::Spur, val: f64, interner: &ax_ir::Interner) -> Option<f64> {
+    match expr {
+        Expr::Int(n) => n.to_f64(),
+        Expr::Rational(r) => Some(rational_to_f64(r)),
+        Expr::Float(v) => Some(*v),
+        Expr::Sym(s) => {
+            if *s == var {
+                Some(val)
+            } else if interner.resolve(*s) == "pi" {
+                Some(std::f64::consts::PI)
+            } else if interner.resolve(*s) == "e" {
+                Some(std::f64::consts::E)
+            } else {
+                None
+            }
+        }
+        Expr::Add(terms) => {
+            let mut acc = 0.0;
+            for term in terms {
+                acc += eval_numeric_at(term, var, val, interner)?;
+            }
+            Some(acc)
+        }
+        Expr::Mul(factors) => {
+            let mut acc = 1.0;
+            for factor in factors {
+                acc *= eval_numeric_at(factor, var, val, interner)?;
+            }
+            Some(acc)
+        }
+        Expr::Pow(base, exp) => {
+            let b = eval_numeric_at(base, var, val, interner)?;
+            let e = eval_numeric_at(exp, var, val, interner)?;
+            Some(b.powf(e))
+        }
+        Expr::Neg(inner) => Some(-eval_numeric_at(inner, var, val, interner)?),
+        Expr::Call(f, args) => {
+            let name = interner.resolve(*f);
+            match (name, args.as_slice()) {
+                ("sin", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.sin()),
+                ("cos", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.cos()),
+                ("tan", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.tan()),
+                ("exp", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.exp()),
+                ("log", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.ln()),
+                ("sqrt", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.sqrt()),
+                ("sinh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.sinh()),
+                ("cosh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.cosh()),
+                ("tanh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.tanh()),
+                ("asin" | "arcsin", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.asin()),
+                ("acos" | "arccos", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.acos()),
+                ("atan" | "arctan", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.atan()),
+                ("sec", [arg]) => Some(1.0 / eval_numeric_at(arg, var, val, interner)?.cos()),
+                ("csc", [arg]) => Some(1.0 / eval_numeric_at(arg, var, val, interner)?.sin()),
+                ("cot", [arg]) => Some(1.0 / eval_numeric_at(arg, var, val, interner)?.tan()),
+                ("asinh" | "arcsinh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.asinh()),
+                ("acosh" | "arccosh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.acosh()),
+                ("atanh" | "arctanh", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.atanh()),
+                ("abs", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.abs()),
+                ("sign" | "sgn", [arg]) => Some(eval_numeric_at(arg, var, val, interner)?.signum()),
+                ("atan2", [y, x]) => Some(
+                    eval_numeric_at(y, var, val, interner)?
+                        .atan2(eval_numeric_at(x, var, val, interner)?),
+                ),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn solve_numerical(
+    expr: &Expr,
+    var: lasso::Spur,
+    interner: &ax_ir::Interner,
+    initial_guess: f64,
+) -> Option<Expr> {
+    let mut x = initial_guess;
+    for _ in 0..100 {
+        let fx = eval_numeric_at(expr, var, x, interner)?;
+        let h = 1e-6_f64.max(x.abs() * 1e-6);
+        let dfx = (eval_numeric_at(expr, var, x + h, interner)?
+            - eval_numeric_at(expr, var, x - h, interner)?)
+            / (2.0 * h);
+        if !fx.is_finite() || !dfx.is_finite() || dfx.abs() < 1e-15 {
+            return None;
+        }
+        let x_new = x - fx / dfx;
+        if (x_new - x).abs() < 1e-12 {
+            return Some(rationalize_f64(x_new));
+        }
+        x = x_new;
+    }
+    None
+}
+
+fn same_numeric_root(lhs: &Expr, rhs: &Expr) -> bool {
+    match (lhs, rhs) {
+        (Expr::Int(a), Expr::Int(b)) => a == b,
+        (Expr::Rational(a), Expr::Rational(b)) => a == b,
+        _ => {
+            let l = match lhs {
+                Expr::Int(n) => n.to_f64().unwrap_or(f64::NAN),
+                Expr::Rational(r) => rational_to_f64(r),
+                Expr::Float(v) => *v,
+                _ => f64::NAN,
+            };
+            let r = match rhs {
+                Expr::Int(n) => n.to_f64().unwrap_or(f64::NAN),
+                Expr::Rational(rr) => rational_to_f64(rr),
+                Expr::Float(v) => *v,
+                _ => f64::NAN,
+            };
+            (l - r).abs() < 1e-8
+        }
+    }
+}
+
 fn solve_from_coeffs(
     equation: &Expr,
     coeffs: &[Expr],
@@ -437,6 +646,7 @@ fn solve_from_coeffs(
                 Expr::List(vec![x1, x2])
             }
         }
+        3 => Expr::List(solve_cubic(&coeffs, interner)),
         _ => {
             let mut current = coeffs.clone();
             let mut roots = Vec::new();
@@ -444,7 +654,7 @@ fn solve_from_coeffs(
             loop {
                 trim_coeffs(&mut current);
                 let degree = current.len().saturating_sub(1);
-                if degree <= 2 {
+                if degree <= 3 {
                     let rest = solve_from_coeffs(equation, &current, var, interner);
                     if let Expr::List(mut items) = rest {
                         roots.append(&mut items);
@@ -465,10 +675,15 @@ fn solve_from_coeffs(
                 current = quotient;
             }
 
-            Expr::Call(
-                interner.get_or_intern("solve"),
-                vec![equation.clone(), Expr::Sym(var)],
-            )
+            for guess in [-10.0, -1.0, 0.0, 1.0, 10.0] {
+                if let Some(root) = solve_numerical(equation, var, interner, guess) {
+                    if !roots.iter().any(|r| same_numeric_root(r, &root)) {
+                        roots.push(root);
+                    }
+                }
+            }
+
+            Expr::List(roots)
         }
     }
 }
@@ -608,6 +823,9 @@ pub fn solve_linear_system(
 
 #[cfg(test)]
 mod tests {
+    use super::solve;
+    use ax_ir::Expr;
+
     fn solve_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
@@ -645,5 +863,31 @@ mod tests {
         let (e, int) = solve_src("solve(x^2 - 2, x);");
         let pp = ax_ir::pretty_print(&e, &int);
         assert!(pp.contains("sqrt") || pp.contains("2"), "got: {}", pp);
+    }
+
+    #[test]
+    fn solve_cubic_simple() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let equation = Expr::add(vec![
+            Expr::pow(Expr::Sym(x), Expr::Int(3.into())),
+            Expr::neg(Expr::mul(vec![
+                Expr::Int(6.into()),
+                Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+            ])),
+            Expr::mul(vec![Expr::Int(11.into()), Expr::Sym(x)]),
+            Expr::neg(Expr::Int(6.into())),
+        ]);
+        let result = solve(&equation, x, &interner);
+        if let Expr::List(roots) = &result {
+            assert_eq!(
+                roots.len(),
+                3,
+                "x³-6x²+11x-6 should have 3 roots, got {:?}",
+                result
+            );
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
     }
 }

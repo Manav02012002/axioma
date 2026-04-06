@@ -255,9 +255,35 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
         | ("cot", 1)
         | ("sec", 1)
         | ("csc", 1)
-        | ("arcsin", 1)
-        | ("arccos", 1)
-        | ("arctan", 1) => format!("\\{name}\\!\\left({}\\right)", rendered_args[0]),
+        | ("sinh", 1)
+        | ("cosh", 1)
+        | ("tanh", 1)
+        | ("arcsin", 1) | ("asin", 1)
+        | ("arccos", 1) | ("acos", 1)
+        | ("arctan", 1) | ("atan", 1)
+        | ("arcsinh", 1) | ("asinh", 1)
+        | ("arccosh", 1) | ("acosh", 1)
+        | ("arctanh", 1) | ("atanh", 1) => {
+            let latex_name = match name {
+                "asin" | "arcsin" => "\\arcsin",
+                "acos" | "arccos" => "\\arccos",
+                "atan" | "arctan" => "\\arctan",
+                "asinh" | "arcsinh" => "\\operatorname{arcsinh}",
+                "acosh" | "arccosh" => "\\operatorname{arccosh}",
+                "atanh" | "arctanh" => "\\operatorname{arctanh}",
+                "sinh" => "\\sinh",
+                "cosh" => "\\cosh",
+                "tanh" => "\\tanh",
+                _ => unreachable!(),
+            };
+            format!("{}\\!\\left({}\\right)", latex_name, rendered_args[0])
+        }
+        ("sign", 1) | ("sgn", 1) => {
+            format!("\\operatorname{{sgn}}\\!\\left({}\\right)", rendered_args[0])
+        }
+        ("atan2", 2) => {
+            format!("\\operatorname{{atan2}}\\!\\left({}, {}\\right)", rendered_args[0], rendered_args[1])
+        }
         ("log", 1) => format!("\\log\\!\\left({}\\right)", rendered_args[0]),
         ("ln", 1) => format!("\\ln\\!\\left({}\\right)", rendered_args[0]),
         ("exp", 1) => format!("e^{{{}}}", rendered_args[0]),
@@ -540,5 +566,15 @@ mod tests {
         let expr = ax_ir::Expr::Pow(Box::new(x), Box::new(half));
         let s = to_latex(&expr, &interner);
         assert_eq!(s, "\\sqrt{x}");
+    }
+
+    #[test]
+    fn latex_sinh() {
+        let interner = ax_ir::Interner::new();
+        let sinh_sym = interner.get_or_intern("sinh");
+        let x = interner.get_or_intern("x");
+        let expr = Expr::Call(sinh_sym, vec![Expr::Sym(x)]);
+        let latex = to_latex(&expr, &interner);
+        assert!(latex.contains("\\sinh"), "expected \\sinh, got: {}", latex);
     }
 }

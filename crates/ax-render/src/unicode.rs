@@ -142,9 +142,17 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
         | ("cot", 1)
         | ("sec", 1)
         | ("csc", 1)
-        | ("arcsin", 1)
-        | ("arccos", 1)
-        | ("arctan", 1) => format!("{name}({})", rendered_args[0]),
+        | ("sinh", 1)
+        | ("cosh", 1)
+        | ("tanh", 1)
+        | ("arcsin", 1) | ("asin", 1)
+        | ("arccos", 1) | ("acos", 1)
+        | ("arctan", 1) | ("atan", 1)
+        | ("arcsinh", 1) | ("asinh", 1)
+        | ("arccosh", 1) | ("acosh", 1)
+        | ("arctanh", 1) | ("atanh", 1) => format!("{name}({})", rendered_args[0]),
+        ("sign", 1) | ("sgn", 1) => format!("sgn({})", rendered_args[0]),
+        ("atan2", 2) => format!("atan2({}, {})", rendered_args[0], rendered_args[1]),
         ("sqrt", 1) => format!("√({})", rendered_args[0]),
         ("diff", 2) => format!("∂{}/∂{}", rendered_args[0], rendered_args[1]),
         ("integrate", 2) => format!("∫ {} d{}", rendered_args[0], rendered_args[1]),

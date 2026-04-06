@@ -847,6 +847,125 @@ fn builtin_unary(name: &str, arg: Expr, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(interner.get_or_intern(name), vec![arg])
 }
 
+fn trig_special_from_rational(func: &str, r: &BigRational, interner: &ax_ir::Interner) -> Option<Expr> {
+    let two = BigRational::from_integer(2.into());
+    let mut normalized = r.clone();
+    while normalized < BigRational::zero() {
+        normalized += two.clone();
+    }
+    while normalized >= two {
+        normalized -= two.clone();
+    }
+
+    let half = BigRational::new(1.into(), 2.into());
+    let third = BigRational::new(1.into(), 3.into());
+    let quarter = BigRational::new(1.into(), 4.into());
+    let sixth = BigRational::new(1.into(), 6.into());
+    let one = BigRational::from_integer(1.into());
+    let zero = BigRational::zero();
+
+    match func {
+        "sin" => {
+            if normalized == zero || normalized == one {
+                Some(Expr::Int(0.into()))
+            } else if normalized == sixth {
+                Some(Expr::Rational(BigRational::new(1.into(), 2.into())))
+            } else if normalized == quarter {
+                Some(Expr::mul(vec![
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    builtin_unary("sqrt", Expr::Int(2.into()), interner),
+                ]))
+            } else if normalized == third {
+                Some(Expr::mul(vec![
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    builtin_unary("sqrt", Expr::Int(3.into()), interner),
+                ]))
+            } else if normalized == half {
+                Some(Expr::Int(1.into()))
+            } else {
+                None
+            }
+        }
+        "cos" => {
+            if normalized == zero {
+                Some(Expr::Int(1.into()))
+            } else if normalized == sixth {
+                Some(Expr::mul(vec![
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    builtin_unary("sqrt", Expr::Int(3.into()), interner),
+                ]))
+            } else if normalized == quarter {
+                Some(Expr::mul(vec![
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    builtin_unary("sqrt", Expr::Int(2.into()), interner),
+                ]))
+            } else if normalized == third {
+                Some(Expr::Rational(BigRational::new(1.into(), 2.into())))
+            } else if normalized == half {
+                Some(Expr::Int(0.into()))
+            } else if normalized == one {
+                Some(Expr::Int((-1i64).into()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn try_trig_special_value(func: &str, factors: &[Expr], interner: &ax_ir::Interner) -> Option<Expr> {
+    let pi_sym = interner.get_or_intern("pi");
+    let coeff = if factors.len() == 2 {
+        if let Expr::Sym(s) = &factors[1] {
+            if *s == pi_sym { factors[0].clone() } else { return None; }
+        } else if let Expr::Float(v) = &factors[1] {
+            if (*v - std::f64::consts::PI).abs() < 1e-12 {
+                factors[0].clone()
+            } else {
+                return None;
+            }
+        } else if let Expr::Sym(s) = &factors[0] {
+            if *s == pi_sym { factors[1].clone() } else { return None; }
+        } else if let Expr::Float(v) = &factors[0] {
+            if (*v - std::f64::consts::PI).abs() < 1e-12 {
+                factors[1].clone()
+            } else {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+
+    let r = match &coeff {
+        Expr::Rational(r) => r.clone(),
+        Expr::Int(n) => BigRational::from_integer(n.clone()),
+        _ => return None,
+    };
+
+    trig_special_from_rational(func, &r, interner)
+}
+
+fn try_trig_special_float(func: &str, value: f64, interner: &ax_ir::Interner) -> Option<Expr> {
+    let ratio = value / std::f64::consts::PI;
+    let specials = [
+        BigRational::from_integer(0.into()),
+        BigRational::new(1.into(), 6.into()),
+        BigRational::new(1.into(), 4.into()),
+        BigRational::new(1.into(), 3.into()),
+        BigRational::new(1.into(), 2.into()),
+        BigRational::from_integer(1.into()),
+    ];
+    for r in specials {
+        if (ratio - to_f64(&Expr::Rational(r.clone()))?).abs() < 1e-12 {
+            return trig_special_from_rational(func, &r, interner);
+        }
+    }
+    None
+}
+
 fn collapse_duplicate_sum_terms(terms: Vec<Expr>) -> Expr {
     let mut grouped: Vec<(Expr, usize)> = Vec::new();
 
@@ -1710,6 +1829,97 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
                 "exp" => Expr::mul(vec![builtin_unary("exp", arg, interner), darg]),
                 "log" => Expr::mul(vec![Expr::pow(arg, Expr::neg(Expr::one())), darg]),
                 "sqrt" => differentiate(&Expr::pow(arg, one_half()), var, interner),
+                "tan" => Expr::mul(vec![
+                    Expr::pow(builtin_unary("sec", arg, interner), Expr::Int(2.into())),
+                    darg,
+                ]),
+                "sec" => Expr::mul(vec![
+                    builtin_unary("sec", arg.clone(), interner),
+                    builtin_unary("tan", arg, interner),
+                    darg,
+                ]),
+                "csc" => Expr::neg(Expr::mul(vec![
+                    builtin_unary("csc", arg.clone(), interner),
+                    builtin_unary("cot", arg, interner),
+                    darg,
+                ])),
+                "cot" => Expr::neg(Expr::mul(vec![
+                    Expr::pow(builtin_unary("csc", arg, interner), Expr::Int(2.into())),
+                    darg,
+                ])),
+                "asin" | "arcsin" => Expr::mul(vec![
+                    Expr::pow(
+                        Expr::add(vec![
+                            Expr::one(),
+                            Expr::neg(Expr::pow(arg, Expr::Int(2.into()))),
+                        ]),
+                        Expr::Rational(BigRational::new((-1).into(), 2.into())),
+                    ),
+                    darg,
+                ]),
+                "acos" | "arccos" => Expr::neg(Expr::mul(vec![
+                    Expr::pow(
+                        Expr::add(vec![
+                            Expr::one(),
+                            Expr::neg(Expr::pow(arg, Expr::Int(2.into()))),
+                        ]),
+                        Expr::Rational(BigRational::new((-1).into(), 2.into())),
+                    ),
+                    darg,
+                ])),
+                "atan" | "arctan" => Expr::mul(vec![
+                    Expr::pow(
+                        Expr::add(vec![
+                            Expr::one(),
+                            Expr::pow(arg, Expr::Int(2.into())),
+                        ]),
+                        Expr::Int((-1).into()),
+                    ),
+                    darg,
+                ]),
+                "sinh" => Expr::mul(vec![builtin_unary("cosh", arg, interner), darg]),
+                "cosh" => Expr::mul(vec![builtin_unary("sinh", arg, interner), darg]),
+                "tanh" => Expr::mul(vec![
+                    Expr::add(vec![
+                        Expr::one(),
+                        Expr::neg(Expr::pow(
+                            builtin_unary("tanh", arg, interner),
+                            Expr::Int(2.into()),
+                        )),
+                    ]),
+                    darg,
+                ]),
+                "asinh" | "arcsinh" => Expr::mul(vec![
+                    Expr::pow(
+                        Expr::add(vec![
+                            Expr::pow(arg, Expr::Int(2.into())),
+                            Expr::one(),
+                        ]),
+                        Expr::Rational(BigRational::new((-1).into(), 2.into())),
+                    ),
+                    darg,
+                ]),
+                "acosh" | "arccosh" => Expr::mul(vec![
+                    Expr::pow(
+                        Expr::add(vec![
+                            Expr::pow(arg, Expr::Int(2.into())),
+                            Expr::neg(Expr::one()),
+                        ]),
+                        Expr::Rational(BigRational::new((-1).into(), 2.into())),
+                    ),
+                    darg,
+                ]),
+                "atanh" | "arctanh" => Expr::mul(vec![
+                    Expr::pow(
+                        Expr::add(vec![
+                            Expr::one(),
+                            Expr::neg(Expr::pow(arg, Expr::Int(2.into()))),
+                        ]),
+                        Expr::Int((-1).into()),
+                    ),
+                    darg,
+                ]),
+                "abs" => Expr::mul(vec![builtin_unary("sign", arg, interner), darg]),
                 _ => diff_call(expr, var, interner),
             }
         }
@@ -1815,7 +2025,21 @@ fn builtin_call(
         "sin" => {
             if args.len() == 1 {
                 match &args[0] {
-                    Expr::Float(v) => Expr::Float(v.sin()),
+                    Expr::Float(v) => {
+                        if let Some(special) = try_trig_special_float("sin", *v, interner) {
+                            special
+                        } else {
+                            Expr::Float(v.sin())
+                        }
+                    }
+                    Expr::Mul(factors) if factors.len() == 2 => {
+                        if let Some(special) = try_trig_special_value("sin", factors, interner) {
+                            special
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    Expr::Sym(s) if interner.resolve(*s) == "pi" => Expr::Int(0.into()),
                     Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
@@ -1826,7 +2050,21 @@ fn builtin_call(
         "cos" => {
             if args.len() == 1 {
                 match &args[0] {
-                    Expr::Float(v) => Expr::Float(v.cos()),
+                    Expr::Float(v) => {
+                        if let Some(special) = try_trig_special_float("cos", *v, interner) {
+                            special
+                        } else {
+                            Expr::Float(v.cos())
+                        }
+                    }
+                    Expr::Mul(factors) if factors.len() == 2 => {
+                        if let Some(special) = try_trig_special_value("cos", factors, interner) {
+                            special
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    Expr::Sym(s) if interner.resolve(*s) == "pi" => Expr::Int((-1i64).into()),
                     Expr::Int(n) if n.is_zero() => Expr::Int(1.into()),
                     _ => Expr::Call(f, args),
                 }
@@ -1837,6 +2075,11 @@ fn builtin_call(
         "exp" => {
             if args.len() == 1 {
                 match &args[0] {
+                    Expr::Call(inner_f, inner_args)
+                        if interner.resolve(*inner_f) == "log" && inner_args.len() == 1 =>
+                    {
+                        inner_args[0].clone()
+                    }
                     Expr::Float(v) => Expr::Float(v.exp()),
                     Expr::Int(n) if n.is_zero() => Expr::Int(1.into()),
                     Expr::Complex(re, im) => {
@@ -1859,34 +2102,194 @@ fn builtin_call(
         "log" => {
             if args.len() == 1 {
                 match &args[0] {
+                    Expr::Call(inner_f, inner_args)
+                        if interner.resolve(*inner_f) == "exp" && inner_args.len() == 1 =>
+                    {
+                        inner_args[0].clone()
+                    }
+                    Expr::Pow(base, exp) => {
+                        let base_is_e =
+                            matches!(base.as_ref(), Expr::Sym(sym) if interner.resolve(*sym) == "e");
+                        if !base_is_e {
+                            Expr::mul(vec![
+                                exp.as_ref().clone(),
+                                builtin_unary("log", base.as_ref().clone(), interner),
+                            ])
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
                     Expr::Float(v) if *v > 0.0 => Expr::Float(v.ln()),
                     Expr::Int(n) if n.is_one() => Expr::Int(0.into()),
+                    Expr::Float(v) if *v == 1.0 => Expr::Int(0.into()),
                     _ => Expr::Call(f, args),
                 }
             } else {
                 Expr::Call(f, args)
             }
         }
+        "sinh" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => Expr::Float(v.sinh()),
+                    Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "cosh" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => Expr::Float(v.cosh()),
+                    Expr::Int(n) if n.is_zero() => Expr::Int(1.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "tanh" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => Expr::Float(v.tanh()),
+                    Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "asin" | "arcsin" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) if *v >= -1.0 && *v <= 1.0 => Expr::Float(v.asin()),
+                    Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
+                    Expr::Int(n) if *n == 1.into() => Expr::Float(std::f64::consts::FRAC_PI_2),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "acos" | "arccos" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) if *v >= -1.0 && *v <= 1.0 => Expr::Float(v.acos()),
+                    Expr::Int(n) if n.is_zero() => Expr::Float(std::f64::consts::FRAC_PI_2),
+                    Expr::Int(n) if *n == 1.into() => Expr::Int(0.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "atan" | "arctan" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => Expr::Float(v.atan()),
+                    Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "atan2" => {
+            if args.len() == 2 {
+                if let (Some(y), Some(x_val)) = (to_f64(&args[0]), to_f64(&args[1])) {
+                    Expr::Float(y.atan2(x_val))
+                } else { Expr::Call(f, args) }
+            } else { Expr::Call(f, args) }
+        }
+        "sec" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => {
+                        let c = v.cos();
+                        if c.abs() < 1e-15 { Expr::Call(f, args) }
+                        else { Expr::Float(1.0 / c) }
+                    }
+                    Expr::Int(n) if n.is_zero() => Expr::Int(1.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "csc" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => {
+                        let s = v.sin();
+                        if s.abs() < 1e-15 { Expr::Call(f, args) }
+                        else { Expr::Float(1.0 / s) }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "cot" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => {
+                        let t = v.tan();
+                        if t.abs() < 1e-15 { Expr::Call(f, args) }
+                        else { Expr::Float(1.0 / t) }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "asinh" | "arcsinh" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => Expr::Float(v.asinh()),
+                    Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "acosh" | "arccosh" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) if *v >= 1.0 => Expr::Float(v.acosh()),
+                    Expr::Int(n) if *n == 1.into() => Expr::Int(0.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "atanh" | "arctanh" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) if v.abs() < 1.0 => Expr::Float(v.atanh()),
+                    Expr::Int(n) if n.is_zero() => Expr::Int(0.into()),
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
+        "sign" | "sgn" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Float(v) => {
+                        if *v > 0.0 { Expr::Int(1.into()) }
+                        else if *v < 0.0 { Expr::Int((-1i64).into()) }
+                        else { Expr::Int(0.into()) }
+                    }
+                    Expr::Int(n) => {
+                        use num_traits::Signed;
+                        if n.is_positive() { Expr::Int(1.into()) }
+                        else if n.is_negative() { Expr::Int((-1i64).into()) }
+                        else { Expr::Int(0.into()) }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else { Expr::Call(f, args) }
+        }
         "sqrt" => {
             if args.len() == 1 {
                 match &args[0] {
                     Expr::Float(v) if *v >= 0.0 => Expr::Float(v.sqrt()),
-                    Expr::Int(n) => {
-                        if let Some(root) = perfect_square_root(n) {
-                            Expr::Int(root)
-                        } else {
-                            Expr::pow(args[0].clone(), one_half())
-                        }
-                    }
                     Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if *n == 2.into()) => {
                         match base.as_ref() {
                             Expr::Sym(sym) if has_assumption(env, *sym, &Assumption::Positive) => {
                                 Expr::Sym(*sym)
                             }
-                            Expr::Sym(sym) if has_assumption(env, *sym, &Assumption::Real) => {
-                                Expr::Call(interner.get_or_intern("abs"), vec![Expr::Sym(*sym)])
-                            }
-                            _ => Expr::pow(args[0].clone(), one_half()),
+                            _ => builtin_unary("abs", base.as_ref().clone(), interner),
+                        }
+                    }
+                    Expr::Int(n) => {
+                        if let Some(root) = perfect_square_root(n) {
+                            Expr::Int(root)
+                        } else {
+                            Expr::pow(args[0].clone(), one_half())
                         }
                     }
                     _ => Expr::pow(args[0].clone(), one_half()),
@@ -4315,6 +4718,95 @@ mod tests {
     }
 
     #[test]
+    fn numerical_sinh() {
+        let interner = ax_ir::Interner::new();
+        let sinh_sym = interner.get_or_intern("sinh");
+        let result = eval(
+            &Expr::Call(sinh_sym, vec![Expr::Float(1.0)]),
+            &Env::new(),
+            &interner,
+        );
+        if let Expr::Float(v) = result {
+            assert!((v - 1.0_f64.sinh()).abs() < 1e-10);
+        } else {
+            panic!("expected Float");
+        }
+    }
+
+    #[test]
+    fn numerical_arctan() {
+        let interner = ax_ir::Interner::new();
+        let atan_sym = interner.get_or_intern("atan");
+        let result = eval(
+            &Expr::Call(atan_sym, vec![Expr::Float(1.0)]),
+            &Env::new(),
+            &interner,
+        );
+        if let Expr::Float(v) = result {
+            assert!((v - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
+        } else {
+            panic!("expected Float");
+        }
+    }
+
+    #[test]
+    fn log_exp_cancel() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let log_sym = interner.get_or_intern("log");
+        let exp_sym = interner.get_or_intern("exp");
+        let expr = Expr::Call(log_sym, vec![Expr::Call(exp_sym, vec![Expr::Sym(x)])]);
+        let result = eval(&expr, &Env::new(), &interner);
+        assert_eq!(result, Expr::Sym(x));
+    }
+
+    #[test]
+    fn exp_log_cancel() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let log_sym = interner.get_or_intern("log");
+        let exp_sym = interner.get_or_intern("exp");
+        let expr = Expr::Call(exp_sym, vec![Expr::Call(log_sym, vec![Expr::Sym(x)])]);
+        let result = eval(&expr, &Env::new(), &interner);
+        assert_eq!(result, Expr::Sym(x));
+    }
+
+    #[test]
+    fn sqrt_perfect_square() {
+        let interner = ax_ir::Interner::new();
+        let sqrt_sym = interner.get_or_intern("sqrt");
+        let expr = Expr::Call(sqrt_sym, vec![Expr::Int(49.into())]);
+        let result = eval(&expr, &Env::new(), &interner);
+        assert_eq!(result, Expr::Int(7.into()));
+    }
+
+    #[test]
+    fn sin_pi_over_6() {
+        let interner = ax_ir::Interner::new();
+        let sin_sym = interner.get_or_intern("sin");
+        let pi_sym = interner.get_or_intern("pi");
+        let expr = Expr::Call(
+            sin_sym,
+            vec![Expr::mul(vec![
+                Expr::Rational(BigRational::new(1.into(), 6.into())),
+                Expr::Sym(pi_sym),
+            ])],
+        );
+        let result = eval(&expr, &Env::new(), &interner);
+        assert_eq!(result, Expr::Rational(BigRational::new(1.into(), 2.into())));
+    }
+
+    #[test]
+    fn cos_pi() {
+        let interner = ax_ir::Interner::new();
+        let cos_sym = interner.get_or_intern("cos");
+        let pi_sym = interner.get_or_intern("pi");
+        let expr = Expr::Call(cos_sym, vec![Expr::Sym(pi_sym)]);
+        let result = eval(&expr, &Env::new(), &interner);
+        assert_eq!(result, Expr::Int((-1i64).into()));
+    }
+
+    #[test]
     fn eval_arithmetic() {
         let (e, _) = eval_src("2 + 3 * 4;");
         assert_eq!(e, ax_ir::Expr::Int(14.into()));
@@ -4441,6 +4933,50 @@ mod tests {
         let (e, int) = eval_src("diff(sin(x), x);");
         let pp = ax_ir::pretty_print(&e, &int);
         assert!(pp.contains("cos"), "got: {}", pp);
+    }
+
+    #[test]
+    fn diff_tan() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let tan_sym = interner.get_or_intern("tan");
+        let expr = Expr::Call(tan_sym, vec![Expr::Sym(x)]);
+        let result = differentiate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("sec"), "d/dx tan(x) should contain sec, got: {}", pp);
+    }
+
+    #[test]
+    fn diff_sinh() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let sinh_sym = interner.get_or_intern("sinh");
+        let expr = Expr::Call(sinh_sym, vec![Expr::Sym(x)]);
+        let result = differentiate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("cosh"), "d/dx sinh(x) should be cosh(x), got: {}", pp);
+    }
+
+    #[test]
+    fn diff_arctan() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let atan_sym = interner.get_or_intern("atan");
+        let expr = Expr::Call(atan_sym, vec![Expr::Sym(x)]);
+        let result = differentiate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(!pp.contains("diff"), "d/dx atan(x) should not be unevaluated, got: {}", pp);
+    }
+
+    #[test]
+    fn diff_chain_tan_x_squared() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let tan_sym = interner.get_or_intern("tan");
+        let expr = Expr::Call(tan_sym, vec![Expr::pow(Expr::Sym(x), Expr::Int(2.into()))]);
+        let result = differentiate(&expr, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("sec"), "chain rule should produce sec²(x²) · 2x, got: {}", pp);
     }
 
     #[test]
