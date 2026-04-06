@@ -10,7 +10,7 @@ IR, evaluator, tensor engine, renderers, and standard library.
 ## Install
 
 ```bash
-cargo install --git https://github.com/manavm12/axioma --bin axioma
+cargo install --git https://github.com/Manav02012002/axioma --bin axioma
 ```
 
 Then:
