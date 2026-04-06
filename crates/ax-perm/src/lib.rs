@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 /// A permutation in images notation. p[i] = image of i under the permutation.
 /// Indices are 0-based internally. The identity permutation of degree n is [0, 1, 2, ..., n-1].
@@ -135,6 +137,74 @@ pub fn all_orbits(generators: &[Perm], n: usize) -> Vec<usize> {
     labels
 }
 
+fn use_parallel(n: usize, generators: &[Perm]) -> bool {
+    n >= 20 && generators.len() >= 4
+}
+
+/// Parallel orbit computation. Falls back to `orbit` for small inputs.
+pub fn orbit_parallel(point: usize, generators: &[Perm], n: usize) -> Vec<usize> {
+    if !use_parallel(n, generators) {
+        return orbit(point, generators);
+    }
+    if point >= n {
+        return Vec::new();
+    }
+
+    let extended = extended_generators(generators);
+    let seen: Vec<AtomicBool> = (0..n).map(|_| AtomicBool::new(false)).collect();
+    seen[point].store(true, AtomicOrdering::Relaxed);
+    let mut frontier = vec![point];
+
+    while !frontier.is_empty() {
+        let mut next = frontier
+            .par_iter()
+            .flat_map_iter(|current| {
+                extended.iter().filter_map(|generator| {
+                    let candidate = on_points(*current, generator);
+                    (candidate < n
+                        && seen[candidate]
+                            .compare_exchange(
+                                false,
+                                true,
+                                AtomicOrdering::AcqRel,
+                                AtomicOrdering::Acquire,
+                            )
+                            .is_ok())
+                    .then_some(candidate)
+                })
+            })
+            .collect::<Vec<_>>();
+        next.sort_unstable();
+        next.dedup();
+        frontier = next;
+    }
+
+    seen.iter()
+        .enumerate()
+        .filter_map(|(i, reached)| reached.load(AtomicOrdering::Acquire).then_some(i))
+        .collect()
+}
+
+/// Parallel all-orbits computation using `orbit_parallel` for each component.
+pub fn all_orbits_parallel(generators: &[Perm], n: usize) -> Vec<usize> {
+    if !use_parallel(n, generators) {
+        return all_orbits(generators, n);
+    }
+
+    let mut labels = vec![usize::MAX; n];
+    let mut orbit_id = 0usize;
+    for point in 0..n {
+        if labels[point] != usize::MAX {
+            continue;
+        }
+        for member in orbit_parallel(point, generators, n) {
+            labels[member] = orbit_id;
+        }
+        orbit_id += 1;
+    }
+    labels
+}
+
 /// Compute a Schreier vector for `point` under `generators`.
 /// Returns (nu, w) where:
 /// - nu[i] is the point that maps to i on the path from `point` to i
@@ -220,9 +290,7 @@ pub fn stabilizer(points: &[usize], generators: &[Perm], n: usize) -> Vec<Perm> 
     let base = points[0];
     let schreier_gens = extended_generators(generators);
     let (nu, w) = schreier_vector(base, &schreier_gens, n);
-    let orbit_points: Vec<usize> = (0..n)
-        .filter(|point| nu[*point] != usize::MAX)
-        .collect();
+    let orbit_points: Vec<usize> = (0..n).filter(|point| nu[*point] != usize::MAX).collect();
 
     for orbit_point in orbit_points {
         let trace_to_orbit = trace_schreier(orbit_point, base, &nu, &w, &schreier_gens, n);
@@ -236,9 +304,69 @@ pub fn stabilizer(points: &[usize], generators: &[Perm], n: usize) -> Vec<Perm> 
                 &product(&trace_to_orbit, generator),
                 &inverse(&trace_to_moved),
             );
-            if fixes_all(points, &schreier_gen) && !is_identity(&schreier_gen) && !contains_perm(&stabilizer_gens, &schreier_gen) {
+            if fixes_all(points, &schreier_gen)
+                && !is_identity(&schreier_gen)
+                && !contains_perm(&stabilizer_gens, &schreier_gen)
+            {
                 stabilizer_gens.push(schreier_gen);
             }
+        }
+    }
+
+    stabilizer_gens
+}
+
+/// Parallel stabilizer generator construction. Falls back to `stabilizer` for small inputs.
+pub fn stabilizer_parallel(points: &[usize], generators: &[Perm], n: usize) -> Vec<Perm> {
+    if !use_parallel(n, generators) {
+        return stabilizer(points, generators, n);
+    }
+
+    let mut stabilizer_gens: Vec<Perm> = generators
+        .par_iter()
+        .filter(|generator| fixes_all(points, generator))
+        .cloned()
+        .collect();
+    stabilizer_gens.sort();
+    stabilizer_gens.dedup();
+
+    if points.is_empty() {
+        return stabilizer_gens;
+    }
+
+    let base = points[0];
+    let schreier_gens = extended_generators(generators);
+    let (nu, w) = schreier_vector(base, &schreier_gens, n);
+    let orbit_points: Vec<usize> = (0..n).filter(|point| nu[*point] != usize::MAX).collect();
+
+    let mut candidates: Vec<Perm> = orbit_points
+        .par_iter()
+        .flat_map_iter(|orbit_point| {
+            let trace_to_orbit = trace_schreier(*orbit_point, base, &nu, &w, &schreier_gens, n);
+            generators
+                .iter()
+                .filter_map(|generator| {
+                    let moved = on_points(*orbit_point, generator);
+                    if moved >= n || nu[moved] == usize::MAX {
+                        return None;
+                    }
+                    let trace_to_moved = trace_schreier(moved, base, &nu, &w, &schreier_gens, n);
+                    let schreier_gen = product(
+                        &product(&trace_to_orbit, generator),
+                        &inverse(&trace_to_moved),
+                    );
+                    (fixes_all(points, &schreier_gen) && !is_identity(&schreier_gen))
+                        .then_some(schreier_gen)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    candidates.sort();
+    candidates.dedup();
+    for candidate in candidates {
+        if !contains_perm(&stabilizer_gens, &candidate) {
+            stabilizer_gens.push(candidate);
         }
     }
 
@@ -255,7 +383,11 @@ pub fn sign(p: &[usize]) -> i32 {
             }
         }
     }
-    if inversions % 2 == 0 { 1 } else { -1 }
+    if inversions % 2 == 0 {
+        1
+    } else {
+        -1
+    }
 }
 
 /// Create a transposition: swaps positions i and j, fixes everything else.
@@ -330,11 +462,7 @@ fn sift(perm: &[usize], base: &[usize], generators: &[Perm], n: usize) -> bool {
 ///
 /// Input: initial base hint (can be empty), generators, degree n.
 /// Output: SGS with a valid base and strong generating set.
-pub fn schreier_sims(
-    base_hint: &[usize],
-    generators: &[Perm],
-    n: usize,
-) -> SGS {
+pub fn schreier_sims(base_hint: &[usize], generators: &[Perm], n: usize) -> SGS {
     if generators.is_empty() {
         return SGS {
             base: vec![],
@@ -380,8 +508,7 @@ pub fn schreier_sims(
                 for generator in &stab_gens {
                     let gen_gamma = on_points(gamma, generator);
                     let trace_gamma = trace_schreier(gamma, bp, &nu, &w, &schreier_gens, n);
-                    let trace_gen_gamma =
-                        trace_schreier(gen_gamma, bp, &nu, &w, &schreier_gens, n);
+                    let trace_gen_gamma = trace_schreier(gen_gamma, bp, &nu, &w, &schreier_gens, n);
 
                     let schreier_gen = product(
                         &product(&inverse(&trace_gen_gamma), generator),
@@ -395,6 +522,96 @@ pub fn schreier_sims(
                         strong_gens.push(schreier_gen);
                         changed = true;
                     }
+                }
+            }
+        }
+    }
+
+    strong_gens = generated_group(&strong_gens, n)
+        .into_iter()
+        .filter(|g| !is_identity(g))
+        .collect();
+
+    SGS {
+        base,
+        generators: strong_gens,
+        n,
+    }
+}
+
+/// Parallel Schreier-Sims construction. Level ordering remains sequential; orbit and
+/// Schreier generator candidate generation are parallelized within each level.
+pub fn schreier_sims_parallel(generators: &[Perm], n: usize) -> SGS {
+    if !use_parallel(n, generators) {
+        return schreier_sims(&[], generators, n);
+    }
+    if generators.is_empty() {
+        return SGS {
+            base: vec![],
+            generators: vec![],
+            n,
+        };
+    }
+
+    let mut base: Vec<usize> = Vec::new();
+    let mut strong_gens: Vec<Perm> = generators.to_vec();
+
+    for generator in generators {
+        for (i, &img) in generator.iter().enumerate() {
+            if img != i && !base.contains(&i) {
+                base.push(i);
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    base.retain(|x| seen.insert(*x));
+
+    let mut changed = true;
+    let mut iteration = 0usize;
+    let max_iterations = 100usize;
+
+    while changed && iteration < max_iterations {
+        changed = false;
+        iteration += 1;
+
+        for level in (0..base.len()).rev() {
+            let stab_gens = stabilizer_generators_for_level(&base, level, &strong_gens);
+            if stab_gens.is_empty() {
+                continue;
+            }
+
+            let bp = base[level];
+            let schreier_gens = extended_generators(&stab_gens);
+            let (nu, w) = schreier_vector(bp, &schreier_gens, n);
+            let orb = orbit_parallel(bp, &stab_gens, n);
+
+            let mut candidates: Vec<Perm> = orb
+                .par_iter()
+                .flat_map_iter(|gamma| {
+                    stab_gens.iter().filter_map(|generator| {
+                        let gen_gamma = on_points(*gamma, generator);
+                        let trace_gamma = trace_schreier(*gamma, bp, &nu, &w, &schreier_gens, n);
+                        let trace_gen_gamma =
+                            trace_schreier(gen_gamma, bp, &nu, &w, &schreier_gens, n);
+
+                        let schreier_gen = product(
+                            &product(&inverse(&trace_gen_gamma), generator),
+                            &trace_gamma,
+                        );
+                        (!is_identity(&schreier_gen)).then_some(schreier_gen)
+                    })
+                })
+                .collect();
+            candidates.sort();
+            candidates.dedup();
+
+            for candidate in candidates {
+                if !contains_perm(&strong_gens, &candidate)
+                    && !sift(&candidate, &base, &strong_gens, n)
+                {
+                    strong_gens.push(candidate);
+                    changed = true;
                 }
             }
         }
@@ -463,11 +680,7 @@ fn choose_better(candidate: Perm, current_best: Option<Perm>, slots: &[usize]) -
 /// Given perm and a group (base, generators), find the unique coset representative
 /// cr such that perm = cr * h for some h in the group.
 /// The representative is the lexicographically smallest element in the coset.
-pub fn coset_representative(
-    perm: &[usize],
-    sgs: &SGS,
-    free_indices: &[usize],
-) -> Perm {
+pub fn coset_representative(perm: &[usize], sgs: &SGS, free_indices: &[usize]) -> Perm {
     coset_rep(perm, sgs.n, &sgs.base, &sgs.generators, free_indices)
 }
 
@@ -489,11 +702,7 @@ fn has_sign_slots(n: usize) -> bool {
 /// Also handles a sign slot: the last two elements of the permutation
 /// encode the sign. If they're swapped relative to [n, n+1], the expression
 /// picks up a minus sign.
-pub fn canonical_perm(
-    perm: &[usize],
-    sgs: &SGS,
-    dummy_pairs: &[(usize, usize)],
-) -> (Perm, i32) {
+pub fn canonical_perm(perm: &[usize], sgs: &SGS, dummy_pairs: &[(usize, usize)]) -> (Perm, i32) {
     canonical_perm_ext(perm, sgs, dummy_pairs, &[], 1)
 }
 
@@ -567,6 +776,101 @@ pub fn coset_rep(
     }
 
     recurse(perm, n, base, generators, free_slots, 0)
+}
+
+fn coset_rep_parallel(
+    perm: &[usize],
+    n: usize,
+    base: &[usize],
+    generators: &[Perm],
+    free_slots: &[usize],
+) -> Perm {
+    if generators.is_empty() || free_slots.is_empty() {
+        return perm.to_vec();
+    }
+
+    fn recurse(
+        current: &[usize],
+        n: usize,
+        base: &[usize],
+        generators: &[Perm],
+        free_slots: &[usize],
+        level: usize,
+    ) -> Perm {
+        if level >= base.len() {
+            return current.to_vec();
+        }
+
+        let bp = base[level];
+        let level_gens = stabilizer_generators_for_level(base, level, generators);
+        if level_gens.is_empty() {
+            return recurse(current, n, base, generators, free_slots, level + 1);
+        }
+
+        let orbit_points = orbit_parallel(bp, &level_gens, n);
+        let min_image = orbit_points
+            .iter()
+            .map(|&pt| current[pt])
+            .min()
+            .unwrap_or(current[bp]);
+        let candidates: Vec<usize> = orbit_points
+            .into_iter()
+            .filter(|pt| current[*pt] == min_image)
+            .collect();
+        let ext_gens = extended_generators(&level_gens);
+        let (nu, w) = schreier_vector(bp, &ext_gens, n);
+
+        if candidates.len() > 4 {
+            candidates
+                .par_iter()
+                .map(|pt| {
+                    let rep = trace_schreier(*pt, bp, &nu, &w, &ext_gens, n);
+                    let next = apply_group_action(current, &rep);
+                    recurse(&next, n, base, generators, free_slots, level + 1)
+                })
+                .reduce_with(|a, b| choose_better(a, Some(b), free_slots).unwrap())
+                .unwrap_or_else(|| current.to_vec())
+        } else {
+            let mut best: Option<Perm> = None;
+            for pt in candidates {
+                let rep = trace_schreier(pt, bp, &nu, &w, &ext_gens, n);
+                let next = apply_group_action(current, &rep);
+                let candidate = recurse(&next, n, base, generators, free_slots, level + 1);
+                best = choose_better(candidate, best, free_slots);
+            }
+            best.unwrap_or_else(|| current.to_vec())
+        }
+    }
+
+    recurse(perm, n, base, generators, free_slots, 0)
+}
+
+/// Parallel canonical representative over a symmetry generating set and free slots.
+pub fn canonical_perm_parallel(
+    tensor_perm: &[usize],
+    generating_set: &[Perm],
+    freeslots: &[usize],
+    n: usize,
+) -> (Perm, i32) {
+    if !use_parallel(n, generating_set) {
+        let sgs = schreier_sims(&[], generating_set, n);
+        let result = coset_rep(tensor_perm, n, &sgs.base, &sgs.generators, freeslots);
+        let sign = if has_sign_slots(n) && result[n - 2] != n - 2 {
+            -1
+        } else {
+            1
+        };
+        return (result, sign);
+    }
+
+    let sgs = schreier_sims_parallel(generating_set, n);
+    let result = coset_rep_parallel(tensor_perm, n, &sgs.base, &sgs.generators, freeslots);
+    let sign = if has_sign_slots(n) && result[n - 2] != n - 2 {
+        -1
+    } else {
+        1
+    };
+    (result, sign)
 }
 
 /// Compute generators for the dummy index symmetry group.
@@ -649,17 +953,16 @@ fn project_dummy_sets_to_labels(perm: &[usize], dummy_sets: &[DummySet]) -> Vec<
     dummy_sets
         .iter()
         .map(|set| DummySet {
-            pairs: set
-                .pairs
-                .iter()
-                .map(|&(a, b)| (perm[a], perm[b]))
-                .collect(),
+            pairs: set.pairs.iter().map(|&(a, b)| (perm[a], perm[b])).collect(),
             metric_symmetry: set.metric_symmetry,
         })
         .collect()
 }
 
-fn project_repeated_sets_to_labels(perm: &[usize], repeated_sets: &[RepeatedSet]) -> Vec<RepeatedSet> {
+fn project_repeated_sets_to_labels(
+    perm: &[usize],
+    repeated_sets: &[RepeatedSet],
+) -> Vec<RepeatedSet> {
     repeated_sets
         .iter()
         .map(|set| RepeatedSet {
@@ -729,6 +1032,99 @@ pub fn double_coset_rep(
     }
 
     (best.unwrap_or_else(|| perm.to_vec()), false)
+}
+
+/// Parallel representative for a double coset generated directly by left and right
+/// generator sets. Returns sign 0 when opposite signs produce the same body.
+pub fn double_coset_rep_parallel(
+    perm: &[usize],
+    sym_generators: &[Perm],
+    dummy_generators: &[Perm],
+    n: usize,
+) -> (Perm, i32) {
+    if !use_parallel(n, sym_generators) && !use_parallel(n, dummy_generators) {
+        let s_group = if sym_generators.is_empty() {
+            vec![identity(n)]
+        } else {
+            generated_group(sym_generators, n)
+        };
+        let d_group = if dummy_generators.is_empty() {
+            vec![identity(n)]
+        } else {
+            generated_group(dummy_generators, n)
+        };
+        return double_coset_rep_from_groups(perm, &s_group, &d_group, n);
+    }
+
+    let s_group = if sym_generators.is_empty() {
+        vec![identity(n)]
+    } else {
+        generated_group(sym_generators, n)
+    };
+    let d_group = if dummy_generators.is_empty() {
+        vec![identity(n)]
+    } else {
+        generated_group(dummy_generators, n)
+    };
+
+    let candidates: Vec<Perm> = s_group
+        .par_iter()
+        .flat_map_iter(|s| {
+            let left = apply_group_action(perm, s);
+            d_group.iter().map(move |d| apply_label_action(&left, d))
+        })
+        .collect();
+
+    choose_best_signed_candidate(candidates, perm, n)
+}
+
+fn double_coset_rep_from_groups(
+    perm: &[usize],
+    s_group: &[Perm],
+    d_group: &[Perm],
+    n: usize,
+) -> (Perm, i32) {
+    let candidates = s_group
+        .iter()
+        .flat_map(|s| {
+            let left = apply_group_action(perm, s);
+            d_group.iter().map(move |d| apply_label_action(&left, d))
+        })
+        .collect();
+    choose_best_signed_candidate(candidates, perm, n)
+}
+
+fn choose_best_signed_candidate(candidates: Vec<Perm>, perm: &[usize], n: usize) -> (Perm, i32) {
+    fn body_key(perm: &[usize], n: usize) -> Vec<usize> {
+        if has_sign_slots(n) {
+            perm[..(n - 2)].to_vec()
+        } else {
+            perm.to_vec()
+        }
+    }
+
+    let mut best: Option<Perm> = None;
+    let mut sign_by_body: HashMap<Vec<usize>, i32> = HashMap::new();
+    for candidate in candidates {
+        let body = body_key(&candidate, n);
+        let sign = perm_sign_state(&candidate, n);
+        if let Some(prev_sign) = sign_by_body.get(&body) {
+            if *prev_sign != sign {
+                return (candidate, 0);
+            }
+        } else {
+            sign_by_body.insert(body, sign);
+        }
+        best = choose_better(candidate, best, &[]);
+    }
+
+    let result = best.unwrap_or_else(|| perm.to_vec());
+    let sign = if has_sign_slots(n) && result[n - 2] != n - 2 {
+        -1
+    } else {
+        1
+    };
+    (result, sign)
 }
 
 /// Extended canonical permutation with full dummy handling.
@@ -862,7 +1258,8 @@ mod tests {
             };
             for s in s_group {
                 let candidate = apply_group_action(perm, &s);
-                if compare_on_free_indices(&candidate, &best, &free_slots) == std::cmp::Ordering::Less
+                if compare_on_free_indices(&candidate, &best, &free_slots)
+                    == std::cmp::Ordering::Less
                 {
                     best = candidate;
                 }
@@ -913,7 +1310,11 @@ mod tests {
         }
 
         let best = best.unwrap_or_else(|| after_free.clone());
-        let sign = if has_sign_slots(n) && best[n - 2] != n - 2 { -1 } else { 1 };
+        let sign = if has_sign_slots(n) && best[n - 2] != n - 2 {
+            -1
+        } else {
+            1
+        };
         (best, sign)
     }
 
@@ -926,10 +1327,66 @@ mod tests {
         let actual = canonical_perm_with_sets(perm, sgs, dummy_sets, repeated_sets);
         let oracle = brute_force_double_coset(perm, sgs, dummy_sets, repeated_sets);
         assert_eq!(
-            actual,
-            oracle,
+            actual, oracle,
             "perm={perm:?} dummy_sets={dummy_sets:?} repeated_sets={repeated_sets:?}"
         );
+    }
+
+    fn fixed_large_generators(n: usize) -> Vec<Perm> {
+        vec![
+            transposition(n, 0, 1),
+            transposition(n, 1, 2),
+            transposition(n, 3, 4),
+            transposition(n, 5, 6),
+        ]
+    }
+
+    #[test]
+    fn test_orbit_parallel_matches_sequential() {
+        let n = 30;
+        let generators = fixed_large_generators(n);
+
+        let mut sequential = orbit(0, &generators);
+        let mut parallel = orbit_parallel(0, &generators, n);
+        sequential.sort_unstable();
+        parallel.sort_unstable();
+
+        assert_eq!(parallel, sequential);
+    }
+
+    #[test]
+    fn test_schreier_sims_parallel_matches_sequential() {
+        let n = 30;
+        let generators = fixed_large_generators(n);
+
+        let sequential = schreier_sims(&[], &generators, n);
+        let parallel = schreier_sims_parallel(&generators, n);
+
+        assert_eq!(group_order(&parallel), group_order(&sequential));
+    }
+
+    #[test]
+    fn test_canonical_perm_parallel_matches_sequential() {
+        let n = 30;
+        let generators = fixed_large_generators(n);
+        let tensor_perm = {
+            let mut perm = identity(n);
+            perm.swap(0, 2);
+            perm.swap(3, 4);
+            perm
+        };
+        let free_slots = vec![0, 1, 2, 3, 4, 5, 6];
+
+        let sgs = schreier_sims(&[], &generators, n);
+        let sequential_perm = coset_rep(&tensor_perm, n, &sgs.base, &sgs.generators, &free_slots);
+        let sequential_sign = if has_sign_slots(n) && sequential_perm[n - 2] != n - 2 {
+            -1
+        } else {
+            1
+        };
+        let parallel = canonical_perm_parallel(&tensor_perm, &generators, &free_slots, n);
+
+        assert_eq!(parallel, (sequential_perm, sequential_sign));
     }
 
     #[test]
@@ -1006,11 +1463,7 @@ mod tests {
 
     #[test]
     fn sgs_of_s4() {
-        let gens = vec![
-            vec![1, 0, 2, 3],
-            vec![0, 2, 1, 3],
-            vec![0, 1, 3, 2],
-        ];
+        let gens = vec![vec![1, 0, 2, 3], vec![0, 2, 1, 3], vec![0, 1, 3, 2]];
         let sgs = schreier_sims(&[], &gens, 4);
         assert_eq!(group_order(&sgs), 24);
     }

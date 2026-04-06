@@ -37,6 +37,7 @@ fn candidate_last_expr(
                 | Expr::Assume(_, _)
                 | Expr::Rule(_, _, _)
                 | Expr::SetConvention(_, _) => None,
+                Expr::Call(f, _) if interner.resolve(*f) == "__set_parallel" => None,
                 Expr::Call(f, _) if interner.resolve(*f) == "grassmann" => None,
                 Expr::Call(f, _) if interner.resolve(*f) == "creation" => None,
                 Expr::Call(f, _) if interner.resolve(*f) == "annihilation" => None,
@@ -73,6 +74,8 @@ fn print_help() {
     println!("  :pool on           Enable pooled expression storage");
     println!("  :pool off          Disable pooled expression storage");
     println!("  :pool stats        Show pooled unique-node count");
+    println!("  :parallel on       Enable parallel tensor canonicalisation");
+    println!("  :parallel off      Disable parallel tensor canonicalisation");
     println!("  :codegen python    Generate Python for last result");
     println!("  :codegen rust      Generate Rust for last result");
     println!("  :codegen cpp       Generate C++ for last result");
@@ -321,6 +324,16 @@ pub fn run() -> Result<()> {
                 } else {
                     println!("Expression pool is disabled.");
                 }
+                continue;
+            }
+            ":parallel on" => {
+                env.parallel = true;
+                println!("Parallel mode enabled.");
+                continue;
+            }
+            ":parallel off" => {
+                env.parallel = false;
+                println!("Parallel mode disabled.");
                 continue;
             }
             s if s.starts_with(":inspect") => {

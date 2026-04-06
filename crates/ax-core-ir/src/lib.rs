@@ -453,6 +453,13 @@ impl<'a> Cursor<'a> {
             return Ok(Expr::SetConvention(field_str, value_str));
         }
 
+        if self.consume_keyword("parallel") {
+            self.skip_ws();
+            let mode = self.parse_ident()?;
+            let set_parallel = self.interner.get_or_intern("__set_parallel");
+            return Ok(Expr::Call(set_parallel, vec![Expr::Sym(mode)]));
+        }
+
         if self.consume_keyword("import") {
             let mut path = Vec::new();
             path.push(self.parse_ident()?);

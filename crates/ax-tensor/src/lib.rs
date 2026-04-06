@@ -10,6 +10,7 @@ use index_classifier::{classify_indices, IndexClassification};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub trait DummyRenameEnv {
@@ -23,7 +24,7 @@ pub trait ComponentEvalEnv {
     fn tensor_properties(&self) -> &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>;
 }
 
-pub trait PropertyLookup {
+pub trait PropertyLookup: Send + Sync {
     fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty>;
     fn get_properties_with_indices(
         &self,
@@ -191,6 +192,19 @@ pub fn build_generating_set(
     }
 
     generators
+}
+
+fn build_generating_set_parallel(
+    factor_info: &[TensorFactorInfo],
+    interner: &ax_ir::Interner,
+) -> Vec<Perm> {
+    let generators = build_generating_set(factor_info, interner);
+    let total_indices: usize = factor_info.iter().map(|factor| factor.n_indices).sum();
+    if total_indices > 20 {
+        ax_perm::schreier_sims_parallel(&generators, total_indices + 2).generators
+    } else {
+        generators
+    }
 }
 
 pub fn extract_factor_info(
@@ -594,6 +608,135 @@ fn canonicalise_product(
     }
 }
 
+fn canonicalise_product_parallel(
+    expr: &Expr,
+    tensor_properties: &(dyn PropertyLookup + Send + Sync),
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let precanonical = canonicalize_indices(expr, tensor_properties, interner);
+    if precanonical == Expr::zero() {
+        return Expr::zero();
+    }
+
+    let wrapped;
+    let expr_ref = match &precanonical {
+        Expr::Mul(_) => &precanonical,
+        Expr::Indexed(_, _) => {
+            wrapped = Expr::Mul(vec![precanonical.clone()]);
+            &wrapped
+        }
+        _ => return precanonical,
+    };
+
+    let factor_info = extract_factor_info(expr_ref, tensor_properties, interner);
+    if factor_info.is_empty() {
+        return expr.clone();
+    }
+    let classification = classify_indices(expr_ref);
+
+    let generators = build_generating_set_parallel(&factor_info, interner);
+    let factors = match expr_ref {
+        Expr::Mul(factors) => factors,
+        _ => unreachable!(),
+    };
+
+    let mut all_indices = Vec::new();
+    let mut scalar_factors = Vec::new();
+    for factor in factors {
+        match factor {
+            Expr::Indexed(_, indices) => all_indices.extend(indices.iter().cloned()),
+            _ => scalar_factors.push(factor.clone()),
+        }
+    }
+
+    let total_indices = classification.total;
+    if total_indices == 0 {
+        return expr.clone();
+    }
+
+    let mut keyed_positions: Vec<(usize, (String, u8))> = all_indices
+        .iter()
+        .enumerate()
+        .map(|(i, idx)| (i, sort_key(idx, interner)))
+        .collect();
+    keyed_positions.sort_by(|(ia, ka), (ib, kb)| ka.cmp(kb).then(ia.cmp(ib)));
+
+    let mut rank_by_pos = vec![0usize; total_indices];
+    for (rank, (pos, _)) in keyed_positions.iter().enumerate() {
+        rank_by_pos[*pos] = rank;
+    }
+
+    let mut extended_perm = rank_by_pos.clone();
+    extended_perm.push(total_indices);
+    extended_perm.push(total_indices + 1);
+
+    let dummy_pairs: Vec<(usize, usize)> = classification
+        .dummy
+        .iter()
+        .map(|(_, a, b, _, _)| (*a, *b))
+        .collect();
+    let repeated_sets = repeated_sets_from_classification(&classification);
+    let degree = total_indices + 2;
+
+    let mut pairs_by_type: HashMap<Option<lasso::Spur>, Vec<(usize, usize)>> = HashMap::new();
+    for &(a, b) in &dummy_pairs {
+        let itype = all_indices[a].index_type;
+        pairs_by_type.entry(itype).or_default().push((a, b));
+    }
+
+    let dummy_sets: Vec<ax_perm::DummySet> = pairs_by_type
+        .into_iter()
+        .map(|(_, pairs)| {
+            let slots: Vec<usize> = pairs.iter().flat_map(|&(a, b)| [a, b]).collect();
+            ax_perm::DummySet {
+                pairs,
+                metric_symmetry: metric_symmetry_for_slots(&slots, &factor_info),
+            }
+        })
+        .collect();
+
+    let (canon_perm, canon_sign) =
+        if generators.is_empty() && dummy_sets.is_empty() && repeated_sets.is_empty() {
+            (extended_perm.clone(), 1)
+        } else {
+            let sgs = ax_perm::schreier_sims_parallel(&generators, degree);
+            ax_perm::canonical_perm_with_sets(&extended_perm, &sgs, &dummy_sets, &repeated_sets)
+        };
+
+    if canon_sign == -1 && canon_perm[..total_indices] == extended_perm[..total_indices] {
+        return Expr::zero();
+    }
+
+    let mut index_by_rank = vec![all_indices[0].clone(); total_indices];
+    for (pos, rank) in rank_by_pos.iter().enumerate() {
+        index_by_rank[*rank] = all_indices[pos].clone();
+    }
+    let new_indices: Vec<ax_ir::Index> = canon_perm[..total_indices]
+        .iter()
+        .map(|rank| index_by_rank[*rank].clone())
+        .collect();
+
+    let mut result_factors = scalar_factors;
+    let mut idx_pos = 0usize;
+    for factor in factors {
+        if let Expr::Indexed(base, indices) = factor {
+            let n = indices.len();
+            result_factors.push(Expr::Indexed(
+                base.clone(),
+                new_indices[idx_pos..idx_pos + n].to_vec(),
+            ));
+            idx_pos += n;
+        }
+    }
+
+    let result = Expr::mul(result_factors);
+    if canon_sign == -1 {
+        Expr::neg(result)
+    } else {
+        result
+    }
+}
+
 /// Canonicalise a tensor product expression by reordering indices to canonical form.
 ///
 /// This uses the Butler-Portugal algorithm (via ax-perm) to find the lexicographically
@@ -614,6 +757,34 @@ pub fn canonicalise(
         Expr::Neg(inner) => Expr::neg(canonicalise(inner, tensor_properties, interner)),
         Expr::Indexed(_, _) => {
             let result = canonicalise_product(expr, tensor_properties, interner);
+            match result {
+                Expr::Mul(mut factors) if factors.len() == 1 => factors.remove(0),
+                other => other,
+            }
+        }
+        _ => expr.clone(),
+    }
+}
+
+/// Parallel canonicalisation for sums with independent terms.
+pub fn canonicalise_parallel(
+    expr: &ax_ir::Expr,
+    properties: &(dyn PropertyLookup + Send + Sync),
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Add(terms) if terms.len() > 4 => {
+            let canonicalised: Vec<Expr> = terms
+                .par_iter()
+                .map(|term| canonicalise_parallel(term, properties, interner))
+                .collect();
+            Expr::add(canonicalised)
+        }
+        Expr::Add(_) => canonicalise(expr, properties, interner),
+        Expr::Mul(_) => canonicalise_product_parallel(expr, properties, interner),
+        Expr::Neg(inner) => Expr::neg(canonicalise_parallel(inner, properties, interner)),
+        Expr::Indexed(_, _) => {
+            let result = canonicalise_product_parallel(expr, properties, interner);
             match result {
                 Expr::Mul(mut factors) if factors.len() == 1 => factors.remove(0),
                 other => other,
@@ -792,6 +963,185 @@ pub fn meld(
                 .collect(),
         ),
         Expr::Neg(inner) => Expr::neg(meld(inner, tensor_properties, interner)),
+        _ => expr.clone(),
+    }
+}
+
+pub fn meld_parallel(
+    expr: &ax_ir::Expr,
+    tensor_properties: &(dyn PropertyLookup + Send + Sync),
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match expr {
+        Expr::Add(terms) => {
+            let mut groups: Vec<(String, Vec<(Expr, usize)>)> = Vec::new();
+            for (idx, term) in terms.iter().enumerate() {
+                let simplified = meld_parallel(term, tensor_properties, interner);
+                let key = tensor_structure_key(&simplified, interner);
+                if let Some((_, bucket)) = groups.iter_mut().find(|(k, _)| *k == key) {
+                    bucket.push((simplified, idx));
+                } else {
+                    groups.push((key, vec![(simplified, idx)]));
+                }
+            }
+
+            let mut result_terms: Vec<Expr> = Vec::new();
+
+            for (_, group) in &groups {
+                if group.len() <= 1 {
+                    result_terms.push(group[0].0.clone());
+                    continue;
+                }
+
+                let canonical: Vec<Expr> = if group.len() > 4 {
+                    group
+                        .par_iter()
+                        .map(|(t, _)| canonicalise_parallel(t, tensor_properties, interner))
+                        .collect()
+                } else {
+                    group
+                        .iter()
+                        .map(|(t, _)| canonicalise(t, tensor_properties, interner))
+                        .collect()
+                };
+
+                let factor_info =
+                    extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
+                let tableaux = tableaux_from_properties(&factor_info, tensor_properties);
+
+                let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
+                for (term, _) in group.iter() {
+                    let (scalar, indices) = extract_scalar_and_indices(term);
+                    let adj = adjform::Adjform::from_indices(&indices);
+                    let coeff = scalar_to_rational(&scalar);
+                    let mut proj = adjform::ProjectedAdjform::from_adjform(adj, coeff);
+                    proj.young_project(&tableaux);
+                    projections.push(proj);
+                }
+
+                let mut independent: Vec<usize> = Vec::new();
+                let mut mapping: Vec<adjform::Adjform> = Vec::new();
+
+                for (i, proj) in projections.iter().enumerate() {
+                    if proj.is_empty() {
+                        continue;
+                    }
+
+                    if independent.is_empty() {
+                        independent.push(i);
+                        if let Some((adj, _)) = proj.terms.iter().next() {
+                            mapping.push(adj.clone());
+                        }
+                        continue;
+                    }
+
+                    let mut matrix: Vec<Vec<BigRational>> = Vec::new();
+                    let mut rhs_vec: Vec<BigRational> = Vec::new();
+
+                    for adj in &mapping {
+                        let mut row = Vec::new();
+                        for &ind_idx in &independent {
+                            row.push(projections[ind_idx].get_coeff(adj));
+                        }
+                        matrix.push(row);
+                        rhs_vec.push(proj.get_coeff(adj));
+                    }
+
+                    let mut dependent = false;
+                    if let Some(coeffs) = solve_rational_system(&matrix, &rhs_vec) {
+                        let all_adjforms: BTreeSet<&adjform::Adjform> =
+                            projections[..=i].iter().flat_map(|p| p.terms.keys()).collect();
+
+                        let mut valid = true;
+                        for adj in &all_adjforms {
+                            let mut lhs = BigRational::from_integer(0.into());
+                            for (j, &ind_idx) in independent.iter().enumerate() {
+                                lhs += &coeffs[j] * &projections[ind_idx].get_coeff(adj);
+                            }
+                            if lhs != proj.get_coeff(adj) {
+                                valid = false;
+                                break;
+                            }
+                        }
+                        if valid {
+                            dependent = true;
+                        }
+                    }
+
+                    if dependent {
+                        continue;
+                    }
+
+                    independent.push(i);
+                    for adj in proj.terms.keys() {
+                        if !mapping.contains(adj) {
+                            mapping.push(adj.clone());
+                            break;
+                        }
+                    }
+                }
+
+                if independent.is_empty() {
+                    continue;
+                }
+
+                let mut total_basis_coeffs =
+                    vec![BigRational::from_integer(0.into()); independent.len()];
+                let basis_adjforms: BTreeSet<&adjform::Adjform> = independent
+                    .iter()
+                    .flat_map(|&idx| projections[idx].terms.keys())
+                    .collect();
+
+                for proj in &projections {
+                    if proj.is_empty() {
+                        continue;
+                    }
+
+                    let mut matrix: Vec<Vec<BigRational>> = Vec::new();
+                    let mut rhs_vec: Vec<BigRational> = Vec::new();
+                    let mut all_adjforms: BTreeSet<&adjform::Adjform> = basis_adjforms.clone();
+                    all_adjforms.extend(proj.terms.keys());
+
+                    for adj in &all_adjforms {
+                        let mut row = Vec::new();
+                        for &ind_idx in &independent {
+                            row.push(projections[ind_idx].get_coeff(adj));
+                        }
+                        matrix.push(row);
+                        rhs_vec.push(proj.get_coeff(adj));
+                    }
+
+                    if let Some(coeffs) = solve_rational_system(&matrix, &rhs_vec) {
+                        for (j, coeff) in coeffs.into_iter().enumerate() {
+                            total_basis_coeffs[j] += coeff;
+                        }
+                    }
+                }
+
+                for (j, &idx) in independent.iter().enumerate() {
+                    if total_basis_coeffs[j] == BigRational::from_integer(0.into()) {
+                        continue;
+                    }
+                    result_terms.push(multiply_expr_by_rational(
+                        canonical[idx].clone(),
+                        total_basis_coeffs[j].clone(),
+                    ));
+                }
+            }
+
+            if result_terms.is_empty() {
+                Expr::zero()
+            } else {
+                Expr::add(result_terms)
+            }
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| meld_parallel(factor, tensor_properties, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(meld_parallel(inner, tensor_properties, interner)),
         _ => expr.clone(),
     }
 }
@@ -6900,6 +7250,53 @@ mod tests {
         } else {
             panic!("expected Indexed, got {:?}", result);
         }
+    }
+
+    #[test]
+    fn test_parallel_canonicalise_matches_sequential() {
+        let interner = ax_ir::Interner::new();
+        let r_sym = interner.get_or_intern("R");
+        let names = [
+            interner.get_or_intern("a"),
+            interner.get_or_intern("b"),
+            interner.get_or_intern("c"),
+            interner.get_or_intern("d"),
+            interner.get_or_intern("e"),
+            interner.get_or_intern("f"),
+            interner.get_or_intern("g"),
+            interner.get_or_intern("h"),
+        ];
+
+        let mut props = HashMap::new();
+        props.insert(r_sym, vec![ax_ir::TensorProperty::RiemannSymmetry]);
+
+        let terms = (0..20)
+            .map(|offset| {
+                let slots = [
+                    names[offset % names.len()],
+                    names[(offset + 1) % names.len()],
+                    names[(offset + 2) % names.len()],
+                    names[(offset + 3) % names.len()],
+                ];
+                Expr::Indexed(
+                    Box::new(Expr::Sym(r_sym)),
+                    slots
+                        .into_iter()
+                        .map(|name| ax_ir::Index {
+                            name,
+                            variance: ax_ir::Variance::Down,
+                            index_type: None,
+                        })
+                        .collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expr = Expr::add(terms);
+
+        assert_eq!(
+            canonicalise_parallel(&expr, &props, &interner),
+            canonicalise(&expr, &props, &interner)
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@ impl McpState {
     fn new() -> Self {
         let mut env = ax_eval::Env::new();
         env.enable_pool();
+        env.parallel = true;
         Self {
             interner: ax_ir::Interner::new(),
             env,

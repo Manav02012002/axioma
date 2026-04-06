@@ -44,6 +44,7 @@ pub struct Env {
     pub property_store: crate::property_store::PropertyStore,
     pub expr_pool: Option<ax_ir::ExprPool>,
     pub expr_pool_threshold: usize,
+    pub parallel: bool,
     pub convention: ax_ir::Convention,
     /// Weights assigned to symbols. Map from (symbol, label) to weight value.
     /// Example: x::Weight(value=1, label=field) → weights[(x, "field")] = 1
@@ -66,6 +67,7 @@ impl Env {
             property_store: crate::property_store::PropertyStore::new(),
             expr_pool: None,
             expr_pool_threshold: 256,
+            parallel: false,
             convention: ax_ir::Convention::default(),
             weights: HashMap::new(),
         }
@@ -94,6 +96,7 @@ impl Env {
             property_store: self.property_store.clone(),
             expr_pool: self.expr_pool.clone(),
             expr_pool_threshold: self.expr_pool_threshold,
+            parallel: self.parallel,
             convention: self.convention.clone(),
             weights: self.weights.clone(),
         }
@@ -161,13 +164,17 @@ fn maybe_pooled_canonicalise(
     properties: &dyn ax_tensor::PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
-    if expr_node_count(expr) < env.expr_pool_threshold {
-        return ax_tensor::canonicalise(expr, properties, interner);
+    if expr_node_count(expr) >= env.expr_pool_threshold {
+        if let Some(ref mut pool) = env.expr_pool {
+            let id = pool.from_expr(expr);
+            let result_id =
+                ax_tensor::pooled_canon::canonicalise_pooled(id, pool, properties, interner);
+            return pool.to_expr(result_id);
+        }
     }
-    if let Some(ref mut pool) = env.expr_pool {
-        let id = pool.from_expr(expr);
-        let result_id = ax_tensor::pooled_canon::canonicalise_pooled(id, pool, properties, interner);
-        pool.to_expr(result_id)
+
+    if env.parallel {
+        ax_tensor::canonicalise_parallel(expr, properties, interner)
     } else {
         ax_tensor::canonicalise(expr, properties, interner)
     }
@@ -179,15 +186,45 @@ fn maybe_pooled_meld(
     properties: &dyn ax_tensor::PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
-    if expr_node_count(expr) < env.expr_pool_threshold {
-        return ax_tensor::meld(expr, properties, interner);
+    if expr_node_count(expr) >= env.expr_pool_threshold {
+        if let Some(ref mut pool) = env.expr_pool {
+            let id = pool.from_expr(expr);
+            let result_id = ax_tensor::pooled_canon::meld_pooled(id, pool, properties, interner);
+            return pool.to_expr(result_id);
+        }
     }
-    if let Some(ref mut pool) = env.expr_pool {
-        let id = pool.from_expr(expr);
-        let result_id = ax_tensor::pooled_canon::meld_pooled(id, pool, properties, interner);
-        pool.to_expr(result_id)
+
+    if env.parallel {
+        ax_tensor::meld_parallel(expr, properties, interner)
     } else {
         ax_tensor::meld(expr, properties, interner)
+    }
+}
+
+pub fn apply_parallel_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "__set_parallel" || args.len() != 1 {
+        return None;
+    }
+    let Expr::Sym(mode) = &args[0] else {
+        return None;
+    };
+    match interner.resolve(*mode) {
+        "on" | "true" => {
+            env.parallel = true;
+            Some("parallel mode enabled".to_string())
+        }
+        "off" | "false" => {
+            env.parallel = false;
+            Some("parallel mode disabled".to_string())
+        }
+        _ => None,
     }
 }
 
@@ -3016,7 +3053,7 @@ fn builtin_call(
         "symmetric" | "antisymmetric" | "riemann_symmetry" | "traceless" => {
             Expr::Call(f, args)
         }
-        "__declare_indices" | "__declare_coordinates" | "__declare_property" | "__declare_weight" | "__declare_depends" => Expr::Call(f, args),
+        "__declare_indices" | "__declare_coordinates" | "__declare_property" | "__declare_weight" | "__declare_depends" | "__set_parallel" => Expr::Call(f, args),
         "grassmann" => Expr::Call(f, args),
         "expand" => {
             if args.len() == 1 {

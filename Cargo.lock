@@ -339,6 +339,9 @@ dependencies = [
 [[package]]
 name = "ax-perm"
 version = "0.1.0"
+dependencies = [
+ "rayon",
+]
 
 [[package]]
 name = "ax-plot"
@@ -452,6 +455,7 @@ dependencies = [
  "num-bigint",
  "num-rational",
  "num-traits",
+ "rayon",
 ]
 
 [[package]]
