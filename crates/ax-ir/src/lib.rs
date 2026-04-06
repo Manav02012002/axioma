@@ -1,5 +1,6 @@
 pub mod expr;
 pub mod intern;
+pub mod pool;
 pub mod pretty;
 
 pub use expr::{
@@ -8,6 +9,7 @@ pub use expr::{
     TensorProperty, TrustLevel, Variance,
 };
 pub use intern::Interner;
+pub use pool::{ExprBuilder, ExprId, ExprPool, PooledExpr};
 pub use pretty::pretty_print;
 
 #[cfg(test)]

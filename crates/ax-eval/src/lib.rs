@@ -42,6 +42,8 @@ pub struct Env {
     /// Deprecated: use property_store instead. Kept for backward compatibility with external code.
     pub tensor_properties: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
     pub property_store: crate::property_store::PropertyStore,
+    pub expr_pool: Option<ax_ir::ExprPool>,
+    pub expr_pool_threshold: usize,
     pub convention: ax_ir::Convention,
     /// Weights assigned to symbols. Map from (symbol, label) to weight value.
     /// Example: x::Weight(value=1, label=field) → weights[(x, "field")] = 1
@@ -62,6 +64,8 @@ impl Env {
             index_to_family: HashMap::new(),
             tensor_properties: HashMap::new(),
             property_store: crate::property_store::PropertyStore::new(),
+            expr_pool: None,
+            expr_pool_threshold: 256,
             convention: ax_ir::Convention::default(),
             weights: HashMap::new(),
         }
@@ -88,9 +92,15 @@ impl Env {
             index_to_family: self.index_to_family.clone(),
             tensor_properties: self.tensor_properties.clone(),
             property_store: self.property_store.clone(),
+            expr_pool: self.expr_pool.clone(),
+            expr_pool_threshold: self.expr_pool_threshold,
             convention: self.convention.clone(),
             weights: self.weights.clone(),
         }
+    }
+
+    pub fn enable_pool(&mut self) {
+        self.expr_pool = Some(ax_ir::ExprPool::new());
     }
 }
 
@@ -115,6 +125,69 @@ impl ax_tensor::ComponentEvalEnv for Env {
 
     fn tensor_properties(&self) -> &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> {
         &self.tensor_properties
+    }
+}
+
+fn expr_node_count(expr: &Expr) -> usize {
+    match expr {
+        Expr::Complex(re, im) => 1 + expr_node_count(re) + expr_node_count(im),
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            1 + terms.iter().map(expr_node_count).sum::<usize>()
+        }
+        Expr::Pow(base, exp) | Expr::Rule(base, exp, _) => {
+            1 + expr_node_count(base) + expr_node_count(exp)
+        }
+        Expr::Neg(inner) => 1 + expr_node_count(inner),
+        Expr::Call(_, args) => 1 + args.iter().map(expr_node_count).sum::<usize>(),
+        Expr::Indexed(base, _) => 1 + expr_node_count(base),
+        Expr::Matrix(rows) => {
+            1 + rows
+                .iter()
+                .flat_map(|row| row.iter())
+                .map(expr_node_count)
+                .sum::<usize>()
+        }
+        Expr::Piecewise(cases) => 1 + cases.iter().map(|(value, _)| expr_node_count(value)).sum::<usize>(),
+        Expr::Let(_, val, body) => 1 + expr_node_count(val) + expr_node_count(body),
+        Expr::FnDef(_, _, body) => 1 + expr_node_count(body),
+        Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) => 1,
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Sym(_) => 1,
+    }
+}
+
+fn maybe_pooled_canonicalise(
+    expr: &Expr,
+    env: &mut Env,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    if expr_node_count(expr) < env.expr_pool_threshold {
+        return ax_tensor::canonicalise(expr, properties, interner);
+    }
+    if let Some(ref mut pool) = env.expr_pool {
+        let id = pool.from_expr(expr);
+        let result_id = ax_tensor::pooled_canon::canonicalise_pooled(id, pool, properties, interner);
+        pool.to_expr(result_id)
+    } else {
+        ax_tensor::canonicalise(expr, properties, interner)
+    }
+}
+
+fn maybe_pooled_meld(
+    expr: &Expr,
+    env: &mut Env,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    if expr_node_count(expr) < env.expr_pool_threshold {
+        return ax_tensor::meld(expr, properties, interner);
+    }
+    if let Some(ref mut pool) = env.expr_pool {
+        let id = pool.from_expr(expr);
+        let result_id = ax_tensor::pooled_canon::meld_pooled(id, pool, properties, interner);
+        pool.to_expr(result_id)
+    } else {
+        ax_tensor::meld(expr, properties, interner)
     }
 }
 
@@ -2470,7 +2543,10 @@ fn builtin_call(
         }
         "canonicalise" | "canonicalize" => {
             if args.len() == 1 {
-                let canonical = ax_tensor::canonicalise(&args[0], &env.property_store, interner);
+                let mut pooled_env = env.clone();
+                let properties = pooled_env.property_store.clone();
+                let canonical =
+                    maybe_pooled_canonicalise(&args[0], &mut pooled_env, &properties, interner);
                 ax_tensor::rename_dummies(&canonical, env, interner)
             } else {
                 Expr::Call(f, args)
@@ -2502,7 +2578,9 @@ fn builtin_call(
         }
         "meld" => {
             if args.len() == 1 {
-                ax_tensor::meld(&args[0], &env.property_store, interner)
+                let mut pooled_env = env.clone();
+                let properties = pooled_env.property_store.clone();
+                maybe_pooled_meld(&args[0], &mut pooled_env, &properties, interner)
             } else {
                 Expr::Call(f, args)
             }

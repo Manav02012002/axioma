@@ -70,6 +70,9 @@ fn print_help() {
     println!("  :convention        Show active convention");
     println!("  :inspect [expr]    Inspect an expression or the last result");
     println!("  :suggest [expr]    Suggest algorithms for an expression or the last result");
+    println!("  :pool on           Enable pooled expression storage");
+    println!("  :pool off          Disable pooled expression storage");
+    println!("  :pool stats        Show pooled unique-node count");
     println!("  :codegen python    Generate Python for last result");
     println!("  :codegen rust      Generate Rust for last result");
     println!("  :codegen cpp       Generate C++ for last result");
@@ -299,6 +302,24 @@ pub fn run() -> Result<()> {
             ":convention" => {
                 for line in convention_lines(&env) {
                     println!("{line}");
+                }
+                continue;
+            }
+            ":pool on" => {
+                env.enable_pool();
+                println!("Expression pool enabled.");
+                continue;
+            }
+            ":pool off" => {
+                env.expr_pool = None;
+                println!("Expression pool disabled.");
+                continue;
+            }
+            ":pool stats" => {
+                if let Some(pool) = &env.expr_pool {
+                    println!("Unique pooled nodes: {}", pool.len());
+                } else {
+                    println!("Expression pool is disabled.");
                 }
                 continue;
             }

@@ -18,9 +18,11 @@ struct McpState {
 
 impl McpState {
     fn new() -> Self {
+        let mut env = ax_eval::Env::new();
+        env.enable_pool();
         Self {
             interner: ax_ir::Interner::new(),
-            env: ax_eval::Env::new(),
+            env,
             expressions: HashMap::new(),
             metrics: HashMap::new(),
             christoffels: HashMap::new(),

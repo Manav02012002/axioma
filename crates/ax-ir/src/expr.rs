@@ -7,13 +7,13 @@ use std::cmp::Ordering;
 pub type Sym = lasso::Spur;
 pub type IndexType = Option<Sym>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Variance {
     Up,
     Down,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Index {
     pub name: Sym,
     pub variance: Variance,

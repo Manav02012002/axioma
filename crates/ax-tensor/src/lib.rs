@@ -2,6 +2,7 @@
 
 pub mod adjform;
 pub mod index_classifier;
+pub mod pooled_canon;
 
 use ax_perm::{Perm, SGS};
 use ax_ir::{Expr, Index, Interner};
@@ -4192,7 +4193,7 @@ fn expand_expr(expr: &Expr, interner: &Interner) -> Expr {
 }
 
 #[allow(dead_code)]
-fn collect_terms_expr(expr: &Expr, interner: &Interner) -> Expr {
+pub(crate) fn collect_terms_expr(expr: &Expr, interner: &Interner) -> Expr {
     match expr {
         Expr::Add(terms) => {
             let normalized_terms = terms
