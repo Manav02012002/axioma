@@ -1,8 +1,9 @@
 use crate::{eval, Env};
 use ax_ir::Expr;
+use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 fn square(expr: Expr) -> Expr {
     Expr::pow(expr, Expr::Int(2.into()))
@@ -761,6 +762,306 @@ fn extract_numer_denom(expr: &Expr) -> (Expr, Expr) {
     }
 }
 
+pub fn apart_expr(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Option<Expr> {
+    let (numer, denom) = extract_numer_denom(expr);
+    if denom == Expr::one() {
+        return None;
+    }
+    partial_fractions(&numer, &denom, var, interner)
+}
+
+pub fn partial_fractions(
+    numer: &Expr,
+    denom: &Expr,
+    var: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let mut coeffs = ax_solve::extract_polynomial(denom, var, interner)?;
+    trim_poly(&mut coeffs);
+    let degree = coeffs.len().checked_sub(1)?;
+    if degree == 0 {
+        return None;
+    }
+
+    let mut linear_roots = Vec::new();
+    for candidate in candidate_rational_roots(&coeffs[0], coeffs.last().unwrap_or(&Expr::one())) {
+        let Some(candidate_r) = expr_to_rational(&candidate) else {
+            continue;
+        };
+        if eval_poly_at(&coeffs, &candidate_r).is_some_and(|value| value.is_zero())
+            && !linear_roots.contains(&candidate_r)
+        {
+            linear_roots.push(candidate_r);
+        }
+    }
+
+    if linear_roots.len() != degree {
+        return None;
+    }
+
+    let mut terms = Vec::new();
+    for (i, root_r) in linear_roots.iter().enumerate() {
+        let root = expr_from_rational(root_r.clone());
+        let numer_at_root = substitute_sym(numer, var, &root, interner);
+        let numer_val = eval(&numer_at_root, &Env::new(), interner);
+
+        let mut denom_val = Expr::one();
+        for (j, other_root_r) in linear_roots.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let other_root = expr_from_rational(other_root_r.clone());
+            let diff = Expr::add(vec![root.clone(), Expr::neg(other_root.clone())]);
+            let diff_val = eval(&diff, &Env::new(), interner);
+            denom_val = Expr::mul(vec![denom_val, diff_val]);
+        }
+
+        let denom_simplified = eval(&denom_val, &Env::new(), interner);
+        if denom_simplified == Expr::zero() {
+            return None;
+        }
+
+        let coeff = Expr::mul(vec![
+            numer_val,
+            Expr::pow(denom_simplified, Expr::Int((-1i64).into())),
+        ]);
+        let coeff_simplified = eval(&coeff, &Env::new(), interner);
+        let factor = Expr::add(vec![Expr::Sym(var), Expr::neg(root.clone())]);
+        let term = Expr::mul(vec![
+            coeff_simplified,
+            Expr::pow(factor, Expr::Int((-1i64).into())),
+        ]);
+        terms.push(term);
+    }
+
+    Some(Expr::add(terms))
+}
+
+fn extract_linear_root(
+    factor: &Expr,
+    var: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let coeffs = ax_solve::extract_polynomial(factor, var, interner)?;
+    if coeffs.len() != 2 {
+        return None;
+    }
+    let a0 = coeffs[0].clone();
+    let a1 = coeffs[1].clone();
+    Some(eval(
+        &Expr::mul(vec![Expr::neg(a0), Expr::pow(a1, Expr::Int((-1i64).into()))]),
+        &Env::new(),
+        interner,
+    ))
+}
+
+fn factor_polynomial(
+    poly: &Expr,
+    var: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Vec<Expr> {
+    let expanded = expand(poly, interner);
+    let Some(mut coeffs) = ax_solve::extract_polynomial(&expanded, var, interner) else {
+        return vec![poly.clone()];
+    };
+    trim_poly(&mut coeffs);
+    if coeffs.len() <= 1 {
+        return vec![poly.clone()];
+    }
+
+    let mut remaining = coeffs.clone();
+    let mut factors = Vec::new();
+    let candidates = candidate_rational_roots(&remaining[0], remaining.last().unwrap_or(&Expr::one()));
+
+    for candidate in &candidates {
+        let Some(candidate_r) = expr_to_rational(candidate) else {
+            continue;
+        };
+        loop {
+            if !eval_poly_at(&remaining, &candidate_r)
+                .is_some_and(|value| value.is_zero())
+            {
+                break;
+            }
+
+            let factor = Expr::add(vec![Expr::Sym(var), Expr::neg(candidate.clone())]);
+            factors.push(factor);
+            let next = ax_solve::poly_divide(&remaining, candidate, interner);
+            if next.is_empty() || next == remaining {
+                break;
+            }
+            remaining = next;
+            trim_poly(&mut remaining);
+            if remaining.len() <= 1 {
+                break;
+            }
+        }
+        if remaining.len() <= 1 {
+            break;
+        }
+    }
+
+    if factors.is_empty() {
+        return vec![poly.clone()];
+    }
+
+    let remaining_expr = poly_from_coeffs(&remaining, var);
+    if remaining_expr != Expr::one() && remaining_expr != Expr::Int(1.into()) {
+        factors.push(remaining_expr);
+    }
+    factors
+}
+
+fn expr_to_rational(expr: &Expr) -> Option<BigRational> {
+    match expr {
+        Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
+        Expr::Rational(r) => Some(r.clone()),
+        Expr::Neg(inner) => expr_to_rational(inner).map(std::ops::Neg::neg),
+        _ => None,
+    }
+}
+
+fn expr_from_rational(r: BigRational) -> Expr {
+    if r.is_integer() {
+        Expr::Int(r.to_integer())
+    } else {
+        Expr::Rational(r)
+    }
+}
+
+fn eval_poly_at(coeffs: &[Expr], x: &BigRational) -> Option<BigRational> {
+    let mut acc = BigRational::zero();
+    for coeff in coeffs.iter().rev() {
+        let c = expr_to_rational(coeff)?;
+        acc = c + x.clone() * acc;
+    }
+    Some(acc)
+}
+
+fn candidate_rational_roots(constant: &Expr, leading: &Expr) -> Vec<Expr> {
+    let mut candidates = Vec::new();
+
+    let c_val = match constant {
+        Expr::Int(n) => n.to_i64(),
+        Expr::Neg(inner) => {
+            if let Expr::Int(n) = inner.as_ref() {
+                n.to_i64().map(|v| -v)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let l_val = match leading {
+        Expr::Int(n) => n.to_i64(),
+        Expr::Neg(inner) => {
+            if let Expr::Int(n) = inner.as_ref() {
+                n.to_i64().map(|v| -v)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    if let (Some(c), Some(l)) = (c_val, l_val) {
+        let c = c.abs().max(1);
+        let l = l.abs().max(1);
+        for p in 1..=c.min(20) {
+            if c % p == 0 {
+                for q in 1..=l.min(10) {
+                    if l % q == 0 {
+                        let r = BigRational::new(BigInt::from(p), BigInt::from(q));
+                        candidates.push(Expr::Rational(r.clone()));
+                        candidates.push(Expr::neg(Expr::Rational(r)));
+                    }
+                }
+            }
+        }
+    }
+
+    candidates.push(Expr::zero());
+    candidates.push(Expr::Int(1.into()));
+    candidates.push(Expr::Int((-1i64).into()));
+
+    candidates.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    candidates.dedup();
+    candidates
+}
+
+fn substitute_sym(
+    expr: &Expr,
+    var: lasso::Spur,
+    value: &Expr,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    crate::symbolic_substitute(expr, &Expr::Sym(var), value, interner)
+}
+
+fn extract_coefficients(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Vec<Expr> {
+    let terms = match expr {
+        Expr::Add(terms) => terms.clone(),
+        _ => vec![expr.clone()],
+    };
+
+    let mut coeffs: HashMap<i64, Expr> = HashMap::new();
+    for term in &terms {
+        let (power, coeff) = extract_var_power_and_coeff(term, var);
+        let entry = coeffs.entry(power).or_insert(Expr::zero());
+        *entry = Expr::add(vec![entry.clone(), coeff]);
+    }
+
+    if coeffs.is_empty() {
+        return vec![];
+    }
+
+    let max_power = *coeffs.keys().max().unwrap_or(&0);
+    (0..=max_power)
+        .map(|p| {
+            let c = coeffs.get(&p).cloned().unwrap_or(Expr::zero());
+            eval(&c, &Env::new(), interner)
+        })
+        .collect()
+}
+
+fn extract_var_power_and_coeff(term: &Expr, var: lasso::Spur) -> (i64, Expr) {
+    match term {
+        Expr::Sym(s) if *s == var => (1, Expr::one()),
+        Expr::Pow(base, exp) => {
+            if let Expr::Sym(s) = base.as_ref() {
+                if *s == var {
+                    if let Expr::Int(n) = exp.as_ref() {
+                        return (n.to_i64().unwrap_or(0), Expr::one());
+                    }
+                }
+            }
+            (0, term.clone())
+        }
+        Expr::Mul(factors) => {
+            let mut power = 0i64;
+            let mut coeff_factors = Vec::new();
+            for factor in factors {
+                let (p, c) = extract_var_power_and_coeff(factor, var);
+                power += p;
+                if c != Expr::one() {
+                    coeff_factors.push(c);
+                }
+            }
+            let coeff = if coeff_factors.is_empty() {
+                Expr::one()
+            } else {
+                Expr::mul(coeff_factors)
+            };
+            (power, coeff)
+        }
+        Expr::Neg(inner) => {
+            let (p, c) = extract_var_power_and_coeff(inner, var);
+            (p, Expr::neg(c))
+        }
+        _ => (0, term.clone()),
+    }
+}
+
 fn poly_div_rem(
     dividend: &[Expr],
     divisor: &[Expr],
@@ -1228,6 +1529,43 @@ mod tests {
         let result = rationalize(&expr, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains("x"), "got: {}", pp);
+    }
+
+    #[test]
+    fn partial_fractions_simple() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+
+        let numer = Expr::Int(1.into());
+        let denom = Expr::mul(vec![
+            Expr::Sym(x),
+            Expr::add(vec![Expr::Sym(x), Expr::Int(1.into())]),
+        ]);
+
+        let result = partial_fractions(&numer, &denom, x, &interner);
+        assert!(result.is_some(), "should decompose 1/(x(x+1))");
+
+        if let Some(pf) = result {
+            let val = crate::symbolic_substitute(&pf, &Expr::Sym(x), &Expr::Int(2.into()), &interner);
+            let simplified = crate::eval(&val, &crate::Env::new(), &interner);
+            let expected = Expr::Rational(BigRational::new(1.into(), 6.into()));
+            assert_eq!(simplified, expected, "partial fractions at x=2 should give 1/6");
+        }
+    }
+
+    #[test]
+    fn partial_fractions_quadratic() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+
+        let numer = Expr::Int(1.into());
+        let denom = Expr::add(vec![
+            Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+            Expr::Int((-1i64).into()),
+        ]);
+
+        let result = partial_fractions(&numer, &denom, x, &interner);
+        assert!(result.is_some(), "should decompose 1/(x^2 - 1)");
     }
 
     #[test]

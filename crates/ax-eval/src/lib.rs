@@ -86,12 +86,16 @@ impl ax_tensor::DummyRenameEnv for Env {
 }
 
 impl ax_tensor::ComponentEvalEnv for Env {
-    fn coordinates(&self) -> &HashSet<lasso::Spur> {
-        &self.coordinates
+    fn coordinates(&self) -> Vec<lasso::Spur> {
+        self.coordinates.iter().copied().collect()
     }
 
-    fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
-        &self.index_to_family
+    fn is_coordinate(&self, s: lasso::Spur) -> bool {
+        self.coordinates.contains(&s)
+    }
+
+    fn tensor_properties(&self) -> &HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> {
+        &self.tensor_properties
     }
 }
 
@@ -2386,7 +2390,17 @@ fn builtin_call(
                 if let Expr::List(rule_exprs) = &args[1] {
                     let rules = parse_component_rules(rule_exprs);
                     let index_vals = HashMap::new();
-                    ax_tensor::evaluate_components(&args[0], &rules, &index_vals, env, interner)
+                    let mut coords: Vec<_> = env.coordinates.iter().copied().collect();
+                    coords.sort_by_key(|sym| interner.resolve(*sym).to_string());
+                    let eval_env =
+                        ax_tensor::DefaultEvalEnv::new(coords, env.tensor_properties.clone());
+                    ax_tensor::evaluate_components(
+                        &args[0],
+                        &rules,
+                        &index_vals,
+                        &eval_env,
+                        interner,
+                    )
                 } else {
                     Expr::Call(f, args)
                 }
@@ -2468,6 +2482,18 @@ fn builtin_call(
         "rationalize" => {
             if args.len() == 1 {
                 simplify::rationalize(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "partial_fractions" | "apart" => {
+            if args.len() >= 2 {
+                if let Expr::Sym(var) = &args[1] {
+                    simplify::apart_expr(&args[0], *var, interner)
+                        .unwrap_or_else(|| args[0].clone())
+                } else {
+                    Expr::Call(f, args)
+                }
             } else {
                 Expr::Call(f, args)
             }
