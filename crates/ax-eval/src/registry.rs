@@ -100,6 +100,17 @@ pub trait EvalState {
     fn get_ricci(&self, id: &str) -> Option<&Vec<Vec<ax_ir::Expr>>>;
     fn store_ricci(&mut self, id: String, ric: Vec<Vec<ax_ir::Expr>>);
     fn get_matrix_data(&self, id: &str) -> Option<Vec<Vec<ax_ir::Expr>>>;
+    fn deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+    fn check_deadline(&self) -> Result<(), String> {
+        if let Some(deadline) = self.deadline() {
+            if std::time::Instant::now() > deadline {
+                return Err("computation timed out".to_string());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn b(
@@ -2394,6 +2405,7 @@ fn matrix_response(
     let rows = matrix.len();
     let cols = matrix.first().map(|r| r.len()).unwrap_or(0);
     Ok(serde_json::json!({
+        "status": "ok",
         "expr_id": expr_id,
         "matrix": rendered,
         "dimensions": [rows, cols]
@@ -2407,6 +2419,7 @@ fn list_response(
     let expr = ax_ir::Expr::List(items.clone());
     let expr_id = state.store_expr(expr);
     Ok(serde_json::json!({
+        "status": "ok",
         "expr_id": expr_id,
         "components": items.iter().map(|item| state.render_latex(item)).collect::<Vec<_>>()
     }))
@@ -2414,6 +2427,7 @@ fn list_response(
 
 fn points_response(points: Vec<(f64, f64)>) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
+        "status": "ok",
         "points": points.into_iter().map(|(x, y)| serde_json::json!({"x": x, "y": y})).collect::<Vec<_>>()
     }))
 }
@@ -2429,6 +2443,29 @@ fn expr_or_struct_response(
     }
 }
 
+fn annotate_success_response(
+    mut response: serde_json::Value,
+    status: &str,
+    changed: bool,
+    message: String,
+) -> Result<serde_json::Value, String> {
+    let obj = response
+        .as_object_mut()
+        .ok_or_else(|| "success response must be a JSON object".to_string())?;
+    obj.insert("status".to_string(), serde_json::json!(status));
+    obj.insert("changed".to_string(), serde_json::json!(changed));
+    obj.insert("message".to_string(), serde_json::json!(message));
+    Ok(response)
+}
+
+fn ensure_not_timeout(expr: ax_ir::Expr, interner: &ax_ir::Interner) -> Result<ax_ir::Expr, String> {
+    if ax_tensor::is_timeout_expr(&expr, interner) {
+        Err("computation timed out".to_string())
+    } else {
+        Ok(expr)
+    }
+}
+
 fn evaluate_matrix(
     matrix: Vec<Vec<ax_ir::Expr>>,
     state: &mut dyn EvalState,
@@ -2439,6 +2476,27 @@ fn evaluate_matrix(
             row.into_iter()
                 .map(|cell| crate::eval(&cell, state.env(), state.interner()))
                 .map(|cell| crate::simplify::simplify(&cell, state.interner()))
+                .collect()
+        })
+        .collect()
+}
+
+fn evaluate_matrix_lightweight(
+    matrix: Vec<Vec<ax_ir::Expr>>,
+    state: &mut dyn EvalState,
+) -> Result<Vec<Vec<ax_ir::Expr>>, String> {
+    matrix
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|cell| {
+                    state.check_deadline()?;
+                    let evaluated = crate::eval(&cell, state.env(), state.interner());
+                    Ok(crate::simplify::rationalize_expanded_numerator(
+                        &evaluated,
+                        state.interner(),
+                    ))
+                })
                 .collect()
         })
         .collect()
@@ -2660,9 +2718,34 @@ fn expr_response(
 ) -> Result<serde_json::Value, String> {
     let expr_id = state.store_expr(expr.clone());
     Ok(serde_json::json!({
+        "status": "ok",
         "expr_id": expr_id,
         "latex": state.render_latex(&expr),
         "unicode": state.render_unicode(&expr)
+    }))
+}
+
+fn expr_response_with_change(
+    input_expr: &ax_ir::Expr,
+    output_expr: ax_ir::Expr,
+    algorithm_name: &str,
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let changed = input_expr != &output_expr;
+    let expr_id = state.store_expr(output_expr.clone());
+    let status = if changed { "ok" } else { "unchanged" };
+    let message = if changed {
+        format!("{algorithm_name} applied successfully")
+    } else {
+        format!("{algorithm_name} did not change the expression")
+    };
+    Ok(serde_json::json!({
+        "status": status,
+        "changed": changed,
+        "message": message,
+        "expr_id": expr_id,
+        "latex": state.render_latex(&output_expr),
+        "unicode": state.render_unicode(&output_expr),
     }))
 }
 
@@ -2674,6 +2757,7 @@ fn zoom_response(
     let focus_id = state.store_expr(focus.clone());
     let remainder_id = state.store_expr(remainder.clone());
     Ok(serde_json::json!({
+        "status": "ok",
         "focus_id": focus_id,
         "focus_latex": state.render_latex(&focus),
         "focus_unicode": state.render_unicode(&focus),
@@ -2681,6 +2765,40 @@ fn zoom_response(
         "remainder_latex": state.render_latex(&remainder),
         "remainder_unicode": state.render_unicode(&remainder)
     }))
+}
+
+fn expr_or_struct_response_with_change(
+    input_expr: &ax_ir::Expr,
+    output_expr: ax_ir::Expr,
+    algorithm_name: &str,
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let changed = input_expr != &output_expr;
+    let status = if changed { "ok" } else { "unchanged" };
+    let message = if changed {
+        format!("{algorithm_name} applied successfully")
+    } else {
+        format!("{algorithm_name} did not change the expression")
+    };
+    let mut response = match output_expr {
+        ax_ir::Expr::Matrix(rows) => matrix_response(rows, state)?,
+        ax_ir::Expr::List(items) => list_response(items, state)?,
+        other => return expr_response_with_change(input_expr, other, algorithm_name, state),
+    };
+    annotate_success_response(response, status, changed, message)
+}
+
+fn expr_or_struct_response_named(
+    output_expr: ax_ir::Expr,
+    algorithm_name: &str,
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    annotate_success_response(
+        expr_or_struct_response(output_expr, state)?,
+        "ok",
+        true,
+        format!("{algorithm_name} applied successfully"),
+    )
 }
 
 fn call_named(name: &str, call_args: Vec<ax_ir::Expr>, state: &mut dyn EvalState) -> ax_ir::Expr {
@@ -2742,7 +2860,12 @@ fn handle_diff(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    expr_response(crate::differentiate(&expr, var, state.interner()), state)
+    expr_response_with_change(
+        &expr,
+        crate::differentiate(&expr, var, state.interner()),
+        "differentiate",
+        state,
+    )
 }
 
 fn handle_integrate(
@@ -2751,8 +2874,10 @@ fn handle_integrate(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         crate::integrate::integrate(&expr, var, state.interner()),
+        "integrate",
         state,
     )
 }
@@ -2766,7 +2891,12 @@ fn handle_double_integral(
     let y = symbol_arg(args, 2, "y", state)?;
     let inner = crate::integrate::integrate(&expr, x, state.interner());
     let outer = crate::integrate::integrate(&inner, y, state.interner());
-    expr_response(crate::eval(&outer, state.env(), state.interner()), state)
+    expr_response_with_change(
+        &expr,
+        crate::eval(&outer, state.env(), state.interner()),
+        "double_integral",
+        state,
+    )
 }
 
 fn handle_triple_integral(
@@ -2780,7 +2910,12 @@ fn handle_triple_integral(
     let i1 = crate::integrate::integrate(&expr, x, state.interner());
     let i2 = crate::integrate::integrate(&i1, y, state.interner());
     let i3 = crate::integrate::integrate(&i2, z, state.interner());
-    expr_response(crate::eval(&i3, state.env(), state.interner()), state)
+    expr_response_with_change(
+        &expr,
+        crate::eval(&i3, state.env(), state.interner()),
+        "triple_integral",
+        state,
+    )
 }
 
 fn handle_definite_integral(
@@ -2801,7 +2936,7 @@ fn handle_definite_integral(
         state.env(),
         state.interner(),
     );
-    expr_response(result, state)
+    expr_response_with_change(&expr, result, "definite_integral", state)
 }
 
 fn handle_integrate_by_parts(
@@ -2811,8 +2946,10 @@ fn handle_integrate_by_parts(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let away = symbol_arg(args, 1, "away", state)?;
     let deriv_syms = derivative_syms(state);
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::integrate_by_parts(&expr, away, &deriv_syms, state.interner()),
+        "integrate_by_parts",
         state,
     )
 }
@@ -2824,8 +2961,10 @@ fn handle_limit(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
     let point = code_expr(args, 2, "point", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         crate::limits::limit(&expr, var, &point, state.interner()),
+        "limit",
         state,
     )
 }
@@ -2841,8 +2980,10 @@ fn handle_series(
     if order < 0 {
         return Err("argument 'order' must be non-negative".to_string());
     }
-    expr_response(
+    expr_response_with_change(
+        &expr,
         crate::series::taylor_series(&expr, var, &point, order as usize, state.interner()),
+        "series",
         state,
     )
 }
@@ -2852,7 +2993,12 @@ fn handle_simplify(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(crate::simplify::simplify(&expr, state.interner()), state)
+    expr_response_with_change(
+        &expr,
+        crate::simplify::simplify_checked(&expr, state.interner())?,
+        "simplify",
+        state,
+    )
 }
 
 fn handle_expand(
@@ -2860,7 +3006,7 @@ fn handle_expand(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(crate::simplify::expand(&expr, state.interner()), state)
+    expr_response_with_change(&expr, crate::simplify::expand(&expr, state.interner()), "expand", state)
 }
 
 fn handle_collect_terms(
@@ -2868,8 +3014,10 @@ fn handle_collect_terms(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         crate::simplify::collect_terms(&expr, state.interner()),
+        "collect_terms",
         state,
     )
 }
@@ -2879,7 +3027,12 @@ fn handle_rationalize(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(crate::simplify::rationalize(&expr, state.interner()), state)
+    expr_response_with_change(
+        &expr,
+        crate::simplify::rationalize(&expr, state.interner()),
+        "rationalize",
+        state,
+    )
 }
 
 fn handle_partial_fractions(
@@ -2888,8 +3041,8 @@ fn handle_partial_fractions(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    let result = crate::simplify::apart_expr(&expr, var, state.interner()).unwrap_or(expr);
-    expr_response(result, state)
+    let result = crate::simplify::apart_expr(&expr, var, state.interner()).unwrap_or_else(|| expr.clone());
+    expr_response_with_change(&expr, result, "partial_fractions", state)
 }
 
 fn handle_trig_simplify(
@@ -2897,8 +3050,10 @@ fn handle_trig_simplify(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         crate::simplify::trig_simplify(&expr, state.interner()),
+        "trig_simplify",
         state,
     )
 }
@@ -2909,8 +3064,10 @@ fn handle_factor_out(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let targets = optional_symbol_list_arg(args, 1, "targets", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         crate::simplify::factor_out(&expr, &targets, state.interner()),
+        "factor_out",
         state,
     )
 }
@@ -2921,8 +3078,10 @@ fn handle_factor_in(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let targets = optional_symbol_list_arg(args, 1, "targets", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         crate::simplify::factor_in(&expr, &targets, state.interner()),
+        "factor_in",
         state,
     )
 }
@@ -2939,7 +3098,12 @@ fn handle_subs(
     } else {
         crate::symbolic_substitute(&expr, &target, &replacement, state.interner())
     };
-    expr_response(crate::eval(&result, state.env(), state.interner()), state)
+    expr_response_with_change(
+        &expr,
+        crate::eval(&result, state.env(), state.interner()),
+        "substitute",
+        state,
+    )
 }
 
 fn handle_rewrite(
@@ -2947,8 +3111,10 @@ fn handle_rewrite(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         crate::rewrite_with_trace(&expr, state.env(), state.interner()).0,
+        "rewrite",
         state,
     )
 }
@@ -2969,7 +3135,7 @@ fn handle_unzoom(
 ) -> Result<serde_json::Value, String> {
     let focus = expr_from_id(args, 0, "focus", state)?;
     let remainder = expr_from_id(args, 1, "remainder", state)?;
-    expr_response(crate::unzoom(&focus, &remainder), state)
+    expr_response_with_change(&focus, crate::unzoom(&focus, &remainder), "unzoom", state)
 }
 
 fn handle_take_match(
@@ -2978,7 +3144,12 @@ fn handle_take_match(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let pattern = code_expr(args, 1, "pattern", state)?;
-    expr_response(crate::take_match(&expr, &pattern, state.interner()), state)
+    expr_response_with_change(
+        &expr,
+        crate::take_match(&expr, &pattern, state.interner()),
+        "take_match",
+        state,
+    )
 }
 
 fn unary_expr_builtin(
@@ -2987,7 +3158,8 @@ fn unary_expr_builtin(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(call_named(name, vec![expr], state), state)
+    let result = call_named(name, vec![expr.clone()], state);
+    expr_response_with_change(&expr, result, name, state)
 }
 
 fn binary_expr_builtin(
@@ -2997,7 +3169,25 @@ fn binary_expr_builtin(
 ) -> Result<serde_json::Value, String> {
     let lhs = expr_from_id(args, 0, "lhs", state)?;
     let rhs = expr_from_id(args, 1, "rhs", state)?;
-    expr_response(call_named(name, vec![lhs, rhs], state), state)
+    let result = call_named(name, vec![lhs.clone(), rhs.clone()], state);
+    let changed = ax_ir::Expr::Call(state.interner_mut().get_or_intern(name), vec![lhs, rhs]) != result;
+    let mut response = expr_or_struct_response(result, state)?;
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert(
+            "status".to_string(),
+            serde_json::json!(if changed { "ok" } else { "unchanged" }),
+        );
+        obj.insert("changed".to_string(), serde_json::json!(changed));
+        obj.insert(
+            "message".to_string(),
+            serde_json::json!(if changed {
+                format!("{name} applied successfully")
+            } else {
+                format!("{name} did not change the expression")
+            }),
+        );
+    }
+    Ok(response)
 }
 
 fn handle_sin(
@@ -3208,10 +3398,8 @@ fn handle_gradient(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(
-        call_named("gradient", vec![expr, ax_ir::Expr::List(vars)], state),
-        state,
-    )
+    let result = call_named("gradient", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    expr_response_with_change(&expr, result, "gradient", state)
 }
 
 fn handle_grad(
@@ -3223,10 +3411,8 @@ fn handle_grad(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(
-        call_named("grad", vec![expr, ax_ir::Expr::List(vars)], state),
-        state,
-    )
+    let result = call_named("grad", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    expr_response_with_change(&expr, result, "grad", state)
 }
 
 fn handle_divergence(
@@ -3238,10 +3424,8 @@ fn handle_divergence(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(
-        call_named("divergence", vec![expr, ax_ir::Expr::List(vars)], state),
-        state,
-    )
+    let result = call_named("divergence", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    expr_response_with_change(&expr, result, "divergence", state)
 }
 
 fn handle_div(
@@ -3253,10 +3437,8 @@ fn handle_div(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(
-        call_named("div", vec![expr, ax_ir::Expr::List(vars)], state),
-        state,
-    )
+    let result = call_named("div", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    expr_response_with_change(&expr, result, "div", state)
 }
 
 fn handle_curl(
@@ -3268,10 +3450,8 @@ fn handle_curl(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(
-        call_named("curl", vec![expr, ax_ir::Expr::List(vars)], state),
-        state,
-    )
+    let result = call_named("curl", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    expr_response_with_change(&expr, result, "curl", state)
 }
 
 fn handle_laplacian(
@@ -3283,10 +3463,8 @@ fn handle_laplacian(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(
-        call_named("laplacian", vec![expr, ax_ir::Expr::List(vars)], state),
-        state,
-    )
+    let result = call_named("laplacian", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    expr_response_with_change(&expr, result, "laplacian", state)
 }
 
 fn handle_jacobian(
@@ -3298,10 +3476,8 @@ fn handle_jacobian(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(
-        call_named("jacobian", vec![expr, ax_ir::Expr::List(vars)], state),
-        state,
-    )
+    let result = call_named("jacobian", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    expr_response_with_change(&expr, result, "jacobian", state)
 }
 
 fn handle_hessian(
@@ -3313,10 +3489,8 @@ fn handle_hessian(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    expr_response(
-        call_named("hessian", vec![expr, ax_ir::Expr::List(vars)], state),
-        state,
-    )
+    let result = call_named("hessian", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    expr_response_with_change(&expr, result, "hessian", state)
 }
 
 fn unary_named_expr_response(
@@ -3325,7 +3499,8 @@ fn unary_named_expr_response(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_or_struct_response(call_named(name, vec![expr], state), state)
+    let result = call_named(name, vec![expr.clone()], state);
+    expr_or_struct_response_with_change(&expr, result, name, state)
 }
 
 fn binary_named_expr_response(
@@ -3335,7 +3510,7 @@ fn binary_named_expr_response(
 ) -> Result<serde_json::Value, String> {
     let lhs = expr_from_id(args, 0, "lhs", state)?;
     let rhs = expr_from_id(args, 1, "rhs", state)?;
-    expr_or_struct_response(call_named(name, vec![lhs, rhs], state), state)
+    expr_or_struct_response_named(call_named(name, vec![lhs, rhs], state), name, state)
 }
 
 fn handle_equation_ternary(
@@ -3346,10 +3521,8 @@ fn handle_equation_ternary(
     let expr = expr_from_id(args, 0, "eq", state)?;
     let target = code_expr(args, 1, "target", state)?;
     let replacement = code_expr(args, 2, "replacement", state)?;
-    expr_response(
-        call_named(name, vec![expr, target, replacement], state),
-        state,
-    )
+    let result = call_named(name, vec![expr.clone(), target, replacement], state);
+    expr_response_with_change(&expr, result, name, state)
 }
 
 fn handle_eq_entry(
@@ -3435,10 +3608,8 @@ fn handle_differentiate_eq_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "eq", state)?;
     let var = symbol_arg(args, 1, "var", state)?;
-    expr_response(
-        call_named("differentiate_eq", vec![expr, ax_ir::Expr::Sym(var)], state),
-        state,
-    )
+    let result = call_named("differentiate_eq", vec![expr.clone(), ax_ir::Expr::Sym(var)], state);
+    expr_response_with_change(&expr, result, "differentiate_eq", state)
 }
 
 fn handle_integrate_eq_entry(
@@ -3447,10 +3618,8 @@ fn handle_integrate_eq_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "eq", state)?;
     let var = symbol_arg(args, 1, "var", state)?;
-    expr_response(
-        call_named("integrate_eq", vec![expr, ax_ir::Expr::Sym(var)], state),
-        state,
-    )
+    let result = call_named("integrate_eq", vec![expr.clone(), ax_ir::Expr::Sym(var)], state);
+    expr_response_with_change(&expr, result, "integrate_eq", state)
 }
 
 fn handle_substitute_eq_entry(
@@ -3466,10 +3635,8 @@ fn handle_raise_eq_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "eq", state)?;
     let index = symbol_arg(args, 1, "index", state)?;
-    expr_response(
-        call_named("raise_eq", vec![expr, ax_ir::Expr::Sym(index)], state),
-        state,
-    )
+    let result = call_named("raise_eq", vec![expr.clone(), ax_ir::Expr::Sym(index)], state);
+    expr_response_with_change(&expr, result, "raise_eq", state)
 }
 
 fn handle_lower_eq_entry(
@@ -3478,10 +3645,8 @@ fn handle_lower_eq_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "eq", state)?;
     let index = symbol_arg(args, 1, "index", state)?;
-    expr_response(
-        call_named("lower_eq", vec![expr, ax_ir::Expr::Sym(index)], state),
-        state,
-    )
+    let result = call_named("lower_eq", vec![expr.clone(), ax_ir::Expr::Sym(index)], state);
+    expr_response_with_change(&expr, result, "lower_eq", state)
 }
 
 fn list_builtin_response(
@@ -3509,15 +3674,32 @@ fn handle_canonicalise(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    unary_named_expr_response("canonicalise", args, state)
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let sym = state.interner_mut().get_or_intern("canonicalise");
+    let result = crate::eval(
+        &ax_ir::Expr::Call(sym, vec![expr.clone()]),
+        state.env(),
+        state.interner(),
+    );
+    expr_response_with_change(
+        &expr,
+        ensure_not_timeout(result, state.interner())?,
+        "canonicalise",
+        state,
+    )
 }
 fn handle_canonicalize_indices(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
-        ax_tensor::canonicalize_indices(&expr, &state.env().property_store, state.interner()),
+    expr_response_with_change(
+        &expr,
+        ensure_not_timeout(
+            ax_tensor::canonicalize_indices(&expr, &state.env().property_store, state.interner()),
+            state.interner(),
+        )?,
+        "canonicalize_indices",
         state,
     )
 }
@@ -3525,7 +3707,14 @@ fn handle_meld(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    unary_named_expr_response("meld", args, state)
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let sym = state.interner_mut().get_or_intern("meld");
+    let result = crate::eval(
+        &ax_ir::Expr::Call(sym, vec![expr.clone()]),
+        state.env(),
+        state.interner(),
+    );
+    expr_response_with_change(&expr, ensure_not_timeout(result, state.interner())?, "meld", state)
 }
 fn handle_sort_product(
     args: &[serde_json::Value],
@@ -3630,8 +3819,10 @@ fn handle_drop_weight_tensor(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let label = string_arg(args, 1, "label")?;
     let value = int_arg(args, 2, "value")?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::drop_weight(&expr, value, &state.env().weights, label, state.interner()),
+        "drop_weight",
         state,
     )
 }
@@ -3642,8 +3833,10 @@ fn handle_keep_weight_tensor(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let label = string_arg(args, 1, "label")?;
     let value = int_arg(args, 2, "value")?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::keep_weight(&expr, value, &state.env().weights, label, state.interner()),
+        "keep_weight",
         state,
     )
 }
@@ -3675,8 +3868,10 @@ fn handle_symmetrise_tensor(
                 .ok_or_else(|| "positions must be integers".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::symmetrise(&expr, &positions, false, state.interner()),
+        "symmetrise",
         state,
     )
 }
@@ -3696,8 +3891,10 @@ fn handle_antisymmetrise_tensor(
                 .ok_or_else(|| "positions must be integers".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::symmetrise(&expr, &positions, true, state.interner()),
+        "antisymmetrise",
         state,
     )
 }
@@ -3710,8 +3907,10 @@ fn handle_split_index_tensor(
     let parent = optional_symbol_list_arg(args, 1, "parent_indices", state)?;
     let sub1 = optional_symbol_list_arg(args, 2, "subfamily_one", state)?;
     let sub2 = optional_symbol_list_arg(args, 3, "subfamily_two", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::split_index(&expr, &parent, &sub1, &sub2, state.interner()),
+        "split_index",
         state,
     )
 }
@@ -3741,8 +3940,10 @@ fn handle_rewrite_indices_tensor(
     target_tensors.insert(tensor, variances);
     let g = state.interner_mut().get_or_intern("g");
     let ginv = state.interner_mut().get_or_intern("ginv");
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::rewrite_indices(&expr, &target_tensors, g, ginv, state.interner()),
+        "rewrite_indices",
         state,
     )
 }
@@ -3762,8 +3963,13 @@ fn handle_evaluate_components_tensor(
         state.env().coordinates.iter().copied().collect(),
         state.env().tensor_properties.clone(),
     );
-    expr_response(
-        ax_tensor::evaluate_components_v2(&expr, &rules, &env, state.interner()),
+    expr_response_with_change(
+        &expr,
+        ensure_not_timeout(
+            ax_tensor::evaluate_components_v2(&expr, &rules, &env, state.interner()),
+            state.interner(),
+        )?,
+        "evaluate_components",
         state,
     )
 }
@@ -3806,7 +4012,7 @@ fn handle_complete_inverse_metric(
             })
             .collect(),
     );
-    expr_response(as_expr, state)
+    expr_or_struct_response_named(as_expr, "euler_lagrange_system", state)
 }
 
 fn handle_diff_component_tensor(
@@ -3815,8 +4021,10 @@ fn handle_diff_component_tensor(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::diff_component(&expr, var, state.interner()),
+        "diff_component",
         state,
     )
 }
@@ -3827,8 +4035,10 @@ fn handle_decompose_tensor(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let basis = list_from_id(args, 1, "basis", state)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_tensor::decompose(&expr, &basis, &state.env().property_store, state.interner()),
+        "decompose",
         state,
     )
 }
@@ -3843,8 +4053,13 @@ fn handle_decompose_product_tensor(
         .and_then(|v| v.as_u64())
         .map(|n| n as usize)
         .unwrap_or(4);
-    expr_response(
-        ax_tensor::decompose_product(&expr, dim, &state.env().property_store, state.interner()),
+    expr_response_with_change(
+        &expr,
+        ensure_not_timeout(
+            ax_tensor::decompose_product(&expr, dim, &state.env().property_store, state.interner()),
+            state.interner(),
+        )?,
+        "decompose_product",
         state,
     )
 }
@@ -3876,6 +4091,7 @@ fn handle_metric_pipeline_christoffel(
         state,
     )?;
     if let Some(obj) = response.as_object_mut() {
+        obj.insert("status".to_string(), serde_json::json!("ok"));
         obj.insert("christoffel_id".to_string(), serde_json::json!(metric_id));
         obj.insert(
             "nonzero_count".to_string(),
@@ -3920,6 +4136,7 @@ fn handle_riemann_from_christoffel(
     );
     let mut response = expr_response(expr, state)?;
     if let Some(obj) = response.as_object_mut() {
+        obj.insert("status".to_string(), serde_json::json!("ok"));
         obj.insert("riemann_id".to_string(), serde_json::json!(id));
     }
     Ok(response)
@@ -3937,8 +4154,9 @@ fn handle_ricci_from_riemann(
     let ric =
         ax_tensor::ricci_from_riemann(&riem, riem.len(), state.interner(), &state.env().convention);
     state.store_ricci(id.to_string(), ric.clone());
-    let mut response = matrix_response(evaluate_matrix(ric, state), state)?;
+    let mut response = matrix_response(evaluate_matrix_lightweight(ric, state)?, state)?;
     if let Some(obj) = response.as_object_mut() {
+        obj.insert("status".to_string(), serde_json::json!("ok"));
         obj.insert("ricci_id".to_string(), serde_json::json!(id));
         if let Some(matrix) = obj.get("matrix").cloned() {
             obj.insert("components".to_string(), matrix);
@@ -3954,12 +4172,15 @@ fn handle_ricci_scalar_gr(
     let ricci = matrix_from_id(args, 0, "ricci", state)?;
     let metric = matrix_from_id(args, 1, "metric_inverse", state)?;
     let ginv = symbolic_matrix_from_rows(metric)?;
-    expr_response(
+    let input_expr = ax_ir::Expr::Matrix(ricci.clone());
+    expr_response_with_change(
+        &input_expr,
         crate::eval(
             &ax_tensor::ricci_scalar(&ricci, &ginv, state.interner()),
             state.env(),
             state.interner(),
         ),
+        "ricci_scalar",
         state,
     )
 }
@@ -3993,12 +4214,28 @@ fn handle_kretschner_scalar_gr(
         .get_metric(id)
         .map(|(m, _)| m.clone())
         .ok_or_else(|| format!("unknown metric '{id}'"))?;
-    expr_response(
+    let input_expr = ax_ir::Expr::List(
+        riem.iter()
+            .cloned()
+            .map(|cube| {
+                ax_ir::Expr::List(
+                    cube.into_iter()
+                        .map(|plane| {
+                            ax_ir::Expr::List(plane.into_iter().map(ax_ir::Expr::List).collect())
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    expr_response_with_change(
+        &input_expr,
         crate::eval(
             &ax_tensor::kretschner_scalar(&riem, &metric, state.interner()),
             state.env(),
             state.interner(),
         ),
+        "kretschner_scalar",
         state,
     )
 }
@@ -4122,12 +4359,14 @@ fn handle_lie_derivative_scalar_gr(
     let f = expr_from_id(args, 0, "expr", state)?;
     let v = list_from_id(args, 1, "vector", state)?;
     let coords = symbol_list_arg(args, 2, "coordinates", state)?;
-    expr_response(
+    expr_response_with_change(
+        &f,
         crate::eval(
             &ax_tensor::lie_derivative_scalar(&f, &v, &coords, state.interner()),
             state.env(),
             state.interner(),
         ),
+        "lie_derivative_scalar",
         state,
     )
 }
@@ -4276,7 +4515,7 @@ fn handle_braket_qm(
 ) -> Result<serde_json::Value, String> {
     let bra = list_from_id(args, 0, "bra", state)?;
     let ket = list_from_id(args, 1, "ket", state)?;
-    expr_response(ax_qm::braket(&bra, &ket), state)
+    expr_or_struct_response_named(ax_qm::braket(&bra, &ket), "braket", state)
 }
 
 fn handle_outer_qm(
@@ -4315,7 +4554,8 @@ fn handle_functional_derivative_variational(
     let field = symbol_arg(args, 1, "field", state)?;
     let field_derivs = symbol_list_arg(args, 2, "field_derivatives", state)?;
     let coords = symbol_list_arg(args, 3, "coordinates", state)?;
-    expr_response(
+    expr_response_with_change(
+        &lagrangian,
         ax_variational::functional_derivative(
             &lagrangian,
             field,
@@ -4323,6 +4563,7 @@ fn handle_functional_derivative_variational(
             &coords,
             state.interner(),
         ),
+        "functional_derivative",
         state,
     )
 }
@@ -4376,7 +4617,8 @@ fn handle_vary_action_variational(
     let variation = symbol_arg(args, 2, "variation", state)?;
     let field_derivs = symbol_list_arg(args, 3, "field_derivatives", state)?;
     let variation_derivs = symbol_list_arg(args, 4, "variation_derivatives", state)?;
-    expr_response(
+    expr_response_with_change(
+        &lagrangian,
         ax_variational::vary_action(
             &lagrangian,
             field,
@@ -4385,6 +4627,7 @@ fn handle_vary_action_variational(
             &variation_derivs,
             state.interner(),
         ),
+        "vary_action",
         state,
     )
 }
@@ -4395,7 +4638,7 @@ fn handle_solve_general(
 ) -> Result<serde_json::Value, String> {
     let equation = code_expr(args, 0, "equation", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    expr_or_struct_response(ax_solve::solve(&equation, var, state.interner()), state)
+    expr_or_struct_response_named(ax_solve::solve(&equation, var, state.interner()), "solve", state)
 }
 
 fn handle_solve_linear_system_general(
@@ -4421,7 +4664,7 @@ fn handle_solve_linear_system_general(
             })
             .collect(),
     );
-    expr_response(expr, state)
+    expr_or_struct_response_named(expr, "solve_linear_system", state)
 }
 
 fn handle_solve_ode_ode(
@@ -4431,8 +4674,10 @@ fn handle_solve_ode_ode(
     let equation = expr_from_id(args, 0, "equation", state)?;
     let dependent = symbol_arg(args, 1, "dependent", state)?;
     let independent = symbol_arg(args, 2, "independent", state)?;
-    expr_response(
+    expr_response_with_change(
+        &equation,
         ax_ode::solve_ode(&equation, dependent, independent, state.interner()),
+        "solve_ode",
         state,
     )
 }
@@ -4480,7 +4725,7 @@ fn handle_rk4_system_ode(
     let x_end = float_arg(args, 5, "x_end")?;
     let steps = args.get(6).and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
     let values = ax_ode::rk4_system(&fs, x, &ys, x0, &y0s, x_end, steps, state.interner());
-    Ok(serde_json::json!({ "values": values }))
+    Ok(serde_json::json!({ "status": "ok", "values": values }))
 }
 
 fn handle_first_order_form_ode(
@@ -4497,7 +4742,7 @@ fn handle_first_order_form_ode(
             .map(|(lhs, rhs)| ax_ir::Expr::List(vec![lhs, rhs]))
             .collect(),
     );
-    expr_response(expr, state)
+    expr_or_struct_response_with_change(&ode, expr, "first_order_form", state)
 }
 
 fn handle_classify_pde_ode(
@@ -4513,7 +4758,7 @@ fn handle_classify_pde_ode(
         ax_ode::PdeType::Hyperbolic => "Hyperbolic",
         ax_ode::PdeType::Unknown => "Unknown",
     };
-    Ok(serde_json::json!({ "kind": kind }))
+    Ok(serde_json::json!({ "status": "ok", "kind": kind }))
 }
 
 fn handle_separate_variables_ode(
@@ -4546,7 +4791,12 @@ fn handle_determinant_linalg(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
-    expr_response(ax_linalg::determinant(&matrix, state.interner()), state)
+    expr_response_with_change(
+        &ax_ir::Expr::Matrix(matrix.clone()),
+        ax_linalg::determinant(&matrix, state.interner()),
+        "determinant",
+        state,
+    )
 }
 
 fn handle_inverse_linalg(
@@ -4564,7 +4814,12 @@ fn handle_trace_linalg(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
-    expr_response(ax_linalg::trace(&matrix), state)
+    expr_response_with_change(
+        &ax_ir::Expr::Matrix(matrix.clone()),
+        ax_linalg::trace(&matrix),
+        "trace",
+        state,
+    )
 }
 
 fn handle_eigenvalues_symbolic_linalg(
@@ -4572,8 +4827,10 @@ fn handle_eigenvalues_symbolic_linalg(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
-    expr_response(
+    expr_response_with_change(
+        &ax_ir::Expr::Matrix(matrix.clone()),
         ax_linalg::eigenvalues_symbolic(&matrix, state.interner()),
+        "eigenvalues_symbolic",
         state,
     )
 }
@@ -4628,6 +4885,7 @@ fn handle_declare_property(
         .or_default()
         .push(prop.clone());
     Ok(serde_json::json!({
+        "status": "ok",
         "symbol": state.interner().resolve(symbol),
         "property": format!("{:?}", prop)
     }))
@@ -4655,6 +4913,7 @@ fn handle_declare_indices(
         state.env_mut().index_to_family.insert(idx, family);
     }
     Ok(serde_json::json!({
+        "status": "ok",
         "family": state.interner().resolve(family),
         "indices": indices.iter().map(|s| state.interner().resolve(*s)).collect::<Vec<_>>(),
         "dimension": family_data.dimension
@@ -4668,6 +4927,7 @@ fn handle_declare_coordinates(
     let coords = symbol_list_arg(args, 0, "coordinates", state)?;
     state.env_mut().coordinates = coords.iter().copied().collect();
     Ok(serde_json::json!({
+        "status": "ok",
         "coordinates": coords.iter().map(|s| state.interner().resolve(*s)).collect::<Vec<_>>()
     }))
 }
@@ -4695,6 +4955,7 @@ fn handle_declare_assumption(
         .or_default()
         .push(assumption.clone());
     Ok(serde_json::json!({
+        "status": "ok",
         "symbol": state.interner().resolve(symbol),
         "assumption": format!("{:?}", assumption)
     }))
@@ -4706,7 +4967,7 @@ fn handle_declare_grassmann(
 ) -> Result<serde_json::Value, String> {
     let symbol = symbol_arg(args, 0, "symbol", state)?;
     state.env_mut().gradings.insert(symbol, ax_ir::Grading::Odd);
-    Ok(serde_json::json!({ "symbol": state.interner().resolve(symbol), "grading": "Odd" }))
+    Ok(serde_json::json!({ "status": "ok", "symbol": state.interner().resolve(symbol), "grading": "Odd" }))
 }
 
 fn handle_declare_operator(
@@ -4721,7 +4982,7 @@ fn handle_declare_operator(
     };
     state.env_mut().operators.insert(symbol, kind);
     Ok(
-        serde_json::json!({ "symbol": state.interner().resolve(symbol), "operator": format!("{:?}", kind) }),
+        serde_json::json!({ "status": "ok", "symbol": state.interner().resolve(symbol), "operator": format!("{:?}", kind) }),
     )
 }
 
@@ -4788,7 +5049,7 @@ fn handle_define_rule(
         trust_level: ax_ir::TrustLevel::Exact,
     };
     state.env_mut().rules.push(rule);
-    Ok(serde_json::json!({ "name": name, "trust": "Exact" }))
+    Ok(serde_json::json!({ "status": "ok", "name": name, "trust": "Exact" }))
 }
 
 fn handle_define_metric(
@@ -4816,6 +5077,7 @@ fn handle_define_metric(
         .push(ax_ir::TensorProperty::Metric);
     state.store_metric(name.clone(), matrix, coords.clone());
     Ok(serde_json::json!({
+        "status": "ok",
         "metric_id": name,
         "coordinates": coords.iter().map(|s| state.interner().resolve(*s)).collect::<Vec<_>>()
     }))
@@ -4826,7 +5088,7 @@ fn handle_to_python_codegen(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    Ok(serde_json::json!({ "code": ax_codegen::to_python(&expr, state.interner()) }))
+    Ok(serde_json::json!({ "status": "ok", "code": ax_codegen::to_python(&expr, state.interner()) }))
 }
 
 fn handle_to_rust_codegen(
@@ -4834,7 +5096,7 @@ fn handle_to_rust_codegen(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    Ok(serde_json::json!({ "code": ax_codegen::to_rust(&expr, state.interner()) }))
+    Ok(serde_json::json!({ "status": "ok", "code": ax_codegen::to_rust(&expr, state.interner()) }))
 }
 
 fn handle_to_cpp_codegen(
@@ -4842,7 +5104,7 @@ fn handle_to_cpp_codegen(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    Ok(serde_json::json!({ "code": ax_codegen::to_cpp(&expr, state.interner()) }))
+    Ok(serde_json::json!({ "status": "ok", "code": ax_codegen::to_cpp(&expr, state.interner()) }))
 }
 
 fn handle_equiv_analysis(
@@ -4865,6 +5127,7 @@ fn handle_inspect_analysis(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let result = crate::inspect::inspect_expr(&expr, state.env(), state.interner());
     Ok(serde_json::json!({
+        "status": "ok",
         "kind": result.kind,
         "free_indices": result.free_indices,
         "dummy_pairs": result.dummy_pairs,
@@ -4881,6 +5144,7 @@ fn handle_suggest_analysis(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let result = crate::suggest::suggest_for_expr(&expr, state.env(), state.interner());
     Ok(serde_json::json!({
+        "status": "ok",
         "suggestions": result.suggestions.into_iter().map(|s| serde_json::json!({"algorithm": s.algorithm, "reason": s.reason})).collect::<Vec<_>>(),
         "missing": result.missing.into_iter().map(|m| serde_json::json!({"symbol": m.symbol, "suggestion": m.suggestion})).collect::<Vec<_>>()
     }))
@@ -4903,12 +5167,13 @@ fn handle_angle_spinor(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "angle",
             vec![int_expr_arg(args, 0, "i")?, int_expr_arg(args, 1, "j")?],
             state,
         ),
+        "angle",
         state,
     )
 }
@@ -4917,12 +5182,13 @@ fn handle_square_spinor(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "square",
             vec![int_expr_arg(args, 0, "i")?, int_expr_arg(args, 1, "j")?],
             state,
         ),
+        "square",
         state,
     )
 }
@@ -4931,12 +5197,13 @@ fn handle_mandelstam_spinor(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "mandelstam",
             vec![int_expr_arg(args, 0, "i")?, int_expr_arg(args, 1, "j")?],
             state,
         ),
+        "mandelstam",
         state,
     )
 }
@@ -4945,7 +5212,7 @@ fn handle_parke_taylor_spinor(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "parke_taylor",
             vec![
@@ -4955,6 +5222,7 @@ fn handle_parke_taylor_spinor(
             ],
             state,
         ),
+        "parke_taylor",
         state,
     )
 }
@@ -4963,7 +5231,7 @@ fn handle_three_point_mhv_spinor(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "three_point_mhv",
             vec![
@@ -4973,6 +5241,7 @@ fn handle_three_point_mhv_spinor(
             ],
             state,
         ),
+        "three_point_mhv",
         state,
     )
 }
@@ -4981,7 +5250,7 @@ fn handle_three_point_anti_mhv_spinor(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "three_point_anti_mhv",
             vec![
@@ -4991,6 +5260,7 @@ fn handle_three_point_anti_mhv_spinor(
             ],
             state,
         ),
+        "three_point_anti_mhv",
         state,
     )
 }
@@ -5001,7 +5271,8 @@ fn handle_spinor_unary_named(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(call_named(name, vec![expr], state), state)
+    let result = call_named(name, vec![expr.clone()], state);
+    expr_response_with_change(&expr, result, name, state)
 }
 
 fn handle_expand_chain_spinor(
@@ -5034,20 +5305,18 @@ fn handle_schouten_spinor(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
-        call_named(
-            "schouten",
-            vec![
-                expr,
-                int_expr_arg(args, 1, "a")?,
-                int_expr_arg(args, 2, "b")?,
-                int_expr_arg(args, 3, "c")?,
-                int_expr_arg(args, 4, "d")?,
-            ],
-            state,
-        ),
+    let result = call_named(
+        "schouten",
+        vec![
+            expr.clone(),
+            int_expr_arg(args, 1, "a")?,
+            int_expr_arg(args, 2, "b")?,
+            int_expr_arg(args, 3, "c")?,
+            int_expr_arg(args, 4, "d")?,
+        ],
         state,
-    )
+    );
+    expr_response_with_change(&expr, result, "schouten", state)
 }
 
 fn handle_momentum_conservation_spinor(
@@ -5055,18 +5324,16 @@ fn handle_momentum_conservation_spinor(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
-        call_named(
-            "momentum_conservation",
-            vec![
-                expr,
-                int_expr_arg(args, 1, "n")?,
-                int_expr_arg(args, 2, "eliminate")?,
-            ],
-            state,
-        ),
+    let result = call_named(
+        "momentum_conservation",
+        vec![
+            expr.clone(),
+            int_expr_arg(args, 1, "n")?,
+            int_expr_arg(args, 2, "eliminate")?,
+        ],
         state,
-    )
+    );
+    expr_response_with_change(&expr, result, "momentum_conservation", state)
 }
 
 fn handle_spinor_simplify_spinor(
@@ -5074,14 +5341,12 @@ fn handle_spinor_simplify_spinor(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
-        call_named(
-            "spinor_simplify",
-            vec![expr, int_expr_arg(args, 1, "n")?],
-            state,
-        ),
+    let result = call_named(
+        "spinor_simplify",
+        vec![expr.clone(), int_expr_arg(args, 1, "n")?],
         state,
-    )
+    );
+    expr_response_with_change(&expr, result, "spinor_simplify", state)
 }
 
 fn handle_bcfw_shift_spinor(
@@ -5090,19 +5355,17 @@ fn handle_bcfw_shift_spinor(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let z = ax_ir::Expr::Sym(symbol_arg(args, 3, "z", state)?);
-    expr_response(
-        call_named(
-            "bcfw_shift",
-            vec![
-                expr,
-                int_expr_arg(args, 1, "i")?,
-                int_expr_arg(args, 2, "j")?,
-                z,
-            ],
-            state,
-        ),
+    let result = call_named(
+        "bcfw_shift",
+        vec![
+            expr.clone(),
+            int_expr_arg(args, 1, "i")?,
+            int_expr_arg(args, 2, "j")?,
+            z,
+        ],
         state,
-    )
+    );
+    expr_response_with_change(&expr, result, "bcfw_shift", state)
 }
 
 fn handle_bcfw_decomposition_spinor(
@@ -5119,7 +5382,7 @@ fn handle_bcfw_decomposition_spinor(
                 .ok_or_else(|| "helicities must contain integers".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "bcfw_decomposition",
             vec![
@@ -5130,6 +5393,7 @@ fn handle_bcfw_decomposition_spinor(
             ],
             state,
         ),
+        "bcfw_decomposition",
         state,
     )
 }
@@ -5138,7 +5402,7 @@ fn handle_four_bracket_twistor(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "four_bracket",
             vec![
@@ -5149,6 +5413,7 @@ fn handle_four_bracket_twistor(
             ],
             state,
         ),
+        "four_bracket",
         state,
     )
 }
@@ -5158,22 +5423,20 @@ fn handle_plucker_twistor(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
-        call_named(
-            "plucker",
-            vec![
-                expr,
-                int_expr_arg(args, 1, "a")?,
-                int_expr_arg(args, 2, "b")?,
-                int_expr_arg(args, 3, "c")?,
-                int_expr_arg(args, 4, "d")?,
-                int_expr_arg(args, 5, "e")?,
-                int_expr_arg(args, 6, "f")?,
-            ],
-            state,
-        ),
+    let result = call_named(
+        "plucker",
+        vec![
+            expr.clone(),
+            int_expr_arg(args, 1, "a")?,
+            int_expr_arg(args, 2, "b")?,
+            int_expr_arg(args, 3, "c")?,
+            int_expr_arg(args, 4, "d")?,
+            int_expr_arg(args, 5, "e")?,
+            int_expr_arg(args, 6, "f")?,
+        ],
         state,
-    )
+    );
+    expr_response_with_change(&expr, result, "plucker", state)
 }
 
 fn handle_perturb_general(
@@ -5181,28 +5444,26 @@ fn handle_perturb_general(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response(
-        call_named(
-            "perturb",
-            vec![
-                expr,
-                ax_ir::Expr::Sym(symbol_arg(args, 1, "field", state)?),
-                ax_ir::Expr::Sym(symbol_arg(args, 2, "background", state)?),
-                ax_ir::Expr::Sym(symbol_arg(args, 3, "perturbation", state)?),
-                ax_ir::Expr::Sym(symbol_arg(args, 4, "epsilon", state)?),
-                int_expr_arg(args, 5, "order")?,
-            ],
-            state,
-        ),
+    let result = call_named(
+        "perturb",
+        vec![
+            expr.clone(),
+            ax_ir::Expr::Sym(symbol_arg(args, 1, "field", state)?),
+            ax_ir::Expr::Sym(symbol_arg(args, 2, "background", state)?),
+            ax_ir::Expr::Sym(symbol_arg(args, 3, "perturbation", state)?),
+            ax_ir::Expr::Sym(symbol_arg(args, 4, "epsilon", state)?),
+            int_expr_arg(args, 5, "order")?,
+        ],
         state,
-    )
+    );
+    expr_response_with_change(&expr, result, "perturb", state)
 }
 
 fn handle_perturb_inverse(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "perturb_inverse",
             vec![
@@ -5215,6 +5476,7 @@ fn handle_perturb_inverse(
             ],
             state,
         ),
+        "perturb_inverse",
         state,
     )
 }
@@ -5228,7 +5490,7 @@ fn handle_perturb_tensor_named(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect();
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             name,
             vec![
@@ -5242,6 +5504,7 @@ fn handle_perturb_tensor_named(
             ],
             state,
         ),
+        name,
         state,
     )
 }
@@ -5275,12 +5538,13 @@ fn handle_linearized_einstein_cosmology(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "linearized_einstein",
             vec![int_expr_arg(args, 0, "order")?],
             state,
         ),
+        "linearized_einstein",
         state,
     )
 }
@@ -5289,7 +5553,7 @@ fn handle_nullary_named(
     name: &str,
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(call_named(name, Vec::new(), state), state)
+    expr_or_struct_response_named(call_named(name, Vec::new(), state), name, state)
 }
 
 fn handle_mukhanov_sasaki_cosmology(
@@ -5314,12 +5578,13 @@ fn handle_regge_wheeler_decompose_gauge(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named(
             "regge_wheeler_decompose",
             vec![int_expr_arg(args, 0, "l")?],
             state,
         ),
+        "regge_wheeler_decompose",
         state,
     )
 }
@@ -5346,8 +5611,9 @@ fn handle_zerilli_gauge(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named("zerilli", vec![int_expr_arg(args, 0, "l")?], state),
+        "zerilli",
         state,
     )
 }
@@ -5355,8 +5621,9 @@ fn handle_regge_wheeler_gauge(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         call_named("regge_wheeler", vec![int_expr_arg(args, 0, "l")?], state),
+        "regge_wheeler",
         state,
     )
 }
@@ -5386,6 +5653,7 @@ fn handle_graded_declare(
         .graded_table
         .declare(symbol, grading.clone());
     Ok(serde_json::json!({
+        "status": "ok",
         "symbol": state.interner().resolve(symbol),
         "grading": format!("{:?}", grading)
     }))
@@ -5398,7 +5666,16 @@ fn handle_graded_commutator_entry(
     let lhs = expr_from_id(args, 0, "lhs", state)?;
     let rhs = expr_from_id(args, 1, "rhs", state)?;
     let out = ax_graded::graded_commutator(&lhs, &rhs, &state.env().graded_table, state.interner());
-    expr_response(out, state)
+    let mut response = expr_or_struct_response(out, state)?;
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("status".to_string(), serde_json::json!("ok"));
+        obj.insert("changed".to_string(), serde_json::json!(true));
+        obj.insert(
+            "message".to_string(),
+            serde_json::json!("graded_commutator applied successfully"),
+        );
+    }
+    Ok(response)
 }
 
 fn handle_graded_simplify_entry(
@@ -5407,7 +5684,7 @@ fn handle_graded_simplify_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let out = ax_graded::graded_simplify(&expr, &state.env().graded_table, state.interner());
-    expr_response(out, state)
+    expr_response_with_change(&expr, out, "graded_simplify", state)
 }
 
 fn active_superspace_for_state(
@@ -5478,8 +5755,9 @@ fn superfield_expr_response(
     setup: &ax_graded::superspace::SuperspaceSetup,
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    expr_response(
+    expr_or_struct_response_named(
         ax_graded::superspace::superfield_to_expr(&expansion, setup, state.interner()),
+        "superfield",
         state,
     )
 }
@@ -5545,8 +5823,10 @@ fn handle_extract_component_entry(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let (setup, table) = active_superspace_for_state(state);
     let theta = theta_monomial_from_json(require_arg(args, 1, "theta_spec")?, &setup)?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_graded::superspace::extract_component(&expr, &theta, &setup, &table, state.interner()),
+        "extract_component",
         state,
     )
 }
@@ -5558,8 +5838,10 @@ fn handle_d_alpha_entry(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let alpha = int_arg(args, 1, "alpha")? as usize;
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_graded::d_algebra::apply_d_alpha(&expr, alpha, &setup, &table, state.interner()),
+        "d_alpha",
         state,
     )
 }
@@ -5571,8 +5853,10 @@ fn handle_d_bar_entry(
     let expr = expr_from_id(args, 0, "expr", state)?;
     let alpha = int_arg(args, 1, "alpha_dot")? as usize;
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_graded::d_algebra::apply_d_bar_alpha_dot(&expr, alpha, &setup, &table, state.interner()),
+        "d_bar",
         state,
     )
 }
@@ -5583,8 +5867,10 @@ fn handle_d_squared_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_graded::d_algebra::d_squared(&expr, &setup, &table, state.interner()),
+        "d_squared",
         state,
     )
 }
@@ -5595,8 +5881,10 @@ fn handle_d_bar_squared_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_graded::d_algebra::d_bar_squared(&expr, &setup, &table, state.interner()),
+        "d_bar_squared",
         state,
     )
 }
@@ -5616,7 +5904,8 @@ fn handle_superspace_integrate_entry(
         other => return Err(format!("unknown superspace measure '{other}'")),
     };
     let (setup, table) = active_superspace_for_state(state);
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_graded::d_algebra::superspace_integrate(
             &expr,
             measure,
@@ -5624,6 +5913,7 @@ fn handle_superspace_integrate_entry(
             &table,
             state.interner(),
         ),
+        "superspace_integrate",
         state,
     )
 }
@@ -5660,8 +5950,10 @@ fn handle_brst_entry(
         .brst_setup
         .clone()
         .ok_or_else(|| "BRST setup is not initialized; call setup_brst_ym first".to_string())?;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_graded::brst::apply_brst(&expr, &setup, &state.env().graded_table, state.interner()),
+        "brst",
         state,
     )
 }
@@ -5681,7 +5973,7 @@ fn handle_brst_check_entry(
     let simplified =
         ax_graded::graded_simplify(&applied, &state.env().graded_table, state.interner());
     Ok(
-        serde_json::json!({ "closed": simplified == ax_ir::Expr::zero(), "result": state.render_unicode(&simplified) }),
+        serde_json::json!({ "status": "ok", "closed": simplified == ax_ir::Expr::zero(), "result": state.render_unicode(&simplified) }),
     )
 }
 
@@ -5691,7 +5983,7 @@ fn handle_ghost_number_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     match ax_graded::brst::ghost_number(&expr, &state.env().graded_table) {
-        Some(n) => Ok(serde_json::json!({ "ghost_number": n })),
+        Some(n) => Ok(serde_json::json!({ "status": "ok", "ghost_number": n })),
         None => Err("expression has inconsistent ghost number".to_string()),
     }
 }
@@ -5702,13 +5994,15 @@ fn handle_filter_ghost_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let target = int_arg(args, 1, "n")? as i32;
-    expr_response(
+    expr_response_with_change(
+        &expr,
         ax_graded::brst::filter_by_ghost_number(
             &expr,
             target,
             &state.env().graded_table,
             state.interner(),
         ),
+        "filter_ghost_number",
         state,
     )
 }
