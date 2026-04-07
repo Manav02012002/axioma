@@ -1,3 +1,4 @@
+<!-- This file is AI-vendor-agnostic. Do not add references to specific AI models or providers. -->
 # Axioma Language Reference (LLM Context)
 
 > This file is auto-generated. It is the complete reference for the Axioma scientific computing language. Inject this into your LLM system prompt or tool description when working with .ax files.

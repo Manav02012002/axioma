@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod diagnostics;
 pub mod equation;
 pub mod inspect;
 pub mod integrate;
@@ -9,6 +10,7 @@ pub mod registry;
 pub mod series;
 pub mod simplify;
 pub mod suggest;
+pub mod workflows;
 
 use ax_ir::{Assumption, Condition, Expr, Grading};
 use num_bigint::BigInt;
@@ -44,6 +46,7 @@ pub struct Env {
     pub gradings: HashMap<lasso::Spur, Grading>,
     pub operators: HashMap<lasso::Spur, ax_qm::OperatorKind>,
     pub coordinates: HashSet<lasso::Spur>,
+    pub component_rule_symbols: HashSet<lasso::Spur>,
     pub index_families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
     pub index_to_family: HashMap<lasso::Spur, lasso::Spur>,
     /// Deprecated: use property_store instead. Kept for backward compatibility with external code.
@@ -72,6 +75,7 @@ impl Env {
             gradings: HashMap::new(),
             operators: HashMap::new(),
             coordinates: HashSet::new(),
+            component_rule_symbols: HashSet::new(),
             index_families: HashMap::new(),
             index_to_family: HashMap::new(),
             tensor_properties: HashMap::new(),
@@ -105,6 +109,7 @@ impl Env {
             gradings: self.gradings.clone(),
             operators: self.operators.clone(),
             coordinates: self.coordinates.clone(),
+            component_rule_symbols: self.component_rule_symbols.clone(),
             index_families: self.index_families.clone(),
             index_to_family: self.index_to_family.clone(),
             tensor_properties: self.tensor_properties.clone(),
@@ -988,7 +993,7 @@ fn extract_sym_list(expr: &Expr) -> Vec<lasso::Spur> {
     }
 }
 
-fn parse_component_rules(rule_exprs: &[Expr]) -> Vec<ax_tensor::ComponentRule> {
+pub fn parse_component_rules(rule_exprs: &[Expr]) -> Vec<ax_tensor::ComponentRule> {
     let mut rules = Vec::new();
     for rule_expr in rule_exprs {
         let Expr::List(items) = rule_expr else {
@@ -1034,6 +1039,20 @@ fn parse_component_rules(rule_exprs: &[Expr]) -> Vec<ax_tensor::ComponentRule> {
         });
     }
     rules
+}
+
+pub fn parse_component_rules_expr(expr: &Expr) -> Vec<ax_tensor::ComponentRule> {
+    match expr {
+        Expr::List(items) => parse_component_rules(items),
+        Expr::Matrix(rows) => {
+            let row_exprs = rows
+                .iter()
+                .map(|row| Expr::List(row.clone()))
+                .collect::<Vec<_>>();
+            parse_component_rules(&row_exprs)
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn grading_rank(grading: Grading) -> usize {

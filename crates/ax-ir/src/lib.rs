@@ -3,14 +3,43 @@ pub mod intern;
 pub mod pool;
 pub mod pretty;
 
+use std::cell::Cell;
+use std::time::Instant;
+
 pub use expr::{
     Assumption, Condition, Convention, Expr, FourierSign, Grading, Index, IndexFamily,
-    IndexPosition, LeviCivitaNorm, MetricSignature, RicciContraction, RiemannSign, TensorProperty,
-    ParentRel, TrustLevel, Variance,
+    IndexPosition, LeviCivitaNorm, MetricSignature, ParentRel, RicciContraction, RiemannSign,
+    TensorProperty, TrustLevel, Variance,
 };
 pub use intern::Interner;
 pub use pool::{ExprBuilder, ExprId, ExprPool, PooledExpr};
 pub use pretty::pretty_print;
+
+thread_local! {
+    static CURRENT_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+pub fn current_deadline() -> Option<Instant> {
+    CURRENT_DEADLINE.with(Cell::get)
+}
+
+pub fn with_deadline<T>(deadline: Option<Instant>, f: impl FnOnce() -> T) -> T {
+    CURRENT_DEADLINE.with(|slot| {
+        let previous = slot.replace(deadline);
+        let out = f();
+        slot.set(previous);
+        out
+    })
+}
+
+pub fn check_deadline() -> Result<(), String> {
+    if let Some(deadline) = current_deadline() {
+        if Instant::now() > deadline {
+            return Err("computation timed out".to_string());
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

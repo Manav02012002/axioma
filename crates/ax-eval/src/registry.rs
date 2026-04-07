@@ -49,6 +49,7 @@ pub struct AssumptionEntry {
 
 pub struct CallableEntry {
     pub name: &'static str,
+    pub category: &'static str,
     pub description: &'static str,
     pub parameters: &'static [ParamDef],
     pub handler: fn(
@@ -100,6 +101,27 @@ pub trait EvalState {
     fn get_ricci(&self, id: &str) -> Option<&Vec<Vec<ax_ir::Expr>>>;
     fn store_ricci(&mut self, id: String, ric: Vec<Vec<ax_ir::Expr>>);
     fn get_matrix_data(&self, id: &str) -> Option<Vec<Vec<ax_ir::Expr>>>;
+    fn list_expression_ids(&self) -> Vec<String> {
+        vec![]
+    }
+    fn list_metric_ids(&self) -> Vec<String> {
+        vec![]
+    }
+    fn list_christoffel_ids(&self) -> Vec<String> {
+        vec![]
+    }
+    fn list_riemann_ids(&self) -> Vec<String> {
+        vec![]
+    }
+    fn list_ricci_ids(&self) -> Vec<String> {
+        vec![]
+    }
+    fn list_properties(&self) -> Vec<(String, Vec<String>)> {
+        vec![]
+    }
+    fn list_index_families(&self) -> Vec<(String, Vec<String>, Option<usize>)> {
+        vec![]
+    }
     fn deadline(&self) -> Option<std::time::Instant> {
         None
     }
@@ -2155,8 +2177,19 @@ fn centry(
     parameters: &'static [ParamDef],
     handler: fn(&[serde_json::Value], &mut dyn EvalState) -> Result<serde_json::Value, String>,
 ) -> CallableEntry {
+    let category = match name {
+        "list_expressions"
+        | "list_metrics"
+        | "list_properties"
+        | "list_index_families"
+        | "get_state_summary" => "state",
+        "diff" | "check_properties" | "explain" => "diagnostics",
+        "workflow" | "list_workflows" => "workflow",
+        _ => "general",
+    };
     CallableEntry {
         name,
+        category,
         description,
         parameters,
         handler,
@@ -2430,6 +2463,83 @@ fn points_response(points: Vec<(f64, f64)>) -> Result<serde_json::Value, String>
         "status": "ok",
         "points": points.into_iter().map(|(x, y)| serde_json::json!({"x": x, "y": y})).collect::<Vec<_>>()
     }))
+}
+
+pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> String {
+    use ax_ir::TensorProperty;
+
+    match prop {
+        TensorProperty::Symmetric(slots) => format!("Symmetric(slots: {:?})", slots),
+        TensorProperty::AntiSymmetric(slots) => format!("AntiSymmetric(slots: {:?})", slots),
+        TensorProperty::RiemannSymmetry => "RiemannSymmetry".to_string(),
+        TensorProperty::Traceless => "Traceless".to_string(),
+        TensorProperty::Diagonal => "Diagonal".to_string(),
+        TensorProperty::Trace => "Trace".to_string(),
+        TensorProperty::Metric => "Metric".to_string(),
+        TensorProperty::InverseMetric => "InverseMetric".to_string(),
+        TensorProperty::KroneckerDelta => "KroneckerDelta".to_string(),
+        TensorProperty::EpsilonTensor => "EpsilonTensor".to_string(),
+        TensorProperty::Derivative => "Derivative".to_string(),
+        TensorProperty::PartialDerivative => "PartialDerivative".to_string(),
+        TensorProperty::CovariantDerivative => "CovariantDerivative".to_string(),
+        TensorProperty::Depends(syms) => format!(
+            "Depends({})",
+            syms.iter()
+                .map(|s| interner.resolve(*s).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TensorProperty::Spinor => "Spinor".to_string(),
+        TensorProperty::DiracBar => "DiracBar".to_string(),
+        TensorProperty::GammaMatrixProp => "GammaMatrix".to_string(),
+        TensorProperty::Commuting => "Commuting".to_string(),
+        TensorProperty::AntiCommuting => "AntiCommuting".to_string(),
+        TensorProperty::NonCommuting => "NonCommuting".to_string(),
+        TensorProperty::CommutingWith(syms) => format!(
+            "CommutingWith({})",
+            syms.iter()
+                .map(|s| interner.resolve(*s).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TensorProperty::AntiCommutingWith(syms) => format!(
+            "AntiCommutingWith({})",
+            syms.iter()
+                .map(|s| interner.resolve(*s).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TensorProperty::NonCommutingWith(syms) => format!(
+            "NonCommutingWith({})",
+            syms.iter()
+                .map(|s| interner.resolve(*s).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TensorProperty::SelfAntiCommuting => "SelfAntiCommuting".to_string(),
+        TensorProperty::SelfNonCommuting => "SelfNonCommuting".to_string(),
+        TensorProperty::SelfCommuting => "SelfCommuting".to_string(),
+        TensorProperty::CommutingAsProduct => "CommutingAsProduct".to_string(),
+        TensorProperty::CommutingAsSum => "CommutingAsSum".to_string(),
+        TensorProperty::MajoranaSpinor => "MajoranaSpinor".to_string(),
+        TensorProperty::WeylSpinor => "WeylSpinor".to_string(),
+        TensorProperty::ImplicitIndex => "ImplicitIndex".to_string(),
+        TensorProperty::SortOrder(syms) => format!(
+            "SortOrder({})",
+            syms.iter()
+                .map(|s| interner.resolve(*s).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TensorProperty::TableauSymmetry { shape, indices } => {
+            format!("TableauSymmetry(shape: {:?}, indices: {:?})", shape, indices)
+        }
+        TensorProperty::SatisfiesBianchi => "SatisfiesBianchi".to_string(),
+        TensorProperty::WeylTensor => "WeylTensor".to_string(),
+        TensorProperty::DifferentialFormDegree(d) => {
+            format!("DifferentialForm(degree: {})", d)
+        }
+    }
 }
 
 fn expr_or_struct_response(
@@ -3954,11 +4064,10 @@ fn handle_evaluate_components_tensor(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let rules_expr = expr_from_id(args, 1, "rules", state)?;
-    let rules = if let ax_ir::Expr::List(items) = rules_expr {
-        crate::parse_component_rules(&items)
-    } else {
-        Vec::new()
-    };
+    let rules = crate::parse_component_rules_expr(&rules_expr);
+    for rule in &rules {
+        state.env_mut().component_rule_symbols.insert(rule.tensor);
+    }
     let env = ax_tensor::DefaultEvalEnv::new(
         state.env().coordinates.iter().copied().collect(),
         state.env().tensor_properties.clone(),
@@ -4185,13 +4294,68 @@ fn handle_ricci_scalar_gr(
     )
 }
 
+fn handle_scalar_curvature_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let id = string_arg(args, 0, "ricci_id")?;
+    let ricci = state
+        .get_ricci(id)
+        .cloned()
+        .ok_or_else(|| format!("unknown ricci '{id}'"))?;
+    let metric = state
+        .get_metric(id)
+        .map(|(m, _)| m.clone())
+        .ok_or_else(|| format!("unknown metric '{id}'"))?;
+    let input_expr = ax_ir::Expr::Matrix(ricci.clone());
+    expr_response_with_change(
+        &input_expr,
+        crate::eval(
+            &ax_tensor::ricci_scalar(&ricci, &metric.symbolic_inverse(state.interner()), state.interner()),
+            state.env(),
+            state.interner(),
+        ),
+        "scalar_curvature",
+        state,
+    )
+}
+
 fn handle_einstein_tensor_gr(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    let ricci = matrix_from_id(args, 0, "ricci", state)?;
-    let scalar = expr_from_id(args, 1, "scalar", state)?;
-    let metric = symbolic_matrix_from_rows(matrix_from_id(args, 2, "metric", state)?)?;
+    let has_id_mode = args
+        .get(0)
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+        && args.get(1).and_then(serde_json::Value::as_str).is_some()
+        && args
+            .get(2)
+            .map(|value| value.is_null())
+            .unwrap_or(true);
+    let (ricci, scalar, metric) = if has_id_mode {
+        let ricci_id = string_arg(args, 0, "ricci_id")?;
+        let metric_id = string_arg(args, 1, "metric_id")?;
+        let ricci = state
+            .get_ricci(ricci_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown ricci '{ricci_id}'"))?;
+        let metric = state
+            .get_metric(metric_id)
+            .map(|(m, _)| m.clone())
+            .ok_or_else(|| format!("unknown metric '{metric_id}'"))?;
+        let scalar = crate::eval(
+            &ax_tensor::ricci_scalar(&ricci, &metric.symbolic_inverse(state.interner()), state.interner()),
+            state.env(),
+            state.interner(),
+        );
+        (ricci, scalar, metric)
+    } else {
+        let ricci = matrix_from_id(args, 2, "ricci", state)?;
+        let scalar = expr_from_id(args, 3, "scalar", state)?;
+        let metric = symbolic_matrix_from_rows(matrix_from_id(args, 4, "metric", state)?)?;
+        (ricci, scalar, metric)
+    };
     matrix_response(
         evaluate_matrix(
             ax_tensor::einstein_tensor(&ricci, &scalar, &metric, state.interner()),
@@ -4199,6 +4363,87 @@ fn handle_einstein_tensor_gr(
         ),
         state,
     )
+}
+
+fn handle_weyl_curvature_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let riemann_id = string_arg(args, 0, "riemann_id")?;
+    let riem = state
+        .get_riemann(riemann_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown riemann '{riemann_id}'"))?;
+    let ricci = state
+        .get_ricci(riemann_id)
+        .cloned()
+        .ok_or_else(|| format!("unknown ricci '{riemann_id}'"))?;
+    let metric = state
+        .get_metric(riemann_id)
+        .map(|(m, _)| m.clone())
+        .ok_or_else(|| format!("unknown metric '{riemann_id}'"))?;
+    let dim = metric.dim;
+    if dim < 3 {
+        return Err("weyl curvature is only defined for dimension >= 3".to_string());
+    }
+    let scalar = crate::eval(
+        &ax_tensor::ricci_scalar(&ricci, &metric.symbolic_inverse(state.interner()), state.interner()),
+        state.env(),
+        state.interner(),
+    );
+    let denom1 = ax_ir::Expr::Rational(num_rational::BigRational::new(1.into(), (dim as i64 - 2).into()));
+    let denom2 = ax_ir::Expr::Rational(num_rational::BigRational::new(1.into(), (((dim - 1) * (dim - 2)) as i64).into()));
+    let mut out = vec![vec![vec![vec![ax_ir::Expr::zero(); dim]; dim]; dim]; dim];
+    for a in 0..dim {
+        for b in 0..dim {
+            for c in 0..dim {
+                for d in 0..dim {
+                    let r = riem[a][b][c][d].clone();
+                    let rab = &ricci;
+                    let gac = metric.data[a][c].clone();
+                    let gad = metric.data[a][d].clone();
+                    let gbc = metric.data[b][c].clone();
+                    let gbd = metric.data[b][d].clone();
+                    let term1 = ax_ir::Expr::mul(vec![
+                        denom1.clone(),
+                        ax_ir::Expr::add(vec![
+                            ax_ir::Expr::mul(vec![gac, rab[d][b].clone()]),
+                            ax_ir::Expr::neg(ax_ir::Expr::mul(vec![gad, rab[c][b].clone()])),
+                            ax_ir::Expr::neg(ax_ir::Expr::mul(vec![gbc, rab[d][a].clone()])),
+                            ax_ir::Expr::mul(vec![gbd, rab[c][a].clone()]),
+                        ]),
+                    ]);
+                    let term2 = ax_ir::Expr::mul(vec![
+                        denom2.clone(),
+                        scalar.clone(),
+                        ax_ir::Expr::add(vec![
+                            ax_ir::Expr::mul(vec![metric.data[a][c].clone(), metric.data[d][b].clone()]),
+                            ax_ir::Expr::neg(ax_ir::Expr::mul(vec![metric.data[a][d].clone(), metric.data[c][b].clone()])),
+                        ]),
+                    ]);
+                    out[a][b][c][d] = crate::eval(
+                        &ax_ir::Expr::add(vec![r, ax_ir::Expr::neg(term1), term2]),
+                        state.env(),
+                        state.interner(),
+                    );
+                }
+            }
+        }
+    }
+    let expr = ax_ir::Expr::List(
+        out.into_iter()
+            .map(|cube| {
+                ax_ir::Expr::List(
+                    cube.into_iter()
+                        .map(|plane| {
+                            ax_ir::Expr::List(plane.into_iter().map(ax_ir::Expr::List).collect())
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    expr_response(expr, state)
 }
 
 fn handle_kretschner_scalar_gr(
@@ -5142,11 +5387,256 @@ fn handle_suggest_analysis(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    let result = crate::suggest::suggest_for_expr(&expr, state.env(), state.interner());
+    let goal = args.get(1).and_then(|v| v.as_str());
+    let result = crate::suggest::suggest_for_expr(&expr, state.env(), state.interner(), goal);
     Ok(serde_json::json!({
         "status": "ok",
+        "goal": goal,
+        "note": result.note,
         "suggestions": result.suggestions.into_iter().map(|s| serde_json::json!({"algorithm": s.algorithm, "reason": s.reason})).collect::<Vec<_>>(),
         "missing": result.missing.into_iter().map(|m| serde_json::json!({"symbol": m.symbol, "suggestion": m.suggestion})).collect::<Vec<_>>()
+    }))
+}
+
+const DIAGNOSTIC_ALGORITHMS: &[&str] = &[
+    "canonicalise",
+    "meld",
+    "collect_terms",
+    "simplify",
+    "sort_product",
+    "eliminate_metric",
+    "eliminate_kronecker",
+    "rename_dummies",
+    "evaluate_components",
+    "epsilon_to_delta",
+    "expand_delta",
+    "reduce_delta",
+    "distribute",
+    "unwrap",
+    "product_rule",
+    "integrate_by_parts",
+    "factor_out",
+    "factor_in",
+];
+
+fn handle_diff_diagnostics(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr_a = expr_from_id(args, 0, "expr_a", state)?;
+    let expr_b = expr_from_id(args, 1, "expr_b", state)?;
+    let mut result = crate::diagnostics::diff_expressions(&expr_a, &expr_b, state.interner());
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("status".to_string(), serde_json::json!("ok"));
+    }
+    Ok(result)
+}
+
+fn handle_check_properties_diagnostics(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let algorithm = require_arg(args, 1, "algorithm")?
+        .as_str()
+        .ok_or_else(|| "argument 'algorithm' must be a string".to_string())?;
+    let mut result =
+        crate::diagnostics::check_properties(&expr, algorithm, state.env(), state.interner());
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("status".to_string(), serde_json::json!("ok"));
+    }
+    Ok(result)
+}
+
+fn handle_explain_diagnostics(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let algorithm = require_arg(args, 0, "algorithm")?
+        .as_str()
+        .ok_or_else(|| "argument 'algorithm' must be a string".to_string())?;
+    let expr = expr_from_id(args, 1, "expr", state)?;
+    Ok(serde_json::json!({
+        "status": "ok",
+        "explanation": crate::diagnostics::explain_algorithm(algorithm, &expr, state.env(), state.interner()),
+    }))
+}
+
+fn handle_workflow_lookup(
+    args: &[serde_json::Value],
+    _state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let goal = require_arg(args, 0, "goal")?
+        .as_str()
+        .ok_or_else(|| "argument 'goal' must be a string".to_string())?;
+    if let Some(workflow) = crate::workflows::lookup_workflow(goal) {
+        return Ok(serde_json::json!({
+            "status": "ok",
+            "goal": workflow.goal,
+            "description": workflow.description,
+            "steps": workflow.steps.iter().map(|step| serde_json::json!({
+                "tool": step.tool,
+                "params_template": step.params_template,
+                "description": step.description,
+                "output_key": step.output_key,
+            })).collect::<Vec<_>>(),
+            "notes": workflow.notes,
+        }));
+    }
+    Ok(serde_json::json!({
+        "status": "ok",
+        "message": format!("No exact workflow found for '{}'. Available workflows:", goal),
+        "available": crate::workflows::list_workflows().into_iter().map(|(goal, description)| serde_json::json!({
+            "goal": goal,
+            "description": description,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+fn handle_list_workflows(
+    _args: &[serde_json::Value],
+    _state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "status": "ok",
+        "available": crate::workflows::list_workflows().into_iter().map(|(goal, description)| serde_json::json!({
+            "goal": goal,
+            "description": description,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+fn handle_list_expressions_state(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expressions = state
+        .list_expression_ids()
+        .into_iter()
+        .filter_map(|id| {
+            state.get_expr(&id).map(|expr| {
+                serde_json::json!({
+                    "id": id,
+                    "latex": state.render_latex(expr),
+                    "unicode": state.render_unicode(expr),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "status": "ok",
+        "expressions": expressions,
+    }))
+}
+
+fn handle_list_metrics_state(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let metrics = state
+        .list_metric_ids()
+        .into_iter()
+        .filter_map(|id| {
+            state.get_metric(&id).map(|(_, coords)| {
+                serde_json::json!({
+                    "id": id,
+                    "coordinates": coords.iter().map(|c| state.interner().resolve(*c).to_string()).collect::<Vec<_>>(),
+                    "dimension": coords.len(),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "status": "ok",
+        "metrics": metrics,
+    }))
+}
+
+fn handle_list_properties_state(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "status": "ok",
+        "properties": state.list_properties().into_iter().map(|(symbol, properties)| serde_json::json!({
+            "symbol": symbol,
+            "properties": properties,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+fn handle_list_index_families_state(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "status": "ok",
+        "families": state.list_index_families().into_iter().map(|(name, indices, dimension)| serde_json::json!({
+            "name": name,
+            "indices": indices,
+            "dimension": dimension,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+fn handle_get_state_summary_state(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expressions = state
+        .list_expression_ids()
+        .into_iter()
+        .filter_map(|id| {
+            state.get_expr(&id).map(|expr| {
+                serde_json::json!({
+                    "id": id,
+                    "latex": state.render_latex(expr),
+                    "unicode": state.render_unicode(expr),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let metrics = state
+        .list_metric_ids()
+        .into_iter()
+        .filter_map(|id| {
+            state.get_metric(&id).map(|(_, coords)| {
+                serde_json::json!({
+                    "id": id,
+                    "coordinates": coords.iter().map(|c| state.interner().resolve(*c).to_string()).collect::<Vec<_>>(),
+                    "dimension": coords.len(),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let properties = state
+        .list_properties()
+        .into_iter()
+        .map(|(symbol, properties)| serde_json::json!({
+            "symbol": symbol,
+            "properties": properties,
+        }))
+        .collect::<Vec<_>>();
+    let index_families = state
+        .list_index_families()
+        .into_iter()
+        .map(|(name, indices, dimension)| serde_json::json!({
+            "name": name,
+            "indices": indices,
+            "dimension": dimension,
+        }))
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({
+        "status": "ok",
+        "expression_count": expressions.len(),
+        "expressions": expressions,
+        "metric_count": metrics.len(),
+        "metrics": metrics,
+        "properties": properties,
+        "index_families": index_families,
+        "christoffel_ids": state.list_christoffel_ids(),
+        "riemann_ids": state.list_riemann_ids(),
+        "ricci_ids": state.list_ricci_ids(),
     }))
 }
 
@@ -6014,7 +6504,6 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("eval", "Parse and evaluate an Axioma code snippet.", ps(vec![pdef("code", ParamType::Code, true, "Axioma code or expression.")]), handle_eval_code),
         centry("import", "Import an Axioma std module via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Import declaration code.")]), handle_eval_syntax_entry),
         centry("assume", "Declare assumptions via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Assumption declaration code.")]), handle_eval_syntax_entry),
-        centry("diff", "Symbolic differentiation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Differentiation variable.")]), handle_diff),
         centry("differentiate", "Symbolic differentiation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Differentiation variable.")]), handle_diff),
         centry("integrate", "Indefinite symbolic integration.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Integration variable.")]), handle_integrate),
         centry("double_integral", "Iterated double integration.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("x", ParamType::Symbol, true, "Inner integration variable."), pdef("y", ParamType::Symbol, true, "Outer integration variable.")]), handle_double_integral),
@@ -6035,6 +6524,7 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("apart", "Alias for partial_fractions.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("variable", ParamType::Symbol, true, "Decomposition variable.")]), handle_partial_fractions),
         centry("trig_simplify", "Exact trigonometric simplification.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_trig_simplify),
         centry("factor_out", "Factor common symbols from a sum.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("targets", ParamType::SymbolList, false, "Optional target symbols to factor.")]), handle_factor_out),
+        centry("collect_factors", "Factor common symbols from a sum.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("targets", ParamType::SymbolList, false, "Optional target symbols to factor.")]), handle_factor_out),
         centry("factor_in", "Group terms with common prefactors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("targets", ParamType::SymbolList, false, "Optional target symbols to factor.")]), handle_factor_in),
         centry("eq", "Create an equation object.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Left-hand side expression id."), pdef("rhs", ParamType::ExprId, true, "Right-hand side expression id.")]), handle_eq_entry),
         centry("get_lhs", "Get the left-hand side of an equation.", ps(vec![pdef("expr", ParamType::ExprId, true, "Equation expression id.")]), handle_get_lhs_entry),
@@ -6161,6 +6651,7 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("product_rule", "Apply the tensor Leibniz rule.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_product_rule_tensor),
         centry("leibniz", "Apply the tensor Leibniz rule.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_product_rule_tensor),
         centry("tensor_distribute", "Distribute tensor products over sums.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_tensor_distribute),
+        centry("distribute", "Distribute tensor products over sums.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_tensor_distribute),
         centry("tdistribute", "Distribute tensor products over sums.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_tensor_distribute),
         centry("eliminate_kronecker", "Contract Kronecker deltas.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_eliminate_kronecker),
         centry("eliminate_metric", "Contract metric or inverse-metric factors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_eliminate_metric),
@@ -6204,11 +6695,26 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("riemann_from_christoffel", "Compute a Riemann tensor from stored Christoffel symbols.", ps(vec![pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id.")]), handle_riemann_from_christoffel),
         centry("ricci", "Contract a stored Riemann tensor to the Ricci tensor.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_ricci_from_riemann),
         centry("ricci_from_riemann", "Contract a stored Riemann tensor to the Ricci tensor.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_ricci_from_riemann),
+        centry("scalar_curvature", "Contract a stored Ricci tensor with the inverse of the stored metric.", ps(vec![pdef("ricci_id", ParamType::Code, true, "Stored ricci id.")]), handle_scalar_curvature_gr),
         centry("ricci_scalar", "Contract a Ricci tensor with an inverse metric.", ps(vec![pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."), pdef("metric_inverse", ParamType::ExprId, true, "Stored inverse metric matrix expression id.")]), handle_ricci_scalar_gr),
-        centry("einstein_tensor", "Build the Einstein tensor from metric, Ricci tensor, and Ricci scalar.", ps(vec![pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."), pdef("scalar", ParamType::ExprId, true, "Stored scalar expression id."), pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id.")]), handle_einstein_tensor_gr),
-        centry("einstein", "Build the Einstein tensor from metric, Ricci tensor, and Ricci scalar.", ps(vec![pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."), pdef("scalar", ParamType::ExprId, true, "Stored scalar expression id."), pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id.")]), handle_einstein_tensor_gr),
+        centry("einstein_tensor", "Build the Einstein tensor from metric, Ricci tensor, and Ricci scalar, or from stored Ricci/metric ids.", ps(vec![
+            pdef("ricci_id", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional stored ricci id."),
+            pdef("metric_id", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional stored metric id."),
+            pdef("ricci", ParamType::Optional(Box::new(ParamType::ExprId)), false, "Stored Ricci matrix expression id."),
+            pdef("scalar", ParamType::Optional(Box::new(ParamType::ExprId)), false, "Stored scalar expression id."),
+            pdef("metric", ParamType::Optional(Box::new(ParamType::ExprId)), false, "Stored metric matrix expression id."),
+        ]), handle_einstein_tensor_gr),
+        centry("einstein", "Build the Einstein tensor from metric, Ricci tensor, and Ricci scalar, or from stored Ricci/metric ids.", ps(vec![
+            pdef("ricci_id", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional stored ricci id."),
+            pdef("metric_id", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional stored metric id."),
+            pdef("ricci", ParamType::Optional(Box::new(ParamType::ExprId)), false, "Stored Ricci matrix expression id."),
+            pdef("scalar", ParamType::Optional(Box::new(ParamType::ExprId)), false, "Stored scalar expression id."),
+            pdef("metric", ParamType::Optional(Box::new(ParamType::ExprId)), false, "Stored metric matrix expression id."),
+        ]), handle_einstein_tensor_gr),
         centry("kretschner_scalar", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
         centry("kretschner", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
+        centry("weyl", "Compute the Weyl curvature tensor from stored curvature data.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_weyl_curvature_gr),
+        centry("weyl_curvature", "Compute the Weyl curvature tensor from stored curvature data.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_weyl_curvature_gr),
         centry("covariant_derivative_vector", "Covariant derivative of a vector.", ps(vec![pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_vector_gr),
         centry("covariant_diff", "Covariant derivative of a vector.", ps(vec![pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_vector_gr),
         centry("covariant_derivative_covector", "Covariant derivative of a covector.", ps(vec![pdef("covector", ParamType::ExprId, true, "Stored covector expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_covector_gr),
@@ -6328,12 +6834,25 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("set_convention", "Set one active convention field.", ps(vec![pdef("field", ParamType::Code, true, "Convention field name."), pdef("value", ParamType::Code, true, "Convention option name.")]), handle_set_convention),
         centry("define_rule", "Define a rewrite rule.", ps(vec![pdef("name", ParamType::Code, true, "Rule name."), pdef("lhs", ParamType::Code, true, "Left-hand-side code."), pdef("rhs", ParamType::Code, true, "Right-hand-side code.")]), handle_define_rule),
         centry("define_metric", "Define and store a symbolic metric with coordinates.", ps(vec![pdef("name", ParamType::Code, true, "Metric identifier."), pdef("components", ParamType::Matrix, true, "2D array of code strings."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_define_metric),
+        centry("list_expressions", "List stored expression ids with LaTeX and Unicode renderings.", ps(vec![]), handle_list_expressions_state),
+        centry("list_metrics", "List stored metric ids with coordinates and dimension.", ps(vec![]), handle_list_metrics_state),
+        centry("list_properties", "List declared tensor properties grouped by symbol.", ps(vec![]), handle_list_properties_state),
+        centry("list_index_families", "List declared index families and their values.", ps(vec![]), handle_list_index_families_state),
+        centry("get_state_summary", "Return a combined summary of stored expressions, metrics, properties, and index families.", ps(vec![]), handle_get_state_summary_state),
         centry("to_python", "Generate Python code.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_to_python_codegen),
         centry("to_rust", "Generate Rust code.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_to_rust_codegen),
         centry("to_cpp", "Generate C++ code.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_to_cpp_codegen),
         centry("equiv", "Test semantic equivalence.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored expression id."), pdef("rhs", ParamType::ExprId, true, "Stored expression id.")]), handle_equiv_analysis),
         centry("semantic_diff", "Summarize semantic differences.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored expression id."), pdef("rhs", ParamType::ExprId, true, "Stored expression id.")]), handle_semantic_diff_analysis),
+        centry("diff", "Compare two expressions structurally.", ps(vec![pdef("expr_a", ParamType::ExprId, true, "First stored expression id."), pdef("expr_b", ParamType::ExprId, true, "Second stored expression id.")]), handle_diff_diagnostics),
+        centry("check_properties", "Check whether an expression has the properties and index declarations an algorithm expects.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("algorithm", ParamType::StringEnum(DIAGNOSTIC_ALGORITHMS), true, "Algorithm to diagnose.")]), handle_check_properties_diagnostics),
+        centry("explain", "Explain what an algorithm does and why it might not change an expression.", ps(vec![pdef("algorithm", ParamType::StringEnum(DIAGNOSTIC_ALGORITHMS), true, "Algorithm to explain."), pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_explain_diagnostics),
+        centry("workflow", "Look up a recommended MCP tool sequence for a physics or algebra task.", ps(vec![pdef("goal", ParamType::Code, true, "Workflow name or natural-language goal.")]), handle_workflow_lookup),
+        centry("list_workflows", "List the available workflow templates.", ps(vec![]), handle_list_workflows),
         centry("inspect", "Inspect an expression structurally.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_inspect_analysis),
-        centry("suggest", "Suggest next algorithms for an expression.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_suggest_analysis),
+        centry("suggest", "Suggest next algorithms for an expression, optionally prioritised for a goal.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("goal", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional goal description (e.g. 'simplify', 'prove vanishes', 'evaluate components')."),
+        ]), handle_suggest_analysis),
     ]
 }

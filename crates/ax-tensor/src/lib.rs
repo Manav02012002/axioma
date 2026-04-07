@@ -14,6 +14,16 @@ use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+fn deadline_timeout_expr(interner: &Interner) -> Option<Expr> {
+    ax_ir::check_deadline()
+        .err()
+        .map(|_| Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]))
+}
+
+pub fn is_timeout_expr(expr: &Expr, interner: &Interner) -> bool {
+    matches!(expr, Expr::Call(sym, args) if args.is_empty() && interner.resolve(*sym) == "__axioma_timeout__")
+}
+
 pub trait DummyRenameEnv {
     fn index_families(&self) -> &HashMap<lasso::Spur, ax_ir::IndexFamily>;
     fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur>;
@@ -1448,11 +1458,20 @@ pub fn meld(
     tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
     match expr {
         Expr::Add(terms) => {
             let mut groups: Vec<(String, Vec<(Expr, usize)>)> = Vec::new();
             for (idx, term) in terms.iter().enumerate() {
+                if let Some(timeout) = deadline_timeout_expr(interner) {
+                    return timeout;
+                }
                 let simplified = meld(term, tensor_properties, interner);
+                if is_timeout_expr(&simplified, interner) {
+                    return simplified;
+                }
                 let key = tensor_structure_key(&simplified, interner);
                 if let Some((_, bucket)) = groups.iter_mut().find(|(k, _)| *k == key) {
                     bucket.push((simplified, idx));
@@ -1464,6 +1483,9 @@ pub fn meld(
             let mut result_terms: Vec<Expr> = Vec::new();
 
             for (_, group) in &groups {
+                if let Some(timeout) = deadline_timeout_expr(interner) {
+                    return timeout;
+                }
                 if group.len() <= 1 {
                     result_terms.push(group[0].0.clone());
                     continue;
@@ -1480,6 +1502,9 @@ pub fn meld(
 
                 let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
                 for (term, _) in group.iter() {
+                    if let Some(timeout) = deadline_timeout_expr(interner) {
+                        return timeout;
+                    }
                     let (scalar, indices) = extract_scalar_and_indices(term);
                     let adj = adjform::Adjform::from_indices(&indices);
                     let coeff = scalar_to_rational(&scalar);
@@ -1492,6 +1517,9 @@ pub fn meld(
                 let mut mapping: Vec<adjform::Adjform> = Vec::new();
 
                 for (i, proj) in projections.iter().enumerate() {
+                    if let Some(timeout) = deadline_timeout_expr(interner) {
+                        return timeout;
+                    }
                     if proj.is_empty() {
                         continue;
                     }
@@ -1564,6 +1592,9 @@ pub fn meld(
                     .collect();
 
                 for proj in &projections {
+                    if let Some(timeout) = deadline_timeout_expr(interner) {
+                        return timeout;
+                    }
                     if proj.is_empty() {
                         continue;
                     }
@@ -1607,10 +1638,17 @@ pub fn meld(
             }
         }
         Expr::Mul(factors) => Expr::mul(
-            factors
-                .iter()
-                .map(|factor| meld(factor, tensor_properties, interner))
-                .collect(),
+            {
+                let mut out = Vec::with_capacity(factors.len());
+                for factor in factors {
+                    let simplified = meld(factor, tensor_properties, interner);
+                    if is_timeout_expr(&simplified, interner) {
+                        return simplified;
+                    }
+                    out.push(simplified);
+                }
+                out
+            },
         ),
         Expr::Neg(inner) => Expr::neg(meld(inner, tensor_properties, interner)),
         _ => expr.clone(),
@@ -2275,6 +2313,9 @@ pub fn evaluate_components_v2(
     env: &dyn ComponentEvalEnv,
     interner: &ax_ir::Interner,
 ) -> Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
     evaluate_node(expr, rules, env, env.tensor_properties(), interner)
 }
 
@@ -2285,6 +2326,9 @@ fn evaluate_node(
     properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
     match expr {
         Expr::Add(terms) => handle_sum(terms, rules, env, properties, interner),
         Expr::Mul(factors) => handle_prod(factors, rules, env, properties, interner),
@@ -2412,6 +2456,9 @@ fn lookup_component_rule(
     let variances: Vec<ax_ir::Variance> = indices.iter().map(|i| i.variance.clone()).collect();
 
     for prop in properties.get_properties_with_indices(tensor_name, indices) {
+        if ax_ir::check_deadline().is_err() {
+            return Some(Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]));
+        }
         match prop {
             ax_ir::TensorProperty::Symmetric(positions) => {
                 let symmetric_slots: Vec<usize> = positions
@@ -2428,6 +2475,9 @@ fn lookup_component_rule(
                 slot_values.sort_by_key(|s| interner.resolve(*s).to_string());
 
                 loop {
+                    if ax_ir::check_deadline().is_err() {
+                        return Some(Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]));
+                    }
                     let mut trial = index_names.clone();
                     for (i, &slot) in symmetric_slots.iter().enumerate() {
                         trial[slot] = slot_values[i];
@@ -2460,6 +2510,9 @@ fn lookup_component_rule(
                 slot_values.sort_by_key(|s| interner.resolve(*s).to_string());
 
                 loop {
+                    if ax_ir::check_deadline().is_err() {
+                        return Some(Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]));
+                    }
                     let mut trial = index_names.clone();
                     for (i, &slot) in symmetric_slots.iter().enumerate() {
                         trial[slot] = slot_values[i];
@@ -2491,6 +2544,9 @@ fn lookup_component_rule(
                     ];
 
                     for (perm, sign) in riemann_perms {
+                        if ax_ir::check_deadline().is_err() {
+                            return Some(Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]));
+                        }
                         let trial: Vec<lasso::Spur> =
                             perm.iter().map(|&p| index_names[p]).collect();
                         let trial_vars: Vec<ax_ir::Variance> =
@@ -2622,10 +2678,17 @@ fn handle_sum(
     properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
-    let evaled: Vec<Expr> = terms
-        .iter()
-        .map(|t| evaluate_node(t, rules, env, properties, interner))
-        .collect();
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
+    let mut evaled = Vec::with_capacity(terms.len());
+    for term in terms {
+        let value = evaluate_node(term, rules, env, properties, interner);
+        if is_timeout_expr(&value, interner) {
+            return value;
+        }
+        evaled.push(value);
+    }
     collect_component_expr(Expr::add(evaled), interner)
 }
 
@@ -2636,6 +2699,9 @@ fn handle_prod(
     properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
     let original_product = Expr::mul(factors.to_vec());
     let ic = index_classifier::classify_indices(&original_product);
     if !ic.dummy.is_empty() {
@@ -2651,6 +2717,9 @@ fn handle_prod(
         let mut sum_terms = Vec::new();
 
         for combo in 0..total_combos {
+            if let Some(timeout) = deadline_timeout_expr(interner) {
+                return timeout;
+            }
             let mut assignment: HashMap<lasso::Spur, lasso::Spur> = HashMap::new();
             let mut idx = combo;
             for (name, _, _, _, _) in &ic.dummy {
@@ -2674,10 +2743,14 @@ fn handle_prod(
         return collect_component_expr(Expr::add(sum_terms), interner);
     }
 
-    let evaled: Vec<Expr> = factors
-        .iter()
-        .map(|f| evaluate_node(f, rules, env, properties, interner))
-        .collect();
+    let mut evaled = Vec::with_capacity(factors.len());
+    for factor in factors {
+        let value = evaluate_node(factor, rules, env, properties, interner);
+        if is_timeout_expr(&value, interner) {
+            return value;
+        }
+        evaled.push(value);
+    }
     if evaled.iter().any(|expr| matches!(expr, Expr::Add(_))) {
         let distributed = distribute_component_product(&evaled, interner);
         return collect_component_expr(distributed, interner);
@@ -2690,6 +2763,9 @@ fn distribute_component_product(factors: &[Expr], interner: &Interner) -> Expr {
     let mut terms = vec![Expr::one()];
 
     for factor in factors {
+        if let Some(timeout) = deadline_timeout_expr(interner) {
+            return timeout;
+        }
         let alternatives = match factor {
             Expr::Add(items) => items.clone(),
             other => vec![other.clone()],
@@ -3368,6 +3444,9 @@ fn canonicalize_indexed_slots(
 
     let mut signed_groups: Vec<Vec<usize>> = Vec::new();
     for prop in &properties {
+        if ax_ir::check_deadline().is_err() {
+            return (indices.to_vec(), i32::MIN);
+        }
         match prop {
             ax_ir::TensorProperty::AntiSymmetric(positions) => {
                 signed_groups.push(positions.clone());
@@ -3390,6 +3469,9 @@ fn canonicalize_indexed_slots(
         }
     }
     for group in signed_groups {
+        if ax_ir::check_deadline().is_err() {
+            return (indices.to_vec(), i32::MIN);
+        }
         for i in 0..group.len() {
             for j in (i + 1)..group.len() {
                 let Some(lhs) = indices.get(group[i]) else {
@@ -5105,6 +5187,9 @@ pub fn canonicalize_indices(
     properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
     match expr {
         Expr::Indexed(base, indices) => {
             let base_expr = canonicalize_indices(base, properties, interner);
@@ -5134,6 +5219,9 @@ pub fn canonicalize_indices(
                 }
                 let (new_indices, sign) =
                     canonicalize_indexed_slots(sym, &indices, props, interner);
+                if sign == i32::MIN {
+                    return Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]);
+                }
                 if sign == 0 {
                     return Expr::zero();
                 }
@@ -5145,16 +5233,30 @@ pub fn canonicalize_indices(
             Expr::Indexed(Box::new(base_expr), indices)
         }
         Expr::Add(terms) => Expr::add(
-            terms
-                .iter()
-                .map(|term| canonicalize_indices(term, properties, interner))
-                .collect(),
+            {
+                let mut out = Vec::with_capacity(terms.len());
+                for term in terms {
+                    let canonical = canonicalize_indices(term, properties, interner);
+                    if is_timeout_expr(&canonical, interner) {
+                        return canonical;
+                    }
+                    out.push(canonical);
+                }
+                out
+            },
         ),
         Expr::Mul(factors) => Expr::mul(
-            factors
-                .iter()
-                .map(|factor| canonicalize_indices(factor, properties, interner))
-                .collect(),
+            {
+                let mut out = Vec::with_capacity(factors.len());
+                for factor in factors {
+                    let canonical = canonicalize_indices(factor, properties, interner);
+                    if is_timeout_expr(&canonical, interner) {
+                        return canonical;
+                    }
+                    out.push(canonical);
+                }
+                out
+            },
         ),
         Expr::Pow(base, exp) => Expr::pow(
             canonicalize_indices(base, properties, interner),
@@ -5166,6 +5268,12 @@ pub fn canonicalize_indices(
                 .iter()
                 .map(|arg| canonicalize_indices(arg, properties, interner))
                 .collect::<Vec<_>>();
+            if canonical_args
+                .iter()
+                .any(|arg| is_timeout_expr(arg, interner))
+            {
+                return Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]);
+            }
             if properties.has_property_kind(*f, &ax_ir::TensorProperty::DiracBar)
                 && canonical_args.len() == 1
             {
@@ -6468,6 +6576,12 @@ fn eval_expr(expr: &Expr) -> Expr {
                 .collect(),
         ),
     }
+}
+
+pub fn bounded_expand_collect(expr: &Expr, interner: &Interner) -> Expr {
+    let expanded = expand_expr(expr, interner);
+    let collected = collect_terms_expr(&expanded, interner);
+    eval_expr(&collected)
 }
 
 #[allow(dead_code)]
@@ -8811,6 +8925,9 @@ pub fn decompose_product(
     properties: &dyn PropertyLookup,
     interner: &Interner,
 ) -> Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
     let factors = match expr {
         Expr::Mul(fs) => fs.clone(),
         _ => return expr.clone(),
@@ -8826,6 +8943,9 @@ pub fn decompose_product(
 
     let mut shapes = Vec::with_capacity(indexed.len());
     for factor in &indexed {
+        if let Some(timeout) = deadline_timeout_expr(interner) {
+            return timeout;
+        }
         let Some(shape) = tableau_shape_for_factor(factor, properties) else {
             return decompose_product_failure("unsupported_shape", expr, interner);
         };
@@ -8840,6 +8960,9 @@ pub fn decompose_product(
     let total_indices = classify_indices(expr).total;
     let mut projected_terms: Vec<(Expr, usize)> = Vec::new();
     for (shape, multiplicity) in decomposition {
+        if let Some(timeout) = deadline_timeout_expr(interner) {
+            return timeout;
+        }
         if shape.iter().sum::<usize>() != total_indices {
             continue;
         }

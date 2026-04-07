@@ -6,6 +6,8 @@ use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+#[cfg(feature = "http")]
+use tokio_stream::Stream;
 
 #[derive(Debug, Error)]
 pub enum ToolError {
@@ -73,6 +75,9 @@ impl EvalState for McpState {
     }
 
     fn store_expr(&mut self, expr: Expr) -> String {
+        for rule in ax_eval::parse_component_rules_expr(&expr) {
+            self.env.component_rule_symbols.insert(rule.tensor);
+        }
         let id = self.alloc_expr_id();
         if let Expr::Matrix(rows) = &expr {
             self.matrices.insert(id.clone(), rows.clone());
@@ -170,6 +175,74 @@ impl EvalState for McpState {
                 _ => None,
             })
     }
+    fn list_expression_ids(&self) -> Vec<String> {
+        let mut ids = self.expressions.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+    fn list_metric_ids(&self) -> Vec<String> {
+        let mut ids = self.metrics.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+    fn list_christoffel_ids(&self) -> Vec<String> {
+        let mut ids = self.christoffels.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+    fn list_riemann_ids(&self) -> Vec<String> {
+        let mut ids = self.riemanns.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+    fn list_ricci_ids(&self) -> Vec<String> {
+        let mut ids = self.riccis.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+    fn list_properties(&self) -> Vec<(String, Vec<String>)> {
+        let mut entries = self
+            .env
+            .property_store
+            .symbols()
+            .into_iter()
+            .map(|sym| {
+                let mut props = self
+                    .env
+                    .property_store
+                    .get_all(sym)
+                    .into_iter()
+                    .map(|prop| ax_eval::registry::format_tensor_property(prop, &self.interner))
+                    .collect::<Vec<_>>();
+                props.sort();
+                (self.interner.resolve(sym).to_string(), props)
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
+    fn list_index_families(&self) -> Vec<(String, Vec<String>, Option<usize>)> {
+        let mut families = self
+            .env
+            .index_families
+            .values()
+            .map(|family| {
+                let mut values = family
+                    .values
+                    .iter()
+                    .map(|sym| self.interner.resolve(*sym).to_string())
+                    .collect::<Vec<_>>();
+                values.sort();
+                (
+                    self.interner.resolve(family.name).to_string(),
+                    values,
+                    family.dimension,
+                )
+            })
+            .collect::<Vec<_>>();
+        families.sort_by(|a, b| a.0.cmp(&b.0));
+        families
+    }
     fn deadline(&self) -> Option<Instant> {
         self.deadline
     }
@@ -217,6 +290,7 @@ fn tool_definitions() -> Vec<Value> {
                 .collect();
             json!({
                 "name": format!("axioma_{}", entry.name),
+                "category": entry.category,
                 "description": entry.description,
                 "inputSchema": {
                     "type": "object",
@@ -236,12 +310,19 @@ fn make_error_response(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn initialize_result() -> Value {
-    json!({
+fn initialize_result(transport: &str, port: u16) -> Value {
+    let mut result = json!({
         "protocolVersion": "2024-11-05",
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "axioma-mcp", "version": "0.1.0" }
-    })
+    });
+    if transport == "http" {
+        result["capabilities"]["transport"] = json!({
+            "type": "http+sse",
+            "endpoint": format!("http://127.0.0.1:{port}/mcp")
+        });
+    }
+    result
 }
 
 fn tools_list_result() -> Value {
@@ -407,13 +488,21 @@ fn handle_tools_call_safe(
     response
 }
 
-fn handle_request(state: &mut McpState, request: &Value, timeout_secs: u64) -> Value {
+fn handle_request(
+    state: &mut McpState,
+    request: &Value,
+    timeout_secs: u64,
+    transport: &str,
+    port: u16,
+) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let Some(method) = request.get("method").and_then(Value::as_str) else {
         return make_error_response(id, -32600, "missing method");
     };
     match method {
-        "initialize" => make_result_response(id, initialize_result()),
+        "initialize" => make_result_response(id, initialize_result(transport, port)),
+        "notifications/initialized" => Value::Null,
+        "ping" => make_result_response(id, json!({})),
         "tools/list" => make_result_response(id, tools_list_result()),
         "tools/call" => {
             let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -430,7 +519,7 @@ fn handle_request(state: &mut McpState, request: &Value, timeout_secs: u64) -> V
     }
 }
 
-fn run_server(timeout_secs: u64) -> Result<(), String> {
+fn run_stdio(timeout_secs: u64) -> Result<(), Box<dyn std::error::Error>> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut state = McpState::new();
@@ -441,41 +530,105 @@ fn run_server(timeout_secs: u64) -> Result<(), String> {
             continue;
         }
         let response = match serde_json::from_str::<Value>(&line) {
-            Ok(request) => handle_request(&mut state, &request, timeout_secs),
+            Ok(request) => handle_request(&mut state, &request, timeout_secs, "stdio", 3000),
             Err(err) => make_error_response(Value::Null, -32700, &format!("parse error: {err}")),
         };
-        writeln!(stdout, "{}", serde_json::to_string(&response).map_err(|err| err.to_string())?)
-            .map_err(|err| err.to_string())?;
-        stdout.flush().map_err(|err| err.to_string())?;
+        if response != Value::Null {
+            writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
+            stdout.flush()?;
+        }
     }
 
     Ok(())
 }
 
+#[cfg(feature = "http")]
+type HttpSharedState = std::sync::Arc<tokio::sync::Mutex<McpState>>;
+
+#[cfg(feature = "http")]
+fn build_http_app(
+    state: HttpSharedState,
+    timeout_secs: u64,
+    port: u16,
+) -> axum::Router {
+    use axum::{routing::post, Router};
+    use tower_http::cors::{Any, CorsLayer};
+
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    Router::new()
+        .route("/mcp", post(handle_http_request))
+        .route("/health", axum::routing::get(|| async { "ok" }))
+        .layer(cors)
+        .with_state((state, timeout_secs, port))
+}
+
+#[cfg(feature = "http")]
+async fn run_http(port: u16, timeout_secs: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let state = std::sync::Arc::new(tokio::sync::Mutex::new(McpState::new()));
+    let app = build_http_app(state, timeout_secs, port);
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    eprintln!("Axioma MCP server listening on http://{}", addr);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+#[cfg(feature = "http")]
+async fn handle_http_request(
+    axum::extract::State((state, timeout_secs, port)): axum::extract::State<(HttpSharedState, u64, u16)>,
+    axum::Json(request): axum::Json<Value>,
+) -> axum::response::sse::Sse<std::pin::Pin<Box<dyn Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> + Send>>> {
+    use axum::response::sse::{Event, Sse};
+
+    let mut state = state.lock().await;
+    let response = handle_request(&mut state, &request, timeout_secs, "http", port);
+    if response == Value::Null {
+        return Sse::new(Box::pin(tokio_stream::empty()));
+    }
+    let json_str = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
+    let stream = tokio_stream::once(Ok(Event::default().data(json_str)));
+    Sse::new(Box::pin(stream))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = std::env::args().collect::<Vec<_>>();
+    let args: Vec<String> = std::env::args().collect();
+    let transport = args
+        .iter()
+        .position(|a| a == "--transport")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+        .unwrap_or("stdio");
+    let port: u16 = args
+        .iter()
+        .position(|a| a == "--port")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3000);
     let timeout_secs: u64 = args
         .iter()
         .position(|a| a == "--timeout")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(60);
-
-    let handle = std::thread::Builder::new()
-        .name("axioma-mcp-runtime".to_string())
-        .stack_size(256 * 1024 * 1024)
-        .spawn(move || run_server(timeout_secs))?;
-
-    match handle.join() {
-        Ok(result) => result.map_err(|message| {
-            Box::<dyn std::error::Error>::from(io::Error::new(io::ErrorKind::Other, message))
-        }),
-        Err(payload) => {
-            let message = panic_message(payload);
-            Err(Box::<dyn std::error::Error>::from(io::Error::new(
-                io::ErrorKind::Other,
-                message,
-            )))
+    match transport {
+        "stdio" => run_stdio(timeout_secs),
+        #[cfg(feature = "http")]
+        "http" => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(run_http(port, timeout_secs))
+        }
+        #[cfg(not(feature = "http"))]
+        "http" => {
+            eprintln!("Unknown transport: http. Rebuild with --features http.");
+            std::process::exit(1);
+        }
+        other => {
+            eprintln!("Unknown transport: {}. Use 'stdio' or 'http'.", other);
+            std::process::exit(1);
         }
     }
 }
@@ -904,5 +1057,608 @@ mod tests {
                 result
             );
         }
+    }
+
+    #[test]
+    fn list_expressions_returns_all_stored() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "1 + 1"}), 5);
+        handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "x^2"}), 5);
+        let result = handle_tools_call_safe(&mut state, "axioma_list_expressions", &json!({}), 5);
+        assert_eq!(result["status"], "ok");
+        let exprs = result["expressions"].as_array().unwrap();
+        assert!(exprs.len() >= 2, "{result:?}");
+    }
+
+    #[test]
+    fn list_properties_after_declaration() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "property R riemann_symmetry"}),
+            5,
+        );
+        let result = handle_tools_call_safe(&mut state, "axioma_list_properties", &json!({}), 5);
+        assert_eq!(result["status"], "ok");
+        let props = result["properties"].as_array().unwrap();
+        let r_entry = props.iter().find(|p| p["symbol"] == "R").unwrap();
+        assert!(r_entry["properties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("Riemann")));
+    }
+
+    #[test]
+    fn get_state_summary_covers_everything() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "property R riemann_symmetry"}),
+            5,
+        );
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [mu, nu, rho, sigma] dim=4"}),
+            5,
+        );
+        let result = handle_tools_call_safe(&mut state, "axioma_get_state_summary", &json!({}), 5);
+        assert_eq!(result["status"], "ok");
+        assert!(result.get("expression_count").is_some(), "{result:?}");
+        assert!(result.get("properties").is_some(), "{result:?}");
+        assert!(result.get("index_families").is_some(), "{result:?}");
+    }
+
+    #[test]
+    fn state_tools_are_categorized_as_state() {
+        let tools = tool_definitions();
+        for name in [
+            "axioma_list_expressions",
+            "axioma_list_metrics",
+            "axioma_list_properties",
+            "axioma_list_index_families",
+            "axioma_get_state_summary",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool definition for {name}"));
+            assert_eq!(tool["category"], "state", "{tool:?}");
+        }
+    }
+
+    #[test]
+    fn diff_identical_expressions() {
+        let mut state = McpState::new();
+        let a = expect_ok(
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "x + y"}), 5),
+            "axioma_eval",
+        );
+        let b = expect_ok(
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "x + y"}), 5),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_diff",
+            &json!({"expr_a": a["expr_id"].clone(), "expr_b": b["expr_id"].clone()}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["identical"], true, "{result:?}");
+    }
+
+    #[test]
+    fn diff_coefficient_difference() {
+        let mut state = McpState::new();
+        let a = expect_ok(
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "2*x + y"}), 5),
+            "axioma_eval",
+        );
+        let b = expect_ok(
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "3*x + y"}), 5),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_diff",
+            &json!({"expr_a": a["expr_id"].clone(), "expr_b": b["expr_id"].clone()}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        let details = result["details"].as_array().unwrap();
+        assert!(details.iter().any(|d| d == "coefficient_differs"), "{result:?}");
+    }
+
+    #[test]
+    fn diff_index_name_difference() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [a, b, c, d] dim=4"}),
+            5,
+        );
+        let a = expect_ok(
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "T[a-, b+]"}), 5),
+            "axioma_eval",
+        );
+        let b = expect_ok(
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "T[c-, d+]"}), 5),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_diff",
+            &json!({"expr_a": a["expr_id"].clone(), "expr_b": b["expr_id"].clone()}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        let details = result["details"].as_array().unwrap();
+        assert!(details.iter().any(|d| d == "index_names_differ"), "{result:?}");
+    }
+
+    #[test]
+    fn check_properties_missing_symmetry() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [a, b] dim=4"}),
+            5,
+        );
+        let expr = expect_ok(
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "T[a-, b+]"}), 5),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_check_properties",
+            &json!({"expr": expr["expr_id"].clone(), "algorithm": "canonicalise"}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["ready"], false, "{result:?}");
+        assert!(result["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue.as_str().unwrap_or("").contains("no symmetry properties")), "{result:?}");
+    }
+
+    #[test]
+    fn check_properties_all_ok() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "property R riemann_symmetry"}),
+            5,
+        );
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [a, b, c, d] dim=4"}),
+            5,
+        );
+        let expr = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "R[a-, b-, c+, d+]"}),
+                5,
+            ),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_check_properties",
+            &json!({"expr": expr["expr_id"].clone(), "algorithm": "canonicalise"}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["ready"], true, "{result:?}");
+    }
+
+    #[test]
+    fn explain_canonicalise_with_issues() {
+        let mut state = McpState::new();
+        let expr = expect_ok(
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "T[a-, b+]"}), 5),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_explain",
+            &json!({"algorithm": "canonicalise", "expr": expr["expr_id"].clone()}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        let explanation = result["explanation"].as_str().unwrap_or("");
+        assert!(explanation.contains("canonicalise"));
+        assert!(explanation.contains("symmetry"), "{result:?}");
+    }
+
+    #[test]
+    fn check_properties_evaluate_components_tracks_component_rules() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [mu, nu] dim=2"}),
+            5,
+        );
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_declare_coordinates",
+            &json!({"coordinates": ["t", "x"]}),
+            5,
+        );
+        let expr = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "T[mu-, nu-]"}),
+                5,
+            ),
+            "axioma_eval",
+        );
+        let before = handle_tools_call_safe(
+            &mut state,
+            "axioma_check_properties",
+            &json!({"expr": expr["expr_id"].clone(), "algorithm": "evaluate_components"}),
+            5,
+        );
+        assert_eq!(before["status"], "ok");
+        assert_eq!(before["ready"], false, "{before:?}");
+        assert!(before["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue.as_str().unwrap_or("").contains("No component rules are known for symbol T")), "{before:?}");
+
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "[[T, [t, t], 1], [T, [x, x], 2]]"}),
+            5,
+        );
+        let after = handle_tools_call_safe(
+            &mut state,
+            "axioma_check_properties",
+            &json!({"expr": expr["expr_id"].clone(), "algorithm": "evaluate_components"}),
+            5,
+        );
+        assert_eq!(after["status"], "ok");
+        assert_eq!(after["ready"], true, "{after:?}");
+    }
+
+    #[test]
+    fn diagnostic_tools_are_categorized_as_diagnostics() {
+        let tools = tool_definitions();
+        for name in ["axioma_diff", "axioma_check_properties", "axioma_explain"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool definition for {name}"));
+            assert_eq!(tool["category"], "diagnostics", "{tool:?}");
+        }
+    }
+
+    #[test]
+    fn suggest_without_goal_returns_all() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "property T symmetric"}),
+            5,
+        );
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [a, b, c, d] dim=4"}),
+            5,
+        );
+        let expr = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "T[a-, b+] + T[c-, d+]"}),
+                5,
+            ),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_suggest",
+            &json!({"expr": expr["expr_id"].clone()}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        assert!(result["suggestions"].as_array().unwrap().len() >= 2, "{result:?}");
+    }
+
+    #[test]
+    fn suggest_with_simplify_goal_prioritises_canonicalise() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "property T symmetric"}),
+            5,
+        );
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [a, b] dim=4"}),
+            5,
+        );
+        let expr = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "T[a-, b+]"}),
+                5,
+            ),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_suggest",
+            &json!({"expr": expr["expr_id"].clone(), "goal": "simplify to canonical form"}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["suggestions"][0]["algorithm"], "canonicalise", "{result:?}");
+    }
+
+    #[test]
+    fn suggest_with_evaluate_goal_prioritises_evaluate_components() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [mu, nu] dim=2"}),
+            5,
+        );
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_declare_coordinates",
+            &json!({"coordinates": ["t", "x"]}),
+            5,
+        );
+        let expr = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "T[mu-, nu-]"}),
+                5,
+            ),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_suggest",
+            &json!({"expr": expr["expr_id"].clone(), "goal": "evaluate in components"}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        let algorithms = result["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(3)
+            .filter_map(|item| item["algorithm"].as_str())
+            .collect::<Vec<_>>();
+        assert!(algorithms.contains(&"evaluate_components"), "{result:?}");
+    }
+
+    #[test]
+    fn suggest_with_prove_zero_goal() {
+        let mut state = McpState::new();
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "property T symmetric"}),
+            5,
+        );
+        handle_tools_call_safe(
+            &mut state,
+            "axioma_eval",
+            &json!({"code": "indices spacetime [a, b, c, d] dim=4"}),
+            5,
+        );
+        let expr = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "T[a-, b+] + T[c-, d+]"}),
+                5,
+            ),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_suggest",
+            &json!({"expr": expr["expr_id"].clone(), "goal": "prove this vanishes"}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        let algorithms = result["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(5)
+            .filter_map(|item| item["algorithm"].as_str())
+            .collect::<Vec<_>>();
+        assert!(algorithms.contains(&"canonicalise"), "{result:?}");
+        assert!(algorithms.contains(&"meld"), "{result:?}");
+        assert!(algorithms.contains(&"collect_terms"), "{result:?}");
+    }
+
+    #[test]
+    fn suggest_with_unknown_goal_returns_all_with_note() {
+        let mut state = McpState::new();
+        let expr = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "sin(x) + cos(x)"}),
+                5,
+            ),
+            "axioma_eval",
+        );
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_suggest",
+            &json!({"expr": expr["expr_id"].clone(), "goal": "quantum gravity loop corrections"}),
+            5,
+        );
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["goal"], "quantum gravity loop corrections");
+        assert!(result["note"].as_str().unwrap_or("").contains("No goal-specific priority profile matched"), "{result:?}");
+        assert!(!result["suggestions"].as_array().unwrap().is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn stdio_still_works_without_http_feature() {
+        let mut state = McpState::new();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        });
+        let response = handle_request(&mut state, &request, 5, "stdio", 3000);
+        assert_eq!(response["result"]["serverInfo"]["name"], "axioma-mcp");
+    }
+
+    #[cfg(feature = "http")]
+    async fn spawn_http_test_server() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = build_http_app(
+            std::sync::Arc::new(tokio::sync::Mutex::new(McpState::new())),
+            5,
+            port,
+        );
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (port, handle)
+    }
+
+    #[cfg(feature = "http")]
+    async fn http_request(
+        method: &str,
+        port: u16,
+        path: &str,
+        body: Option<&str>,
+        extra_headers: &[(&str, &str)],
+    ) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut last_err = None;
+        let mut stream = {
+            let mut connected = None;
+            for _ in 0..40 {
+                match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(err) => {
+                        last_err = Some(err);
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                }
+            }
+            connected.unwrap_or_else(|| {
+                panic!(
+                    "failed to connect to test HTTP server: {}",
+                    last_err
+                        .map(|err| err.to_string())
+                        .unwrap_or_else(|| "unknown connection error".to_string())
+                )
+            })
+        };
+        let body = body.unwrap_or("");
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n"
+        );
+        for (name, value) in extra_headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        if !body.is_empty() {
+            request.push_str("Content-Type: application/json\r\n");
+            request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        } else {
+            request.push_str("Content-Length: 0\r\n");
+        }
+        request.push_str("\r\n");
+        request.push_str(body);
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn http_initialize_returns_server_info() {
+        let (port, handle) = spawn_http_test_server().await;
+        let response = http_request(
+            "POST",
+            port,
+            "/mcp",
+            Some(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#),
+            &[],
+        )
+        .await;
+        handle.abort();
+        assert!(response.contains("text/event-stream"), "{response}");
+        assert!(response.contains("\"serverInfo\""), "{response}");
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn http_tool_call_works() {
+        let (port, handle) = spawn_http_test_server().await;
+        let response = http_request(
+            "POST",
+            port,
+            "/mcp",
+            Some(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"axioma_eval","arguments":{"code":"1+1"}}}"#),
+            &[],
+        )
+        .await;
+        handle.abort();
+        assert!(response.contains("data: "), "{response}");
+        assert!(response.contains("\"expr_id\""), "{response}");
+    }
+
+    #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn http_cors_headers_present() {
+        let (port, handle) = spawn_http_test_server().await;
+        let response = http_request(
+            "OPTIONS",
+            port,
+            "/mcp",
+            None,
+            &[
+                ("Origin", "http://example.com"),
+                ("Access-Control-Request-Method", "POST"),
+            ],
+        )
+        .await;
+        handle.abort();
+        assert!(
+            response.to_lowercase().contains("access-control-allow-origin"),
+            "{response}"
+        );
     }
 }

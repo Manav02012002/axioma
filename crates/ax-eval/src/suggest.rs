@@ -15,6 +15,7 @@ pub struct MissingProperty {
 pub struct SuggestResult {
     pub suggestions: Vec<Suggestion>,
     pub missing: Vec<MissingProperty>,
+    pub note: Option<String>,
 }
 
 fn contains_indexed(expr: &Expr) -> bool {
@@ -225,7 +226,142 @@ fn add_suggestion(
     }
 }
 
-pub fn suggest_for_expr(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> SuggestResult {
+fn goal_priorities(goal: &str) -> Vec<&'static str> {
+    let g = goal.to_lowercase();
+    if g.contains("simplif") {
+        vec![
+            "canonicalise",
+            "rename_dummies",
+            "collect_terms",
+            "meld",
+            "simplify",
+            "factor_out",
+        ]
+    } else if g.contains("canonical") || g.contains("canon") {
+        vec!["canonicalise", "rename_dummies", "collect_terms", "meld"]
+    } else if g.contains("evaluat") || g.contains("component") {
+        vec!["evaluate_components", "simplify"]
+    } else if g.contains("zero")
+        || g.contains("vanish")
+        || g.contains("prove")
+        || g.contains("identity")
+    {
+        vec![
+            "canonicalise",
+            "rename_dummies",
+            "meld",
+            "collect_terms",
+            "simplify",
+        ]
+    } else if g.contains("contract") || g.contains("eliminat") {
+        vec![
+            "eliminate_metric",
+            "eliminate_kronecker",
+            "rename_dummies",
+            "collect_terms",
+        ]
+    } else if g.contains("expand") || g.contains("distribut") {
+        vec!["distribute", "expand", "collect_terms", "simplify"]
+    } else if g.contains("gamma") || g.contains("spinor") || g.contains("dirac") {
+        vec![
+            "join_gamma",
+            "sort_product",
+            "gamma_trace",
+            "fierz",
+            "sort_spinors",
+            "collect_terms",
+            "simplify",
+        ]
+    } else if g.contains("factor") {
+        vec!["factor_out", "factor_in", "collect_factors", "simplify"]
+    } else if g.contains("integrat") {
+        vec!["integrate_by_parts", "integrate", "simplify"]
+    } else if g.contains("decompos") || g.contains("irrep") {
+        vec!["decompose_product", "decompose", "young_project", "collect_terms"]
+    } else if g.contains("curv")
+        || g.contains("riemann")
+        || g.contains("ricci")
+        || g.contains("einstein")
+    {
+        vec![
+            "define_metric",
+            "christoffel",
+            "riemann",
+            "ricci",
+            "einstein",
+            "scalar_curvature",
+            "kretschner",
+        ]
+    } else {
+        vec![]
+    }
+}
+
+fn prioritise_suggestions(
+    mut suggestions: Vec<Suggestion>,
+    goal: &str,
+) -> (Vec<Suggestion>, Option<String>) {
+    let priorities = goal_priorities(goal);
+    if priorities.is_empty() {
+        return (
+            suggestions,
+            Some(format!(
+                "No goal-specific priority profile matched '{}'; returning the general suggestions.",
+                goal
+            )),
+        );
+    }
+
+    let priority_positions = priorities
+        .iter()
+        .enumerate()
+        .map(|(idx, alg)| (*alg, idx))
+        .collect::<HashMap<_, _>>();
+
+    let mut priority = Vec::new();
+    let mut other = Vec::new();
+    let mut seen = suggestions
+        .iter()
+        .map(|s| s.algorithm.clone())
+        .collect::<HashSet<_>>();
+
+    for suggestion in suggestions.drain(..) {
+        if priority_positions.contains_key(suggestion.algorithm.as_str()) {
+            priority.push(suggestion);
+        } else {
+            other.push(suggestion);
+        }
+    }
+
+    priority.sort_by_key(|suggestion| {
+        priority_positions
+            .get(suggestion.algorithm.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+
+    for algorithm in priorities {
+        if seen.insert(algorithm.to_string()) {
+            priority.push(Suggestion {
+                algorithm: algorithm.to_string(),
+                reason: format!(
+                    "recommended for goal: {} (may require additional property declarations)",
+                    goal
+                ),
+            });
+        }
+    }
+
+    priority.extend(other);
+    (priority, None)
+}
+
+pub fn suggest_for_expr(
+    expr: &Expr,
+    env: &Env,
+    interner: &ax_ir::Interner,
+    goal: Option<&str>,
+) -> SuggestResult {
     let mut suggestions = Vec::new();
     let mut seen = HashSet::new();
 
@@ -455,8 +591,15 @@ pub fn suggest_for_expr(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> S
         "general simplification",
     );
 
+    let (suggestions, note) = if let Some(goal) = goal {
+        prioritise_suggestions(suggestions, goal)
+    } else {
+        (suggestions, None)
+    };
+
     SuggestResult {
         suggestions,
         missing,
+        note,
     }
 }

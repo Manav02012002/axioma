@@ -1,5 +1,6 @@
 use lasso::Key;
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
@@ -550,6 +551,23 @@ impl Expr {
     }
 
     pub fn pow(base: Expr, exp: Expr) -> Expr {
+        if let Expr::Group(inner, _) = base {
+            return Expr::pow(*inner, exp);
+        }
+
+        if let Expr::Neg(inner) = base.clone() {
+            if let Some(exp_num) = as_numeric(&exp) {
+                if exp_num.is_integer() {
+                    let exp_int = exp_num.to_integer();
+                    let reduced = Expr::pow(*inner, exp);
+                    if exp_int.is_odd() {
+                        return Expr::neg(reduced);
+                    }
+                    return reduced;
+                }
+            }
+        }
+
         if let (Expr::Complex(re, im), Expr::Int(n)) = (&base, &exp) {
             if let Some(pow) = n.to_u32() {
                 let mut acc = Expr::one();
@@ -700,5 +718,13 @@ mod tests {
         let grouped = Expr::group(x.clone());
         let sum = Expr::add(vec![grouped.clone(), x.clone()]);
         assert_eq!(sum, Expr::Add(vec![x, grouped]));
+    }
+
+    #[test]
+    fn inverse_of_negated_product_distributes_sign() {
+        let sym = lasso::Spur::default();
+        let x = Expr::Sym(sym);
+        let expr = Expr::pow(Expr::neg(x.clone()), Expr::Int((-1).into()));
+        assert_eq!(expr, Expr::neg(Expr::pow(x, Expr::Int((-1).into()))));
     }
 }

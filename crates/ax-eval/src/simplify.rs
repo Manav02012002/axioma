@@ -210,6 +210,107 @@ fn numeric_coeff(expr: &Expr) -> Option<BigRational> {
     }
 }
 
+fn canonicalize_commutative_base(expr: Expr) -> Expr {
+    match expr {
+        Expr::Mul(mut factors) => {
+            factors.sort_by_key(|factor| format!("{factor:?}"));
+            Expr::mul(factors)
+        }
+        other => other,
+    }
+}
+
+fn strip_groups(expr: &Expr) -> Expr {
+    match expr {
+        Expr::Group(inner, _) => strip_groups(inner),
+        Expr::Add(terms) => Expr::add(terms.iter().map(strip_groups).collect()),
+        Expr::Mul(factors) => Expr::mul(factors.iter().map(strip_groups).collect()),
+        Expr::Pow(base, exp) => Expr::pow(strip_groups(base), strip_groups(exp)),
+        Expr::Neg(inner) => Expr::neg(strip_groups(inner)),
+        Expr::Complex(re, im) => Expr::Complex(Box::new(strip_groups(re)), Box::new(strip_groups(im))),
+        Expr::Call(f, args) => Expr::Call(*f, args.iter().map(strip_groups).collect()),
+        Expr::FnDef(name, params, body) => Expr::FnDef(*name, params.clone(), Box::new(strip_groups(body))),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(Box::new(strip_groups(lhs)), Box::new(strip_groups(rhs)), *trust),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| (strip_groups(value), condition.clone()))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(Box::new(strip_groups(base)), indices.clone()),
+        Expr::Let(name, value, body) => Expr::Let(*name, Box::new(strip_groups(value)), Box::new(strip_groups(body))),
+        Expr::List(items) => Expr::List(items.iter().map(strip_groups).collect()),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| row.iter().map(strip_groups).collect())
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn expand_scalar_product_powers(expr: &Expr) -> Expr {
+    match expr {
+        Expr::Pow(base, exp) => {
+            let base = expand_scalar_product_powers(base);
+            let exp = expand_scalar_product_powers(exp);
+            if let (Expr::Mul(factors), Expr::Int(n)) = (&base, &exp) {
+                if *n > 1.into() {
+                    if let Some(pow) = n.to_u32() {
+                        return Expr::mul(
+                            factors
+                                .iter()
+                                .cloned()
+                                .map(|factor| Expr::pow(factor, Expr::Int(pow.into())))
+                                .collect(),
+                        );
+                    }
+                }
+            }
+            Expr::pow(base, exp)
+        }
+        Expr::Add(terms) => Expr::add(terms.iter().map(expand_scalar_product_powers).collect()),
+        Expr::Mul(factors) => Expr::mul(factors.iter().map(expand_scalar_product_powers).collect()),
+        Expr::Neg(inner) => Expr::neg(expand_scalar_product_powers(inner)),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(expand_scalar_product_powers(re)),
+            Box::new(expand_scalar_product_powers(im)),
+        ),
+        Expr::Call(f, args) => Expr::Call(*f, args.iter().map(expand_scalar_product_powers).collect()),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(expand_scalar_product_powers(body)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(expand_scalar_product_powers(lhs)),
+            Box::new(expand_scalar_product_powers(rhs)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| (expand_scalar_product_powers(value), condition.clone()))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => {
+            Expr::Indexed(Box::new(expand_scalar_product_powers(base)), indices.clone())
+        }
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(expand_scalar_product_powers(value)),
+            Box::new(expand_scalar_product_powers(body)),
+        ),
+        Expr::List(items) => Expr::List(items.iter().map(expand_scalar_product_powers).collect()),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| row.iter().map(expand_scalar_product_powers).collect())
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 fn decompose_term(term: &Expr) -> (BigRational, Expr) {
     match term {
         Expr::Mul(factors) if !factors.is_empty() => {
@@ -218,20 +319,20 @@ fn decompose_term(term: &Expr) -> (BigRational, Expr) {
                 let base = if rest.is_empty() {
                     Expr::one()
                 } else {
-                    Expr::mul(rest)
+                    canonicalize_commutative_base(Expr::mul(rest))
                 };
                 (coeff, base)
             } else {
-                (BigRational::one(), term.clone())
+                (BigRational::one(), canonicalize_commutative_base(term.clone()))
             }
         }
         Expr::Neg(inner) => (
             BigRational::from_integer((-1).into()),
-            inner.as_ref().clone(),
+            canonicalize_commutative_base(inner.as_ref().clone()),
         ),
         Expr::Int(n) => (BigRational::from_integer(n.clone()), Expr::one()),
         Expr::Rational(r) => (r.clone(), Expr::one()),
-        _ => (BigRational::one(), term.clone()),
+        _ => (BigRational::one(), canonicalize_commutative_base(term.clone())),
     }
 }
 
@@ -1257,6 +1358,37 @@ pub fn rationalize(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Exp
     }
 }
 
+pub fn rationalize_expanded_numerator(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
+    fn one_pass(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
+        let stripped = expand_scalar_product_powers(&strip_groups(expr));
+        let (numer, denom) = extract_numer_denom(&stripped);
+        let numer = eval(&numer, &Env::new(), interner);
+        let denom = eval(&denom, &Env::new(), interner);
+        let (numer_s, denom_s) = cancel_common(&numer, &denom, interner);
+        let numer_s = eval(&numer_s, &Env::new(), interner);
+        let denom_s = eval(&denom_s, &Env::new(), interner);
+        let numer_final = ax_tensor::bounded_expand_collect(&numer_s, interner);
+        let result = if numer_final == Expr::zero() {
+            Expr::zero()
+        } else if denom_s == Expr::one() {
+            numer_final
+        } else {
+            Expr::mul(vec![numer_final, Expr::pow(denom_s, Expr::Int((-1).into()))])
+        };
+        ax_tensor::bounded_expand_collect(&result, interner)
+    }
+
+    let mut current = expr.clone();
+    for _ in 0..3 {
+        let next = one_pass(&current, interner);
+        if next == current {
+            return next;
+        }
+        current = next;
+    }
+    current
+}
+
 fn extract_log_multiple(expr: &Expr, log_sym: lasso::Spur) -> Option<(Expr, Expr)> {
     if let Expr::Mul(factors) = expr {
         let mut coeff = None;
@@ -1504,15 +1636,84 @@ fn try_factor(expr: &Expr, _interner: &ax_ir::Interner) -> Expr {
     }
 }
 
-pub fn simplify(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+fn deadline_probe_expr(expr: &Expr, counter: &mut usize) -> Result<(), String> {
+    *counter += 1;
+    if *counter % 100 == 0 || *counter == 1 {
+        ax_ir::check_deadline()?;
+    }
+    match expr {
+        Expr::Complex(re, im) => {
+            deadline_probe_expr(re, counter)?;
+            deadline_probe_expr(im, counter)?;
+        }
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) | Expr::Call(_, terms) => {
+            for term in terms {
+                deadline_probe_expr(term, counter)?;
+            }
+        }
+        Expr::Pow(base, exp) | Expr::Rule(base, exp, _) => {
+            deadline_probe_expr(base, counter)?;
+            deadline_probe_expr(exp, counter)?;
+        }
+        Expr::Neg(inner) | Expr::Group(inner, _) => {
+            deadline_probe_expr(inner, counter)?;
+        }
+        Expr::Indexed(base, _) => {
+            deadline_probe_expr(base, counter)?;
+        }
+        Expr::FnDef(_, _, body) => {
+            deadline_probe_expr(body, counter)?;
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                deadline_probe_expr(value, counter)?;
+            }
+        }
+        Expr::Let(_, value, body) => {
+            deadline_probe_expr(value, counter)?;
+            deadline_probe_expr(body, counter)?;
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    deadline_probe_expr(cell, counter)?;
+                }
+            }
+        }
+        Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _)
+        | Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_)
+        | Expr::Sym(_) => {}
+    }
+    Ok(())
+}
+
+pub fn simplify_checked(expr: &Expr, interner: &ax_ir::Interner) -> Result<Expr, String> {
+    let mut counter = 0usize;
+    deadline_probe_expr(expr, &mut counter)?;
     let e1 = expand(expr, interner);
+    deadline_probe_expr(&e1, &mut counter)?;
     let e2 = collect_terms(&e1, interner);
+    deadline_probe_expr(&e2, &mut counter)?;
     let e3 = rationalize(&e2, interner);
+    deadline_probe_expr(&e3, &mut counter)?;
     let e4 = trig_simplify(&e3, interner);
+    deadline_probe_expr(&e4, &mut counter)?;
     let e5 = log_simplify(&e4, interner);
+    deadline_probe_expr(&e5, &mut counter)?;
     let e6 = combine_powers(&e5, interner);
+    deadline_probe_expr(&e6, &mut counter)?;
     let e7 = try_factor(&e6, interner);
-    eval(&e7, &Env::new(), interner)
+    deadline_probe_expr(&e7, &mut counter)?;
+    ax_ir::check_deadline()?;
+    Ok(eval(&e7, &Env::new(), interner))
+}
+
+pub fn simplify(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    simplify_checked(expr, interner).unwrap_or_else(|_| expr.clone())
 }
 
 fn strip_group_ref(expr: &Expr) -> &Expr {
