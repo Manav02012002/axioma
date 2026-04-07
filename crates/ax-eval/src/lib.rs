@@ -7910,4 +7910,34 @@ mod tests {
         // Variance mismatch: expression unchanged
         assert_eq!(result, expression);
     }
+
+    #[test]
+    fn eval_sort_product_normalizes_barred_gamma_bilinear() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let sort_product = interner.get_or_intern("sort_product");
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        env.property_store
+            .declare_simple(bar, ax_ir::TensorProperty::DiracBar);
+        env.property_store
+            .declare_simple(gamma, ax_ir::TensorProperty::GammaMatrixProp);
+        env.property_store
+            .declare_simple(psi, ax_ir::TensorProperty::Spinor);
+
+        let bilinear = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Sym(psi),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+        ]);
+        let result = eval(&Expr::Call(sort_product, vec![bilinear]), &env, &interner);
+        let expected = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+            Expr::Sym(psi),
+        ]);
+        assert_eq!(result, expected);
+    }
 }

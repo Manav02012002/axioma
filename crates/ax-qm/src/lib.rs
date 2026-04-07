@@ -2,7 +2,7 @@
 
 use ax_ir::{Expr, Index, TensorProperty, Variance};
 use num_bigint::BigInt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperatorKind {
@@ -27,6 +27,27 @@ pub struct BilinearPair {
     pub gamma_b: Vec<lasso::Spur>,
     pub psi4: lasso::Spur,
     pub remaining_factors: Vec<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FierzError {
+    NoBilinearPair,
+    AmbiguousBilinears(usize),
+    MalformedBilinear,
+    AmbiguousSpinorOrder,
+    SpinorOrderMismatch,
+}
+
+impl FierzError {
+    fn symbol_name(&self) -> &'static str {
+        match self {
+            FierzError::NoBilinearPair => "fierz_no_bilinear_pair",
+            FierzError::AmbiguousBilinears(_) => "fierz_ambiguous_bilinears",
+            FierzError::MalformedBilinear => "fierz_malformed_bilinear",
+            FierzError::AmbiguousSpinorOrder => "fierz_ambiguous_spinor_order",
+            FierzError::SpinorOrderMismatch => "fierz_spinor_order_mismatch",
+        }
+    }
 }
 
 fn operator_kind(
@@ -1042,6 +1063,29 @@ fn spinor_symbol(expr: &Expr) -> Option<lasso::Spur> {
     }
 }
 
+fn spinor_symbol_with_properties(
+    expr: &Expr,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+) -> Option<lasso::Spur> {
+    match expr {
+        Expr::Sym(sym) => {
+            if properties
+                .map(|props| {
+                    props.has_property_kind(*sym, &TensorProperty::Spinor)
+                        || props.has_property_kind(*sym, &TensorProperty::AntiCommuting)
+                })
+                .unwrap_or(true)
+            {
+                Some(*sym)
+            } else {
+                None
+            }
+        }
+        Expr::Indexed(base, _) => spinor_symbol_with_properties(base, properties),
+        _ => None,
+    }
+}
+
 fn gamma_factor_indices(
     expr: &Expr,
     gamma_sym: Option<lasso::Spur>,
@@ -1088,10 +1132,11 @@ fn parse_bilinear_at(
     start: usize,
     properties: Option<&dyn ax_tensor::PropertyLookup>,
     interner: &ax_ir::Interner,
-) -> Option<(lasso::Spur, Vec<lasso::Spur>, lasso::Spur, usize)> {
+) -> Option<(lasso::Spur, Vec<lasso::Spur>, lasso::Spur, usize, bool)> {
     let barred = barred_spinor_symbol(&factors[start], properties, interner)?;
     let mut gamma_indices = Vec::new();
     let mut cursor = start + 1;
+    let mut saw_non_gamma_before_spinor = false;
     while cursor < factors.len() {
         let Some(mut indices) = gamma_factor_indices(&factors[cursor], None, properties, interner)
         else {
@@ -1103,12 +1148,32 @@ fn parse_bilinear_at(
     if cursor >= factors.len() {
         return None;
     }
-    let spinor = spinor_symbol(&factors[cursor])?;
-    Some((barred, gamma_indices, spinor, cursor + 1))
+    let spinor = spinor_symbol_with_properties(&factors[cursor], properties)?;
+
+    let mut trailing_cursor = cursor + 1;
+    while trailing_cursor < factors.len() {
+        if let Some(mut indices) =
+            gamma_factor_indices(&factors[trailing_cursor], None, properties, interner)
+        {
+            gamma_indices.append(&mut indices);
+            saw_non_gamma_before_spinor = true;
+            trailing_cursor += 1;
+        } else {
+            break;
+        }
+    }
+
+    Some((
+        barred,
+        gamma_indices,
+        spinor,
+        trailing_cursor,
+        saw_non_gamma_before_spinor,
+    ))
 }
 
 pub fn find_bilinears(expr: &Expr, interner: &ax_ir::Interner) -> Option<BilinearPair> {
-    find_bilinears_impl(expr, None, interner)
+    find_bilinears_impl(expr, None, interner).ok()
 }
 
 pub fn find_bilinears_with_properties(
@@ -1116,27 +1181,161 @@ pub fn find_bilinears_with_properties(
     properties: &dyn ax_tensor::PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Option<BilinearPair> {
-    find_bilinears_impl(expr, Some(properties), interner)
+    find_bilinears_impl(expr, Some(properties), interner).ok()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ParsedBilinear {
+    barred: lasso::Spur,
+    gamma_indices: Vec<lasso::Spur>,
+    spinor: lasso::Spur,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ParsedFierzInput {
+    pair: BilinearPair,
+    sign: i64,
+}
+
+fn flatten_mul_factors(expr: &Expr, out: &mut Vec<Expr>) {
+    match expr {
+        Expr::Mul(factors) => {
+            for factor in factors {
+                flatten_mul_factors(factor, out);
+            }
+        }
+        other => out.push(other.clone()),
+    }
+}
+
+fn factor_contains_diracbar(
+    expr: &Expr,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> bool {
+    match expr {
+        Expr::Sym(sym) => {
+            barred_spinor_symbol(expr, properties, interner).is_some()
+                || has_property(properties, *sym, &TensorProperty::DiracBar)
+        }
+        Expr::Call(sym, args) => {
+            is_dirac_bar_call(*sym, properties, interner)
+                || args
+                    .iter()
+                    .any(|arg| factor_contains_diracbar(arg, properties, interner))
+        }
+        Expr::Indexed(base, _) => factor_contains_diracbar(base, properties, interner),
+        Expr::Mul(factors) | Expr::Add(factors) => factors
+            .iter()
+            .any(|factor| factor_contains_diracbar(factor, properties, interner)),
+        Expr::Neg(inner) => factor_contains_diracbar(inner, properties, interner),
+        Expr::Pow(base, exp) => {
+            factor_contains_diracbar(base, properties, interner)
+                || factor_contains_diracbar(exp, properties, interner)
+        }
+        Expr::Complex(re, im) => {
+            factor_contains_diracbar(re, properties, interner)
+                || factor_contains_diracbar(im, properties, interner)
+        }
+        _ => false,
+    }
+}
+
+fn is_anticommuting_spinor(
+    sym: lasso::Spur,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> bool {
+    properties
+        .map(|props| props.has_property_kind(sym, &TensorProperty::AntiCommuting))
+        .unwrap_or_else(|| {
+            let name = interner.resolve(sym);
+            name.starts_with("psi")
+                || name.starts_with("chi")
+                || name.starts_with("theta")
+                || name.contains("spinor")
+        })
+}
+
+fn anticommuting_reorder_sign(
+    input_order: &[lasso::Spur],
+    output_order: &[lasso::Spur],
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> Result<i64, FierzError> {
+    if input_order.len() != output_order.len() {
+        return Err(FierzError::SpinorOrderMismatch);
+    }
+
+    let input_set: HashSet<_> = input_order.iter().copied().collect();
+    let output_set: HashSet<_> = output_order.iter().copied().collect();
+    if input_set != output_set || input_set.len() != input_order.len() {
+        return Err(FierzError::SpinorOrderMismatch);
+    }
+
+    let mut current = input_order.to_vec();
+    let mut sign = 1i64;
+    for target_pos in 0..output_order.len() {
+        let Some(found_pos) = current[target_pos..]
+            .iter()
+            .position(|sym| *sym == output_order[target_pos])
+            .map(|pos| pos + target_pos)
+        else {
+            return Err(FierzError::SpinorOrderMismatch);
+        };
+
+        for pos in (target_pos..found_pos).rev() {
+            if is_anticommuting_spinor(current[pos], properties, interner)
+                && is_anticommuting_spinor(current[pos + 1], properties, interner)
+            {
+                sign = -sign;
+            }
+            current.swap(pos, pos + 1);
+        }
+    }
+    Ok(sign)
 }
 
 fn find_bilinears_impl(
     expr: &Expr,
     properties: Option<&dyn ax_tensor::PropertyLookup>,
     interner: &ax_ir::Interner,
-) -> Option<BilinearPair> {
-    let Expr::Mul(factors) = expr else {
-        return None;
-    };
+) -> Result<BilinearPair, FierzError> {
+    parse_fierz_input(expr, properties, interner).map(|parsed| parsed.pair)
+}
 
-    let mut bilinears = Vec::new();
+fn parse_fierz_input(
+    expr: &Expr,
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
+    interner: &ax_ir::Interner,
+) -> Result<ParsedFierzInput, FierzError> {
+    let mut factors = Vec::new();
+    flatten_mul_factors(expr, &mut factors);
+    if factors.len() < 4 {
+        if factors
+            .iter()
+            .any(|factor| factor_contains_diracbar(factor, properties, interner))
+        {
+            return Err(FierzError::MalformedBilinear);
+        }
+        return Err(FierzError::NoBilinearPair);
+    }
+
+    let mut bilinears: Vec<ParsedBilinear> = Vec::new();
     let mut remaining_factors = Vec::new();
+    let mut reordered_within_bilinear = false;
     let mut cursor = 0usize;
     while cursor < factors.len() {
         if bilinears.len() < 2 {
-            if let Some((barred, gamma_indices, spinor, next)) =
-                parse_bilinear_at(factors, cursor, properties, interner)
+            if let Some((barred, gamma_indices, spinor, next, reordered)) =
+                parse_bilinear_at(&factors, cursor, properties, interner)
             {
-                bilinears.push((barred, gamma_indices, spinor));
+                bilinears.push(ParsedBilinear {
+                    barred,
+                    gamma_indices,
+                    spinor,
+                });
+                reordered_within_bilinear |= reordered;
                 cursor = next;
                 continue;
             }
@@ -1146,20 +1345,44 @@ fn find_bilinears_impl(
     }
 
     if bilinears.len() < 2 {
-        return None;
+        if factors
+            .iter()
+            .any(|factor| factor_contains_diracbar(factor, properties, interner))
+        {
+            return Err(FierzError::MalformedBilinear);
+        }
+        return Err(FierzError::NoBilinearPair);
     }
 
-    let (psi1, gamma_a, psi2) = bilinears[0].clone();
-    let (psi3, gamma_b, psi4) = bilinears[1].clone();
-    Some(BilinearPair {
-        psi1,
-        gamma_a,
-        psi2,
-        psi3,
-        gamma_b,
-        psi4,
+    let mut probe = 0usize;
+    let mut total_bilinears = 0usize;
+    while probe < factors.len() {
+        if let Some((_, _, _, next, _)) = parse_bilinear_at(&factors, probe, properties, interner) {
+            total_bilinears += 1;
+            probe = next;
+        } else {
+            probe += 1;
+        }
+    }
+    if total_bilinears > 2 {
+        return Err(FierzError::AmbiguousBilinears(total_bilinears));
+    }
+
+    let first = bilinears[0].clone();
+    let second = bilinears[1].clone();
+    let pair = BilinearPair {
+        psi1: first.barred,
+        gamma_a: first.gamma_indices,
+        psi2: first.spinor,
+        psi3: second.barred,
+        gamma_b: second.gamma_indices,
+        psi4: second.spinor,
         remaining_factors,
-    })
+    };
+
+    let sign = if reordered_within_bilinear { -1 } else { 1 };
+
+    Ok(ParsedFierzInput { pair, sign })
 }
 
 fn gamma_index_count(expr: &Expr, gamma_sym: lasso::Spur) -> Option<usize> {
@@ -1177,9 +1400,25 @@ fn is_gamma_expr(expr: &Expr, gamma_sym: lasso::Spur) -> bool {
 }
 
 fn expand_diracbar_inner(inner: &Expr, diracbar_sym: lasso::Spur, gamma_sym: lasso::Spur) -> Expr {
+    if let Expr::Neg(nested) = inner {
+        return Expr::neg(expand_diracbar_inner(nested, diracbar_sym, gamma_sym));
+    }
+
     let Expr::Mul(factors) = inner else {
         return Expr::Call(diracbar_sym, vec![inner.clone()]);
     };
+
+    if factors.len() > 1 {
+        if let Expr::Int(n) = &factors[0] {
+            if *n == (-1).into() {
+                return Expr::neg(expand_diracbar_inner(
+                    &Expr::mul(factors[1..].to_vec()),
+                    diracbar_sym,
+                    gamma_sym,
+                ));
+            }
+        }
+    }
 
     let mut gamma_chain = Vec::new();
     let mut spinor = None;
@@ -1424,16 +1663,30 @@ fn bilinear_expr(
     Expr::mul(factors)
 }
 
-/// Apply Fierz identity to a concrete product of two spinor bilinears.
-pub fn fierz(
-    expr: &ax_ir::Expr,
+fn fierz_error_expr(error: &FierzError, expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    let sym = interner.get_or_intern(error.symbol_name());
+    Expr::Call(sym, vec![expr.clone()])
+}
+
+fn build_fierz_sum(
+    parsed: ParsedFierzInput,
     dim: usize,
     spinor_order: [lasso::Spur; 4],
+    properties: Option<&dyn ax_tensor::PropertyLookup>,
     interner: &ax_ir::Interner,
-) -> ax_ir::Expr {
-    let Some(pair) = find_bilinears(expr, interner) else {
-        return expr.clone();
-    };
+) -> Result<ax_ir::Expr, FierzError> {
+    let pair = parsed.pair;
+    let expected = [pair.psi1, pair.psi4, pair.psi3, pair.psi2];
+    let explicit_set: HashSet<_> = spinor_order.iter().copied().collect();
+    if explicit_set.len() != 4 || explicit_set != expected.iter().copied().collect() {
+        return Err(FierzError::SpinorOrderMismatch);
+    }
+
+    let input_order = [pair.psi1, pair.psi2, pair.psi3, pair.psi4];
+    let mut sign = anticommuting_reorder_sign(&input_order, &spinor_order, properties, interner)?;
+    if parsed.sign < 0 {
+        sign = -sign;
+    }
 
     let coeffs = fierz_coefficients(dim);
     let gamma_sym = interner.get_or_intern("gamma");
@@ -1448,13 +1701,99 @@ pub fn fierz(
             let second = bilinear_expr(psi3, &gamma_indices, psi2, gamma_sym);
 
             let mut factors = pair.remaining_factors.clone();
-            factors.push(Expr::Rational(coefficient));
+            let signed_coefficient = if sign < 0 { -coefficient } else { coefficient };
+            factors.push(Expr::Rational(signed_coefficient));
             factors.push(first);
             factors.push(second);
             Expr::mul(factors)
         })
         .collect();
-    ax_ir::Expr::add(terms)
+    Ok(ax_ir::Expr::add(terms))
+}
+
+pub fn try_fierz(
+    expr: &ax_ir::Expr,
+    dim: usize,
+    spinor_order: [lasso::Spur; 4],
+    interner: &ax_ir::Interner,
+) -> Result<ax_ir::Expr, FierzError> {
+    let parsed = parse_fierz_input(expr, None, interner)?;
+    build_fierz_sum(parsed, dim, spinor_order, None, interner)
+}
+
+pub fn try_fierz_with_properties(
+    expr: &ax_ir::Expr,
+    dim: usize,
+    spinor_order: [lasso::Spur; 4],
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Result<ax_ir::Expr, FierzError> {
+    let parsed = parse_fierz_input(expr, Some(properties), interner)?;
+    build_fierz_sum(parsed, dim, spinor_order, Some(properties), interner)
+}
+
+/// Apply Fierz identity to a concrete product of two spinor bilinears.
+pub fn fierz(
+    expr: &ax_ir::Expr,
+    dim: usize,
+    spinor_order: [lasso::Spur; 4],
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match try_fierz(expr, dim, spinor_order, interner) {
+        Ok(result) => result,
+        Err(error) => fierz_error_expr(&error, expr, interner),
+    }
+}
+
+pub fn fierz_with_properties(
+    expr: &ax_ir::Expr,
+    dim: usize,
+    spinor_order: [lasso::Spur; 4],
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    match try_fierz_with_properties(expr, dim, spinor_order, properties, interner) {
+        Ok(result) => result,
+        Err(error) => fierz_error_expr(&error, expr, interner),
+    }
+}
+
+pub fn try_fierz_auto(
+    expr: &ax_ir::Expr,
+    dim: usize,
+    interner: &ax_ir::Interner,
+) -> Result<ax_ir::Expr, FierzError> {
+    let parsed = parse_fierz_input(expr, None, interner)?;
+    let order = [
+        parsed.pair.psi1,
+        parsed.pair.psi4,
+        parsed.pair.psi3,
+        parsed.pair.psi2,
+    ];
+    build_fierz_sum(parsed, dim, order, None, interner)
+}
+
+pub fn try_fierz_auto_with_properties(
+    expr: &ax_ir::Expr,
+    dim: usize,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Result<ax_ir::Expr, FierzError> {
+    let parsed = parse_fierz_input(expr, Some(properties), interner)?;
+    let order = [
+        parsed.pair.psi1,
+        parsed.pair.psi4,
+        parsed.pair.psi3,
+        parsed.pair.psi2,
+    ];
+    build_fierz_sum(parsed, dim, order, Some(properties), interner)
+}
+
+pub fn fierz_auto(expr: &ax_ir::Expr, dim: usize, interner: &ax_ir::Interner) -> ax_ir::Expr {
+    match try_fierz_auto(expr, dim, interner) {
+        Ok(result) => result,
+        Err(error) => fierz_error_expr(&error, expr, interner),
+    }
 }
 
 /// Return the abstract Fierz coefficient expansion used by the old API.
@@ -1836,6 +2175,59 @@ mod tests {
     }
 
     #[test]
+    fn expand_bar_multi_index_gamma_chain_reverses_with_total_rank_sign() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let inner = Expr::mul(vec![
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+            Expr::Call(gamma, vec![Expr::Sym(b), Expr::Sym(c)]),
+            Expr::Sym(psi),
+        ]);
+        let expr = Expr::Call(bar, vec![inner]);
+        let result = expand_diracbar(&expr, bar, gamma, interner.get_or_intern("eta"), &interner);
+        let expected = Expr::neg(Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(b), Expr::Sym(c)]),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+        ]));
+        assert_eq!(
+            result, expected,
+            "rank-3 gamma chain should reverse and pick a minus sign"
+        );
+    }
+
+    #[test]
+    fn expand_bar_nested_negative_chain_keeps_transpose_sign() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let inner = Expr::neg(Expr::mul(vec![
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+            Expr::Call(gamma, vec![Expr::Sym(b)]),
+            Expr::Sym(psi),
+        ]));
+        let expr = Expr::Call(bar, vec![inner]);
+        let result = expand_diracbar(&expr, bar, gamma, interner.get_or_intern("eta"), &interner);
+        let expected = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(b)]),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+        ]);
+        assert_eq!(
+            result, expected,
+            "explicit minus and two-gamma transpose minus should cancel"
+        );
+    }
+
+    #[test]
     fn expand_bar_no_gamma() {
         // bar(psi) should stay as bar(psi)
         let interner = ax_ir::Interner::new();
@@ -1912,6 +2304,149 @@ mod tests {
             Expr::Add(terms) => assert_eq!(terms.len(), coeffs.len()),
             other => panic!("expected Fierz sum, got {other:?}"),
         }
+    }
+
+    fn collect_rationals(expr: &Expr, out: &mut Vec<num_rational::BigRational>) {
+        match expr {
+            Expr::Rational(value) => out.push(value.clone()),
+            Expr::Mul(factors) | Expr::Add(factors) => {
+                for factor in factors {
+                    collect_rationals(factor, out);
+                }
+            }
+            Expr::Neg(inner) => {
+                let mut nested = Vec::new();
+                collect_rationals(inner, &mut nested);
+                out.extend(nested.into_iter().map(|value| -value));
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn fierz_detects_nontrivial_gamma_chains() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let psibar1 = interner.get_or_intern("psibar1");
+        let psi2 = interner.get_or_intern("psi2");
+        let psibar3 = interner.get_or_intern("psibar3");
+        let psi4 = interner.get_or_intern("psi4");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+
+        let expr = Expr::mul(vec![
+            Expr::Sym(psibar1),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+            Expr::Call(gamma, vec![Expr::Sym(b), Expr::Sym(c)]),
+            Expr::Sym(psi2),
+            Expr::Sym(psibar3),
+            Expr::Call(gamma, vec![Expr::Sym(d)]),
+            Expr::Sym(psi4),
+        ]);
+        let pair = find_bilinears(&expr, &interner).expect("gamma-chain bilinears should parse");
+        assert_eq!(pair.gamma_a, vec![a, b, c]);
+        assert_eq!(pair.gamma_b, vec![d]);
+
+        let result = fierz_auto(&expr, 4, &interner);
+        match result {
+            Expr::Add(terms) => assert_eq!(terms.len(), fierz_coefficients(4).len()),
+            other => panic!("expected Fierz sum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fierz_auto_infers_standard_spinor_order_in_nested_product() {
+        let interner = ax_ir::Interner::new();
+        let scalar = interner.get_or_intern("m");
+        let psibar1 = interner.get_or_intern("psibar1");
+        let psi2 = interner.get_or_intern("psi2");
+        let psibar3 = interner.get_or_intern("psibar3");
+        let psi4 = interner.get_or_intern("psi4");
+
+        let expr = Expr::mul(vec![
+            Expr::Sym(scalar),
+            Expr::mul(vec![Expr::Sym(psibar1), Expr::Sym(psi2)]),
+            Expr::mul(vec![Expr::Sym(psibar3), Expr::Sym(psi4)]),
+        ]);
+        let result =
+            try_fierz_auto(&expr, 4, &interner).expect("standard product should infer order");
+        match result {
+            Expr::Add(terms) => {
+                assert_eq!(terms.len(), fierz_coefficients(4).len());
+                assert!(
+                    matches!(&terms[0], Expr::Mul(factors) if factors.contains(&Expr::Sym(scalar))),
+                    "remaining scalar should be preserved"
+                );
+            }
+            other => panic!("expected Fierz sum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fierz_ambiguous_three_bilinears_fails_clearly() {
+        let interner = ax_ir::Interner::new();
+        let s = ["psibar1", "psi2", "psibar3", "psi4", "psibar5", "psi6"]
+            .iter()
+            .map(|name| interner.get_or_intern(name))
+            .collect::<Vec<_>>();
+        let expr = Expr::mul(s.iter().map(|sym| Expr::Sym(*sym)).collect());
+        let error = try_fierz_auto(&expr, 4, &interner).expect_err("three bilinears are ambiguous");
+        assert_eq!(error, FierzError::AmbiguousBilinears(3));
+
+        let wrapped = fierz_auto(&expr, 4, &interner);
+        assert!(
+            matches!(wrapped, Expr::Call(sym, _) if interner.resolve(sym) == "fierz_ambiguous_bilinears")
+        );
+    }
+
+    #[test]
+    fn fierz_malformed_bar_fails_clearly() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let psi = interner.get_or_intern("psi");
+        let expr = Expr::mul(vec![Expr::Call(bar, vec![Expr::Sym(psi)])]);
+        let error = try_fierz_auto(&expr, 4, &interner).expect_err("single bar is malformed");
+        assert_eq!(error, FierzError::MalformedBilinear);
+    }
+
+    #[test]
+    fn fierz_anticommuting_spinors_flip_rearrangement_sign() {
+        let interner = ax_ir::Interner::new();
+        let s1 = interner.get_or_intern("s1bar");
+        let s2 = interner.get_or_intern("s2");
+        let s3 = interner.get_or_intern("s3bar");
+        let s4 = interner.get_or_intern("s4");
+        let expr = Expr::mul(vec![
+            Expr::Sym(s1),
+            Expr::Sym(s2),
+            Expr::Sym(s3),
+            Expr::Sym(s4),
+        ]);
+
+        let plain = try_fierz_auto(&expr, 4, &interner).expect("plain spinors should rearrange");
+        let mut props: HashMap<lasso::Spur, Vec<TensorProperty>> = HashMap::new();
+        for sym in [s1, s2, s3, s4] {
+            props.insert(sym, vec![TensorProperty::AntiCommuting]);
+        }
+        let graded =
+            try_fierz_auto_with_properties(&expr, 4, &props, &interner).expect("graded spinors");
+
+        let mut plain_coeffs = Vec::new();
+        collect_rationals(&plain, &mut plain_coeffs);
+        let mut graded_coeffs = Vec::new();
+        collect_rationals(&graded, &mut graded_coeffs);
+        let mut negated_plain = plain_coeffs
+            .into_iter()
+            .map(|value| -value)
+            .collect::<Vec<_>>();
+        graded_coeffs.sort_by_key(|value| format!("{value:?}"));
+        negated_plain.sort_by_key(|value| format!("{value:?}"));
+        assert_eq!(
+            graded_coeffs, negated_plain,
+            "moving the fourth anticommuting spinor through the third should flip every Fierz coefficient"
+        );
     }
 
     // ── split_gamma tests ─────────────────────────────────────────────────────

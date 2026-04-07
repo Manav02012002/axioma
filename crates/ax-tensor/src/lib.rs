@@ -116,6 +116,91 @@ pub struct ComponentRule {
     pub value: ax_ir::Expr,
 }
 
+fn tableau_groups_from_shape(
+    shape: &[usize],
+    indices: &[usize],
+) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+    let mut rows = Vec::new();
+    let mut cursor = 0usize;
+    for &row_len in shape {
+        if row_len == 0 {
+            continue;
+        }
+        let mut row = Vec::new();
+        for _ in 0..row_len {
+            if let Some(&slot) = indices.get(cursor) {
+                row.push(slot);
+            }
+            cursor += 1;
+        }
+        if !row.is_empty() {
+            rows.push(row);
+        }
+    }
+
+    let max_cols = shape.iter().copied().max().unwrap_or(0);
+    let mut columns = Vec::new();
+    for col in 0..max_cols {
+        let mut column = Vec::new();
+        for row in &rows {
+            if let Some(&slot) = row.get(col) {
+                column.push(slot);
+            }
+        }
+        if !column.is_empty() {
+            columns.push(column);
+        }
+    }
+
+    (rows, columns)
+}
+
+fn push_slot_swap_generator(
+    generators: &mut Vec<Perm>,
+    degree: usize,
+    sign_pos: usize,
+    sign_neg: usize,
+    lhs: usize,
+    rhs: usize,
+    signed: bool,
+) {
+    let mut generator: Perm = (0..degree).collect();
+    generator.swap(lhs, rhs);
+    if signed {
+        generator.swap(sign_pos, sign_neg);
+    }
+    generators.push(generator);
+}
+
+fn push_adjacent_slot_generators(
+    generators: &mut Vec<Perm>,
+    degree: usize,
+    sign_pos: usize,
+    sign_neg: usize,
+    start_position: usize,
+    positions: &[usize],
+    signed: bool,
+    n_indices: usize,
+) {
+    if positions.len() < 2 {
+        return;
+    }
+    for pair in positions.windows(2) {
+        if pair[0] >= n_indices || pair[1] >= n_indices {
+            continue;
+        }
+        push_slot_swap_generator(
+            generators,
+            degree,
+            sign_pos,
+            sign_neg,
+            start_position + pair[0],
+            start_position + pair[1],
+            signed,
+        );
+    }
+}
+
 /// Build the generating set for the symmetry group of a tensor product expression.
 ///
 /// Each tensor in the product has index positions. The symmetry generators
@@ -136,29 +221,28 @@ pub fn build_generating_set(
         for prop in &factor.properties {
             match prop {
                 ax_ir::TensorProperty::Symmetric(positions) => {
-                    if positions.len() < 2 {
-                        continue;
-                    }
-                    for i in 0..(positions.len() - 1) {
-                        let mut generator: Perm = (0..degree).collect();
-                        let p1 = factor.start_position + positions[i];
-                        let p2 = factor.start_position + positions[i + 1];
-                        generator.swap(p1, p2);
-                        generators.push(generator);
-                    }
+                    push_adjacent_slot_generators(
+                        &mut generators,
+                        degree,
+                        sign_pos,
+                        sign_neg,
+                        factor.start_position,
+                        positions,
+                        false,
+                        factor.n_indices,
+                    );
                 }
                 ax_ir::TensorProperty::AntiSymmetric(positions) => {
-                    if positions.len() < 2 {
-                        continue;
-                    }
-                    for i in 0..(positions.len() - 1) {
-                        let mut generator: Perm = (0..degree).collect();
-                        let p1 = factor.start_position + positions[i];
-                        let p2 = factor.start_position + positions[i + 1];
-                        generator.swap(p1, p2);
-                        generator.swap(sign_pos, sign_neg);
-                        generators.push(generator);
-                    }
+                    push_adjacent_slot_generators(
+                        &mut generators,
+                        degree,
+                        sign_pos,
+                        sign_neg,
+                        factor.start_position,
+                        positions,
+                        true,
+                        factor.n_indices,
+                    );
                 }
                 ax_ir::TensorProperty::RiemannSymmetry => {
                     if factor.n_indices >= 4 {
@@ -180,6 +264,81 @@ pub fn build_generating_set(
                         generators.push(g3);
                     }
                 }
+                ax_ir::TensorProperty::WeylTensor => {
+                    if factor.n_indices >= 4 {
+                        let s = factor.start_position;
+
+                        let mut g1: Perm = (0..degree).collect();
+                        g1.swap(s, s + 1);
+                        g1.swap(sign_pos, sign_neg);
+                        generators.push(g1);
+
+                        let mut g2: Perm = (0..degree).collect();
+                        g2.swap(s + 2, s + 3);
+                        g2.swap(sign_pos, sign_neg);
+                        generators.push(g2);
+
+                        let mut g3: Perm = (0..degree).collect();
+                        g3.swap(s, s + 2);
+                        g3.swap(s + 1, s + 3);
+                        generators.push(g3);
+                    }
+                }
+                ax_ir::TensorProperty::Metric
+                | ax_ir::TensorProperty::InverseMetric
+                | ax_ir::TensorProperty::KroneckerDelta => {
+                    if factor.n_indices >= 2 {
+                        push_slot_swap_generator(
+                            &mut generators,
+                            degree,
+                            sign_pos,
+                            sign_neg,
+                            factor.start_position,
+                            factor.start_position + 1,
+                            false,
+                        );
+                    }
+                }
+                ax_ir::TensorProperty::EpsilonTensor | ax_ir::TensorProperty::GammaMatrixProp => {
+                    let positions: Vec<usize> = (0..factor.n_indices).collect();
+                    push_adjacent_slot_generators(
+                        &mut generators,
+                        degree,
+                        sign_pos,
+                        sign_neg,
+                        factor.start_position,
+                        &positions,
+                        true,
+                        factor.n_indices,
+                    );
+                }
+                ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
+                    let (rows, columns) = tableau_groups_from_shape(shape, indices);
+                    for row in rows {
+                        push_adjacent_slot_generators(
+                            &mut generators,
+                            degree,
+                            sign_pos,
+                            sign_neg,
+                            factor.start_position,
+                            &row,
+                            false,
+                            factor.n_indices,
+                        );
+                    }
+                    for column in columns {
+                        push_adjacent_slot_generators(
+                            &mut generators,
+                            degree,
+                            sign_pos,
+                            sign_neg,
+                            factor.start_position,
+                            &column,
+                            true,
+                            factor.n_indices,
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -187,10 +346,16 @@ pub fn build_generating_set(
 
     for i in 0..factors.len() {
         for j in (i + 1)..factors.len() {
-            if factors[i].name == factors[j].name && factors[i].n_indices == factors[j].n_indices {
+            if factors[i].name == factors[j].name
+                && factors[i].n_indices == factors[j].n_indices
+                && factor_exchange_allowed(&factors[i], &factors[j])
+            {
                 let mut generator: Perm = (0..degree).collect();
                 for k in 0..factors[i].n_indices {
                     generator.swap(factors[i].start_position + k, factors[j].start_position + k);
+                }
+                if factor_exchange_sign(&factors[i], &factors[j]) {
+                    generator.swap(sign_pos, sign_neg);
                 }
                 generators.push(generator);
             }
@@ -228,14 +393,14 @@ pub fn extract_factor_info(
 
     for factor in factors {
         if let ax_ir::Expr::Indexed(base, indices) = factor {
-            if let ax_ir::Expr::Sym(name) = base.as_ref() {
+            if let Some(name) = expr_head_symbol(base) {
                 let props = tensor_properties
-                    .get_properties_with_indices(*name, indices)
+                    .get_properties_with_indices(name, indices)
                     .into_iter()
                     .cloned()
                     .collect();
                 result.push(TensorFactorInfo {
-                    name: *name,
+                    name,
                     n_indices: indices.len(),
                     start_position: position,
                     properties: props,
@@ -246,6 +411,35 @@ pub fn extract_factor_info(
     }
 
     result
+}
+
+fn factor_exchange_sign(lhs: &TensorFactorInfo, rhs: &TensorFactorInfo) -> bool {
+    let lhs_odd = lhs
+        .properties
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::AntiCommuting));
+    let rhs_odd = rhs
+        .properties
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::AntiCommuting));
+    lhs_odd && rhs_odd
+}
+
+fn factor_exchange_allowed(lhs: &TensorFactorInfo, rhs: &TensorFactorInfo) -> bool {
+    let noncommuting = |factor: &TensorFactorInfo| {
+        factor.properties.iter().any(|prop| {
+            matches!(
+                prop,
+                ax_ir::TensorProperty::NonCommuting
+                    | ax_ir::TensorProperty::Derivative
+                    | ax_ir::TensorProperty::PartialDerivative
+                    | ax_ir::TensorProperty::CovariantDerivative
+                    | ax_ir::TensorProperty::DiracBar
+                    | ax_ir::TensorProperty::GammaMatrixProp
+            )
+        })
+    };
+    !noncommuting(lhs) && !noncommuting(rhs)
 }
 
 fn repeated_sets_from_classification(
@@ -317,10 +511,16 @@ enum DummyCategory {
 
 fn indexed_base_sym(factor: &Expr) -> Option<lasso::Spur> {
     match factor {
-        Expr::Indexed(base, _) => match base.as_ref() {
-            Expr::Sym(sym) => Some(*sym),
-            _ => None,
-        },
+        Expr::Indexed(base, _) => expr_head_symbol(base),
+        _ => expr_head_symbol(factor),
+    }
+}
+
+fn expr_head_symbol(expr: &Expr) -> Option<lasso::Spur> {
+    match expr {
+        Expr::Sym(sym) => Some(*sym),
+        Expr::Call(sym, _) => Some(*sym),
+        Expr::Indexed(base, _) => expr_head_symbol(base),
         _ => None,
     }
 }
@@ -366,10 +566,13 @@ fn classify_dummy_pair(
 
     let derivative_kind = ax_ir::TensorProperty::Derivative;
     let partial_derivative_kind = ax_ir::TensorProperty::PartialDerivative;
+    let covariant_derivative_kind = ax_ir::TensorProperty::CovariantDerivative;
     let factor_a_is_derivative = factor_has_property(factor_a, properties, &derivative_kind)
-        || factor_has_property(factor_a, properties, &partial_derivative_kind);
+        || factor_has_property(factor_a, properties, &partial_derivative_kind)
+        || factor_has_property(factor_a, properties, &covariant_derivative_kind);
     let factor_b_is_derivative = factor_has_property(factor_b, properties, &derivative_kind)
-        || factor_has_property(factor_b, properties, &partial_derivative_kind);
+        || factor_has_property(factor_b, properties, &partial_derivative_kind)
+        || factor_has_property(factor_b, properties, &covariant_derivative_kind);
 
     if factor_a_is_derivative != factor_b_is_derivative
         && (is_fixed_position_index(idx_a, index_families)
@@ -398,7 +601,12 @@ fn remove_traceless_traces(
         if !properties
             .get_properties_with_indices(*name, indices)
             .iter()
-            .any(|prop| matches!(prop, ax_ir::TensorProperty::Traceless))
+            .any(|prop| {
+                matches!(
+                    prop,
+                    ax_ir::TensorProperty::Traceless | ax_ir::TensorProperty::WeylTensor
+                )
+            })
         {
             continue;
         }
@@ -461,6 +669,191 @@ fn remove_vanishing_diagonal(
     }
 
     None
+}
+
+fn indexed_symbol_and_indices(expr: &Expr) -> Option<(lasso::Spur, &[Index])> {
+    let Expr::Indexed(base, indices) = expr else {
+        return None;
+    };
+    expr_head_symbol(base).map(|sym| (sym, indices.as_slice()))
+}
+
+fn expr_has_property(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    property: &ax_ir::TensorProperty,
+) -> bool {
+    expr_head_symbol(expr)
+        .map(|sym| properties.has_property_kind(sym, property))
+        .unwrap_or(false)
+}
+
+fn indexed_has_property<F>(expr: &Expr, properties: &dyn PropertyLookup, mut predicate: F) -> bool
+where
+    F: FnMut(&ax_ir::TensorProperty) -> bool,
+{
+    indexed_symbol_and_indices(expr)
+        .map(|(sym, indices)| {
+            properties
+                .get_properties_with_indices(sym, indices)
+                .into_iter()
+                .any(|prop| predicate(prop))
+        })
+        .unwrap_or(false)
+}
+
+fn is_metric_delta_factor(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+    indexed_has_property(expr, properties, |prop| {
+        matches!(
+            prop,
+            ax_ir::TensorProperty::Metric
+                | ax_ir::TensorProperty::InverseMetric
+                | ax_ir::TensorProperty::KroneckerDelta
+        )
+    })
+}
+
+fn simplify_property_contractions_once(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut remaining = factors.clone();
+            for i in 0..remaining.len() {
+                let Some((_, factor_indices)) = indexed_symbol_and_indices(&remaining[i]) else {
+                    continue;
+                };
+                if factor_indices.len() != 2 {
+                    continue;
+                }
+                let indices = [factor_indices[0].clone(), factor_indices[1].clone()];
+
+                let is_delta = indexed_has_property(&remaining[i], properties, |prop| {
+                    matches!(prop, ax_ir::TensorProperty::KroneckerDelta)
+                });
+                if is_delta {
+                    let (left_name, left_var, right_name, right_var) = (
+                        indices[0].name,
+                        indices[0].variance.clone(),
+                        indices[1].name,
+                        indices[1].variance.clone(),
+                    );
+                    if left_var != right_var {
+                        let (from, to) = if left_var == ax_ir::Variance::Up
+                            && right_var == ax_ir::Variance::Down
+                        {
+                            (right_name, left_name)
+                        } else {
+                            (left_name, right_name)
+                        };
+
+                        let mut found = false;
+                        for j in 0..remaining.len() {
+                            if i == j || is_metric_delta_factor(&remaining[j], properties) {
+                                continue;
+                            }
+                            if contains_index(&remaining[j], from) {
+                                remaining[j] = replace_index(&remaining[j], from, to);
+                                found = true;
+                            }
+                        }
+                        if found {
+                            remaining.remove(i);
+                            return Expr::mul(remaining);
+                        }
+
+                        if left_name == right_name {
+                            remaining[i] = Expr::Sym(interner.get_or_intern("dim"));
+                            return Expr::mul(remaining);
+                        }
+                    }
+                }
+
+                let is_metric = indexed_has_property(&remaining[i], properties, |prop| {
+                    matches!(prop, ax_ir::TensorProperty::Metric)
+                }) && indices[0].variance == ax_ir::Variance::Down
+                    && indices[1].variance == ax_ir::Variance::Down;
+                let is_inverse_metric = indexed_has_property(&remaining[i], properties, |prop| {
+                    matches!(prop, ax_ir::TensorProperty::InverseMetric)
+                }) && indices[0].variance == ax_ir::Variance::Up
+                    && indices[1].variance == ax_ir::Variance::Up;
+                if !is_metric && !is_inverse_metric {
+                    continue;
+                }
+
+                let target_variance = if is_metric {
+                    ax_ir::Variance::Up
+                } else {
+                    ax_ir::Variance::Down
+                };
+                let new_variance = if is_metric {
+                    ax_ir::Variance::Down
+                } else {
+                    ax_ir::Variance::Up
+                };
+
+                for (contract_slot, replace_slot) in [(1usize, 0usize), (0usize, 1usize)] {
+                    let contract_idx = &indices[contract_slot];
+                    let replace_idx = &indices[replace_slot];
+                    for j in 0..remaining.len() {
+                        if i == j || is_metric_delta_factor(&remaining[j], properties) {
+                            continue;
+                        }
+                        if has_index_with_variance(
+                            &remaining[j],
+                            contract_idx.name,
+                            &target_variance,
+                        ) {
+                            remaining[j] = replace_index_with_variance(
+                                &remaining[j],
+                                contract_idx.name,
+                                &target_variance,
+                                replace_idx.name,
+                                &new_variance,
+                            );
+                            remaining.remove(i);
+                            return Expr::mul(remaining);
+                        }
+                    }
+                }
+            }
+
+            Expr::mul(
+                factors
+                    .iter()
+                    .map(|factor| simplify_property_contractions_once(factor, properties, interner))
+                    .collect(),
+            )
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| simplify_property_contractions_once(term, properties, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(simplify_property_contractions_once(
+            inner, properties, interner,
+        )),
+        _ => expr.clone(),
+    }
+}
+
+fn simplify_property_contractions(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Expr {
+    let mut current = expr.clone();
+    for _ in 0..32 {
+        let next = simplify_property_contractions_once(&current, properties, interner);
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
 }
 
 /// Lower all free (non-contracted) upper indices in an expression.
@@ -644,6 +1037,14 @@ fn canonicalise_product(
     if precanonical == Expr::zero() {
         return Expr::zero();
     }
+    let simplified = simplify_property_contractions(&precanonical, tensor_properties, interner);
+    if simplified != precanonical {
+        return canonicalise(&simplified, tensor_properties, interner);
+    }
+    let sorted = sort_product(&precanonical, tensor_properties, interner);
+    if sorted != precanonical {
+        return canonicalise(&sorted, tensor_properties, interner);
+    }
 
     let wrapped;
     let expr_ref = match &precanonical {
@@ -804,6 +1205,14 @@ fn canonicalise_product_parallel(
     let precanonical = canonicalize_indices(expr, tensor_properties, interner);
     if precanonical == Expr::zero() {
         return Expr::zero();
+    }
+    let simplified = simplify_property_contractions(&precanonical, tensor_properties, interner);
+    if simplified != precanonical {
+        return canonicalise_parallel(&simplified, tensor_properties, interner);
+    }
+    let sorted = sort_product(&precanonical, tensor_properties, interner);
+    if sorted != precanonical {
+        return canonicalise_parallel(&sorted, tensor_properties, interner);
     }
 
     let wrapped;
@@ -982,6 +1391,7 @@ pub fn canonicalise(
                 other => other,
             }
         }
+        Expr::Call(_, _) => canonicalize_indices(expr, tensor_properties, interner),
         _ => expr.clone(),
     }
 }
@@ -1010,6 +1420,7 @@ pub fn canonicalise_parallel(
                 other => other,
             }
         }
+        Expr::Call(_, _) => canonicalize_indices(expr, properties, interner),
         _ => expr.clone(),
     }
 }
@@ -1488,7 +1899,39 @@ pub fn tableaux_from_properties(
                         columns: vec![abs],
                     });
                 }
-                ax_ir::TensorProperty::RiemannSymmetry => {
+                ax_ir::TensorProperty::Metric
+                | ax_ir::TensorProperty::InverseMetric
+                | ax_ir::TensorProperty::KroneckerDelta => {
+                    if info.n_indices >= 2 {
+                        result.push(adjform::TableauInfo {
+                            rows: vec![vec![info.start_position, info.start_position + 1]],
+                            columns: vec![],
+                        });
+                    }
+                }
+                ax_ir::TensorProperty::EpsilonTensor => {
+                    if info.n_indices >= 2 {
+                        result.push(adjform::TableauInfo {
+                            rows: vec![],
+                            columns: vec![(0..info.n_indices)
+                                .map(|p| info.start_position + p)
+                                .collect()],
+                        });
+                    }
+                }
+                ax_ir::TensorProperty::GammaMatrixProp => {
+                    if info.n_indices >= 2 {
+                        result.push(adjform::TableauInfo {
+                            rows: vec![],
+                            columns: vec![(0..info.n_indices)
+                                .map(|p| info.start_position + p)
+                                .collect()],
+                        });
+                    }
+                }
+                ax_ir::TensorProperty::RiemannSymmetry
+                | ax_ir::TensorProperty::SatisfiesBianchi
+                | ax_ir::TensorProperty::WeylTensor => {
                     if info.n_indices >= 4 {
                         let s = info.start_position;
                         result.push(adjform::TableauInfo {
@@ -1496,6 +1939,23 @@ pub fn tableaux_from_properties(
                             columns: vec![vec![s, s + 1], vec![s + 2, s + 3]],
                         });
                     }
+                }
+                ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
+                    let (rows, columns) = tableau_groups_from_shape(shape, indices);
+                    let rows = rows
+                        .into_iter()
+                        .map(|row| row.into_iter().map(|p| info.start_position + p).collect())
+                        .collect();
+                    let columns = columns
+                        .into_iter()
+                        .map(|column| {
+                            column
+                                .into_iter()
+                                .map(|p| info.start_position + p)
+                                .collect()
+                        })
+                        .collect();
+                    result.push(adjform::TableauInfo { rows, columns });
                 }
                 _ => {}
             }
@@ -1807,12 +2267,16 @@ fn evaluate_node(
                 || properties.has_property_kind(*f, &ax_ir::TensorProperty::PartialDerivative);
             if is_derivative {
                 handle_derivative(expr, *f, args, rules, env, properties, interner)
+            } else if properties.has_property_kind(*f, &ax_ir::TensorProperty::Trace)
+                && args.len() == 1
+            {
+                handle_component_trace(&args[0], rules, env, properties, interner)
             } else {
                 let evaled_args: Vec<Expr> = args
                     .iter()
                     .map(|a| evaluate_node(a, rules, env, properties, interner))
                     .collect();
-                Expr::Call(*f, evaled_args)
+                collect_component_expr(Expr::Call(*f, evaled_args), interner)
             }
         }
         _ => expr.clone(),
@@ -2118,8 +2582,7 @@ fn handle_sum(
         .iter()
         .map(|t| evaluate_node(t, rules, env, properties, interner))
         .collect();
-    let simplified = Expr::add(evaled);
-    simplify_expr(simplified, interner)
+    collect_component_expr(Expr::add(evaled), interner)
 }
 
 fn handle_prod(
@@ -2129,60 +2592,54 @@ fn handle_prod(
     properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
+    let original_product = Expr::mul(factors.to_vec());
+    let ic = index_classifier::classify_indices(&original_product);
+    if !ic.dummy.is_empty() {
+        let mut coords = env.coordinates();
+        coords.sort_by_key(|sym| interner.resolve(*sym).to_string());
+        if coords.is_empty() {
+            return original_product;
+        }
+
+        let n_dummy = ic.dummy.len();
+        let n_coords = coords.len();
+        let total_combos = n_coords.pow(n_dummy as u32);
+        let mut sum_terms = Vec::new();
+
+        for combo in 0..total_combos {
+            let mut assignment: HashMap<lasso::Spur, lasso::Spur> = HashMap::new();
+            let mut idx = combo;
+            for (name, _, _, _, _) in &ic.dummy {
+                assignment.insert(*name, coords[idx % n_coords]);
+                idx /= n_coords;
+            }
+
+            let mut term_factors = Vec::new();
+            for factor in factors {
+                let substituted = substitute_index_values(factor, &assignment, interner);
+                let evaluated = evaluate_node(&substituted, rules, env, properties, interner);
+                term_factors.push(evaluated);
+            }
+
+            let term = collect_component_expr(Expr::mul(term_factors), interner);
+            if term != Expr::zero() {
+                sum_terms.push(term);
+            }
+        }
+
+        return collect_component_expr(Expr::add(sum_terms), interner);
+    }
+
     let evaled: Vec<Expr> = factors
         .iter()
         .map(|f| evaluate_node(f, rules, env, properties, interner))
         .collect();
     if evaled.iter().any(|expr| matches!(expr, Expr::Add(_))) {
         let distributed = distribute_component_product(&evaled, interner);
-        return evaluate_node(&distributed, rules, env, properties, interner);
+        return collect_component_expr(distributed, interner);
     }
 
-    let product = Expr::mul(evaled.clone());
-    let ic = index_classifier::classify_indices(&product);
-    if ic.dummy.is_empty() {
-        return Expr::mul(evaled);
-    }
-
-    let mut coords = env.coordinates();
-    coords.sort_by_key(|sym| interner.resolve(*sym).to_string());
-    if coords.is_empty() {
-        return Expr::mul(evaled);
-    }
-
-    let n_dummy = ic.dummy.len();
-    let n_coords = coords.len();
-    let total_combos = n_coords.pow(n_dummy as u32);
-    let mut sum_terms = Vec::new();
-
-    for combo in 0..total_combos {
-        let mut assignment: HashMap<lasso::Spur, lasso::Spur> = HashMap::new();
-        let mut idx = combo;
-        for (name, _, _, _, _) in &ic.dummy {
-            assignment.insert(*name, coords[idx % n_coords]);
-            idx /= n_coords;
-        }
-
-        let mut term_factors = Vec::new();
-        for factor in &evaled {
-            let substituted = substitute_index_values(factor, &assignment, interner);
-            let evaluated = evaluate_with_rules_deep(&substituted, rules, env, interner);
-            term_factors.push(evaluated);
-        }
-
-        let term = Expr::mul(term_factors);
-        let simplified = simplify_expr(term, interner);
-        if simplified != Expr::zero() {
-            sum_terms.push(simplified);
-        }
-    }
-
-    if sum_terms.is_empty() {
-        Expr::zero()
-    } else {
-        let result = Expr::add(sum_terms);
-        simplify_expr(result, interner)
-    }
+    collect_component_expr(Expr::mul(evaled), interner)
 }
 
 fn distribute_component_product(factors: &[Expr], interner: &Interner) -> Expr {
@@ -2203,7 +2660,100 @@ fn distribute_component_product(factors: &[Expr], interner: &Interner) -> Expr {
         terms = next;
     }
 
-    simplify_expr(Expr::add(terms), interner)
+    collect_component_expr(Expr::add(terms), interner)
+}
+
+fn abstract_index_occurrences(expr: &Expr, env: &dyn ComponentEvalEnv) -> Vec<Index> {
+    let mut out = Vec::new();
+    fn walk(expr: &Expr, env: &dyn ComponentEvalEnv, out: &mut Vec<Index>) {
+        match expr {
+            Expr::Indexed(base, indices) => {
+                for index in indices {
+                    if !env.is_coordinate(index.name) {
+                        out.push(index.clone());
+                    }
+                }
+                walk(base, env, out);
+            }
+            Expr::Mul(factors) | Expr::Add(factors) => {
+                for factor in factors {
+                    walk(factor, env, out);
+                }
+            }
+            Expr::Neg(inner) => walk(inner, env, out),
+            Expr::Pow(base, exp) => {
+                walk(base, env, out);
+                walk(exp, env, out);
+            }
+            Expr::Call(_, args) => {
+                for arg in args {
+                    walk(arg, env, out);
+                }
+            }
+            Expr::Complex(re, im) => {
+                walk(re, env, out);
+                walk(im, env, out);
+            }
+            Expr::Rule(lhs, rhs, _) => {
+                walk(lhs, env, out);
+                walk(rhs, env, out);
+            }
+            Expr::Piecewise(cases) => {
+                for (value, _) in cases {
+                    walk(value, env, out);
+                }
+            }
+            Expr::Let(_, value, body) => {
+                walk(value, env, out);
+                walk(body, env, out);
+            }
+            Expr::List(items) => {
+                for item in items {
+                    walk(item, env, out);
+                }
+            }
+            Expr::Matrix(rows) => {
+                for row in rows {
+                    for cell in row {
+                        walk(cell, env, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(expr, env, &mut out);
+    out
+}
+
+fn handle_component_trace(
+    inner: &Expr,
+    rules: &[ComponentRule],
+    env: &dyn ComponentEvalEnv,
+    properties: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let occurrences = abstract_index_occurrences(inner, env);
+    let (Some(first), Some(last)) = (occurrences.first(), occurrences.last()) else {
+        return evaluate_node(inner, rules, env, properties, interner);
+    };
+
+    let mut coords = env.coordinates();
+    coords.sort_by_key(|sym| interner.resolve(*sym).to_string());
+    if coords.is_empty() {
+        return evaluate_node(inner, rules, env, properties, interner);
+    }
+
+    let mut terms = Vec::new();
+    for coord in coords {
+        let assignment = HashMap::from([(first.name, coord), (last.name, coord)]);
+        let substituted = substitute_index_values(inner, &assignment, interner);
+        let evaluated = evaluate_node(&substituted, rules, env, properties, interner);
+        if evaluated != Expr::zero() {
+            terms.push(evaluated);
+        }
+    }
+    collect_component_expr(Expr::add(terms), interner)
 }
 
 fn handle_derivative(
@@ -2244,7 +2794,10 @@ fn handle_derivative(
     }
 
     if deriv_indices.len() == 1 && env.is_coordinate(deriv_indices[0]) {
-        return diff_component(&inner_evaled, deriv_indices[0], interner);
+        return collect_component_expr(
+            diff_component(&inner_evaled, deriv_indices[0], interner),
+            interner,
+        );
     }
 
     if deriv_indices.len() == 1 {
@@ -2254,10 +2807,10 @@ fn handle_derivative(
             if has_abstract_indices(&expanded) {
                 return Expr::Call(deriv_sym, vec![expanded, Expr::Sym(idx)]);
             }
-            return diff_component(&expanded, idx, interner);
+            return collect_component_expr(diff_component(&expanded, idx, interner), interner);
         }
 
-        return diff_component(&inner_evaled, idx, interner);
+        return collect_component_expr(diff_component(&inner_evaled, idx, interner), interner);
     }
 
     let mut result = inner_evaled;
@@ -2269,7 +2822,7 @@ fn handle_derivative(
         }
     }
 
-    simplify_expr(result, interner)
+    collect_component_expr(result, interner)
 }
 
 fn has_abstract_indices(expr: &Expr) -> bool {
@@ -2279,6 +2832,67 @@ fn has_abstract_indices(expr: &Expr) -> bool {
         Expr::Add(terms) => terms.iter().any(has_abstract_indices),
         Expr::Neg(e) => has_abstract_indices(e),
         _ => false,
+    }
+}
+
+fn collect_component_expr(expr: Expr, interner: &Interner) -> Expr {
+    match expr {
+        Expr::Add(terms) => {
+            let collected = terms
+                .into_iter()
+                .map(|term| collect_component_expr(term, interner))
+                .filter(|term| *term != Expr::zero())
+                .collect();
+            simplify_expr(Expr::add(collected), interner)
+        }
+        Expr::Mul(factors) => {
+            let collected = factors
+                .into_iter()
+                .map(|factor| collect_component_expr(factor, interner))
+                .collect::<Vec<_>>();
+            if collected.iter().any(|factor| *factor == Expr::zero()) {
+                Expr::zero()
+            } else {
+                simplify_expr(Expr::mul(collected), interner)
+            }
+        }
+        Expr::Neg(inner) => simplify_expr(
+            Expr::neg(collect_component_expr(*inner, interner)),
+            interner,
+        ),
+        Expr::Pow(base, exp) => simplify_expr(
+            Expr::pow(
+                collect_component_expr(*base, interner),
+                collect_component_expr(*exp, interner),
+            ),
+            interner,
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            f,
+            args.into_iter()
+                .map(|arg| collect_component_expr(arg, interner))
+                .collect(),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(collect_component_expr(*re, interner)),
+            Box::new(collect_component_expr(*im, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .into_iter()
+                .map(|item| collect_component_expr(item, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|cell| collect_component_expr(cell, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        other => simplify_expr(other, interner),
     }
 }
 
@@ -2476,74 +3090,6 @@ fn handle_factor(
     expr.clone()
 }
 
-fn evaluate_with_rules_deep(
-    expr: &Expr,
-    rules: &[ComponentRule],
-    env: &dyn ComponentEvalEnv,
-    interner: &ax_ir::Interner,
-) -> Expr {
-    match expr {
-        Expr::Indexed(base, indices) => {
-            if let Expr::Sym(tensor_name) = base.as_ref() {
-                let epsilon_value = handle_epsilon(expr, *tensor_name, env, interner);
-                if epsilon_value != *expr {
-                    return epsilon_value;
-                }
-                if let Some(value) = automatic_kronecker_delta_component(
-                    *tensor_name,
-                    indices,
-                    env,
-                    env.tensor_properties(),
-                ) {
-                    return value;
-                }
-                if let Some(value) = lookup_component_rule(
-                    *tensor_name,
-                    indices,
-                    rules,
-                    env.tensor_properties(),
-                    interner,
-                ) {
-                    return value;
-                }
-                if let Some(value) = automatic_inverse_metric_component(
-                    *tensor_name,
-                    indices,
-                    rules,
-                    env,
-                    env.tensor_properties(),
-                    interner,
-                ) {
-                    return value;
-                }
-                Expr::zero()
-            } else {
-                expr.clone()
-            }
-        }
-        Expr::Mul(factors) => Expr::mul(
-            factors
-                .iter()
-                .map(|f| evaluate_with_rules_deep(f, rules, env, interner))
-                .collect(),
-        ),
-        Expr::Add(terms) => Expr::add(
-            terms
-                .iter()
-                .map(|t| evaluate_with_rules_deep(t, rules, env, interner))
-                .collect(),
-        ),
-        Expr::Neg(e) => Expr::neg(evaluate_with_rules_deep(e, rules, env, interner)),
-        Expr::Call(f, args) => Expr::Call(
-            *f,
-            args.iter()
-                .map(|a| evaluate_with_rules_deep(a, rules, env, interner))
-                .collect(),
-        ),
-        _ => expr.clone(),
-    }
-}
-
 fn substitute_index_values(
     expr: &Expr,
     assignment: &HashMap<lasso::Spur, lasso::Spur>,
@@ -2684,6 +3230,16 @@ pub fn detect_contractions(indices: &[ax_ir::Index]) -> Vec<(usize, usize)> {
     pairs
 }
 
+fn sort_key(index: &ax_ir::Index, interner: &Interner) -> (String, u8) {
+    (
+        interner.resolve(index.name).to_string(),
+        match index.variance {
+            ax_ir::Variance::Down => 0,
+            ax_ir::Variance::Up => 1,
+        },
+    )
+}
+
 fn permutation_parity(original: &[ax_ir::Index], sorted: &[ax_ir::Index]) -> bool {
     let mut used = vec![false; sorted.len()];
     let mut permutation = Vec::with_capacity(original.len());
@@ -2709,14 +3265,149 @@ fn permutation_parity(original: &[ax_ir::Index], sorted: &[ax_ir::Index]) -> boo
     inversions % 2 == 1
 }
 
-fn sort_key(index: &ax_ir::Index, interner: &Interner) -> (String, u8) {
-    (
-        interner.resolve(index.name).to_string(),
-        match index.variance {
-            ax_ir::Variance::Down => 0,
-            ax_ir::Variance::Up => 1,
-        },
-    )
+fn canonicalize_riemann_slots(
+    indices: &[ax_ir::Index],
+    interner: &Interner,
+) -> Option<(Vec<ax_ir::Index>, i32)> {
+    if indices.len() != 4 {
+        return None;
+    }
+
+    let mut indices = indices.to_vec();
+    let mut sign = 1;
+    let pairs = [vec![0usize, 1usize], vec![2usize, 3usize]];
+    for positions in pairs {
+        let original = positions
+            .iter()
+            .filter_map(|&pos| indices.get(pos).cloned())
+            .collect::<Vec<_>>();
+        if original[0] == original[1] {
+            return Some((indices, 0));
+        }
+        let mut sorted = original.clone();
+        sorted.sort_by_key(|idx| sort_key(idx, interner));
+        if permutation_parity(&original, &sorted) {
+            sign *= -1;
+        }
+        for (slot, value) in positions.iter().zip(sorted.iter()) {
+            indices[*slot] = value.clone();
+        }
+    }
+
+    let left = vec![indices[0].clone(), indices[1].clone()];
+    let right = vec![indices[2].clone(), indices[3].clone()];
+    let left_key = left
+        .iter()
+        .map(|i| sort_key(i, interner))
+        .collect::<Vec<_>>();
+    let right_key = right
+        .iter()
+        .map(|i| sort_key(i, interner))
+        .collect::<Vec<_>>();
+    if right_key < left_key {
+        indices.swap(0, 2);
+        indices.swap(1, 3);
+    }
+
+    Some((indices, sign))
+}
+
+fn canonicalize_indexed_slots(
+    sym: lasso::Spur,
+    indices: &[ax_ir::Index],
+    properties: Vec<ax_ir::TensorProperty>,
+    interner: &Interner,
+) -> (Vec<ax_ir::Index>, i32) {
+    if indices.len() < 2 || properties.is_empty() {
+        return (indices.to_vec(), 1);
+    }
+
+    let mut signed_groups: Vec<Vec<usize>> = Vec::new();
+    for prop in &properties {
+        match prop {
+            ax_ir::TensorProperty::AntiSymmetric(positions) => {
+                signed_groups.push(positions.clone());
+            }
+            ax_ir::TensorProperty::RiemannSymmetry => {
+                signed_groups.push(vec![0, 1]);
+                signed_groups.push(vec![2, 3]);
+            }
+            ax_ir::TensorProperty::EpsilonTensor => {
+                signed_groups.push((0..indices.len()).collect());
+            }
+            ax_ir::TensorProperty::TableauSymmetry {
+                shape,
+                indices: tab_indices,
+            } => {
+                let (_, columns) = tableau_groups_from_shape(shape, tab_indices);
+                signed_groups.extend(columns);
+            }
+            _ => {}
+        }
+    }
+    for group in signed_groups {
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let Some(lhs) = indices.get(group[i]) else {
+                    continue;
+                };
+                let Some(rhs) = indices.get(group[j]) else {
+                    continue;
+                };
+                if lhs == rhs {
+                    return (indices.to_vec(), 0);
+                }
+            }
+        }
+    }
+
+    let factor = TensorFactorInfo {
+        name: sym,
+        n_indices: indices.len(),
+        start_position: 0,
+        properties,
+    };
+    let generators = build_generating_set(&[factor], interner);
+    if generators.is_empty() {
+        return (indices.to_vec(), 1);
+    }
+
+    let total_indices = indices.len();
+    let degree = total_indices + 2;
+    let mut keyed_positions: Vec<(usize, (String, u8))> = indices
+        .iter()
+        .enumerate()
+        .map(|(i, idx)| (i, sort_key(idx, interner)))
+        .collect();
+    keyed_positions.sort_by(|(ia, ka), (ib, kb)| ka.cmp(kb).then(ia.cmp(ib)));
+
+    let mut rank_by_pos = vec![0usize; total_indices];
+    for (rank, (pos, _)) in keyed_positions.iter().enumerate() {
+        rank_by_pos[*pos] = rank;
+    }
+
+    let mut extended_perm = rank_by_pos.clone();
+    extended_perm.push(total_indices);
+    extended_perm.push(total_indices + 1);
+
+    let sgs = ax_perm::schreier_sims(&[], &generators, degree);
+    let free_slots: Vec<usize> = (0..total_indices).collect();
+    let canon_perm = ax_perm::coset_representative(&extended_perm, &sgs, &free_slots);
+    let canon_sign = if canon_perm[total_indices] == total_indices + 1 {
+        -1
+    } else {
+        1
+    };
+
+    let mut index_by_rank = vec![indices[0].clone(); total_indices];
+    for (pos, rank) in rank_by_pos.iter().enumerate() {
+        index_by_rank[*rank] = indices[pos].clone();
+    }
+    let new_indices = canon_perm[..total_indices]
+        .iter()
+        .map(|rank| index_by_rank[*rank].clone())
+        .collect();
+    (new_indices, canon_sign)
 }
 
 fn tensor_sort_key(expr: &Expr, interner: &ax_ir::Interner) -> (u8, String, String) {
@@ -2746,49 +3437,184 @@ fn tensor_sort_key(expr: &Expr, interner: &ax_ir::Interner) -> (u8, String, Stri
     }
 }
 
+fn is_diracbar_factor(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+    expr_has_property(expr, properties, &ax_ir::TensorProperty::DiracBar)
+}
+
+fn is_gamma_factor(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+    expr_has_property(expr, properties, &ax_ir::TensorProperty::GammaMatrixProp)
+}
+
+fn is_hard_noncommuting_boundary(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+    expr_has_property(expr, properties, &ax_ir::TensorProperty::NonCommuting)
+        || expr_has_property(expr, properties, &ax_ir::TensorProperty::Derivative)
+        || expr_has_property(expr, properties, &ax_ir::TensorProperty::PartialDerivative)
+        || expr_has_property(
+            expr,
+            properties,
+            &ax_ir::TensorProperty::CovariantDerivative,
+        )
+}
+
+fn is_spinor_like_factor(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+    expr_has_property(expr, properties, &ax_ir::TensorProperty::Spinor)
+        || expr_has_property(expr, properties, &ax_ir::TensorProperty::AntiCommuting)
+        || matches!(expr, Expr::Sym(_))
+}
+
+fn normalize_diracbar_bilinear_windows(
+    factors: Vec<Expr>,
+    properties: &dyn PropertyLookup,
+) -> Vec<Expr> {
+    let mut out = Vec::with_capacity(factors.len());
+    let mut cursor = 0usize;
+
+    while cursor < factors.len() {
+        let factor = &factors[cursor];
+        if !is_diracbar_factor(factor, properties) {
+            out.push(factor.clone());
+            cursor += 1;
+            continue;
+        }
+
+        out.push(factor.clone());
+        cursor += 1;
+
+        let mut window = Vec::new();
+        while cursor < factors.len()
+            && !is_diracbar_factor(&factors[cursor], properties)
+            && !is_hard_noncommuting_boundary(&factors[cursor], properties)
+        {
+            window.push(factors[cursor].clone());
+            cursor += 1;
+        }
+
+        if window.is_empty() {
+            continue;
+        }
+
+        let mut gammas = Vec::new();
+        let mut spinors = Vec::new();
+        let mut others = Vec::new();
+        for item in window {
+            if is_gamma_factor(&item, properties) {
+                gammas.push(item);
+            } else if is_spinor_like_factor(&item, properties) {
+                spinors.push(item);
+            } else {
+                others.push(item);
+            }
+        }
+
+        out.extend(gammas);
+        out.extend(spinors);
+        out.extend(others);
+    }
+
+    out
+}
+
 pub fn sort_product(
     expr: &ax_ir::Expr,
-    _tensor_properties: &dyn PropertyLookup,
+    tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
+    fn is_sort_barrier(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+        expr_has_property(expr, properties, &ax_ir::TensorProperty::NonCommuting)
+            || expr_has_property(expr, properties, &ax_ir::TensorProperty::DiracBar)
+            || expr_has_property(expr, properties, &ax_ir::TensorProperty::GammaMatrixProp)
+            || expr_has_property(expr, properties, &ax_ir::TensorProperty::Derivative)
+            || expr_has_property(expr, properties, &ax_ir::TensorProperty::PartialDerivative)
+            || expr_has_property(
+                expr,
+                properties,
+                &ax_ir::TensorProperty::CovariantDerivative,
+            )
+    }
+
+    fn is_odd(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+        expr_has_property(expr, properties, &ax_ir::TensorProperty::AntiCommuting)
+    }
+
+    fn sort_commuting_segment(
+        segment: &mut [Expr],
+        properties: &dyn PropertyLookup,
+        interner: &ax_ir::Interner,
+    ) -> bool {
+        let mut negate = false;
+        for i in 1..segment.len() {
+            let mut j = i;
+            while j > 0
+                && tensor_sort_key(&segment[j], interner)
+                    < tensor_sort_key(&segment[j - 1], interner)
+            {
+                if is_odd(&segment[j], properties) && is_odd(&segment[j - 1], properties) {
+                    negate = !negate;
+                }
+                segment.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        negate
+    }
+
     match expr {
         Expr::Mul(factors) => {
-            let mut sorted: Vec<Expr> = factors
+            let sorted: Vec<Expr> = factors
                 .iter()
-                .map(|factor| sort_product(factor, _tensor_properties, interner))
+                .map(|factor| sort_product(factor, tensor_properties, interner))
                 .collect();
-            sorted.sort_by(|a, b| tensor_sort_key(a, interner).cmp(&tensor_sort_key(b, interner)));
-            Expr::mul(sorted)
+            let mut sorted = normalize_diracbar_bilinear_windows(sorted, tensor_properties);
+            let mut negate = false;
+            let mut start = 0usize;
+            for end in 0..=sorted.len() {
+                if end == sorted.len() || is_sort_barrier(&sorted[end], tensor_properties) {
+                    if end > start {
+                        negate ^= sort_commuting_segment(
+                            &mut sorted[start..end],
+                            tensor_properties,
+                            interner,
+                        );
+                    }
+                    start = end + 1;
+                }
+            }
+            let result = Expr::mul(sorted);
+            if negate {
+                Expr::neg(result)
+            } else {
+                result
+            }
         }
         Expr::Add(terms) => Expr::add(
             terms
                 .iter()
-                .map(|term| sort_product(term, _tensor_properties, interner))
+                .map(|term| sort_product(term, tensor_properties, interner))
                 .collect(),
         ),
-        Expr::Neg(inner) => Expr::neg(sort_product(inner, _tensor_properties, interner)),
+        Expr::Neg(inner) => Expr::neg(sort_product(inner, tensor_properties, interner)),
         Expr::Pow(base, exp) => Expr::pow(
-            sort_product(base, _tensor_properties, interner),
-            sort_product(exp, _tensor_properties, interner),
+            sort_product(base, tensor_properties, interner),
+            sort_product(exp, tensor_properties, interner),
         ),
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()
-                .map(|arg| sort_product(arg, _tensor_properties, interner))
+                .map(|arg| sort_product(arg, tensor_properties, interner))
                 .collect(),
         ),
         Expr::Complex(re, im) => Expr::Complex(
-            Box::new(sort_product(re, _tensor_properties, interner)),
-            Box::new(sort_product(im, _tensor_properties, interner)),
+            Box::new(sort_product(re, tensor_properties, interner)),
+            Box::new(sort_product(im, tensor_properties, interner)),
         ),
         Expr::FnDef(name, params, body) => Expr::FnDef(
             *name,
             params.clone(),
-            Box::new(sort_product(body, _tensor_properties, interner)),
+            Box::new(sort_product(body, tensor_properties, interner)),
         ),
         Expr::Rule(lhs, rhs, trust) => Expr::Rule(
-            Box::new(sort_product(lhs, _tensor_properties, interner)),
-            Box::new(sort_product(rhs, _tensor_properties, interner)),
+            Box::new(sort_product(lhs, tensor_properties, interner)),
+            Box::new(sort_product(rhs, tensor_properties, interner)),
             *trust,
         ),
         Expr::Piecewise(cases) => Expr::Piecewise(
@@ -2796,7 +3622,7 @@ pub fn sort_product(
                 .iter()
                 .map(|(value, cond)| {
                     (
-                        sort_product(value, _tensor_properties, interner),
+                        sort_product(value, tensor_properties, interner),
                         cond.clone(),
                     )
                 })
@@ -2804,20 +3630,20 @@ pub fn sort_product(
         ),
         Expr::Let(name, value, body) => Expr::Let(
             *name,
-            Box::new(sort_product(value, _tensor_properties, interner)),
-            Box::new(sort_product(body, _tensor_properties, interner)),
+            Box::new(sort_product(value, tensor_properties, interner)),
+            Box::new(sort_product(body, tensor_properties, interner)),
         ),
         Expr::List(items) => Expr::List(
             items
                 .iter()
-                .map(|item| sort_product(item, _tensor_properties, interner))
+                .map(|item| sort_product(item, tensor_properties, interner))
                 .collect(),
         ),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
                 .map(|row| {
                     row.iter()
-                        .map(|cell| sort_product(cell, _tensor_properties, interner))
+                        .map(|cell| sort_product(cell, tensor_properties, interner))
                         .collect()
                 })
                 .collect(),
@@ -3411,119 +4237,40 @@ pub fn canonicalize_indices(
         Expr::Indexed(base, indices) => {
             let base_expr = canonicalize_indices(base, properties, interner);
             let mut indices = indices.clone();
-            let mut negate = false;
 
-            if let Expr::Sym(sym) = &base_expr {
-                for prop in properties.get_properties_with_indices(*sym, &indices) {
-                    match prop {
-                        ax_ir::TensorProperty::Symmetric(positions) => {
-                            let mut original = positions
-                                .iter()
-                                .filter_map(|&pos| indices.get(pos).cloned())
-                                .collect::<Vec<_>>();
-                            let mut sorted = original.clone();
-                            sorted.sort_by_key(|idx| sort_key(idx, interner));
-                            for (slot, value) in positions.iter().zip(sorted.iter()) {
-                                if let Some(target) = indices.get_mut(*slot) {
-                                    *target = value.clone();
-                                }
-                            }
-                            original.clear();
+            if let Some(sym) = expr_head_symbol(&base_expr) {
+                let props = properties
+                    .get_properties_with_indices(sym, &indices)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if props.iter().any(|prop| {
+                    matches!(
+                        prop,
+                        ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor
+                    )
+                }) {
+                    if let Some((new_indices, sign)) =
+                        canonicalize_riemann_slots(&indices, interner)
+                    {
+                        if sign == 0 {
+                            return Expr::zero();
                         }
-                        ax_ir::TensorProperty::AntiSymmetric(positions) => {
-                            let original = positions
-                                .iter()
-                                .filter_map(|&pos| indices.get(pos).cloned())
-                                .collect::<Vec<_>>();
-                            if original.len() >= 2 {
-                                for i in 0..original.len() {
-                                    for j in (i + 1)..original.len() {
-                                        if original[i] == original[j] {
-                                            return Expr::zero();
-                                        }
-                                    }
-                                }
-                            }
-                            let mut sorted = original.clone();
-                            sorted.sort_by_key(|idx| sort_key(idx, interner));
-                            if permutation_parity(&original, &sorted) {
-                                negate = !negate;
-                            }
-                            for (slot, value) in positions.iter().zip(sorted.iter()) {
-                                if let Some(target) = indices.get_mut(*slot) {
-                                    *target = value.clone();
-                                }
-                            }
-                        }
-                        ax_ir::TensorProperty::RiemannSymmetry => {
-                            if indices.len() == 4 {
-                                let pairs = [vec![0usize, 1usize], vec![2usize, 3usize]];
-                                for positions in pairs {
-                                    let original = positions
-                                        .iter()
-                                        .filter_map(|&pos| indices.get(pos).cloned())
-                                        .collect::<Vec<_>>();
-                                    if original[0] == original[1] {
-                                        return Expr::zero();
-                                    }
-                                    let mut sorted = original.clone();
-                                    sorted.sort_by_key(|idx| sort_key(idx, interner));
-                                    if permutation_parity(&original, &sorted) {
-                                        negate = !negate;
-                                    }
-                                    for (slot, value) in positions.iter().zip(sorted.iter()) {
-                                        indices[*slot] = value.clone();
-                                    }
-                                }
-
-                                let left = vec![indices[0].clone(), indices[1].clone()];
-                                let right = vec![indices[2].clone(), indices[3].clone()];
-                                let left_key = left
-                                    .iter()
-                                    .map(|i| sort_key(i, interner))
-                                    .collect::<Vec<_>>();
-                                let right_key = right
-                                    .iter()
-                                    .map(|i| sort_key(i, interner))
-                                    .collect::<Vec<_>>();
-                                if right_key < left_key {
-                                    indices.swap(0, 2);
-                                    indices.swap(1, 3);
-                                }
-                            }
-                        }
-                        ax_ir::TensorProperty::Traceless
-                        | ax_ir::TensorProperty::Diagonal
-                        | ax_ir::TensorProperty::Trace
-                        | ax_ir::TensorProperty::Metric
-                        | ax_ir::TensorProperty::InverseMetric
-                        | ax_ir::TensorProperty::KroneckerDelta
-                        | ax_ir::TensorProperty::EpsilonTensor
-                        | ax_ir::TensorProperty::Derivative
-                        | ax_ir::TensorProperty::PartialDerivative
-                        | ax_ir::TensorProperty::CovariantDerivative
-                        | ax_ir::TensorProperty::Depends(_)
-                        | ax_ir::TensorProperty::Spinor
-                        | ax_ir::TensorProperty::DiracBar
-                        | ax_ir::TensorProperty::GammaMatrixProp
-                        | ax_ir::TensorProperty::Commuting
-                        | ax_ir::TensorProperty::AntiCommuting
-                        | ax_ir::TensorProperty::NonCommuting
-                        | ax_ir::TensorProperty::SortOrder(_)
-                        | ax_ir::TensorProperty::TableauSymmetry { .. }
-                        | ax_ir::TensorProperty::SatisfiesBianchi
-                        | ax_ir::TensorProperty::WeylTensor
-                        | ax_ir::TensorProperty::DifferentialFormDegree(_) => {}
+                        let out = Expr::Indexed(Box::new(base_expr), new_indices);
+                        return if sign == -1 { Expr::neg(out) } else { out };
                     }
                 }
+                let (new_indices, sign) =
+                    canonicalize_indexed_slots(sym, &indices, props, interner);
+                if sign == 0 {
+                    return Expr::zero();
+                }
+                indices = new_indices;
+                let out = Expr::Indexed(Box::new(base_expr), indices);
+                return if sign == -1 { Expr::neg(out) } else { out };
             }
 
-            let out = Expr::Indexed(Box::new(base_expr), indices);
-            if negate {
-                Expr::neg(out)
-            } else {
-                out
-            }
+            Expr::Indexed(Box::new(base_expr), indices)
         }
         Expr::Add(terms) => Expr::add(
             terms
@@ -3542,12 +4289,70 @@ pub fn canonicalize_indices(
             canonicalize_indices(exp, properties, interner),
         ),
         Expr::Neg(inner) => Expr::neg(canonicalize_indices(inner, properties, interner)),
-        Expr::Call(f, args) => Expr::Call(
-            *f,
-            args.iter()
+        Expr::Call(f, args) => {
+            let canonical_args = args
+                .iter()
                 .map(|arg| canonicalize_indices(arg, properties, interner))
-                .collect(),
-        ),
+                .collect::<Vec<_>>();
+            if properties.has_property_kind(*f, &ax_ir::TensorProperty::DiracBar)
+                && canonical_args.len() == 1
+            {
+                match &canonical_args[0] {
+                    Expr::Neg(inner) => {
+                        return Expr::neg(Expr::Call(*f, vec![(**inner).clone()]));
+                    }
+                    Expr::Mul(factors) if !factors.is_empty() => {
+                        if matches!(&factors[0], Expr::Int(n) if *n == (-1).into()) {
+                            let rest = Expr::mul(factors[1..].to_vec());
+                            return Expr::neg(Expr::Call(*f, vec![rest]));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if properties.has_property_kind(*f, &ax_ir::TensorProperty::GammaMatrixProp) {
+                let symbols = canonical_args
+                    .iter()
+                    .map(|arg| match arg {
+                        Expr::Sym(sym) => Some(*sym),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(original) = symbols {
+                    let mut seen = HashSet::new();
+                    for sym in &original {
+                        if !seen.insert(*sym) {
+                            return Expr::zero();
+                        }
+                    }
+                    let mut sorted = original.clone();
+                    sorted.sort_by(|lhs, rhs| interner.resolve(*lhs).cmp(interner.resolve(*rhs)));
+                    let mut used = vec![false; sorted.len()];
+                    let mut perm = Vec::with_capacity(original.len());
+                    for sym in &original {
+                        let pos = sorted
+                            .iter()
+                            .enumerate()
+                            .find(|(idx, candidate)| !used[*idx] && *candidate == sym)
+                            .map(|(idx, _)| idx)
+                            .unwrap_or(0);
+                        used[pos] = true;
+                        perm.push(pos);
+                    }
+                    let inversions = (0..perm.len())
+                        .flat_map(|i| ((i + 1)..perm.len()).map(move |j| (i, j)))
+                        .filter(|(i, j)| perm[*i] > perm[*j])
+                        .count();
+                    let out = Expr::Call(*f, sorted.into_iter().map(Expr::Sym).collect());
+                    return if inversions % 2 == 1 {
+                        Expr::neg(out)
+                    } else {
+                        out
+                    };
+                }
+            }
+            Expr::Call(*f, canonical_args)
+        }
         Expr::Complex(re, im) => Expr::Complex(
             Box::new(canonicalize_indices(re, properties, interner)),
             Box::new(canonicalize_indices(im, properties, interner)),
@@ -6112,10 +6917,10 @@ fn fresh_chain_index(
     available_indices: &[lasso::Spur],
     interner: &Interner,
 ) -> lasso::Spur {
-    let idx = available_indices
-        .get(*counter)
-        .copied()
-        .unwrap_or_else(|| interner.get_or_intern(&format!("_i{}", *counter)));
+    let idx = available_indices.get(*counter).copied().unwrap_or_else(|| {
+        let name = format!("_i{}", *counter);
+        interner.get_or_intern(&name)
+    });
     *counter += 1;
     idx
 }
@@ -6123,32 +6928,183 @@ fn fresh_chain_index(
 fn chain_variance(slot: usize, rank: usize) -> ax_ir::Variance {
     if rank == 1 {
         ax_ir::Variance::Up
-    } else if slot == rank - 1 {
-        ax_ir::Variance::Down
-    } else {
+    } else if slot == 0 {
         ax_ir::Variance::Up
+    } else {
+        ax_ir::Variance::Down
     }
 }
 
-fn attach_chain_indices(factor: &Expr, names: &[lasso::Spur]) -> Expr {
-    if names.is_empty() {
-        return factor.clone();
+fn opposite_variance(variance: ax_ir::Variance) -> ax_ir::Variance {
+    match variance {
+        ax_ir::Variance::Up => ax_ir::Variance::Down,
+        ax_ir::Variance::Down => ax_ir::Variance::Up,
     }
-    let rank = names.len();
-    let indices = names
-        .iter()
-        .enumerate()
-        .map(|(slot, name)| ax_ir::Index {
-            name: *name,
-            variance: chain_variance(slot, rank),
-            index_type: None,
-        })
-        .collect();
-    let base = match factor {
-        Expr::Indexed(base, _) => *base.clone(),
-        other => other.clone(),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GraphSlotRef {
+    assignment: usize,
+    slot: usize,
+}
+
+#[derive(Clone, Debug)]
+struct GraphFactorAssignment {
+    original_pos: usize,
+    base: Expr,
+    indices: Vec<ax_ir::Index>,
+}
+
+fn existing_index_counts(
+    assignments: &[GraphFactorAssignment],
+) -> HashMap<lasso::Spur, (usize, usize)> {
+    let mut counts = HashMap::new();
+    for assignment in assignments {
+        for index in &assignment.indices {
+            let entry = counts.entry(index.name).or_insert((0usize, 0usize));
+            match index.variance {
+                ax_ir::Variance::Up => entry.0 += 1,
+                ax_ir::Variance::Down => entry.1 += 1,
+            }
+        }
+    }
+    counts
+}
+
+fn index_name_is_already_contracted(
+    name: lasso::Spur,
+    counts: &HashMap<lasso::Spur, (usize, usize)>,
+) -> bool {
+    counts
+        .get(&name)
+        .map(|(up, down)| *up > 0 && *down > 0)
+        .unwrap_or(false)
+}
+
+fn next_fresh_graph_index(
+    counter: &mut usize,
+    available_indices: &[lasso::Spur],
+    used: &mut HashSet<lasso::Spur>,
+    interner: &Interner,
+) -> lasso::Spur {
+    loop {
+        let candidate = fresh_chain_index(counter, available_indices, interner);
+        if used.insert(candidate) {
+            return candidate;
+        }
+    }
+}
+
+fn connect_graph_slots(
+    assignments: &mut [GraphFactorAssignment],
+    left: GraphSlotRef,
+    right: GraphSlotRef,
+    counter: &mut usize,
+    available_indices: &[lasso::Spur],
+    used: &mut HashSet<lasso::Spur>,
+    interner: &Interner,
+) {
+    let left_name = assignments[left.assignment].indices[left.slot].name;
+    let right_name = assignments[right.assignment].indices[right.slot].name;
+    let shared = if used.contains(&left_name) {
+        left_name
+    } else if used.contains(&right_name) {
+        right_name
+    } else {
+        next_fresh_graph_index(counter, available_indices, used, interner)
     };
-    Expr::Indexed(Box::new(base), indices)
+    used.insert(shared);
+    assignments[left.assignment].indices[left.slot].name = shared;
+    assignments[right.assignment].indices[right.slot].name = shared;
+}
+
+fn close_trace_component(
+    assignments: &mut [GraphFactorAssignment],
+    component: &[usize],
+    counter: &mut usize,
+    available_indices: &[lasso::Spur],
+    used: &mut HashSet<lasso::Spur>,
+    interner: &Interner,
+) {
+    let (Some(first_assignment), Some(last_assignment)) =
+        (component.first().copied(), component.last().copied())
+    else {
+        return;
+    };
+    if assignments[first_assignment].indices.is_empty()
+        || assignments[last_assignment].indices.is_empty()
+    {
+        return;
+    }
+
+    let first = GraphSlotRef {
+        assignment: first_assignment,
+        slot: 0,
+    };
+    let last = GraphSlotRef {
+        assignment: last_assignment,
+        slot: assignments[last_assignment].indices.len() - 1,
+    };
+    let first_variance = assignments[first.assignment].indices[first.slot]
+        .variance
+        .clone();
+    assignments[last.assignment].indices[last.slot].variance = opposite_variance(first_variance);
+    connect_graph_slots(
+        assignments,
+        first,
+        last,
+        counter,
+        available_indices,
+        used,
+        interner,
+    );
+}
+
+fn connect_contraction_component(
+    assignments: &mut [GraphFactorAssignment],
+    component: &[usize],
+    counter: &mut usize,
+    available_indices: &[lasso::Spur],
+    used: &mut HashSet<lasso::Spur>,
+    interner: &Interner,
+) {
+    let existing_counts = existing_index_counts(assignments);
+    let mut open_down: Vec<GraphSlotRef> = Vec::new();
+
+    for &assignment_idx in component {
+        let slot_len = assignments[assignment_idx].indices.len();
+        for slot in 0..slot_len {
+            let slot_ref = GraphSlotRef {
+                assignment: assignment_idx,
+                slot,
+            };
+            let index = &assignments[assignment_idx].indices[slot];
+            let already_contracted = index_name_is_already_contracted(index.name, &existing_counts);
+            match index.variance {
+                ax_ir::Variance::Down => {
+                    if !already_contracted {
+                        open_down.push(slot_ref);
+                    }
+                }
+                ax_ir::Variance::Up => {
+                    if already_contracted {
+                        continue;
+                    }
+                    if let Some(down) = open_down.pop() {
+                        connect_graph_slots(
+                            assignments,
+                            down,
+                            slot_ref,
+                            counter,
+                            available_indices,
+                            used,
+                            interner,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn assign_chain_indices(
@@ -6159,59 +7115,111 @@ fn assign_chain_indices(
     interner: &Interner,
     is_traced: bool,
 ) -> Vec<Expr> {
-    let mut assigned: Vec<Option<Vec<lasso::Spur>>> = vec![None; factors.len()];
-    let mut indexed_positions = Vec::new();
+    let mut assignments = Vec::new();
+    let mut pos_to_assignment: HashMap<usize, usize> = HashMap::new();
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    let mut current_component = Vec::new();
     let mut counter = 0usize;
-    let mut previous_tail = None;
+    let mut used: HashSet<lasso::Spur> = factors
+        .iter()
+        .flat_map(|factor| match factor {
+            Expr::Indexed(_, indices) => indices.iter().map(|idx| idx.name).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect();
 
     for (pos, factor) in factors.iter().enumerate() {
         let Some(name) = implicit_factor_name(factor) else {
+            if !current_component.is_empty() {
+                components.push(std::mem::take(&mut current_component));
+            }
             continue;
         };
         let Some(rank) = n_indices_per_tensor.get(&name).copied() else {
+            if !current_component.is_empty() {
+                components.push(std::mem::take(&mut current_component));
+            }
             continue;
         };
         if !implicit_index_tensors.contains(&name) || rank == 0 {
+            if !current_component.is_empty() {
+                components.push(std::mem::take(&mut current_component));
+            }
             continue;
         }
 
-        let mut names = (0..rank)
-            .map(|_| fresh_chain_index(&mut counter, available_indices, interner))
-            .collect::<Vec<_>>();
-        if let Some(shared) = previous_tail {
-            names[0] = shared;
-        }
-        previous_tail = names.last().copied();
-        assigned[pos] = Some(names);
-        indexed_positions.push(pos);
-    }
-
-    if is_traced {
-        if let (Some(first_pos), Some(last_pos)) = (
-            indexed_positions.first().copied(),
-            indexed_positions.last().copied(),
-        ) {
-            let first_name = assigned[first_pos]
-                .as_ref()
-                .and_then(|indices| indices.first().copied());
-            if let (Some(first_name), Some(last_indices)) =
-                (first_name, assigned[last_pos].as_mut())
-            {
-                if let Some(last) = last_indices.last_mut() {
-                    *last = first_name;
-                }
+        let existing = match factor {
+            Expr::Indexed(_, indices) => indices.clone(),
+            _ => Vec::new(),
+        };
+        let actual_rank = rank.max(existing.len());
+        let mut indices = Vec::with_capacity(actual_rank);
+        for slot in 0..actual_rank {
+            if let Some(index) = existing.get(slot).cloned() {
+                indices.push(index);
+            } else {
+                let name =
+                    next_fresh_graph_index(&mut counter, available_indices, &mut used, interner);
+                indices.push(ax_ir::Index {
+                    name,
+                    variance: chain_variance(slot, actual_rank),
+                    index_type: None,
+                });
             }
         }
+
+        let base = match factor {
+            Expr::Indexed(base, _) => *base.clone(),
+            other => other.clone(),
+        };
+        let assignment_idx = assignments.len();
+        assignments.push(GraphFactorAssignment {
+            original_pos: pos,
+            base,
+            indices,
+        });
+        pos_to_assignment.insert(pos, assignment_idx);
+        current_component.push(assignment_idx);
+    }
+    if !current_component.is_empty() {
+        components.push(current_component);
+    }
+
+    for component in &components {
+        if is_traced {
+            close_trace_component(
+                &mut assignments,
+                component,
+                &mut counter,
+                available_indices,
+                &mut used,
+                interner,
+            );
+        }
+        connect_contraction_component(
+            &mut assignments,
+            component,
+            &mut counter,
+            available_indices,
+            &mut used,
+            interner,
+        );
     }
 
     factors
         .iter()
         .enumerate()
         .map(|(pos, factor)| {
-            assigned[pos]
-                .as_ref()
-                .map(|indices| attach_chain_indices(factor, indices))
-                .unwrap_or_else(|| factor.clone())
+            if let Some(assignment_idx) = pos_to_assignment.get(&pos).copied() {
+                let assignment = &assignments[assignment_idx];
+                debug_assert_eq!(assignment.original_pos, pos);
+                Expr::Indexed(
+                    Box::new(assignment.base.clone()),
+                    assignment.indices.clone(),
+                )
+            } else {
+                factor.clone()
+            }
         })
         .collect()
 }
@@ -6860,17 +7868,21 @@ fn tableau_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> O
     for prop in properties.get_properties_with_indices(*name, indices) {
         match prop {
             ax_ir::TensorProperty::TableauSymmetry { shape, .. } => {
-                return Some(normalize_shape(shape));
+                let shape = normalize_shape(shape);
+                if shape.iter().sum::<usize>() == indices.len() {
+                    return Some(shape);
+                }
+                return None;
             }
             ax_ir::TensorProperty::Symmetric(positions) => {
                 let rank = positions.iter().filter(|pos| **pos < indices.len()).count();
-                if rank > 0 {
+                if rank == indices.len() && rank > 0 {
                     return Some(vec![rank]);
                 }
             }
             ax_ir::TensorProperty::AntiSymmetric(positions) => {
                 let rank = positions.iter().filter(|pos| **pos < indices.len()).count();
-                if rank > 0 {
+                if rank == indices.len() && rank > 0 {
                     return Some(vec![1; rank]);
                 }
             }
@@ -6896,6 +7908,47 @@ fn standard_tableau_for_shape(shape: &[usize]) -> ax_young::YoungTableau {
     ax_young::YoungTableau::standard(&ax_young::YoungDiagram::new(shape.to_vec()))
 }
 
+fn lr_product_decomposition(shapes: &[Vec<usize>], dim: usize) -> Vec<(Vec<usize>, usize)> {
+    let Some(first) = shapes.first() else {
+        return Vec::new();
+    };
+    let mut current: HashMap<Vec<usize>, usize> = HashMap::from([(normalize_shape(first), 1usize)]);
+
+    for shape in &shapes[1..] {
+        let mut next: HashMap<Vec<usize>, usize> = HashMap::new();
+        for (left, left_mult) in current {
+            for (right, right_mult) in littlewood_richardson(&left, shape, dim) {
+                *next.entry(right).or_default() += left_mult * right_mult;
+            }
+        }
+        current = next;
+        if current.is_empty() {
+            break;
+        }
+    }
+
+    let mut out = current.into_iter().collect::<Vec<_>>();
+    out.sort_by(|(shape_a, mult_a), (shape_b, mult_b)| {
+        shape_b.cmp(shape_a).then_with(|| mult_a.cmp(mult_b))
+    });
+    out
+}
+
+fn decompose_product_failure(reason: &str, expr: &Expr, interner: &Interner) -> Expr {
+    Expr::Call(
+        interner.get_or_intern(&format!("decompose_product_{reason}")),
+        vec![expr.clone()],
+    )
+}
+
+fn add_projected_term(terms: &mut Vec<(Expr, usize)>, expr: Expr, multiplicity: usize) {
+    if let Some((_, existing)) = terms.iter_mut().find(|(existing, _)| *existing == expr) {
+        *existing += multiplicity;
+    } else {
+        terms.push((expr, multiplicity));
+    }
+}
+
 pub fn decompose_product(
     expr: &Expr,
     dim: usize,
@@ -6911,49 +7964,55 @@ pub fn decompose_product(
         .iter()
         .filter(|factor| matches!(factor, Expr::Indexed(_, _)))
         .collect();
-    if indexed.len() != 2 {
-        return expr.clone();
+    if indexed.len() < 2 {
+        return decompose_product_failure("needs_indexed_product", expr, interner);
     }
 
-    let Some(shape_a) = tableau_shape_for_factor(indexed[0], properties) else {
-        return expr.clone();
-    };
-    let Some(shape_b) = tableau_shape_for_factor(indexed[1], properties) else {
-        return expr.clone();
-    };
+    let mut shapes = Vec::with_capacity(indexed.len());
+    for factor in &indexed {
+        let Some(shape) = tableau_shape_for_factor(factor, properties) else {
+            return decompose_product_failure("unsupported_shape", expr, interner);
+        };
+        shapes.push(shape);
+    }
 
-    let decomposition = littlewood_richardson(&shape_a, &shape_b, dim);
+    let decomposition = lr_product_decomposition(&shapes, dim);
     if decomposition.is_empty() {
         return Expr::zero();
     }
 
     let total_indices = classify_indices(expr).total;
-    let projected_terms = decomposition
-        .into_iter()
-        .filter_map(|(shape, multiplicity)| {
-            if shape.iter().sum::<usize>() != total_indices {
-                return None;
-            }
-            let tableau = standard_tableau_for_shape(&shape);
-            let projected = young_project(expr, &tableau, interner);
-            let projected = canonicalise(&projected, properties, interner);
-            if projected == Expr::zero() {
-                None
-            } else if multiplicity == 1 {
-                Some(projected)
-            } else {
-                Some(Expr::mul(vec![
-                    Expr::Int(num_bigint::BigInt::from(multiplicity)),
-                    projected,
-                ]))
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut projected_terms: Vec<(Expr, usize)> = Vec::new();
+    for (shape, multiplicity) in decomposition {
+        if shape.iter().sum::<usize>() != total_indices {
+            continue;
+        }
+        let tableau = standard_tableau_for_shape(&shape);
+        let projected = young_project(expr, &tableau, interner);
+        let projected = canonicalise(&projected, properties, interner);
+        if projected != Expr::zero() {
+            add_projected_term(&mut projected_terms, projected, multiplicity);
+        }
+    }
 
     if projected_terms.is_empty() {
         Expr::zero()
     } else {
-        Expr::add(projected_terms)
+        Expr::add(
+            projected_terms
+                .into_iter()
+                .map(|(projected, multiplicity)| {
+                    if multiplicity == 1 {
+                        projected
+                    } else {
+                        Expr::mul(vec![
+                            Expr::Int(num_bigint::BigInt::from(multiplicity)),
+                            projected,
+                        ])
+                    }
+                })
+                .collect(),
+        )
     }
 }
 
@@ -7013,6 +8072,19 @@ pub fn expand_implicit(
             properties,
             interner,
         )),
+        Expr::Call(f, args)
+            if properties.has_property_kind(*f, &ax_ir::TensorProperty::Trace)
+                && args.len() == 1 =>
+        {
+            explicit_indices(
+                expr,
+                implicit_index_tensors,
+                available_indices,
+                n_indices_per_tensor,
+                properties,
+                interner,
+            )
+        }
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()
@@ -8368,6 +9440,358 @@ mod tests {
     }
 
     #[test]
+    fn eval_nested_derivative_of_component_product() {
+        let interner = ax_ir::Interner::new();
+        let d = interner.get_or_intern("partial");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let i = interner.get_or_intern("i");
+        let x = interner.get_or_intern("x");
+        let rules = vec![
+            ComponentRule {
+                tensor: a,
+                indices: vec![(x, Variance::Down)],
+                value: Expr::pow(Expr::Sym(x), Expr::Int(2.into())),
+            },
+            ComponentRule {
+                tensor: b,
+                indices: vec![(x, Variance::Up)],
+                value: Expr::Sym(x),
+            },
+        ];
+        let inner = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![Index {
+                    name: i,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(b)),
+                vec![Index {
+                    name: i,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        let expr = Expr::Call(
+            d,
+            vec![Expr::Call(d, vec![inner, Expr::Sym(x)]), Expr::Sym(x)],
+        );
+        let env = DefaultEvalEnv::new(vec![x], HashMap::new());
+        let result = evaluate_components_v2(&expr, &rules, &env, &interner);
+        assert_eq!(
+            simplify_expr(result, &interner),
+            Expr::mul(vec![Expr::Int(6.into()), Expr::Sym(x)])
+        );
+    }
+
+    #[test]
+    fn eval_epsilon_metric_inverse_interaction() {
+        let interner = ax_ir::Interner::new();
+        let eps = interner.get_or_intern("eps");
+        let g = interner.get_or_intern("g");
+        let ginv = interner.get_or_intern("ginv");
+        let i = interner.get_or_intern("i");
+        let j = interner.get_or_intern("j");
+        let k = interner.get_or_intern("k");
+        let m = interner.get_or_intern("m");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let rules = vec![
+            ComponentRule {
+                tensor: g,
+                indices: vec![(x, Variance::Down), (x, Variance::Down)],
+                value: Expr::one(),
+            },
+            ComponentRule {
+                tensor: g,
+                indices: vec![(y, Variance::Down), (y, Variance::Down)],
+                value: Expr::one(),
+            },
+        ];
+        let mut props = HashMap::new();
+        props.insert(eps, vec![ax_ir::TensorProperty::EpsilonTensor]);
+        props.insert(g, vec![ax_ir::TensorProperty::Metric]);
+        props.insert(ginv, vec![ax_ir::TensorProperty::InverseMetric]);
+        let env = DefaultEvalEnv::new(vec![x, y], props);
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(eps)),
+                vec![
+                    Index {
+                        name: i,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: j,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(ginv)),
+                vec![
+                    Index {
+                        name: i,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                    Index {
+                        name: k,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(g)),
+                vec![
+                    Index {
+                        name: k,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: m,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(eps)),
+                vec![
+                    Index {
+                        name: m,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                    Index {
+                        name: j,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                ],
+            ),
+        ]);
+        let result = evaluate_components_v2(&expr, &rules, &env, &interner);
+        assert_eq!(simplify_expr(result, &interner), Expr::Int(2.into()));
+    }
+
+    #[test]
+    fn eval_sparse_rule_zero_elimination_in_contraction() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let i = interner.get_or_intern("i");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let rules = vec![
+            ComponentRule {
+                tensor: a,
+                indices: vec![(x, Variance::Down)],
+                value: Expr::zero(),
+            },
+            ComponentRule {
+                tensor: b,
+                indices: vec![(x, Variance::Up)],
+                value: Expr::Int(7.into()),
+            },
+            ComponentRule {
+                tensor: b,
+                indices: vec![(y, Variance::Up)],
+                value: Expr::Int(11.into()),
+            },
+        ];
+        let env = DefaultEvalEnv::new(vec![x, y], HashMap::new());
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![Index {
+                    name: i,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(b)),
+                vec![Index {
+                    name: i,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        let result = evaluate_components_v2(&expr, &rules, &env, &interner);
+        assert_eq!(
+            result,
+            Expr::zero(),
+            "missing sparse A_y and explicit A_x=0 should leave no nonzero terms"
+        );
+    }
+
+    #[test]
+    fn eval_riemann_symmetry_component_regression() {
+        let interner = ax_ir::Interner::new();
+        let r_sym = interner.get_or_intern("R2");
+        let z = interner.get_or_intern("Z2");
+        let c0 = interner.get_or_intern("0");
+        let c1 = interner.get_or_intern("1");
+        let c2 = interner.get_or_intern("2");
+        let c3 = interner.get_or_intern("3");
+        let mut props = HashMap::new();
+        props.insert(r_sym, vec![ax_ir::TensorProperty::RiemannSymmetry]);
+        let env = DefaultEvalEnv::new(vec![c0, c1, c2, c3], props);
+        let rules = vec![ComponentRule {
+            tensor: r_sym,
+            indices: vec![
+                (c0, Variance::Down),
+                (c1, Variance::Down),
+                (c2, Variance::Down),
+                (c3, Variance::Down),
+            ],
+            value: Expr::Sym(z),
+        }];
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(r_sym)),
+            vec![
+                Index {
+                    name: c3,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: c2,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: c1,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: c0,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let result = evaluate_components_v2(&expr, &rules, &env, &interner);
+        assert_eq!(
+            result,
+            Expr::Sym(z),
+            "pair exchange plus both pair swaps should preserve sign"
+        );
+    }
+
+    #[test]
+    fn eval_collects_equal_component_terms() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let i = interner.get_or_intern("i");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let rules = vec![
+            ComponentRule {
+                tensor: a,
+                indices: vec![(x, Variance::Down)],
+                value: Expr::one(),
+            },
+            ComponentRule {
+                tensor: a,
+                indices: vec![(y, Variance::Down)],
+                value: Expr::one(),
+            },
+            ComponentRule {
+                tensor: b,
+                indices: vec![(x, Variance::Up)],
+                value: Expr::one(),
+            },
+            ComponentRule {
+                tensor: b,
+                indices: vec![(y, Variance::Up)],
+                value: Expr::one(),
+            },
+        ];
+        let env = DefaultEvalEnv::new(vec![x, y], HashMap::new());
+        let product = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![Index {
+                    name: i,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(b)),
+                vec![Index {
+                    name: i,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        let expr = Expr::add(vec![product.clone(), product]);
+        let result = evaluate_components_v2(&expr, &rules, &env, &interner);
+        assert_eq!(result, Expr::Int(4.into()));
+    }
+
+    #[test]
+    fn eval_trace_wrapper_sums_diagonal_components() {
+        let interner = ax_ir::Interner::new();
+        let tr = interner.get_or_intern("Tr");
+        let a = interner.get_or_intern("A");
+        let i = interner.get_or_intern("i");
+        let j = interner.get_or_intern("j");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let rules = vec![
+            ComponentRule {
+                tensor: a,
+                indices: vec![(x, Variance::Down), (x, Variance::Up)],
+                value: Expr::Int(3.into()),
+            },
+            ComponentRule {
+                tensor: a,
+                indices: vec![(y, Variance::Down), (y, Variance::Up)],
+                value: Expr::Int(5.into()),
+            },
+        ];
+        let mut props = HashMap::new();
+        props.insert(tr, vec![ax_ir::TensorProperty::Trace]);
+        let env = DefaultEvalEnv::new(vec![x, y], props);
+        let expr = Expr::Call(
+            tr,
+            vec![Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![
+                    Index {
+                        name: i,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: j,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                ],
+            )],
+        );
+        let result = evaluate_components_v2(&expr, &rules, &env, &interner);
+        assert_eq!(result, Expr::Int(8.into()));
+    }
+
+    #[test]
     fn generating_set_symmetric_2tensor() {
         let interner = ax_ir::Interner::new();
         let g_sym = interner.get_or_intern("g");
@@ -8425,6 +9849,542 @@ mod tests {
         } else {
             panic!("expected Indexed, got {:?}", result);
         }
+    }
+
+    #[test]
+    fn canonicalise_metric_and_delta_contractions_equivalent() {
+        let interner = ax_ir::Interner::new();
+        let g = interner.get_or_intern("g");
+        let delta = interner.get_or_intern("delta");
+        let v = interner.get_or_intern("V");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let mut props = HashMap::new();
+        props.insert(g, vec![ax_ir::TensorProperty::Metric]);
+        props.insert(delta, vec![ax_ir::TensorProperty::KroneckerDelta]);
+
+        let vector_down_a = Expr::Indexed(
+            Box::new(Expr::Sym(v)),
+            vec![Index {
+                name: a,
+                variance: Variance::Down,
+                index_type: None,
+            }],
+        );
+        let metric_contraction = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(g)),
+                vec![
+                    Index {
+                        name: a,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(v)),
+                vec![Index {
+                    name: b,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        assert_eq!(
+            canonicalise(&metric_contraction, &props, &interner),
+            canonicalise(&vector_down_a, &props, &interner),
+            "g_ab V^b should canonicalise to V_a"
+        );
+
+        let vector_up_a = Expr::Indexed(
+            Box::new(Expr::Sym(v)),
+            vec![Index {
+                name: a,
+                variance: Variance::Up,
+                index_type: None,
+            }],
+        );
+        let delta_contraction = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(delta)),
+                vec![
+                    Index {
+                        name: a,
+                        variance: Variance::Up,
+                        index_type: None,
+                    },
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(v)),
+                vec![Index {
+                    name: b,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        assert_eq!(
+            canonicalise(&delta_contraction, &props, &interner),
+            canonicalise(&vector_up_a, &props, &interner),
+            "delta^a_b V^b should canonicalise to V^a"
+        );
+    }
+
+    #[test]
+    fn canonicalise_epsilon_sign_and_zero() {
+        let interner = ax_ir::Interner::new();
+        let eps = interner.get_or_intern("eps");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let mut props = HashMap::new();
+        props.insert(eps, vec![ax_ir::TensorProperty::EpsilonTensor]);
+
+        let make_eps = |slots: [lasso::Spur; 3]| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(eps)),
+                slots
+                    .into_iter()
+                    .map(|name| Index {
+                        name,
+                        variance: Variance::Down,
+                        index_type: None,
+                    })
+                    .collect(),
+            )
+        };
+
+        let canonical = canonicalise(&make_eps([a, b, c]), &props, &interner);
+        let swapped = canonicalise(&make_eps([b, a, c]), &props, &interner);
+        assert_eq!(
+            swapped,
+            Expr::neg(canonical),
+            "odd epsilon slot swaps should flip sign"
+        );
+        assert_eq!(
+            canonicalise(&make_eps([a, a, c]), &props, &interner),
+            Expr::zero(),
+            "epsilon with repeated slots should vanish"
+        );
+    }
+
+    #[test]
+    fn canonicalise_tableau_symmetry_equivalence() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let mut props = HashMap::new();
+        props.insert(
+            t,
+            vec![ax_ir::TensorProperty::TableauSymmetry {
+                shape: vec![2, 1],
+                indices: vec![0, 1, 2],
+            }],
+        );
+
+        let make_t = |slots: [lasso::Spur; 3]| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                slots
+                    .into_iter()
+                    .map(|name| Index {
+                        name,
+                        variance: Variance::Down,
+                        index_type: None,
+                    })
+                    .collect(),
+            )
+        };
+
+        assert_eq!(
+            canonicalise(&make_t([a, b, c]), &props, &interner),
+            canonicalise(&make_t([b, a, c]), &props, &interner),
+            "row-symmetric tableau slots should canonicalise identically"
+        );
+        assert_eq!(
+            canonicalise(&make_t([a, b, a]), &props, &interner),
+            Expr::zero(),
+            "column-antisymmetric tableau slots should vanish when repeated"
+        );
+    }
+
+    #[test]
+    fn meld_uses_tableau_symmetry_for_cancellation() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let mut props = HashMap::new();
+        props.insert(
+            t,
+            vec![ax_ir::TensorProperty::TableauSymmetry {
+                shape: vec![2, 1],
+                indices: vec![0, 1, 2],
+            }],
+        );
+
+        let make_t = |slots: [lasso::Spur; 3]| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                slots
+                    .into_iter()
+                    .map(|name| Index {
+                        name,
+                        variance: Variance::Down,
+                        index_type: None,
+                    })
+                    .collect(),
+            )
+        };
+
+        let expr = Expr::add(vec![make_t([a, b, c]), Expr::neg(make_t([b, a, c]))]);
+        assert_eq!(
+            meld(&expr, &props, &interner),
+            Expr::zero(),
+            "meld should cancel terms equivalent by declared tableau symmetry"
+        );
+    }
+
+    #[test]
+    fn parallel_and_serial_property_canonicalisation_match() {
+        let interner = ax_ir::Interner::new();
+        let eps = interner.get_or_intern("eps");
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let mut props = HashMap::new();
+        props.insert(eps, vec![ax_ir::TensorProperty::EpsilonTensor]);
+        props.insert(
+            t,
+            vec![ax_ir::TensorProperty::TableauSymmetry {
+                shape: vec![2, 1],
+                indices: vec![0, 1, 2],
+            }],
+        );
+
+        let make_index = |name| Index {
+            name,
+            variance: Variance::Down,
+            index_type: None,
+        };
+        let make_t = |slots: [lasso::Spur; 3]| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                slots.into_iter().map(make_index).collect(),
+            )
+        };
+        let make_eps = |slots: [lasso::Spur; 3]| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(eps)),
+                slots.into_iter().map(make_index).collect(),
+            )
+        };
+        let expr = Expr::add(vec![
+            make_t([b, a, c]),
+            make_t([a, b, c]),
+            make_eps([b, a, d]),
+            make_eps([a, b, d]),
+            make_t([c, b, a]),
+            make_eps([d, b, a]),
+        ]);
+
+        assert_eq!(
+            canonicalise(&expr, &props, &interner),
+            canonicalise_parallel(&expr, &props, &interner),
+            "parallel and serial canonicalisation should remain deterministic"
+        );
+    }
+
+    #[test]
+    fn graded_anticommuting_sort_sign() {
+        let interner = ax_ir::Interner::new();
+        let alpha = interner.get_or_intern("alpha");
+        let zeta = interner.get_or_intern("zeta");
+        let mut props = HashMap::new();
+        props.insert(alpha, vec![ax_ir::TensorProperty::AntiCommuting]);
+        props.insert(zeta, vec![ax_ir::TensorProperty::AntiCommuting]);
+
+        let expr = Expr::mul(vec![Expr::Sym(zeta), Expr::Sym(alpha)]);
+        let expected = Expr::neg(Expr::mul(vec![Expr::Sym(alpha), Expr::Sym(zeta)]));
+        assert_eq!(
+            canonicalise(&expr, &props, &interner),
+            expected,
+            "swapping two anticommuting factors should introduce a sign"
+        );
+    }
+
+    #[test]
+    fn noncommuting_factor_order_is_preserved() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let mut props = HashMap::new();
+        props.insert(a, vec![ax_ir::TensorProperty::NonCommuting]);
+
+        let expr = Expr::mul(vec![Expr::Sym(c), Expr::Sym(a), Expr::Sym(b)]);
+        assert_eq!(
+            canonicalise(&expr, &props, &interner),
+            expr,
+            "noncommuting A should remain a barrier between commuting factors"
+        );
+    }
+
+    #[test]
+    fn covariant_derivative_dummy_renaming_equivalence() {
+        let interner = ax_ir::Interner::new();
+        let nabla = interner.get_or_intern("nabla");
+        let v = interner.get_or_intern("V");
+        let i = interner.get_or_intern("i");
+        let j = interner.get_or_intern("j");
+        let mut props = HashMap::new();
+        props.insert(nabla, vec![ax_ir::TensorProperty::CovariantDerivative]);
+
+        let make = |idx| {
+            Expr::mul(vec![
+                Expr::Indexed(
+                    Box::new(Expr::Sym(nabla)),
+                    vec![Index {
+                        name: idx,
+                        variance: Variance::Down,
+                        index_type: None,
+                    }],
+                ),
+                Expr::Indexed(
+                    Box::new(Expr::Sym(v)),
+                    vec![Index {
+                        name: idx,
+                        variance: Variance::Up,
+                        index_type: None,
+                    }],
+                ),
+            ])
+        };
+
+        let lhs = rename_dummy_indices(&canonicalise(&make(i), &props, &interner), &interner);
+        let rhs = rename_dummy_indices(&canonicalise(&make(j), &props, &interner), &interner);
+        assert_eq!(
+            lhs, rhs,
+            "covariant derivative dummy contractions should be canonical after dummy renaming"
+        );
+    }
+
+    #[test]
+    fn gamma_matrix_call_canonicalises_with_sign() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = HashMap::new();
+        props.insert(gamma, vec![ax_ir::TensorProperty::GammaMatrixProp]);
+
+        let swapped = Expr::Call(gamma, vec![Expr::Sym(b), Expr::Sym(a)]);
+        let canonical = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]);
+        assert_eq!(
+            canonicalize_indices(&swapped, &props, &interner),
+            Expr::neg(canonical),
+            "multi-index gamma calls should use antisymmetric slot canonicalisation"
+        );
+        assert_eq!(
+            canonicalize_indices(
+                &Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(a)]),
+                &props,
+                &interner
+            ),
+            Expr::zero(),
+            "repeated antisymmetric gamma indices should vanish"
+        );
+    }
+
+    #[test]
+    fn diracbar_bilinear_keeps_local_gamma_canonicalisation() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = HashMap::new();
+        props.insert(bar, vec![ax_ir::TensorProperty::DiracBar]);
+        props.insert(gamma, vec![ax_ir::TensorProperty::GammaMatrixProp]);
+
+        let expr = Expr::Call(
+            bar,
+            vec![Expr::mul(vec![
+                Expr::Call(gamma, vec![Expr::Sym(b), Expr::Sym(a)]),
+                Expr::Sym(psi),
+            ])],
+        );
+        let result = canonicalize_indices(&expr, &props, &interner);
+        let expected = Expr::neg(Expr::Call(
+            bar,
+            vec![Expr::mul(vec![
+                Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]),
+                Expr::Sym(psi),
+            ])],
+        ));
+        assert_eq!(
+            result, expected,
+            "DiracBar arguments should be canonicalised locally without moving factors across the bar"
+        );
+    }
+
+    #[test]
+    fn sort_product_normalizes_barred_bilinear_gamma_position() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        let mut props = HashMap::new();
+        props.insert(bar, vec![ax_ir::TensorProperty::DiracBar]);
+        props.insert(gamma, vec![ax_ir::TensorProperty::GammaMatrixProp]);
+        props.insert(psi, vec![ax_ir::TensorProperty::Spinor]);
+
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Sym(psi),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+        ]);
+        let expected = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+            Expr::Sym(psi),
+        ]);
+        assert_eq!(
+            sort_product(&expr, &props, &interner),
+            expected,
+            "barred bilinears should be normalized locally as bar(psi) gamma psi"
+        );
+    }
+
+    #[test]
+    fn canonicalise_barred_bilinear_with_anticommuting_spinor_keeps_gamma_even() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        let mut props = HashMap::new();
+        props.insert(bar, vec![ax_ir::TensorProperty::DiracBar]);
+        props.insert(gamma, vec![ax_ir::TensorProperty::GammaMatrixProp]);
+        props.insert(
+            psi,
+            vec![
+                ax_ir::TensorProperty::Spinor,
+                ax_ir::TensorProperty::AntiCommuting,
+            ],
+        );
+
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Sym(psi),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+        ]);
+        let expected = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+            Expr::Sym(psi),
+        ]);
+        assert_eq!(
+            canonicalise(&expr, &props, &interner),
+            expected,
+            "gamma factors are even and should move into the local bilinear without a graded sign"
+        );
+    }
+
+    #[test]
+    fn sort_product_does_not_cross_noncommuting_spinor_in_barred_bilinear() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let a = interner.get_or_intern("a");
+        let mut props = HashMap::new();
+        props.insert(bar, vec![ax_ir::TensorProperty::DiracBar]);
+        props.insert(gamma, vec![ax_ir::TensorProperty::GammaMatrixProp]);
+        props.insert(
+            psi,
+            vec![
+                ax_ir::TensorProperty::Spinor,
+                ax_ir::TensorProperty::NonCommuting,
+            ],
+        );
+
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Sym(psi),
+            Expr::Call(gamma, vec![Expr::Sym(a)]),
+        ]);
+        assert_eq!(
+            sort_product(&expr, &props, &interner),
+            expr,
+            "NonCommuting spinors remain hard barriers for bilinear normalization"
+        );
+    }
+
+    #[test]
+    fn meld_satisfies_bianchi_and_weyl_cancellations() {
+        let interner = ax_ir::Interner::new();
+        let r = interner.get_or_intern("R");
+        let c_sym = interner.get_or_intern("C");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let mut props = HashMap::new();
+        props.insert(r, vec![ax_ir::TensorProperty::SatisfiesBianchi]);
+        props.insert(c_sym, vec![ax_ir::TensorProperty::WeylTensor]);
+
+        let make = |sym, slots: [lasso::Spur; 4]| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(sym)),
+                slots
+                    .into_iter()
+                    .map(|name| Index {
+                        name,
+                        variance: Variance::Down,
+                        index_type: None,
+                    })
+                    .collect(),
+            )
+        };
+
+        let bianchi = Expr::add(vec![
+            make(r, [a, b, c, d]),
+            make(r, [a, c, d, b]),
+            make(r, [a, d, b, c]),
+        ]);
+        assert_eq!(
+            meld(&bianchi, &props, &interner),
+            Expr::zero(),
+            "SatisfiesBianchi should feed meld's Young-tableau cancellation path"
+        );
+
+        let weyl_swap = Expr::add(vec![make(c_sym, [a, b, c, d]), make(c_sym, [b, a, c, d])]);
+        assert_eq!(
+            meld(&weyl_swap, &props, &interner),
+            Expr::zero(),
+            "WeylTensor should use Riemann-like antisymmetry in meld/canonicalisation"
+        );
     }
 
     #[test]
@@ -9933,6 +11893,206 @@ mod tests {
         }
     }
 
+    #[test]
+    fn explicit_indices_non_chain_rank3_two_vector_contractions() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let v = interner.get_or_intern("V");
+        let w = interner.get_or_intern("W");
+        let mut implicit = HashSet::new();
+        implicit.extend([t, v, w]);
+        let n_idx: HashMap<lasso::Spur, usize> = vec![(t, 3usize), (v, 1usize), (w, 1usize)]
+            .into_iter()
+            .collect();
+        let avail: Vec<_> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|s| interner.get_or_intern(s))
+            .collect();
+
+        let expr = Expr::mul(vec![Expr::Sym(t), Expr::Sym(v), Expr::Sym(w)]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_idx, &HashMap::new(), &interner);
+
+        let t_indices = indexed_indices_for(&result, t);
+        let v_indices = indexed_indices_for(&result, v);
+        let w_indices = indexed_indices_for(&result, w);
+        assert_eq!(t_indices.len(), 3);
+        assert_eq!(v_indices.len(), 1);
+        assert_eq!(w_indices.len(), 1);
+        assert_eq!(
+            contraction_count(&result),
+            2,
+            "rank-3 tensor should contract two graph ports with two vectors"
+        );
+    }
+
+    #[test]
+    fn explicit_indices_disconnected_indexed_subproducts_do_not_cross_scalar_barrier() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let d = interner.get_or_intern("D");
+        let s = interner.get_or_intern("s");
+        let mut implicit = HashSet::new();
+        implicit.extend([a, b, c, d]);
+        let n_idx: HashMap<lasso::Spur, usize> =
+            vec![(a, 2usize), (b, 2usize), (c, 2usize), (d, 2usize)]
+                .into_iter()
+                .collect();
+        let avail: Vec<_> = (0..12)
+            .map(|i| interner.get_or_intern(&format!("q{i}")))
+            .collect();
+        let expr = Expr::mul(vec![
+            Expr::Sym(a),
+            Expr::Sym(b),
+            Expr::Sym(s),
+            Expr::Sym(c),
+            Expr::Sym(d),
+        ]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_idx, &HashMap::new(), &interner);
+        let b_indices = indexed_indices_for(&result, b);
+        let c_indices = indexed_indices_for(&result, c);
+        assert_ne!(
+            b_indices[1].name, c_indices[0].name,
+            "scalar barrier should split disconnected contraction graph components"
+        );
+        assert_eq!(
+            contraction_count(&result),
+            2,
+            "A-B and C-D components should each have one contraction"
+        );
+    }
+
+    #[test]
+    fn explicit_indices_mixed_explicit_and_implicit_contracts_named_slot() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let v = interner.get_or_intern("V");
+        let i = interner.get_or_intern("i");
+        let mut implicit = HashSet::new();
+        implicit.extend([a, v]);
+        let n_idx: HashMap<lasso::Spur, usize> =
+            vec![(a, 1usize), (v, 1usize)].into_iter().collect();
+        let avail: Vec<_> = ["j", "k", "l"]
+            .iter()
+            .map(|s| interner.get_or_intern(s))
+            .collect();
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![Index {
+                    name: i,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::Sym(v),
+        ]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_idx, &HashMap::new(), &interner);
+        let v_indices = indexed_indices_for(&result, v);
+        assert_eq!(v_indices.len(), 1);
+        assert_eq!(
+            v_indices[0].name, i,
+            "implicit vector should reuse the explicit open contraction name"
+        );
+        assert_eq!(v_indices[0].variance, Variance::Up);
+    }
+
+    #[test]
+    fn explicit_indices_repeated_contractions_from_rank4_tensor() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let v = interner.get_or_intern("V");
+        let w = interner.get_or_intern("W");
+        let x = interner.get_or_intern("X");
+        let mut implicit = HashSet::new();
+        implicit.extend([t, v, w, x]);
+        let n_idx: HashMap<lasso::Spur, usize> =
+            vec![(t, 4usize), (v, 1usize), (w, 1usize), (x, 1usize)]
+                .into_iter()
+                .collect();
+        let avail: Vec<_> = (0..12)
+            .map(|i| interner.get_or_intern(&format!("r{i}")))
+            .collect();
+        let expr = Expr::mul(vec![Expr::Sym(t), Expr::Sym(v), Expr::Sym(w), Expr::Sym(x)]);
+        let result = explicit_indices(&expr, &implicit, &avail, &n_idx, &HashMap::new(), &interner);
+        assert_eq!(
+            contraction_count(&result),
+            3,
+            "three rank-4 tensor ports should contract across the graph"
+        );
+    }
+
+    #[test]
+    fn explicit_indices_trace_wrapped_non_chain_graph() {
+        let interner = ax_ir::Interner::new();
+        let tr = interner.get_or_intern("Tr");
+        let t = interner.get_or_intern("T");
+        let v = interner.get_or_intern("V");
+        let w = interner.get_or_intern("W");
+        let mut implicit = HashSet::new();
+        implicit.extend([t, v, w]);
+        let n_idx: HashMap<lasso::Spur, usize> = vec![(t, 3usize), (v, 1usize), (w, 1usize)]
+            .into_iter()
+            .collect();
+        let avail: Vec<_> = ["m", "n", "p", "q", "r"]
+            .iter()
+            .map(|s| interner.get_or_intern(s))
+            .collect();
+        let mut props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> = HashMap::new();
+        props.insert(tr, vec![ax_ir::TensorProperty::Trace]);
+        let expr = Expr::Call(
+            tr,
+            vec![Expr::mul(vec![Expr::Sym(t), Expr::Sym(v), Expr::Sym(w)])],
+        );
+        let result = explicit_indices(&expr, &implicit, &avail, &n_idx, &props, &interner);
+        assert_eq!(
+            contraction_count(&result),
+            2,
+            "trace should close one graph edge and preserve the internal vector contraction"
+        );
+    }
+
+    fn indexed_indices_for(expr: &Expr, sym: lasso::Spur) -> Vec<ax_ir::Index> {
+        match expr {
+            Expr::Indexed(base, indices) if expr_head_symbol(base) == Some(sym) => indices.clone(),
+            Expr::Mul(factors) => factors
+                .iter()
+                .find_map(|factor| {
+                    if let Expr::Indexed(base, indices) = factor {
+                        if expr_head_symbol(base) == Some(sym) {
+                            return Some(indices.clone());
+                        }
+                    }
+                    None
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn contraction_count(expr: &Expr) -> usize {
+        let factors = match expr {
+            Expr::Mul(factors) => factors.as_slice(),
+            other => std::slice::from_ref(other),
+        };
+        let mut up: HashMap<lasso::Spur, usize> = HashMap::new();
+        let mut down: HashMap<lasso::Spur, usize> = HashMap::new();
+        for factor in factors {
+            if let Expr::Indexed(_, indices) = factor {
+                for index in indices {
+                    match index.variance {
+                        Variance::Up => *up.entry(index.name).or_insert(0) += 1,
+                        Variance::Down => *down.entry(index.name).or_insert(0) += 1,
+                    }
+                }
+            }
+        }
+        up.into_iter()
+            .map(|(name, up_count)| up_count.min(down.get(&name).copied().unwrap_or(0)))
+            .sum()
+    }
+
     // ── rewrite_indices tests ─────────────────────────────────────────────────
 
     #[test]
@@ -10547,6 +12707,156 @@ mod tests {
                 other
             ),
         }
+    }
+
+    #[test]
+    fn decompose_product_three_vector_product() {
+        let interner = ax_ir::Interner::new();
+        let a_sym = interner.get_or_intern("A");
+        let b_sym = interner.get_or_intern("B");
+        let c_sym = interner.get_or_intern("C");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> = HashMap::new();
+        let vector = |sym, idx| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(sym)),
+                vec![Index {
+                    name: idx,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            )
+        };
+        let expr = Expr::mul(vec![vector(a_sym, a), vector(b_sym, b), vector(c_sym, c)]);
+        let result = decompose_product(&expr, 4, &props, &interner);
+
+        assert!(
+            !matches!(result, Expr::Call(sym, _) if interner.resolve(sym).starts_with("decompose_product_")),
+            "three-vector product should not fail: {:?}",
+            result
+        );
+        assert_ne!(
+            result,
+            Expr::zero(),
+            "decomposition should retain nonzero projections"
+        );
+    }
+
+    #[test]
+    fn lr_three_vectors_tracks_multiplicity() {
+        let result = lr_product_decomposition(&[vec![1], vec![1], vec![1]], 4);
+        assert!(
+            result
+                .iter()
+                .any(|(shape, multiplicity)| shape == &vec![2, 1] && *multiplicity == 2),
+            "[1]⊗[1]⊗[1] should contain [2,1] with multiplicity 2, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn decompose_product_infers_shape_from_tableau_symmetry() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let v = interner.get_or_intern("V");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let t_expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let v_expr = Expr::Indexed(
+            Box::new(Expr::Sym(v)),
+            vec![Index {
+                name: c,
+                variance: Variance::Down,
+                index_type: None,
+            }],
+        );
+        let mut props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> = HashMap::new();
+        props.insert(
+            t,
+            vec![ax_ir::TensorProperty::TableauSymmetry {
+                shape: vec![2],
+                indices: vec![0, 1],
+            }],
+        );
+        assert_eq!(
+            tableau_shape_for_factor(&t_expr, &props),
+            Some(vec![2]),
+            "TableauSymmetry should drive shape inference"
+        );
+        let expr = Expr::mul(vec![t_expr.clone(), v_expr]);
+        let result = decompose_product(&expr, 4, &props, &interner);
+        assert_ne!(result, expr);
+        assert!(
+            !matches!(result, Expr::Call(sym, _) if interner.resolve(sym).starts_with("decompose_product_")),
+            "tableau-derived shape should decompose, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn decompose_product_fails_on_inconsistent_tableau_shape() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T_bad");
+        let v = interner.get_or_intern("V_bad");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let mut props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> = HashMap::new();
+        props.insert(
+            t,
+            vec![ax_ir::TensorProperty::TableauSymmetry {
+                shape: vec![3],
+                indices: vec![0, 1, 2],
+            }],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![
+                    Index {
+                        name: a,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(v)),
+                vec![Index {
+                    name: c,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        let result = decompose_product(&expr, 4, &props, &interner);
+        assert!(
+            matches!(result, Expr::Call(sym, _) if interner.resolve(sym) == "decompose_product_unsupported_shape"),
+            "inconsistent tableau shape should fail clearly, got {:?}",
+            result
+        );
     }
 
     #[test]
