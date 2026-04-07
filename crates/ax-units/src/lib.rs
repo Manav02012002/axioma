@@ -390,6 +390,7 @@ pub fn check_dimensions(
             Ok(unit.unwrap_or_else(dimensionless))
         }
         Expr::Indexed(base, _) => check_dimensions(base, units_env, interner),
+        Expr::Group(inner, _) => check_dimensions(inner, units_env, interner),
         Expr::Let(name, value, body) => {
             let mut extended = units_env.clone();
             let value_unit = check_dimensions(value, units_env, interner)?;

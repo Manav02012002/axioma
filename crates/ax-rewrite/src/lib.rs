@@ -56,208 +56,62 @@ impl RewriteTrace {
     }
 }
 
-fn restore_binds(target: &mut Bindings, snapshot: &Bindings) {
-    *target = snapshot.clone();
+fn empty_props() -> &'static HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> {
+    static EMPTY: std::sync::OnceLock<HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(HashMap::new)
 }
 
-fn match_sequence(patterns: &[Pattern], terms: &[Expr], binds: &mut Bindings) -> bool {
-    if patterns.is_empty() {
-        return terms.is_empty();
-    }
-    if terms.is_empty() {
-        return false;
-    }
-
-    fn helper(
-        patterns: &[Pattern],
-        terms: &[Expr],
-        used: &mut [bool],
-        binds: &mut Bindings,
-    ) -> bool {
-        if patterns.is_empty() {
-            return used.iter().all(|u| *u);
-        }
-
-        for idx in 0..terms.len() {
-            if used[idx] {
-                continue;
-            }
-            let snapshot = binds.clone();
-            if match_pattern(&patterns[0], &terms[idx], binds) {
-                used[idx] = true;
-                if helper(&patterns[1..], terms, used, binds) {
-                    return true;
-                }
-                used[idx] = false;
-            }
-            restore_binds(binds, &snapshot);
-        }
-
-        false
-    }
-
-    let mut used = vec![false; terms.len()];
-    helper(patterns, terms, &mut used, binds)
+fn empty_index_to_family() -> &'static HashMap<lasso::Spur, lasso::Spur> {
+    static EMPTY: std::sync::OnceLock<HashMap<lasso::Spur, lasso::Spur>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(HashMap::new)
 }
 
-fn commutative_match(
-    patterns: &[Pattern],
-    terms: &[Expr],
-    binds: &mut Bindings,
-    is_add: bool,
-) -> bool {
-    if patterns.len() == 1 {
-        let whole = if is_add {
-            Expr::add(terms.to_vec())
+fn try_apply_rule_compare(
+    rule: &RewriteRule,
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    index_to_family: &HashMap<lasso::Spur, lasso::Spur>,
+    interner: &Interner,
+) -> Option<(Expr, Bindings)> {
+    let pattern = pattern_to_expr_with_wildcard(&rule.pattern, interner.get_or_intern("_"));
+    if rule.condition.is_none() {
+        let sub_rule =
+            ax_compare::SubstitutionRule::new(pattern.clone(), rule.replacement.clone(), None);
+        let rewritten = ax_compare::substitute_full(expr, &sub_rule, properties, interner, true)?;
+        let bindings = if rewritten != *expr {
+            ax_compare::pattern_match(&pattern, expr, properties, index_to_family, interner)
+                .map(|m| match_map_to_bindings(&m))
+                .unwrap_or_default()
         } else {
-            Expr::mul(terms.to_vec())
+            Bindings::new()
         };
-        return match_pattern(&patterns[0], &whole, binds);
+        return Some((rewritten, bindings));
     }
-
-    if patterns.len() == 2 {
-        for idx in 0..terms.len() {
-            let snapshot = binds.clone();
-            if !match_pattern(&patterns[0], &terms[idx], binds) {
-                restore_binds(binds, &snapshot);
-                continue;
-            }
-
-            let remaining = terms
-                .iter()
-                .enumerate()
-                .filter_map(|(j, term)| if j != idx { Some(term.clone()) } else { None })
-                .collect::<Vec<_>>();
-            let rest_expr = if is_add {
-                Expr::add(remaining)
-            } else {
-                Expr::mul(remaining)
-            };
-
-            if match_pattern(&patterns[1], &rest_expr, binds) {
-                return true;
-            }
-            restore_binds(binds, &snapshot);
-        }
-        return false;
-    }
-
-    match_sequence(patterns, terms, binds)
-}
-
-pub fn match_pattern(pattern: &Pattern, expr: &Expr, binds: &mut Bindings) -> bool {
-    match pattern {
-        Pattern::Slot(name) => match binds.get(name) {
-            Some(bound) => bound == expr,
-            None => {
-                binds.insert(*name, expr.clone());
-                true
-            }
-        },
-        Pattern::Wildcard => true,
-        Pattern::Exact(e) => e == expr,
-        Pattern::Neg(inner) => match expr {
-            Expr::Neg(e) => match_pattern(inner, e, binds),
-            _ => false,
-        },
-        Pattern::Pow(bp, ep) => match expr {
-            Expr::Pow(b, e) => {
-                let snapshot = binds.clone();
-                if match_pattern(bp, b, binds) && match_pattern(ep, e, binds) {
-                    true
-                } else {
-                    restore_binds(binds, &snapshot);
-                    false
-                }
-            }
-            _ => false,
-        },
-        Pattern::Call(f, pats) => match expr {
-            Expr::Call(g, args) if f == g && pats.len() == args.len() => {
-                let snapshot = binds.clone();
-                for (pat, arg) in pats.iter().zip(args.iter()) {
-                    if !match_pattern(pat, arg, binds) {
-                        restore_binds(binds, &snapshot);
-                        return false;
-                    }
-                }
-                true
-            }
-            _ => false,
-        },
-        Pattern::Add(pats) => match expr {
-            Expr::Add(terms) => commutative_match(pats, terms, binds, true),
-            _ if pats.len() == 1 => match_pattern(&pats[0], expr, binds),
-            _ => false,
-        },
-        Pattern::Mul(pats) => match expr {
-            Expr::Mul(terms) => commutative_match(pats, terms, binds, false),
-            _ if pats.len() == 1 => match_pattern(&pats[0], expr, binds),
-            _ => false,
-        },
-    }
-}
-
-pub fn substitute(template: &Expr, binds: &Bindings) -> Expr {
-    match template {
-        Expr::Int(n) => Expr::Int(n.clone()),
-        Expr::Rational(r) => Expr::Rational(r.clone()),
-        Expr::Float(f) => Expr::Float(*f),
-        Expr::Complex(re, im) => Expr::Complex(
-            Box::new(substitute(re, binds)),
-            Box::new(substitute(im, binds)),
-        ),
-        Expr::Sym(s) => binds.get(s).cloned().unwrap_or(Expr::Sym(*s)),
-        Expr::Add(terms) => Expr::add(terms.iter().map(|t| substitute(t, binds)).collect()),
-        Expr::Mul(factors) => Expr::mul(factors.iter().map(|f| substitute(f, binds)).collect()),
-        Expr::Pow(base, exp) => Expr::pow(substitute(base, binds), substitute(exp, binds)),
-        Expr::Neg(e) => Expr::neg(substitute(e, binds)),
-        Expr::Call(f, args) => Expr::Call(*f, args.iter().map(|a| substitute(a, binds)).collect()),
-        Expr::FnDef(name, params, body) => {
-            Expr::FnDef(*name, params.clone(), Box::new(substitute(body, binds)))
-        }
-        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
-            Box::new(substitute(lhs, binds)),
-            Box::new(substitute(rhs, binds)),
-            *trust,
-        ),
-        Expr::Import(path) => Expr::Import(path.clone()),
-        Expr::Assume(name, assumptions) => Expr::Assume(*name, assumptions.clone()),
-        Expr::SetConvention(field, value) => Expr::SetConvention(field.clone(), value.clone()),
-        Expr::Piecewise(cases) => Expr::Piecewise(
-            cases
-                .iter()
-                .map(|(value, condition)| (substitute(value, binds), condition.clone()))
-                .collect(),
-        ),
-        Expr::Indexed(base, indices) => {
-            Expr::Indexed(Box::new(substitute(base, binds)), indices.clone())
-        }
-        Expr::Let(name, val, body) => Expr::Let(
-            *name,
-            Box::new(substitute(val, binds)),
-            Box::new(substitute(body, binds)),
-        ),
-        Expr::List(items) => Expr::List(items.iter().map(|i| substitute(i, binds)).collect()),
-        Expr::Matrix(rows) => Expr::Matrix(
-            rows.iter()
-                .map(|row| row.iter().map(|cell| substitute(cell, binds)).collect())
-                .collect(),
-        ),
-    }
-}
-
-pub fn apply_rule(rule: &RewriteRule, expr: &Expr, interner: &Interner) -> Option<Expr> {
-    let mut binds = Bindings::new();
-    if !match_pattern(&rule.pattern, expr, &mut binds) {
-        return None;
-    }
+    let match_map =
+        ax_compare::pattern_match(&pattern, expr, properties, index_to_family, interner)?;
+    let bindings = match_map_to_bindings(&match_map);
     if let Some(condition) = rule.condition {
-        if !condition(&binds, interner) {
+        if !condition(&bindings, interner) {
             return None;
         }
     }
-    Some(substitute(&rule.replacement, &binds))
+    Some((
+        ax_compare::apply_match_map(&rule.replacement, &match_map, interner),
+        bindings,
+    ))
+}
+
+pub fn apply_rule(rule: &RewriteRule, expr: &Expr, interner: &Interner) -> Option<Expr> {
+    try_apply_rule_compare(
+        rule,
+        expr,
+        empty_props(),
+        empty_index_to_family(),
+        interner,
+    )
+    .map(|(rewritten, _)| rewritten)
 }
 
 pub fn apply_rule_traced(
@@ -266,16 +120,13 @@ pub fn apply_rule_traced(
     interner: &Interner,
     trace: &mut RewriteTrace,
 ) -> Option<Expr> {
-    let mut binds = Bindings::new();
-    if !match_pattern(&rule.pattern, expr, &mut binds) {
-        return None;
-    }
-    if let Some(condition) = rule.condition {
-        if !condition(&binds, interner) {
-            return None;
-        }
-    }
-    let after = substitute(&rule.replacement, &binds);
+    let (after, binds) = try_apply_rule_compare(
+        rule,
+        expr,
+        empty_props(),
+        empty_index_to_family(),
+        interner,
+    )?;
     trace.steps.push(RewriteStep {
         rule_name: rule.name.clone(),
         trust_level: rule.trust_level,
@@ -342,6 +193,7 @@ pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> 
             Box::new(rewrite_once(rules, base, interner)),
             indices.clone(),
         ),
+        Expr::Group(inner, rel) => Expr::Group(Box::new(rewrite_once(rules, inner, interner)), *rel),
         Expr::Let(name, val, body) => Expr::Let(
             *name,
             Box::new(rewrite_once(rules, val, interner)),
@@ -439,6 +291,10 @@ pub fn rewrite_once_traced(
             Box::new(rewrite_once_traced(rules, base, interner, trace)),
             indices.clone(),
         ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(rewrite_once_traced(rules, inner, interner, trace)),
+            *rel,
+        ),
         Expr::Let(name, val, body) => Expr::Let(
             *name,
             Box::new(rewrite_once_traced(rules, val, interner, trace)),
@@ -512,20 +368,8 @@ pub fn apply_rule_with_compare(
     index_to_family: &std::collections::HashMap<lasso::Spur, lasso::Spur>,
     interner: &ax_ir::Interner,
 ) -> Option<Expr> {
-    let pattern = pattern_to_expr_with_wildcard(&rule.pattern, interner.get_or_intern("_"));
-    let match_map =
-        ax_compare::pattern_match(&pattern, expr, properties, index_to_family, interner)?;
-    if let Some(condition) = rule.condition {
-        let bindings = match_map_to_bindings(&match_map);
-        if !condition(&bindings, interner) {
-            return None;
-        }
-    }
-    Some(ax_compare::apply_match_map(
-        &rule.replacement,
-        &match_map,
-        interner,
-    ))
+    try_apply_rule_compare(rule, expr, properties, index_to_family, interner)
+        .map(|(rewritten, _)| rewritten)
 }
 
 pub fn rewrite_once_with_compare(
@@ -648,6 +492,16 @@ pub fn rewrite_once_with_compare(
                 interner,
             )),
             indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(rewrite_once_with_compare(
+                rules,
+                inner,
+                properties,
+                index_to_family,
+                interner,
+            )),
+            *rel,
         ),
         Expr::Let(name, val, body) => Expr::Let(
             *name,
@@ -783,46 +637,21 @@ mod tests {
     }
 
     #[test]
-    fn slot_binds_and_checks_consistency() {
-        let (_interner, a, _, _) = make_interner_and_syms();
-        let pat = Pattern::Slot(a);
-        let expr = Expr::Int(42.into());
-        let mut binds = Bindings::new();
-        assert!(match_pattern(&pat, &expr, &mut binds));
-        assert_eq!(binds[&a], Expr::Int(42.into()));
-        assert!(match_pattern(&pat, &Expr::Int(42.into()), &mut binds));
-        assert!(!match_pattern(&pat, &Expr::Int(99.into()), &mut binds));
-    }
-
-    #[test]
-    fn exact_matches_literal() {
-        let pat = Pattern::Exact(Expr::Int(5.into()));
-        let mut binds = Bindings::new();
-        assert!(match_pattern(&pat, &Expr::Int(5.into()), &mut binds));
-        assert!(!match_pattern(&pat, &Expr::Int(6.into()), &mut binds));
-    }
-
-    #[test]
-    fn add_commutative_match() {
+    fn pattern_to_expr_converts_slots_and_structure() {
         let (interner, a, b, x) = make_interner_and_syms();
-        let y = interner.get_or_intern("y");
-        let pat = Pattern::Add(vec![Pattern::Slot(a), Pattern::Slot(b)]);
-        let expr = Expr::add(vec![Expr::Sym(x), Expr::Sym(y)]);
-        let mut binds = Bindings::new();
-        assert!(match_pattern(&pat, &expr, &mut binds));
-        assert!(binds.contains_key(&a));
-        assert!(binds.contains_key(&b));
-    }
-
-    #[test]
-    fn substitute_replaces_slots() {
-        let (_interner, a, b, _) = make_interner_and_syms();
-        let template = Expr::add(vec![Expr::Sym(a), Expr::Sym(b)]);
-        let mut binds = Bindings::new();
-        binds.insert(a, Expr::Int(3.into()));
-        binds.insert(b, Expr::Int(4.into()));
-        let result = substitute(&template, &binds);
-        assert_eq!(result, Expr::Int(7.into()));
+        let sin_sym = interner.get_or_intern("sin");
+        let pattern = Pattern::Add(vec![
+            Pattern::Call(sin_sym, vec![Pattern::Slot(a)]),
+            Pattern::Mul(vec![Pattern::Exact(Expr::Sym(x)), Pattern::Slot(b)]),
+        ]);
+        let expr = pattern_to_expr(&pattern);
+        assert_eq!(
+            expr,
+            Expr::add(vec![
+                Expr::Call(sin_sym, vec![Expr::Sym(a)]),
+                Expr::mul(vec![Expr::Sym(x), Expr::Sym(b)]),
+            ])
+        );
     }
 
     #[test]
@@ -884,5 +713,51 @@ mod tests {
         assert_eq!(trace.steps.len(), 1);
         assert_eq!(trace.steps[0].trust_level, ax_ir::TrustLevel::Heuristic);
         assert_eq!(trace.overall_trust(), ax_ir::TrustLevel::Heuristic);
+    }
+
+    #[test]
+    fn apply_rule_with_compare_matches_partial_products() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let d = interner.get_or_intern("D");
+        let rule = RewriteRule {
+            name: "partial_mul".into(),
+            pattern: Pattern::Mul(vec![
+                Pattern::Exact(Expr::Sym(a)),
+                Pattern::Exact(Expr::Sym(b)),
+            ]),
+            replacement: Expr::Sym(c),
+            condition: None,
+            trust_level: ax_ir::TrustLevel::Exact,
+        };
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(d)]);
+        let props: std::collections::HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> =
+            std::collections::HashMap::new();
+        let index_to_family = std::collections::HashMap::new();
+        let result = apply_rule_with_compare(&rule, &expr, &props, &index_to_family, &interner);
+        assert_eq!(result, Some(Expr::mul(vec![Expr::Sym(c), Expr::Sym(d)])));
+    }
+
+    #[test]
+    fn rewrite_once_preserves_explicit_grouping() {
+        let interner = ax_ir::Interner::new();
+        let slot = interner.get_or_intern("a_");
+        let sin_sym = interner.get_or_intern("sin");
+        let cos_sym = interner.get_or_intern("cos");
+        let x = interner.get_or_intern("x");
+
+        let rule = RewriteRule {
+            name: "sin_to_cos".into(),
+            pattern: Pattern::Call(sin_sym, vec![Pattern::Slot(slot)]),
+            replacement: Expr::Call(cos_sym, vec![Expr::Sym(slot)]),
+            condition: None,
+            trust_level: ax_ir::TrustLevel::Exact,
+        };
+
+        let expr = Expr::group(Expr::Call(sin_sym, vec![Expr::Sym(x)]));
+        let result = rewrite_once(&[rule], &expr, &interner);
+        assert_eq!(result, Expr::group(Expr::Call(cos_sym, vec![Expr::Sym(x)])));
     }
 }

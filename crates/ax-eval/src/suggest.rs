@@ -25,7 +25,7 @@ fn contains_indexed(expr: &Expr) -> bool {
         }
         Expr::Matrix(rows) => rows.iter().flatten().any(contains_indexed),
         Expr::Pow(base, exp) => contains_indexed(base) || contains_indexed(exp),
-        Expr::Neg(inner) => contains_indexed(inner),
+        Expr::Neg(inner) | Expr::Group(inner, _) => contains_indexed(inner),
         Expr::Complex(re, im) => contains_indexed(re) || contains_indexed(im),
         Expr::Call(_, args) => args.iter().any(contains_indexed),
         Expr::FnDef(_, _, body) => contains_indexed(body),
@@ -63,7 +63,7 @@ fn contains_named_call(expr: &Expr, names: &[&str], interner: &ax_ir::Interner) 
         Expr::Pow(base, exp) => {
             contains_named_call(base, names, interner) || contains_named_call(exp, names, interner)
         }
-        Expr::Neg(inner) => contains_named_call(inner, names, interner),
+        Expr::Neg(inner) | Expr::Group(inner, _) => contains_named_call(inner, names, interner),
         Expr::Complex(re, im) => {
             contains_named_call(re, names, interner) || contains_named_call(im, names, interner)
         }
@@ -118,7 +118,7 @@ fn collect_indices(expr: &Expr, out: &mut Vec<ax_ir::Index>) {
             collect_indices(base, out);
             collect_indices(exp, out);
         }
-        Expr::Neg(inner) => collect_indices(inner, out),
+        Expr::Neg(inner) | Expr::Group(inner, _) => collect_indices(inner, out),
         Expr::Complex(re, im) => {
             collect_indices(re, out);
             collect_indices(im, out);
@@ -177,7 +177,7 @@ fn collect_indexed_base_symbols(expr: &Expr, out: &mut Vec<ax_ir::expr::Sym>) {
             collect_indexed_base_symbols(base, out);
             collect_indexed_base_symbols(exp, out);
         }
-        Expr::Neg(inner) => collect_indexed_base_symbols(inner, out),
+        Expr::Neg(inner) | Expr::Group(inner, _) => collect_indexed_base_symbols(inner, out),
         Expr::Complex(re, im) => {
             collect_indexed_base_symbols(re, out);
             collect_indexed_base_symbols(im, out);

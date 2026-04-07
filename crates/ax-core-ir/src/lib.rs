@@ -543,7 +543,7 @@ impl<'a> Cursor<'a> {
                 if !self.eat_if(')') {
                     return Err(self.error("expected ')'"));
                 }
-                Ok(expr)
+                Ok(Expr::group(expr))
             }
             Some('[') => {
                 self.bump_char();

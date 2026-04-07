@@ -534,6 +534,9 @@ name = "ax-young"
 version = "0.1.0"
 dependencies = [
  "ax-perm",
+ "num-bigint",
+ "num-rational",
+ "num-traits",
 ]
 
 [[package]]

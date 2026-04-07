@@ -138,6 +138,7 @@ fn contains_symbol(expr: &Expr, variable: Spur) -> bool {
         }
         Expr::Pow(base, exp) => contains_symbol(base, variable) || contains_symbol(exp, variable),
         Expr::Neg(inner) | Expr::Indexed(inner, _) => contains_symbol(inner, variable),
+        Expr::Group(inner, _) => contains_symbol(inner, variable),
         Expr::Call(_, args) => contains_symbol_in_exprs(args, variable),
         Expr::Matrix(rows) => rows
             .iter()

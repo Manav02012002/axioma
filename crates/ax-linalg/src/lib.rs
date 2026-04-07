@@ -9,6 +9,7 @@ fn to_rational(expr: &Expr) -> Option<BigRational> {
     match expr {
         Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
         Expr::Rational(r) => Some(r.clone()),
+        Expr::Group(inner, _) => to_rational(inner),
         _ => None,
     }
 }
@@ -134,6 +135,7 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
         Expr::Indexed(base, indices) => {
             Expr::Indexed(Box::new(simplify_expr(*base, interner)), indices)
         }
+        Expr::Group(inner, rel) => Expr::Group(Box::new(simplify_expr(*inner, interner)), rel),
         Expr::Let(name, val, body) => Expr::Let(
             name,
             Box::new(simplify_expr(*val, interner)),

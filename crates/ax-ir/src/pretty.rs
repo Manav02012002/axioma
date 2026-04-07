@@ -1,4 +1,4 @@
-use crate::expr::{Assumption, Condition, Expr, Index, Variance};
+use crate::expr::{Assumption, Condition, Expr, Index, ParentRel, Variance};
 use crate::intern::Interner;
 
 fn needs_parens_in_pow_base(expr: &Expr) -> bool {
@@ -183,6 +183,7 @@ fn render(expr: &Expr, interner: &Interner) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        Expr::Group(inner, ParentRel::ExplicitGroup) => format!("({})", render(inner, interner)),
         Expr::Let(name, val, body) => format!(
             "let {} = {} in {}",
             interner.resolve(*name),

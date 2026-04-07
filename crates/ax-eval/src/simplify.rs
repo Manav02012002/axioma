@@ -474,6 +474,7 @@ pub fn expand(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
         Expr::Indexed(base, indices) => {
             Expr::Indexed(Box::new(expand(base, interner)), indices.clone())
         }
+        Expr::Group(inner, rel) => Expr::Group(Box::new(expand(inner, interner)), *rel),
         Expr::Let(name, val, body) => Expr::Let(
             *name,
             Box::new(expand(val, interner)),
@@ -687,7 +688,7 @@ fn collect_syms(expr: &Expr, out: &mut BTreeSet<lasso::Spur>) {
             collect_syms(base, out);
             collect_syms(exp, out);
         }
-        Expr::Neg(inner) => collect_syms(inner, out),
+        Expr::Neg(inner) | Expr::Group(inner, _) => collect_syms(inner, out),
         Expr::Call(_, args) => {
             for arg in args {
                 collect_syms(arg, out);

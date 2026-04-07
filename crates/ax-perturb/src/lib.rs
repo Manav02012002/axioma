@@ -370,6 +370,9 @@ fn substitute_field(expr: &Expr, setup: &PerturbationSetup, interner: &ax_ir::In
             substitute_field(exp, setup, interner),
         ),
         Expr::Neg(inner) => Expr::neg(substitute_field(inner, setup, interner)),
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(substitute_field(inner, setup, interner)), *rel)
+        }
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()

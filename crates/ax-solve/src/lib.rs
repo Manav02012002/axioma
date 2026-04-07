@@ -9,6 +9,7 @@ fn to_rational(expr: &Expr) -> Option<BigRational> {
     match expr {
         Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
         Expr::Rational(r) => Some(r.clone()),
+        Expr::Group(inner, _) => to_rational(inner),
         _ => None,
     }
 }
@@ -93,6 +94,7 @@ fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
         Expr::SetConvention(_, _) => false,
         Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_var(value, var)),
         Expr::Indexed(base, _) => contains_var(base, var),
+        Expr::Group(inner, _) => contains_var(inner, var),
         Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
         Expr::Matrix(rows) => rows
             .iter()
@@ -164,6 +166,7 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
             }
         }
         Expr::Neg(inner) => Expr::neg(simplify_expr(*inner, interner)),
+        Expr::Group(inner, rel) => Expr::Group(Box::new(simplify_expr(*inner, interner)), rel),
         Expr::Call(f, args) => {
             let args = args
                 .into_iter()
@@ -318,6 +321,7 @@ pub fn extract_polynomial(
         | Expr::SetConvention(_, _)
         | Expr::Piecewise(_)
         | Expr::Indexed(_, _)
+        | Expr::Group(_, _)
         | Expr::Let(_, _, _)
         | Expr::List(_)
         | Expr::Matrix(_) => {

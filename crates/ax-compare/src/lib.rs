@@ -1,13 +1,16 @@
 #![forbid(unsafe_code)]
 
-use ax_ir::{Expr, Index, Interner, TensorProperty, Variance};
+use ax_ir::{Expr, Index, IndexFamily, Interner, TensorProperty, Variance};
 use ax_tensor::PropertyLookup;
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::One;
+use num_traits::{One, Zero};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::mem::Discriminant;
+use std::sync::{Mutex, OnceLock};
+
+type Sym = lasso::Spur;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchResult {
@@ -23,6 +26,80 @@ pub struct MatchMap {
     pub index_map: HashMap<lasso::Spur, lasso::Spur>,
     pub wildcard_map: HashMap<lasso::Spur, Expr>,
     pub multiplier: Option<BigRational>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubproductMatch {
+    pub factor_locations: Vec<usize>,
+    pub factor_moving_signs: Vec<i32>,
+    pub match_map: MatchMap,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubsumMatch {
+    pub term_locations: Vec<usize>,
+    pub term_ratio: BigRational,
+    pub match_map: MatchMap,
+}
+
+pub type IndexSetInfo = IndexFamily;
+
+#[derive(Debug, Clone)]
+pub struct SubstitutionRule {
+    pub lhs: Expr,
+    pub rhs: Expr,
+    pub conditions: Option<Expr>,
+    pub lhs_contains_dummies: bool,
+    pub rhs_contains_dummies: bool,
+}
+
+impl SubstitutionRule {
+    pub fn new(lhs: Expr, rhs: Expr, conditions: Option<Expr>) -> Self {
+        Self {
+            lhs_contains_dummies: !dummy_pairs(&lhs).is_empty(),
+            rhs_contains_dummies: !dummy_pairs(&rhs).is_empty(),
+            lhs,
+            rhs,
+            conditions,
+        }
+    }
+}
+
+static SUBSTITUTION_RULE_CACHE: OnceLock<Mutex<HashMap<String, (bool, bool)>>> = OnceLock::new();
+
+fn substitution_rule_cache() -> &'static Mutex<HashMap<String, (bool, bool)>> {
+    SUBSTITUTION_RULE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn substitution_rule_cache_key(rule: &SubstitutionRule) -> String {
+    format!("{:?}=>{:?}|{:?}", rule.lhs, rule.rhs, rule.conditions)
+}
+
+fn validate_substitution_rule(rule: &mut SubstitutionRule) {
+    let key = substitution_rule_cache_key(rule);
+    if let Some((lhs, rhs)) = substitution_rule_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&key).copied())
+    {
+        rule.lhs_contains_dummies = lhs;
+        rule.rhs_contains_dummies = rhs;
+        return;
+    }
+
+    let lhs = !dummy_pairs(&rule.lhs).is_empty();
+    let rhs = !dummy_pairs(&rule.rhs).is_empty();
+    rule.lhs_contains_dummies = lhs;
+    rule.rhs_contains_dummies = rhs;
+    if let Ok(mut cache) = substitution_rule_cache().lock() {
+        cache.insert(key, (lhs, rhs));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubstituteError {
+    NoFreshDummy(Sym),
+    InvalidCondition(String),
 }
 
 impl MatchMap {
@@ -132,6 +209,30 @@ fn merge_expr_binding(map: &mut HashMap<lasso::Spur, Expr>, key: lasso::Spur, va
     }
 }
 
+fn is_legacy_wildcard(sym: Sym, interner: &Interner) -> bool {
+    interner.resolve(sym).ends_with('_')
+}
+
+fn is_single_wildcard(sym: Sym, interner: &Interner) -> bool {
+    let name = interner.resolve(sym);
+    name.ends_with('?') && !name.ends_with("??")
+}
+
+fn is_sequence_wildcard(sym: Sym, interner: &Interner) -> bool {
+    interner.resolve(sym).ends_with("??")
+}
+
+fn is_any_wildcard(sym: Sym, interner: &Interner) -> bool {
+    is_legacy_wildcard(sym, interner)
+        || is_single_wildcard(sym, interner)
+        || is_sequence_wildcard(sym, interner)
+}
+
+fn bind_index_capture(map: &mut MatchMap, pattern_name: Sym, target_name: Sym) -> bool {
+    map.try_bind_index(pattern_name, target_name)
+        && map.try_bind_wildcard(pattern_name, Expr::Sym(target_name))
+}
+
 #[derive(Debug, Clone)]
 pub struct CompareConfig {
     pub match_indices_by_family: bool,
@@ -224,7 +325,7 @@ impl<'a> ExprComparator<'a> {
     pub fn subtree_compare(&self, pattern: &Expr, target: &Expr, map: &mut MatchMap) -> bool {
         if self.config.allow_wildcards {
             if let Expr::Sym(slot) = pattern {
-                if self.interner.resolve(*slot).ends_with('_') {
+                if is_any_wildcard(*slot, self.interner) {
                     return map.try_bind_wildcard(*slot, target.clone());
                 }
             }
@@ -308,8 +409,10 @@ impl<'a> ExprComparator<'a> {
             (Expr::Rational(a), Expr::Rational(b)) => a == b,
             (Expr::Float(a), Expr::Float(b)) => a == b,
             (Expr::Sym(pattern_sym), Expr::Sym(target_sym)) => {
-                self.symbols_property_compatible(*pattern_sym, *target_sym)
-                    && map.try_bind_symbol(*pattern_sym, *target_sym)
+                if self.config.allow_wildcards && is_any_wildcard(*pattern_sym, self.interner) {
+                    return map.try_bind_wildcard(*pattern_sym, Expr::Sym(*target_sym));
+                }
+                pattern_sym == target_sym && map.try_bind_symbol(*pattern_sym, *target_sym)
             }
             (Expr::Add(pattern_terms), Expr::Add(target_terms)) => {
                 self.match_commutative_exprs(pattern_terms, target_terms, map)
@@ -325,9 +428,7 @@ impl<'a> ExprComparator<'a> {
                 self.subtree_compare(pattern_inner, target_inner, map)
             }
             (Expr::Call(pattern_fn, pattern_args), Expr::Call(target_fn, target_args)) => {
-                if pattern_args.len() != target_args.len()
-                    || !map.try_bind_symbol(*pattern_fn, *target_fn)
-                {
+                if pattern_args.len() != target_args.len() || pattern_fn != target_fn {
                     return false;
                 }
                 for (pattern_arg, target_arg) in pattern_args.iter().zip(target_args) {
@@ -347,9 +448,14 @@ impl<'a> ExprComparator<'a> {
                     return false;
                 }
                 for (pattern_idx, target_idx) in pattern_indices.iter().zip(target_indices) {
-                    if !self.indices_compatible(pattern_idx, target_idx)
-                        || !map.try_bind_index(pattern_idx.name, target_idx.name)
-                    {
+                    if !self.indices_compatible(pattern_idx, target_idx) {
+                        return false;
+                    }
+                    if is_any_wildcard(pattern_idx.name, self.interner) {
+                        if !bind_index_capture(map, pattern_idx.name, target_idx.name) {
+                            return false;
+                        }
+                    } else if !map.try_bind_index(pattern_idx.name, target_idx.name) {
                         return false;
                     }
                 }
@@ -390,7 +496,8 @@ impl<'a> ExprComparator<'a> {
                 Expr::Let(pattern_name, pattern_value, pattern_body),
                 Expr::Let(target_name, target_value, target_body),
             ) => {
-                map.try_bind_symbol(*pattern_name, *target_name)
+                pattern_name == target_name
+                    && map.try_bind_symbol(*pattern_name, *target_name)
                     && self.subtree_compare(pattern_value, target_value, map)
                     && self.subtree_compare(pattern_body, target_body, map)
             }
@@ -802,6 +909,7 @@ fn collect_indices_inner(expr: &Expr, out: &mut Vec<(lasso::Spur, Variance)>) {
             collect_indices_inner(exp, out);
         }
         Expr::Neg(inner) => collect_indices_inner(inner, out),
+        Expr::Group(inner, _) => collect_indices_inner(inner, out),
         Expr::Call(_, args) => {
             for arg in args {
                 collect_indices_inner(arg, out);
@@ -964,6 +1072,7 @@ fn collect_free_index_occurrences_inner(
             collect_free_index_occurrences_inner(exp, free_names, out);
         }
         Expr::Neg(inner) => collect_free_index_occurrences_inner(inner, free_names, out),
+        Expr::Group(inner, _) => collect_free_index_occurrences_inner(inner, free_names, out),
         Expr::Call(_, args) => {
             for arg in args {
                 collect_free_index_occurrences_inner(arg, free_names, out);
@@ -1178,6 +1287,73 @@ pub fn pattern_match_with_config(
         .then_some(map)
 }
 
+fn build_index_to_family(properties: &dyn PropertyLookup) -> HashMap<Sym, Sym> {
+    let mut out = HashMap::new();
+    if let Some(families) = properties.index_families() {
+        for family in families.values() {
+            out.insert(family.name, family.name);
+            for value in &family.values {
+                out.insert(*value, family.name);
+            }
+        }
+    }
+    out
+}
+
+fn expr_contains_wildcards(expr: &Expr, interner: &Interner) -> bool {
+    match expr {
+        Expr::Sym(sym) => is_any_wildcard(*sym, interner),
+        Expr::Indexed(base, indices) => {
+            expr_contains_wildcards(base, interner)
+                || indices
+                    .iter()
+                    .any(|idx| is_any_wildcard(idx.name, interner))
+        }
+        Expr::Add(items) | Expr::Mul(items) | Expr::List(items) | Expr::Call(_, items) => {
+            items.iter().any(|item| expr_contains_wildcards(item, interner))
+        }
+        Expr::Pow(base, exp) | Expr::Complex(base, exp) => {
+            expr_contains_wildcards(base, interner) || expr_contains_wildcards(exp, interner)
+        }
+        Expr::Neg(inner) => expr_contains_wildcards(inner, interner),
+        Expr::Rule(lhs, rhs, _) => {
+            expr_contains_wildcards(lhs, interner) || expr_contains_wildcards(rhs, interner)
+        }
+        Expr::Piecewise(branches) => branches
+            .iter()
+            .any(|(value, _)| expr_contains_wildcards(value, interner)),
+        Expr::Let(_, value, body) => {
+            expr_contains_wildcards(value, interner) || expr_contains_wildcards(body, interner)
+        }
+        Expr::Matrix(rows) => rows
+            .iter()
+            .flatten()
+            .any(|cell| expr_contains_wildcards(cell, interner)),
+        _ => false,
+    }
+}
+
+fn pattern_match_local(
+    pattern: &Expr,
+    target: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Option<MatchMap> {
+    let index_to_family = build_index_to_family(properties);
+    if expr_contains_wildcards(pattern, interner) {
+        let comparator = ExprComparator {
+            config: CompareConfig::default(),
+            properties,
+            index_to_family: &index_to_family,
+            interner,
+        };
+        let mut map = MatchMap::new();
+        comparator.subtree_compare(pattern, target, &mut map).then_some(map)
+    } else {
+        pattern_match(pattern, target, properties, &index_to_family, interner)
+    }
+}
+
 pub fn apply_match_map(template: &Expr, map: &MatchMap, interner: &Interner) -> Expr {
     let applied = apply_match_map_inner(template, map, interner);
     match &map.multiplier {
@@ -1229,6 +1405,9 @@ fn apply_match_map_inner(template: &Expr, map: &MatchMap, interner: &Interner) -
             apply_match_map_inner(exp, map, interner),
         ),
         Expr::Neg(inner) => Expr::neg(apply_match_map_inner(inner, map, interner)),
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(apply_match_map_inner(inner, map, interner)), *rel)
+        }
         Expr::Call(f, args) => Expr::Call(
             map.symbol_map.get(f).copied().unwrap_or(*f),
             args.iter()
@@ -1295,166 +1474,776 @@ fn apply_match_map_inner(template: &Expr, map: &MatchMap, interner: &Interner) -
     }
 }
 
-pub fn substitute_with_compare(
-    expr: &Expr,
+fn match_expr_with_conditions(
     pattern: &Expr,
-    replacement: &Expr,
+    target: &Expr,
     properties: &dyn PropertyLookup,
-    index_to_family: &HashMap<lasso::Spur, lasso::Spur>,
     interner: &Interner,
+    conditions: Option<&Expr>,
+) -> Option<MatchMap> {
+    let map = pattern_match_local(pattern, target, properties, interner)?;
+    if let Some(cond) = conditions {
+        satisfies_conditions(cond, &map, interner).ok().filter(|ok| *ok)?;
+    }
+    Some(map)
+}
+
+fn expr_vec_from_product(expr: &Expr) -> Vec<Expr> {
+    match expr {
+        Expr::Mul(factors) => factors.clone(),
+        other => vec![other.clone()],
+    }
+}
+
+fn expr_vec_from_sum(expr: &Expr) -> Vec<Expr> {
+    match expr {
+        Expr::Add(terms) => terms.clone(),
+        other => vec![other.clone()],
+    }
+}
+
+fn product_expr(items: Vec<Expr>) -> Expr {
+    Expr::mul(items)
+}
+
+fn sum_expr(items: Vec<Expr>) -> Expr {
+    Expr::add(items)
+}
+
+fn sequence_wildcard_binding(
+    wildcard: Sym,
+    targets: &[Expr],
+    used: &[bool],
+    additive: bool,
 ) -> Expr {
-    if let Some(map) = pattern_match(pattern, expr, properties, index_to_family, interner) {
-        return apply_match_map(replacement, &map, interner);
+    let captured: Vec<Expr> = targets
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !used[*idx])
+        .map(|(_, expr)| expr.clone())
+        .collect();
+    let _ = wildcard;
+    if additive {
+        sum_expr(captured)
+    } else {
+        product_expr(captured)
+    }
+}
+
+fn compute_moving_signs(
+    factors: &[Expr],
+    locations: &[usize],
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Option<Vec<i32>> {
+    if locations.is_empty() {
+        return Some(Vec::new());
+    }
+    let anchor = *locations.iter().min()?;
+    let mut current_positions: Vec<usize> = (0..factors.len()).collect();
+    let mut signs = Vec::with_capacity(locations.len());
+    for (cluster_idx, &loc) in locations.iter().enumerate() {
+        let current_idx = current_positions.iter().position(|pos| *pos == loc)?;
+        let desired_idx = anchor + cluster_idx;
+        if desired_idx > current_idx {
+            signs.push(1);
+            continue;
+        }
+        let mut sign = 1;
+        for crossed_idx in desired_idx..current_idx {
+            let crossed_pos = current_positions[crossed_idx];
+            let swap = ax_tensor::can_swap(
+                &factors[loc],
+                &factors[crossed_pos],
+                ax_tensor::subtree_compare(&factors[loc], &factors[crossed_pos], properties, interner),
+                properties,
+                interner,
+                false,
+            );
+            if swap == 0 {
+                return None;
+            }
+            sign *= swap;
+        }
+        let moved = current_positions.remove(current_idx);
+        current_positions.insert(desired_idx, moved);
+        signs.push(sign);
+    }
+    Some(signs)
+}
+
+fn match_subproduct_inner(
+    pattern_factors: &[Expr],
+    target_factors: &[Expr],
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    conditions: Option<&Expr>,
+    pos: usize,
+    used: &mut [bool],
+    chosen: &mut Vec<usize>,
+    map: &mut MatchMap,
+) -> bool {
+    if pos == pattern_factors.len() {
+        return conditions
+            .map(|cond| satisfies_conditions(cond, map, interner).unwrap_or(false))
+            .unwrap_or(true);
     }
 
-    match expr {
-        Expr::Add(terms) => {
-            if let Expr::Add(pattern_terms) = pattern {
-                if let Some(rewritten) = substitute_sequence_in_terms(
-                    terms,
-                    pattern_terms,
-                    replacement,
-                    true,
-                    properties,
-                    index_to_family,
-                    interner,
-                ) {
-                    return rewritten;
-                }
+    if let Expr::Sym(wild) = &pattern_factors[pos] {
+        if is_sequence_wildcard(*wild, interner) {
+            let mut candidate = map.clone();
+            let binding = sequence_wildcard_binding(*wild, target_factors, used, false);
+            if !candidate.try_bind_wildcard(*wild, binding) {
+                return false;
             }
-            Expr::add(
-                terms
-                    .iter()
-                    .map(|term| {
-                        substitute_with_compare(
-                            term,
-                            pattern,
-                            replacement,
-                            properties,
-                            index_to_family,
-                            interner,
-                        )
-                    })
-                    .collect(),
-            )
-        }
-        Expr::Mul(factors) => {
-            if let Expr::Mul(pattern_factors) = pattern {
-                if let Some(rewritten) = substitute_sequence_in_terms(
-                    factors,
-                    pattern_factors,
-                    replacement,
-                    false,
-                    properties,
-                    index_to_family,
-                    interner,
-                ) {
-                    return rewritten;
-                }
+            if match_subproduct_inner(
+                pattern_factors,
+                target_factors,
+                properties,
+                interner,
+                conditions,
+                pos + 1,
+                used,
+                chosen,
+                &mut candidate,
+            ) {
+                *map = candidate;
+                return true;
             }
-            Expr::mul(
-                factors
-                    .iter()
-                    .map(|factor| {
-                        substitute_with_compare(
-                            factor,
-                            pattern,
-                            replacement,
-                            properties,
-                            index_to_family,
-                            interner,
-                        )
-                    })
-                    .collect(),
-            )
         }
-        Expr::Pow(base, exp) => Expr::pow(
-            substitute_with_compare(
-                base,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            ),
-            substitute_with_compare(
-                exp,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            ),
-        ),
-        Expr::Neg(inner) => Expr::neg(substitute_with_compare(
-            inner,
-            pattern,
-            replacement,
+    }
+
+    for target_pos in 0..target_factors.len() {
+        if used[target_pos] {
+            continue;
+        }
+        let mut candidate = map.clone();
+        let Some(term_map) = match_expr_with_conditions(
+            &pattern_factors[pos],
+            &target_factors[target_pos],
             properties,
-            index_to_family,
             interner,
-        )),
-        Expr::Call(f, args) => Expr::Call(
-            *f,
-            args.iter()
-                .map(|arg| {
-                    substitute_with_compare(
-                        arg,
-                        pattern,
-                        replacement,
-                        properties,
-                        index_to_family,
-                        interner,
-                    )
+            None,
+        ) else {
+            continue;
+        };
+        let Some(composed) = candidate.compose(&term_map) else {
+            continue;
+        };
+        candidate = composed;
+        used[target_pos] = true;
+        chosen.push(target_pos);
+        if match_subproduct_inner(
+            pattern_factors,
+            target_factors,
+            properties,
+            interner,
+            conditions,
+            pos + 1,
+            used,
+            chosen,
+            &mut candidate,
+        ) {
+            *map = candidate;
+            return true;
+        }
+        chosen.pop();
+        used[target_pos] = false;
+    }
+    false
+}
+
+pub fn match_subproduct(
+    pattern_factors: &[Expr],
+    target: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    conditions: Option<&Expr>,
+) -> Option<SubproductMatch> {
+    let target_factors = expr_vec_from_product(target);
+    if pattern_factors.is_empty() || pattern_factors.len() > target_factors.len() + 1 {
+        return None;
+    }
+    let mut used = vec![false; target_factors.len()];
+    let mut chosen = Vec::new();
+    let mut map = MatchMap::new();
+    match_subproduct_inner(
+        pattern_factors,
+        &target_factors,
+        properties,
+        interner,
+        conditions,
+        0,
+        &mut used,
+        &mut chosen,
+        &mut map,
+    )
+    .then_some(())?;
+    let moving = compute_moving_signs(&target_factors, &chosen, properties, interner)?;
+    Some(SubproductMatch {
+        factor_locations: chosen,
+        factor_moving_signs: moving,
+        match_map: map,
+    })
+}
+
+fn match_subsum_inner(
+    pattern_terms: &[Expr],
+    target_terms: &[Expr],
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    conditions: Option<&Expr>,
+    pos: usize,
+    used: &mut [bool],
+    chosen: &mut Vec<usize>,
+    map: &mut MatchMap,
+    ratio: &mut Option<BigRational>,
+) -> bool {
+    if pos == pattern_terms.len() {
+        return conditions
+            .map(|cond| satisfies_conditions(cond, map, interner).unwrap_or(false))
+            .unwrap_or(true);
+    }
+    for target_pos in 0..target_terms.len() {
+        if used[target_pos] {
+            continue;
+        }
+        let (pattern_coeff, pattern_core) = decompose_multiplier(&pattern_terms[pos]);
+        let (target_coeff, target_core) = decompose_multiplier(&target_terms[target_pos]);
+        if pattern_coeff.is_zero() {
+            continue;
+        }
+        let local_ratio = target_coeff / pattern_coeff;
+        if ratio.as_ref().is_some_and(|existing| existing != &local_ratio) {
+            continue;
+        }
+        let mut candidate = map.clone();
+        let Some(term_map) =
+            match_expr_with_conditions(&pattern_core, &target_core, properties, interner, None)
+        else {
+            continue;
+        };
+        let Some(composed) = candidate.compose(&term_map) else {
+            continue;
+        };
+        candidate = composed;
+        let previous_ratio = ratio.clone();
+        *ratio = Some(local_ratio);
+        used[target_pos] = true;
+        chosen.push(target_pos);
+        if match_subsum_inner(
+            pattern_terms,
+            target_terms,
+            properties,
+            interner,
+            conditions,
+            pos + 1,
+            used,
+            chosen,
+            &mut candidate,
+            ratio,
+        ) {
+            *map = candidate;
+            return true;
+        }
+        chosen.pop();
+        used[target_pos] = false;
+        *ratio = previous_ratio;
+    }
+    false
+}
+
+pub fn match_subsum(
+    pattern_terms: &[Expr],
+    target: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    conditions: Option<&Expr>,
+) -> Option<SubsumMatch> {
+    let target_terms = expr_vec_from_sum(target);
+    if pattern_terms.is_empty() || pattern_terms.len() > target_terms.len() {
+        return None;
+    }
+    let mut used = vec![false; target_terms.len()];
+    let mut chosen = Vec::new();
+    let mut map = MatchMap::new();
+    let mut ratio = None;
+    match_subsum_inner(
+        pattern_terms,
+        &target_terms,
+        properties,
+        interner,
+        conditions,
+        0,
+        &mut used,
+        &mut chosen,
+        &mut map,
+        &mut ratio,
+    )
+    .then_some(())?;
+    Some(SubsumMatch {
+        term_locations: chosen,
+        term_ratio: ratio.unwrap_or_else(BigRational::one),
+        match_map: map,
+    })
+}
+
+fn evaluate_condition_expr(expr: &Expr) -> Option<BigRational> {
+    match expr {
+        Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
+        Expr::Rational(r) => Some(r.clone()),
+        Expr::Neg(inner) => evaluate_condition_expr(inner).map(std::ops::Neg::neg),
+        _ => None,
+    }
+}
+
+pub fn satisfies_conditions(
+    conditions: &Expr,
+    match_map: &MatchMap,
+    interner: &Interner,
+) -> Result<bool, String> {
+    let resolved = apply_match_map(conditions, match_map, interner);
+    match resolved {
+        Expr::Call(f, args) => {
+            let name = interner.resolve(f);
+            match (name, args.as_slice()) {
+                ("unequals", [lhs, rhs]) => Ok(lhs != rhs),
+                ("equals", [lhs, rhs]) => Ok(lhs == rhs),
+                ("greater", [lhs, rhs]) => {
+                    let Some(lhs) = evaluate_condition_expr(lhs) else {
+                        return Err("greater requires numeric lhs".into());
+                    };
+                    let Some(rhs) = evaluate_condition_expr(rhs) else {
+                        return Err("greater requires numeric rhs".into());
+                    };
+                    Ok(lhs > rhs)
+                }
+                ("less", [lhs, rhs]) => {
+                    let Some(lhs) = evaluate_condition_expr(lhs) else {
+                        return Err("less requires numeric lhs".into());
+                    };
+                    let Some(rhs) = evaluate_condition_expr(rhs) else {
+                        return Err("less requires numeric rhs".into());
+                    };
+                    Ok(lhs < rhs)
+                }
+                ("and", [lhs, rhs]) => Ok(
+                    satisfies_conditions(lhs, match_map, interner)?
+                        && satisfies_conditions(rhs, match_map, interner)?,
+                ),
+                ("or", [lhs, rhs]) => Ok(
+                    satisfies_conditions(lhs, match_map, interner)?
+                        || satisfies_conditions(rhs, match_map, interner)?,
+                ),
+                ("not", [inner]) => Ok(!satisfies_conditions(inner, match_map, interner)?),
+                _ => Err(format!("unsupported condition: {name}")),
+            }
+        }
+        Expr::Piecewise(_) => Err("piecewise conditions are not supported".into()),
+        Expr::Sym(sym) if interner.resolve(sym) == "true" => Ok(true),
+        Expr::Sym(sym) if interner.resolve(sym) == "false" => Ok(false),
+        Expr::Int(n) => Ok(!n.is_zero()),
+        Expr::Rational(r) => Ok(!r.is_zero()),
+        other => Err(format!("unsupported condition expression: {other:?}")),
+    }
+}
+
+fn collect_index_names(expr: &Expr, out: &mut HashSet<Sym>) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            collect_index_names(base, out);
+            out.extend(indices.iter().map(|idx| idx.name));
+        }
+        Expr::Add(items) | Expr::Mul(items) | Expr::List(items) | Expr::Call(_, items) => {
+            for item in items {
+                collect_index_names(item, out);
+            }
+        }
+        Expr::Pow(base, exp) | Expr::Complex(base, exp) => {
+            collect_index_names(base, out);
+            collect_index_names(exp, out);
+        }
+        Expr::Neg(inner) => collect_index_names(inner, out),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_index_names(lhs, out);
+            collect_index_names(rhs, out);
+        }
+        Expr::Piecewise(branches) => {
+            for (value, _) in branches {
+                collect_index_names(value, out);
+            }
+        }
+        Expr::Let(_, value, body) => {
+            collect_index_names(value, out);
+            collect_index_names(body, out);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_index_names(cell, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn replacement_dummy_info(
+    expr: &Expr,
+    families: Option<&HashMap<Sym, IndexFamily>>,
+) -> HashMap<Sym, IndexSetInfo> {
+    let mut occurrences: HashMap<Sym, Vec<Index>> = HashMap::new();
+    collect_dummy_occurrences(expr, &mut occurrences);
+    occurrences
+        .into_iter()
+        .filter_map(|(name, entries): (Sym, Vec<Index>)| {
+            let has_up = entries.iter().any(|idx| matches!(idx.variance, Variance::Up));
+            let has_down = entries
+                .iter()
+                .any(|idx| matches!(idx.variance, Variance::Down));
+            if !(has_up && has_down) {
+                return None;
+            }
+            let family_name = entries
+                .iter()
+                .find_map(|idx| idx.index_type)
+                .or_else(|| {
+                    families.and_then(|fams: &HashMap<Sym, IndexFamily>| {
+                        fams.values().find_map(|fam| {
+                            (fam.values.contains(&name) || fam.name == name).then_some(fam.name)
+                        })
+                    })
+                })
+                .unwrap_or(name);
+            let info = families
+                .and_then(|fams: &HashMap<Sym, IndexFamily>| fams.get(&family_name).cloned())
+                .unwrap_or(IndexFamily {
+                    name: family_name,
+                    values: Vec::new(),
+                    position: ax_ir::IndexPosition::Free,
+                    dimension: None,
+                    parent: None,
+                });
+            Some((name, info))
+        })
+        .collect()
+}
+
+fn collect_dummy_occurrences(expr: &Expr, out: &mut HashMap<Sym, Vec<Index>>) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            collect_dummy_occurrences(base, out);
+            for idx in indices {
+                out.entry(idx.name).or_default().push(idx.clone());
+            }
+        }
+        Expr::Add(items) | Expr::Mul(items) | Expr::List(items) | Expr::Call(_, items) => {
+            for item in items {
+                collect_dummy_occurrences(item, out);
+            }
+        }
+        Expr::Pow(base, exp) | Expr::Complex(base, exp) => {
+            collect_dummy_occurrences(base, out);
+            collect_dummy_occurrences(exp, out);
+        }
+        Expr::Neg(inner) => collect_dummy_occurrences(inner, out),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_dummy_occurrences(lhs, out);
+            collect_dummy_occurrences(rhs, out);
+        }
+        Expr::Piecewise(branches) => {
+            for (value, _) in branches {
+                collect_dummy_occurrences(value, out);
+            }
+        }
+        Expr::Let(_, value, body) => {
+            collect_dummy_occurrences(value, out);
+            collect_dummy_occurrences(body, out);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_dummy_occurrences(cell, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rename_index_everywhere(expr: &Expr, from: Sym, to: Sym) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(rename_index_everywhere(base, from, to)),
+            indices
+                .iter()
+                .map(|idx| Index {
+                    name: if idx.name == from { to } else { idx.name },
+                    variance: idx.variance.clone(),
+                    index_type: idx.index_type,
                 })
                 .collect(),
         ),
+        Expr::Add(items) => Expr::add(items.iter().map(|e| rename_index_everywhere(e, from, to)).collect()),
+        Expr::Mul(items) => Expr::mul(items.iter().map(|e| rename_index_everywhere(e, from, to)).collect()),
+        Expr::Pow(base, exp) => Expr::pow(
+            rename_index_everywhere(base, from, to),
+            rename_index_everywhere(exp, from, to),
+        ),
+        Expr::Neg(inner) => Expr::neg(rename_index_everywhere(inner, from, to)),
+        Expr::Call(f, args) => Expr::Call(*f, args.iter().map(|e| rename_index_everywhere(e, from, to)).collect()),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(rename_index_everywhere(re, from, to)),
+            Box::new(rename_index_everywhere(im, from, to)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(rename_index_everywhere(lhs, from, to)),
+            Box::new(rename_index_everywhere(rhs, from, to)),
+            *trust,
+        ),
+        Expr::Piecewise(branches) => Expr::Piecewise(
+            branches
+                .iter()
+                .map(|(value, cond)| (rename_index_everywhere(value, from, to), cond.clone()))
+                .collect(),
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(rename_index_everywhere(value, from, to)),
+            Box::new(rename_index_everywhere(body, from, to)),
+        ),
+        Expr::List(items) => Expr::List(items.iter().map(|e| rename_index_everywhere(e, from, to)).collect()),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| row.iter().map(|e| rename_index_everywhere(e, from, to)).collect())
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+pub fn fresh_dummy(
+    index_set: &IndexSetInfo,
+    avoid: &[&HashSet<Sym>],
+    interner: &Interner,
+) -> Sym {
+    let prefix = interner.resolve(index_set.name);
+    for i in 0..4096 {
+        let candidate = interner.get_or_intern(&format!("{prefix}_rw{i}"));
+        if avoid.iter().all(|set: &&HashSet<Sym>| !set.contains(&candidate)) {
+            return candidate;
+        }
+    }
+    interner.get_or_intern(&format!("{prefix}_fresh"))
+}
+
+pub fn relabel_clashing_dummies(
+    replacement: &mut Expr,
+    ind_forced: &HashSet<Sym>,
+    ind_dummy: &HashMap<Sym, IndexSetInfo>,
+    interner: &Interner,
+) -> Result<(), SubstituteError> {
+    let mut used = ind_forced.clone();
+    collect_index_names(replacement, &mut used);
+    for (dummy, info) in ind_dummy {
+        if !ind_forced.contains(dummy) {
+            continue;
+        }
+        let fresh = fresh_dummy(info, &[&used], interner);
+        if used.contains(&fresh) {
+            return Err(SubstituteError::NoFreshDummy(*dummy));
+        }
+        *replacement = rename_index_everywhere(replacement, *dummy, fresh);
+        used.insert(fresh);
+    }
+    Ok(())
+}
+
+fn instantiate_replacement(
+    rhs: &Expr,
+    map: &MatchMap,
+    forced: &HashSet<Sym>,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    rhs_contains_dummies: bool,
+) -> Option<Expr> {
+    let mut replacement = apply_match_map(rhs, map, interner);
+    if rhs_contains_dummies {
+        let dummy_info = replacement_dummy_info(&replacement, properties.index_families());
+        relabel_clashing_dummies(&mut replacement, forced, &dummy_info, interner).ok()?;
+    }
+    Some(replacement)
+}
+
+fn insert_product_replacement(
+    target: &Expr,
+    lhs_factors: &[Expr],
+    rule: &SubstitutionRule,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    partial: bool,
+    forced: &HashSet<Sym>,
+) -> Option<Expr> {
+    let target_factors = expr_vec_from_product(target);
+    if !partial && target_factors.len() != lhs_factors.len() {
+        return None;
+    }
+    let matched = match_subproduct(lhs_factors, target, properties, interner, rule.conditions.as_ref())?;
+    if !partial && matched.factor_locations.len() != target_factors.len() {
+        return None;
+    }
+    let mut replacement = instantiate_replacement(
+        &rule.rhs,
+        &matched.match_map,
+        forced,
+        properties,
+        interner,
+        rule.rhs_contains_dummies,
+    )?;
+    let total_sign: i32 = matched.factor_moving_signs.iter().product();
+    if total_sign < 0 {
+        replacement = Expr::neg(replacement);
+    }
+    let anchor = *matched.factor_locations.iter().min()?;
+    let matched_set: HashSet<usize> = matched.factor_locations.iter().copied().collect();
+    let mut out = Vec::new();
+    let mut replacement_slot = Some(replacement);
+    for idx in 0..target_factors.len() {
+        if idx == anchor {
+            match replacement_slot.take().unwrap() {
+                Expr::Mul(items) => out.extend(items),
+                other => out.push(other),
+            }
+        }
+        if matched_set.contains(&idx) {
+            continue;
+        }
+        out.push(target_factors[idx].clone());
+    }
+    Some(Expr::mul(out))
+}
+
+fn insert_sum_replacement(
+    target: &Expr,
+    lhs_terms: &[Expr],
+    rule: &SubstitutionRule,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    partial: bool,
+    forced: &HashSet<Sym>,
+) -> Option<Expr> {
+    let target_terms = expr_vec_from_sum(target);
+    if !partial && target_terms.len() != lhs_terms.len() {
+        return None;
+    }
+    let matched = match_subsum(lhs_terms, target, properties, interner, rule.conditions.as_ref())?;
+    if !partial && matched.term_locations.len() != target_terms.len() {
+        return None;
+    }
+    let mut replacement = instantiate_replacement(
+        &rule.rhs,
+        &matched.match_map,
+        forced,
+        properties,
+        interner,
+        rule.rhs_contains_dummies,
+    )?;
+    if matched.term_ratio != BigRational::one() {
+        replacement = Expr::mul(vec![Expr::Rational(matched.term_ratio.clone()), replacement]);
+    }
+    let anchor = *matched.term_locations.iter().min()?;
+    let matched_set: HashSet<usize> = matched.term_locations.iter().copied().collect();
+    let mut out = Vec::new();
+    let mut replacement_slot = Some(replacement);
+    for idx in 0..target_terms.len() {
+        if idx == anchor {
+            match replacement_slot.take().unwrap() {
+                Expr::Add(items) => out.extend(items),
+                other => out.push(other),
+            }
+        }
+        if matched_set.contains(&idx) {
+            continue;
+        }
+        out.push(target_terms[idx].clone());
+    }
+    Some(Expr::add(out))
+}
+
+fn substitute_full_in_context(
+    expr: &Expr,
+    rule: &SubstitutionRule,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    partial: bool,
+    forced: &HashSet<Sym>,
+) -> Option<Expr> {
+    match (&rule.lhs, expr) {
+        (Expr::Mul(lhs_factors), Expr::Mul(_)) => {
+            if let Some(done) =
+                insert_product_replacement(expr, lhs_factors, rule, properties, interner, partial, forced)
+            {
+                return Some(done);
+            }
+        }
+        (Expr::Add(lhs_terms), Expr::Add(_)) => {
+            if let Some(done) =
+                insert_sum_replacement(expr, lhs_terms, rule, properties, interner, partial, forced)
+            {
+                return Some(done);
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(map) =
+        match_expr_with_conditions(&rule.lhs, expr, properties, interner, rule.conditions.as_ref())
+    {
+        return instantiate_replacement(
+            &rule.rhs,
+            &map,
+            forced,
+            properties,
+            interner,
+            rule.rhs_contains_dummies,
+        );
+    }
+
+    let recursed = match expr {
+        Expr::Add(terms) => Expr::add(
+            terms.iter()
+                .map(|term| substitute_full_in_context(term, rule, properties, interner, partial, forced).unwrap_or_else(|| term.clone()))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors.iter()
+                .map(|factor| substitute_full_in_context(factor, rule, properties, interner, partial, forced).unwrap_or_else(|| factor.clone()))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            substitute_full_in_context(base, rule, properties, interner, partial, forced).unwrap_or_else(|| base.as_ref().clone()),
+            substitute_full_in_context(exp, rule, properties, interner, partial, forced).unwrap_or_else(|| exp.as_ref().clone()),
+        ),
+        Expr::Neg(inner) => Expr::neg(
+            substitute_full_in_context(inner, rule, properties, interner, partial, forced).unwrap_or_else(|| inner.as_ref().clone()),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| substitute_full_in_context(arg, rule, properties, interner, partial, forced).unwrap_or_else(|| arg.clone()))
+                .collect(),
+        ),
         Expr::Indexed(base, indices) => Expr::Indexed(
-            Box::new(substitute_with_compare(
-                base,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            )),
+            Box::new(substitute_full_in_context(base, rule, properties, interner, partial, forced).unwrap_or_else(|| base.as_ref().clone())),
             indices.clone(),
         ),
         Expr::Complex(re, im) => Expr::Complex(
-            Box::new(substitute_with_compare(
-                re,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            )),
-            Box::new(substitute_with_compare(
-                im,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            )),
+            Box::new(substitute_full_in_context(re, rule, properties, interner, partial, forced).unwrap_or_else(|| re.as_ref().clone())),
+            Box::new(substitute_full_in_context(im, rule, properties, interner, partial, forced).unwrap_or_else(|| im.as_ref().clone())),
         ),
         Expr::Rule(lhs, rhs, trust) => Expr::Rule(
-            Box::new(substitute_with_compare(
-                lhs,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            )),
-            Box::new(substitute_with_compare(
-                rhs,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            )),
+            Box::new(substitute_full_in_context(lhs, rule, properties, interner, partial, forced).unwrap_or_else(|| lhs.as_ref().clone())),
+            Box::new(substitute_full_in_context(rhs, rule, properties, interner, partial, forced).unwrap_or_else(|| rhs.as_ref().clone())),
             *trust,
         ),
         Expr::Piecewise(branches) => Expr::Piecewise(
@@ -1462,14 +2251,8 @@ pub fn substitute_with_compare(
                 .iter()
                 .map(|(value, condition)| {
                     (
-                        substitute_with_compare(
-                            value,
-                            pattern,
-                            replacement,
-                            properties,
-                            index_to_family,
-                            interner,
-                        ),
+                        substitute_full_in_context(value, rule, properties, interner, partial, forced)
+                            .unwrap_or_else(|| value.clone()),
                         condition.clone(),
                     )
                 })
@@ -1477,176 +2260,52 @@ pub fn substitute_with_compare(
         ),
         Expr::Let(name, value, body) => Expr::Let(
             *name,
-            Box::new(substitute_with_compare(
-                value,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            )),
-            Box::new(substitute_with_compare(
-                body,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            )),
+            Box::new(substitute_full_in_context(value, rule, properties, interner, partial, forced).unwrap_or_else(|| value.as_ref().clone())),
+            Box::new(substitute_full_in_context(body, rule, properties, interner, partial, forced).unwrap_or_else(|| body.as_ref().clone())),
         ),
         Expr::List(items) => Expr::List(
-            items
-                .iter()
-                .map(|item| {
-                    substitute_with_compare(
-                        item,
-                        pattern,
-                        replacement,
-                        properties,
-                        index_to_family,
-                        interner,
-                    )
-                })
+            items.iter()
+                .map(|item| substitute_full_in_context(item, rule, properties, interner, partial, forced).unwrap_or_else(|| item.clone()))
                 .collect(),
         ),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
                 .map(|row| {
                     row.iter()
-                        .map(|cell| {
-                            substitute_with_compare(
-                                cell,
-                                pattern,
-                                replacement,
-                                properties,
-                                index_to_family,
-                                interner,
-                            )
-                        })
+                        .map(|cell| substitute_full_in_context(cell, rule, properties, interner, partial, forced).unwrap_or_else(|| cell.clone()))
                         .collect()
                 })
                 .collect(),
         ),
-        Expr::FnDef(name, params, body) => Expr::FnDef(
-            *name,
-            params.clone(),
-            Box::new(substitute_with_compare(
-                body,
-                pattern,
-                replacement,
-                properties,
-                index_to_family,
-                interner,
-            )),
-        ),
-        Expr::Int(_)
-        | Expr::Rational(_)
-        | Expr::Float(_)
-        | Expr::Sym(_)
-        | Expr::Import(_)
-        | Expr::Assume(_, _)
-        | Expr::SetConvention(_, _) => expr.clone(),
-    }
+        _ => return None,
+    };
+    (recursed != *expr).then_some(recursed)
 }
 
-fn substitute_sequence_in_terms(
-    terms: &[Expr],
-    pattern_terms: &[Expr],
-    replacement: &Expr,
-    additive: bool,
+pub fn substitute_full(
+    expr: &Expr,
+    rule: &SubstitutionRule,
     properties: &dyn PropertyLookup,
-    index_to_family: &HashMap<lasso::Spur, lasso::Spur>,
     interner: &Interner,
+    partial: bool,
 ) -> Option<Expr> {
-    if pattern_terms.is_empty() || pattern_terms.len() > terms.len() {
-        return None;
-    }
-
-    let mut used = vec![false; terms.len()];
-    let mut selected = Vec::with_capacity(pattern_terms.len());
-    let mut map = MatchMap::new();
-    if !match_term_subset(
-        pattern_terms,
-        terms,
-        properties,
-        index_to_family,
-        interner,
-        0,
-        &mut used,
-        &mut selected,
-        &mut map,
-    ) {
-        return None;
-    }
-
-    let replacement = apply_match_map(replacement, &map, interner);
-    let mut out = Vec::new();
-    out.push(replacement);
-    for (idx, term) in terms.iter().enumerate() {
-        if !selected.contains(&idx) {
-            out.push(term.clone());
-        }
-    }
-
-    Some(if additive {
-        Expr::add(out)
-    } else {
-        Expr::mul(out)
-    })
+    let mut rule = rule.clone();
+    validate_substitution_rule(&mut rule);
+    let mut forced = HashSet::new();
+    collect_index_names(expr, &mut forced);
+    substitute_full_in_context(expr, &rule, properties, interner, partial, &forced)
 }
 
-fn match_term_subset(
-    pattern_terms: &[Expr],
-    terms: &[Expr],
+pub fn substitute_with_compare(
+    expr: &Expr,
+    pattern: &Expr,
+    replacement: &Expr,
     properties: &dyn PropertyLookup,
-    index_to_family: &HashMap<lasso::Spur, lasso::Spur>,
+    _index_to_family: &HashMap<lasso::Spur, lasso::Spur>,
     interner: &Interner,
-    pos: usize,
-    used: &mut [bool],
-    selected: &mut Vec<usize>,
-    map: &mut MatchMap,
-) -> bool {
-    if pos == pattern_terms.len() {
-        return true;
-    }
-    for target_pos in 0..terms.len() {
-        if used[target_pos] {
-            continue;
-        }
-        let mut candidate = map.clone();
-        if pattern_match(
-            &pattern_terms[pos],
-            &terms[target_pos],
-            properties,
-            index_to_family,
-            interner,
-        )
-        .and_then(|term_map| candidate.compose(&term_map))
-        .is_some_and(|composed| {
-            candidate = composed;
-            true
-        }) {
-            used[target_pos] = true;
-            selected.push(target_pos);
-            if match_term_subset(
-                pattern_terms,
-                terms,
-                properties,
-                index_to_family,
-                interner,
-                pos + 1,
-                used,
-                selected,
-                &mut candidate,
-            ) {
-                *map = candidate;
-                return true;
-            }
-            selected.pop();
-            used[target_pos] = false;
-        }
-    }
-    false
+) -> Expr {
+    let rule = SubstitutionRule::new(pattern.clone(), replacement.clone(), None);
+    substitute_full(expr, &rule, properties, interner, true).unwrap_or_else(|| expr.clone())
 }
 
 pub fn exprs_equal_up_to_dummies(
@@ -1789,6 +2448,7 @@ fn expr_kind_rank(expr: &Expr) -> u8 {
         Expr::SetConvention(_, _) => 17,
         Expr::Piecewise(_) => 18,
         Expr::Let(_, _, _) => 19,
+        Expr::Group(_, _) => 20,
     }
 }
 
@@ -1856,5 +2516,292 @@ fn compare_index_type(
         (None, Some(_)) => Ordering::Less,
         (Some(_), None) => Ordering::Greater,
         (None, None) => Ordering::Equal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ax_ir::IndexPosition;
+
+    #[derive(Default)]
+    struct TestProps {
+        props: HashMap<Sym, Vec<TensorProperty>>,
+        families: HashMap<Sym, IndexFamily>,
+    }
+
+    impl PropertyLookup for TestProps {
+        fn get_properties(&self, name: Sym) -> Vec<&TensorProperty> {
+            self.props
+                .get(&name)
+                .map(|items| items.iter().collect())
+                .unwrap_or_default()
+        }
+
+        fn get_properties_with_indices(
+            &self,
+            name: Sym,
+            _indices: &[Index],
+        ) -> Vec<&TensorProperty> {
+            self.get_properties(name)
+        }
+
+        fn has_property_kind(&self, name: Sym, kind: &TensorProperty) -> bool {
+            self.get_properties(name)
+                .into_iter()
+                .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+        }
+
+        fn index_families(&self) -> Option<&HashMap<Sym, IndexFamily>> {
+            Some(&self.families)
+        }
+    }
+
+    fn idx(name: Sym, variance: Variance, index_type: Option<Sym>) -> Index {
+        Index {
+            name,
+            variance,
+            index_type,
+        }
+    }
+
+    fn fam(name: Sym, values: Vec<Sym>) -> IndexFamily {
+        IndexFamily {
+            name,
+            values,
+            position: IndexPosition::Free,
+            dimension: None,
+            parent: None,
+        }
+    }
+
+    #[test]
+    fn substitute_subproduct_match() {
+        let interner = Interner::new();
+        let d = interner.get_or_intern("D");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let e = interner.get_or_intern("E");
+        let ia = interner.get_or_intern("a");
+        let fam_sym = interner.get_or_intern("Lor");
+
+        let mut props = TestProps::default();
+        props.families.insert(fam_sym, fam(fam_sym, vec![ia]));
+
+        let rule = SubstitutionRule::new(
+            Expr::mul(vec![
+                Expr::Indexed(Box::new(Expr::Sym(a)), vec![idx(ia, Variance::Down, Some(fam_sym))]),
+                Expr::Indexed(Box::new(Expr::Sym(b)), vec![idx(ia, Variance::Up, Some(fam_sym))]),
+            ]),
+            Expr::Sym(c),
+            None,
+        );
+        let expr = Expr::mul(vec![
+            Expr::Sym(d),
+            Expr::Indexed(Box::new(Expr::Sym(a)), vec![idx(ia, Variance::Down, Some(fam_sym))]),
+            Expr::Indexed(Box::new(Expr::Sym(b)), vec![idx(ia, Variance::Up, Some(fam_sym))]),
+            Expr::Sym(e),
+        ]);
+        let result = substitute_full(&expr, &rule, &props, &interner, true).unwrap();
+        assert_eq!(result, Expr::mul(vec![Expr::Sym(d), Expr::Sym(c), Expr::Sym(e)]));
+    }
+
+    #[test]
+    fn substitute_subproduct_anticommuting_sign() {
+        let interner = Interner::new();
+        let psi = interner.get_or_intern("psi");
+        let chi = interner.get_or_intern("chi");
+        let phi = interner.get_or_intern("Phi");
+
+        let mut props = TestProps::default();
+        props.props.insert(psi, vec![TensorProperty::AntiCommuting]);
+        props.props.insert(chi, vec![TensorProperty::AntiCommuting]);
+
+        let rule = SubstitutionRule::new(
+            Expr::mul(vec![Expr::Sym(psi), Expr::Sym(chi)]),
+            Expr::Sym(phi),
+            None,
+        );
+        let expr = Expr::mul(vec![Expr::Sym(chi), Expr::Sym(psi)]);
+        let result = substitute_full(&expr, &rule, &props, &interner, true).unwrap();
+        assert_eq!(result, Expr::mul(vec![Expr::Int((-1).into()), Expr::Sym(phi)]));
+    }
+
+    #[test]
+    fn substitute_subsum_with_ratio() {
+        let interner = Interner::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+
+        let rule =
+            SubstitutionRule::new(Expr::add(vec![Expr::Sym(a), Expr::Sym(b)]), Expr::Sym(c), None);
+        let expr = Expr::add(vec![
+            Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(a)]),
+            Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(b)]),
+            Expr::Sym(d),
+        ]);
+        let result = substitute_full(&expr, &rule, &TestProps::default(), &interner, true).unwrap();
+        assert_eq!(
+            result,
+            Expr::add(vec![
+                Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(c)]),
+                Expr::Sym(d)
+            ])
+        );
+    }
+
+    #[test]
+    fn substitute_conditional_unequals() {
+        let interner = Interner::new();
+        let delta = interner.get_or_intern("delta");
+        let a_w = interner.get_or_intern("a?");
+        let b_w = interner.get_or_intern("b?");
+        let equals = interner.get_or_intern("equals");
+        let unequals = interner.get_or_intern("unequals");
+        let one = Expr::one();
+        let d = interner.get_or_intern("d");
+        let mu = interner.get_or_intern("mu");
+
+        let neq_rule = SubstitutionRule::new(
+            Expr::Indexed(
+                Box::new(Expr::Sym(delta)),
+                vec![idx(a_w, Variance::Up, None), idx(b_w, Variance::Down, None)],
+            ),
+            one.clone(),
+            Some(Expr::Call(unequals, vec![Expr::Sym(a_w), Expr::Sym(b_w)])),
+        );
+        let eq_rule = SubstitutionRule::new(
+            Expr::Indexed(
+                Box::new(Expr::Sym(delta)),
+                vec![idx(a_w, Variance::Up, None), idx(a_w, Variance::Down, None)],
+            ),
+            Expr::Sym(d),
+            Some(Expr::Call(equals, vec![Expr::Sym(a_w), Expr::Sym(a_w)])),
+        );
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(delta)),
+            vec![idx(mu, Variance::Up, None), idx(mu, Variance::Down, None)],
+        );
+        assert!(substitute_full(&expr, &neq_rule, &TestProps::default(), &interner, false).is_none());
+        assert_eq!(
+            substitute_full(&expr, &eq_rule, &TestProps::default(), &interner, false).unwrap(),
+            Expr::Sym(d)
+        );
+    }
+
+    #[test]
+    fn substitute_dummy_relabelling() {
+        let interner = Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let d = interner.get_or_intern("D");
+        let ia = interner.get_or_intern("a");
+        let ib = interner.get_or_intern("b");
+        let fam_sym = interner.get_or_intern("Lor");
+
+        let mut props = TestProps::default();
+        props.families.insert(fam_sym, fam(fam_sym, vec![ia, ib]));
+
+        let rule = SubstitutionRule::new(
+            Expr::Indexed(Box::new(Expr::Sym(a)), vec![idx(ia, Variance::Down, Some(fam_sym))]),
+            Expr::mul(vec![
+                Expr::Indexed(
+                    Box::new(Expr::Sym(b)),
+                    vec![
+                        idx(ia, Variance::Down, Some(fam_sym)),
+                        idx(ib, Variance::Down, Some(fam_sym)),
+                    ],
+                ),
+                Expr::Indexed(Box::new(Expr::Sym(c)), vec![idx(ib, Variance::Up, Some(fam_sym))]),
+            ]),
+            None,
+        );
+        let expr = Expr::mul(vec![
+            Expr::Indexed(Box::new(Expr::Sym(d)), vec![idx(ib, Variance::Up, Some(fam_sym))]),
+            Expr::Indexed(Box::new(Expr::Sym(a)), vec![idx(ia, Variance::Down, Some(fam_sym))]),
+        ]);
+        let result = substitute_full(&expr, &rule, &props, &interner, true).unwrap();
+        match result {
+            Expr::Mul(factors) => {
+                assert_eq!(factors.len(), 3);
+                assert!(matches!(&factors[1], Expr::Indexed(base, _) if **base == Expr::Sym(b)));
+                assert!(matches!(&factors[2], Expr::Indexed(base, _) if **base == Expr::Sym(c)));
+                let Expr::Indexed(_, b_indices) = &factors[1] else { panic!("expected B factor") };
+                let Expr::Indexed(_, c_indices) = &factors[2] else { panic!("expected C factor") };
+                assert_ne!(b_indices[1].name, ib);
+                assert_eq!(b_indices[1].name, c_indices[0].name);
+            }
+            other => panic!("expected rewritten product, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn substitute_object_wildcard() {
+        let interner = Interner::new();
+        let pd = interner.get_or_intern("pd");
+        let gamma = interner.get_or_intern("Gamma");
+        let hold = interner.get_or_intern("A??");
+        let ia = interner.get_or_intern("a");
+        let ib = interner.get_or_intern("b");
+
+        let rule = SubstitutionRule::new(
+            Expr::Call(pd, vec![Expr::Sym(hold)]),
+            Expr::add(vec![
+                Expr::Call(pd, vec![Expr::Sym(hold)]),
+                Expr::mul(vec![Expr::Sym(gamma), Expr::Sym(hold)]),
+            ]),
+            None,
+        );
+        let expr = Expr::Call(
+            pd,
+            vec![Expr::Indexed(
+                Box::new(Expr::Sym(interner.get_or_intern("T"))),
+                vec![idx(ia, Variance::Down, None), idx(ib, Variance::Down, None)],
+            )],
+        );
+        let captured = match &expr {
+            Expr::Call(_, args) => args[0].clone(),
+            _ => unreachable!(),
+        };
+        let result = substitute_full(&expr, &rule, &TestProps::default(), &interner, false).unwrap();
+        match result {
+            Expr::Add(terms) => {
+                assert_eq!(terms.len(), 2);
+                assert_eq!(terms[0], expr);
+                match &terms[1] {
+                    Expr::Mul(factors) => {
+                        assert_eq!(factors.len(), 2);
+                        assert!(factors.contains(&Expr::Sym(gamma)));
+                        assert!(factors.contains(&captured));
+                    }
+                    other => panic!("expected gamma times captured subtree, got {other:?}"),
+                }
+            }
+            other => panic!("expected sum after wildcard substitution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn substitute_partial_product_flag() {
+        let interner = Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let d = interner.get_or_intern("D");
+        let rule = SubstitutionRule::new(
+            Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]),
+            Expr::Sym(c),
+            None,
+        );
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(d)]);
+        assert!(substitute_full(&expr, &rule, &TestProps::default(), &interner, false).is_none());
+        assert_eq!(
+            substitute_full(&expr, &rule, &TestProps::default(), &interner, true).unwrap(),
+            Expr::mul(vec![Expr::Sym(c), Expr::Sym(d)])
+        );
     }
 }

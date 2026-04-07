@@ -366,6 +366,22 @@ impl ax_tensor::PropertyLookup for PropertyStore {
             .any(|p| std::mem::discriminant(*p) == std::mem::discriminant(kind))
     }
 
+    fn declared_index_slot_families(&self, name: lasso::Spur) -> Vec<Vec<Option<lasso::Spur>>> {
+        self.attachments
+            .iter()
+            .filter(|attachment| attachment.pattern.base_name == name)
+            .filter(|attachment| !attachment.pattern.index_slots.is_empty())
+            .map(|attachment| {
+                attachment
+                    .pattern
+                    .index_slots
+                    .iter()
+                    .map(|slot| slot.family)
+                    .collect()
+            })
+            .collect()
+    }
+
     fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
         Some(&self.index_families)
     }

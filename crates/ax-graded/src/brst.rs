@@ -117,6 +117,10 @@ pub fn apply_brst(
             Box::new(apply_brst(base, setup, table, interner)),
             indices.clone(),
         ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(apply_brst(inner, setup, table, interner)),
+            *rel,
+        ),
         Expr::List(items) => Expr::List(
             items
                 .iter()
@@ -200,6 +204,7 @@ pub fn ghost_number(expr: &Expr, table: &GradedSymbolTable) -> Option<i32> {
             _ => None,
         },
         Expr::Neg(inner) | Expr::Indexed(inner, _) => ghost_number(inner, table),
+        Expr::Group(inner, _) => ghost_number(inner, table),
         Expr::Call(f, args) => {
             let f_ghost = symbol_ghost_number(*f, table);
             args.iter().try_fold(f_ghost, |acc, arg| {

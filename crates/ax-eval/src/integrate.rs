@@ -131,6 +131,9 @@ fn substitute_symbol(expr: &Expr, from: lasso::Spur, to: &Expr) -> Expr {
         Expr::Indexed(base, indices) => {
             Expr::Indexed(Box::new(substitute_symbol(base, from, to)), indices.clone())
         }
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(substitute_symbol(inner, from, to)), *rel)
+        }
         Expr::Let(name, val, body) => Expr::Let(
             *name,
             Box::new(substitute_symbol(val, from, to)),

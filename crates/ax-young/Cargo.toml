@@ -7,3 +7,6 @@ rust-version.workspace = true
 
 [dependencies]
 ax-perm = { path = "../ax-perm" }
+num-bigint = { workspace = true }
+num-rational = { workspace = true }
+num-traits = { workspace = true }

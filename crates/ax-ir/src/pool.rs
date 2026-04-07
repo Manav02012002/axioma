@@ -1,4 +1,4 @@
-use crate::{Assumption, Condition, Expr, Index, Interner, TrustLevel};
+use crate::{Assumption, Condition, Expr, Index, Interner, ParentRel, TrustLevel};
 use num_traits::Zero;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -24,6 +24,7 @@ pub enum PooledExpr {
     Matrix(Vec<Vec<ExprId>>),
     Piecewise(Vec<(ExprId, ExprId)>),
     Let(lasso::Spur, ExprId, ExprId),
+    Group(ExprId, ParentRel),
     FnDef(lasso::Spur, Vec<lasso::Spur>, ExprId),
     Rule(ExprId, ExprId, TrustLevel),
     Import(Vec<lasso::Spur>),
@@ -156,6 +157,10 @@ impl ExprPool {
                 let base = self.from_expr(base);
                 self.intern(PooledExpr::Indexed(base, indices.clone()))
             }
+            Expr::Group(inner, rel) => {
+                let inner = self.from_expr(inner);
+                self.intern(PooledExpr::Group(inner, *rel))
+            }
             Expr::Let(name, value, body) => {
                 let value = self.from_expr(value);
                 let body = self.from_expr(body);
@@ -196,6 +201,7 @@ impl ExprPool {
             PooledExpr::Indexed(base, indices) => {
                 Expr::Indexed(Box::new(self.to_expr(*base)), indices.clone())
             }
+            PooledExpr::Group(inner, rel) => Expr::Group(Box::new(self.to_expr(*inner)), *rel),
             PooledExpr::List(items) => {
                 Expr::List(items.iter().map(|id| self.to_expr(*id)).collect())
             }
@@ -275,6 +281,7 @@ impl ExprPool {
             }
             PooledExpr::Neg(inner)
             | PooledExpr::Indexed(inner, _)
+            | PooledExpr::Group(inner, _)
             | PooledExpr::FnDef(_, _, inner) => {
                 vec![*inner]
             }

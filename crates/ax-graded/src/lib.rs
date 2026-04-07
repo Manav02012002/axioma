@@ -149,6 +149,7 @@ impl GradedSymbolTable {
             Expr::Pow(base, _) => self.infer_grading(base),
             Expr::Neg(inner) => self.infer_grading(inner),
             Expr::Indexed(base, _) => self.infer_grading(base),
+            Expr::Group(inner, _) => self.infer_grading(inner),
             Expr::Call(f, args) => self.get(*f).cloned().unwrap_or_else(|| {
                 args.iter().fold(Grading::bosonic(), |acc, arg| {
                     acc.add(&self.infer_grading(arg))
@@ -313,6 +314,10 @@ fn graded_simplify_once(
         Expr::Indexed(base, indices) => Expr::Indexed(
             Box::new(graded_simplify(base, table, interner)),
             indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(graded_simplify(inner, table, interner)),
+            *rel,
         ),
         Expr::List(items) => Expr::List(
             items

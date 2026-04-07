@@ -11,6 +11,7 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use rayon::prelude::*;
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub trait DummyRenameEnv {
@@ -38,6 +39,22 @@ pub trait PropertyLookup: Send + Sync {
         indices: &[ax_ir::Index],
     ) -> Vec<&ax_ir::TensorProperty>;
     fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool;
+    fn pair_commuting_behaviour(&self, a: lasso::Spur, b: lasso::Spur) -> Option<i32> {
+        let explicit = |source: lasso::Spur, target: lasso::Spur| {
+            self.get_properties(source).into_iter().find_map(|prop| match prop {
+                ax_ir::TensorProperty::CommutingWith(syms) if syms.contains(&target) => Some(1),
+                ax_ir::TensorProperty::AntiCommutingWith(syms) if syms.contains(&target) => {
+                    Some(-1)
+                }
+                ax_ir::TensorProperty::NonCommutingWith(syms) if syms.contains(&target) => Some(0),
+                _ => None,
+            })
+        };
+        explicit(a, b).or_else(|| explicit(b, a))
+    }
+    fn declared_index_slot_families(&self, _name: lasso::Spur) -> Vec<Vec<Option<lasso::Spur>>> {
+        Vec::new()
+    }
     fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
         None
     }
@@ -1941,21 +1958,48 @@ pub fn tableaux_from_properties(
                     }
                 }
                 ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-                    let (rows, columns) = tableau_groups_from_shape(shape, indices);
-                    let rows = rows
-                        .into_iter()
-                        .map(|row| row.into_iter().map(|p| info.start_position + p).collect())
-                        .collect();
-                    let columns = columns
-                        .into_iter()
-                        .map(|column| {
-                            column
-                                .into_iter()
-                                .map(|p| info.start_position + p)
-                                .collect()
-                        })
-                        .collect();
-                    result.push(adjform::TableauInfo { rows, columns });
+                    let mut cursor = 0usize;
+                    let mut rows = Vec::new();
+                    for &row_len in shape {
+                        let mut row = Vec::new();
+                        for _ in 0..row_len {
+                            if cursor < indices.len() {
+                                row.push(indices[cursor]);
+                                cursor += 1;
+                            }
+                        }
+                        rows.push(row);
+                    }
+                    let mut tabs = ax_young::Tableaux::new();
+                    tabs.add_tableau(ax_young::YoungTableau {
+                        rows,
+                        multiplicity: BigRational::one(),
+                        selfdual_column: 0,
+                    });
+                    tabs.standard_form();
+                    for tab in tabs.storage {
+                        let rows: Vec<Vec<usize>> = tab
+                            .rows
+                            .iter()
+                            .map(|row| {
+                                row.iter()
+                                    .map(|p| info.start_position + *p)
+                                    .collect::<Vec<_>>()
+                            })
+                            .collect();
+                        let max_cols = tab.rows.iter().map(Vec::len).max().unwrap_or(0);
+                        let columns: Vec<Vec<usize>> = (0..max_cols)
+                            .map(|col| {
+                                tab.rows
+                                    .iter()
+                                    .filter_map(|row| row.get(col).copied())
+                                    .map(|p| info.start_position + p)
+                                    .collect::<Vec<_>>()
+                            })
+                            .filter(|column| column.len() > 1)
+                            .collect();
+                        result.push(adjform::TableauInfo { rows, columns });
+                    }
                 }
                 _ => {}
             }
@@ -3410,31 +3454,867 @@ fn canonicalize_indexed_slots(
     (new_indices, canon_sign)
 }
 
-fn tensor_sort_key(expr: &Expr, interner: &ax_ir::Interner) -> (u8, String, String) {
-    match expr {
-        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => (0, String::new(), String::new()),
-        Expr::Sym(s) => (1, interner.resolve(*s).to_string(), String::new()),
-        Expr::Indexed(base, indices) => {
-            let base_name = if let Expr::Sym(s) = base.as_ref() {
-                interner.resolve(*s).to_string()
-            } else {
-                format!("{base:?}")
-            };
-            let first_index = indices
-                .first()
-                .map(|idx| interner.resolve(idx.name).to_string())
-                .unwrap_or_default();
-            (2, base_name, first_index)
-        }
-        Expr::Call(f, args) => {
-            let first_arg = args
-                .first()
-                .map(|arg| format!("{arg:?}"))
-                .unwrap_or_default();
-            (2, interner.resolve(*f).to_string(), first_arg)
-        }
-        _ => (4, format!("{expr:?}"), String::new()),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchResult {
+    MatchIndexLess,
+    MatchIndexGreater,
+    NoMatchLess,
+    NoMatchGreater,
+    NodeMatch,
+    SubtreeMatch,
+}
+
+fn compare_index(a: &Index, b: &Index, interner: &ax_ir::Interner) -> Ordering {
+    let variance_cmp = match (&a.variance, &b.variance) {
+        (ax_ir::Variance::Up, ax_ir::Variance::Down) => Ordering::Less,
+        (ax_ir::Variance::Down, ax_ir::Variance::Up) => Ordering::Greater,
+        _ => Ordering::Equal,
+    };
+    if variance_cmp != Ordering::Equal {
+        return variance_cmp;
     }
+
+    let type_cmp = a
+        .index_type
+        .map(|sym| interner.resolve(sym))
+        .cmp(&b.index_type.map(|sym| interner.resolve(sym)));
+    if type_cmp != Ordering::Equal {
+        return type_cmp;
+    }
+
+    interner.resolve(a.name).cmp(interner.resolve(b.name))
+}
+
+fn expr_node_name(expr: &Expr, interner: &Interner) -> String {
+    match expr {
+        Expr::Int(_) => "Int".to_string(),
+        Expr::Rational(_) => "Rational".to_string(),
+        Expr::Float(_) => "Float".to_string(),
+        Expr::Complex(_, _) => "Complex".to_string(),
+        Expr::Sym(sym) => interner.resolve(*sym).to_string(),
+        Expr::Add(_) => "Add".to_string(),
+        Expr::Mul(_) => "Mul".to_string(),
+        Expr::Pow(_, _) => "Pow".to_string(),
+        Expr::Neg(_) => "Neg".to_string(),
+        Expr::Call(sym, _) => interner.resolve(*sym).to_string(),
+        Expr::FnDef(sym, _, _) => interner.resolve(*sym).to_string(),
+        Expr::Rule(_, _, _) => "Rule".to_string(),
+        Expr::Import(_) => "Import".to_string(),
+        Expr::Assume(sym, _) => interner.resolve(*sym).to_string(),
+        Expr::SetConvention(name, value) => format!("{name}:{value}"),
+        Expr::Piecewise(_) => "Piecewise".to_string(),
+        Expr::Indexed(base, _) => expr_node_name(base, interner),
+        Expr::Group(inner, _) => expr_node_name(inner, interner),
+        Expr::Let(sym, _, _) => interner.resolve(*sym).to_string(),
+        Expr::List(_) => "List".to_string(),
+        Expr::Matrix(_) => "Matrix".to_string(),
+    }
+}
+
+fn expr_children(expr: &Expr) -> &[Expr] {
+    match expr {
+        Expr::Add(children) | Expr::Mul(children) | Expr::List(children) | Expr::Call(_, children) => {
+            children.as_slice()
+        }
+        _ => &[],
+    }
+}
+
+fn decompose_multiplier(expr: &Expr) -> (BigRational, Expr) {
+    match expr {
+        Expr::Int(n) => (BigRational::from_integer(n.clone()), Expr::one()),
+        Expr::Rational(r) => (r.clone(), Expr::one()),
+        Expr::Neg(inner) => {
+            let (coeff, core) = decompose_multiplier(inner);
+            (-coeff, core)
+        }
+        Expr::Mul(factors) => {
+            let mut coeff = BigRational::one();
+            let mut start = 0usize;
+            while let Some(factor) = factors.get(start) {
+                match factor {
+                    Expr::Int(n) => {
+                        coeff *= BigRational::from_integer(n.clone());
+                        start += 1;
+                    }
+                    Expr::Rational(r) => {
+                        coeff *= r.clone();
+                        start += 1;
+                    }
+                    Expr::Neg(inner) if start == 0 => {
+                        let mut rest = factors.clone();
+                        rest[0] = inner.as_ref().clone();
+                        let (inner_coeff, core) = decompose_multiplier(&Expr::mul(rest));
+                        return (-inner_coeff, core);
+                    }
+                    _ => break,
+                }
+            }
+            let rest = factors[start..].to_vec();
+            let core = match rest.len() {
+                0 => Expr::one(),
+                1 => rest.into_iter().next().unwrap(),
+                _ => Expr::mul(rest),
+            };
+            (coeff, core)
+        }
+        _ => (BigRational::one(), expr.clone()),
+    }
+}
+
+fn subtree_compare_ordering(a: &Expr, b: &Expr, interner: &Interner) -> (Ordering, bool) {
+    if a == b {
+        return (Ordering::Equal, false);
+    }
+
+    let (coeff_a, core_a) = decompose_multiplier(a);
+    let (coeff_b, core_b) = decompose_multiplier(b);
+    if (core_a != *a || core_b != *b) && core_a != core_b {
+        return subtree_compare_ordering(&core_a, &core_b, interner);
+    }
+    if coeff_a != coeff_b {
+        return (coeff_a.cmp(&coeff_b), false);
+    }
+
+    match (a, b) {
+        (Expr::Int(lhs), Expr::Int(rhs)) => return (lhs.cmp(rhs), false),
+        (Expr::Rational(lhs), Expr::Rational(rhs)) => return (lhs.cmp(rhs), false),
+        (Expr::Float(lhs), Expr::Float(rhs)) => {
+            return (
+                lhs.partial_cmp(rhs)
+                    .unwrap_or_else(|| format!("{lhs:?}").cmp(&format!("{rhs:?}"))),
+                false,
+            )
+        }
+        (Expr::Sym(lhs), Expr::Sym(rhs)) => {
+            return (interner.resolve(*lhs).cmp(interner.resolve(*rhs)), false)
+        }
+        (Expr::Indexed(lhs_base, lhs_indices), Expr::Indexed(rhs_base, rhs_indices)) => {
+            let base_cmp = subtree_compare_ordering(lhs_base, rhs_base, interner);
+            if base_cmp.0 != Ordering::Equal {
+                return base_cmp;
+            }
+            let len_cmp = lhs_indices.len().cmp(&rhs_indices.len());
+            if len_cmp != Ordering::Equal {
+                return (len_cmp, false);
+            }
+            for (lhs, rhs) in lhs_indices.iter().zip(rhs_indices) {
+                let cmp = compare_index(lhs, rhs, interner);
+                if cmp != Ordering::Equal {
+                    return (cmp, true);
+                }
+            }
+            return (Ordering::Equal, true);
+        }
+        (Expr::Pow(lhs_b, lhs_e), Expr::Pow(rhs_b, rhs_e)) => {
+            let base_cmp = subtree_compare_ordering(lhs_b, rhs_b, interner);
+            if base_cmp.0 != Ordering::Equal {
+                return base_cmp;
+            }
+            return subtree_compare_ordering(lhs_e, rhs_e, interner);
+        }
+        (Expr::Neg(lhs), Expr::Neg(rhs)) => return subtree_compare_ordering(lhs, rhs, interner),
+        (Expr::Complex(lhs_re, lhs_im), Expr::Complex(rhs_re, rhs_im)) => {
+            let re_cmp = subtree_compare_ordering(lhs_re, rhs_re, interner);
+            if re_cmp.0 != Ordering::Equal {
+                return re_cmp;
+            }
+            return subtree_compare_ordering(lhs_im, rhs_im, interner);
+        }
+        (Expr::FnDef(lhs_name, lhs_params, lhs_body), Expr::FnDef(rhs_name, rhs_params, rhs_body)) => {
+            let name_cmp = interner.resolve(*lhs_name).cmp(interner.resolve(*rhs_name));
+            if name_cmp != Ordering::Equal {
+                return (name_cmp, false);
+            }
+            let len_cmp = lhs_params.len().cmp(&rhs_params.len());
+            if len_cmp != Ordering::Equal {
+                return (len_cmp, false);
+            }
+            for (lhs, rhs) in lhs_params.iter().zip(rhs_params) {
+                let param_cmp = interner.resolve(*lhs).cmp(interner.resolve(*rhs));
+                if param_cmp != Ordering::Equal {
+                    return (param_cmp, false);
+                }
+            }
+            return subtree_compare_ordering(lhs_body, rhs_body, interner);
+        }
+        (Expr::Rule(lhs_l, lhs_r, lhs_t), Expr::Rule(rhs_l, rhs_r, rhs_t)) => {
+            let lhs_cmp = subtree_compare_ordering(lhs_l, rhs_l, interner);
+            if lhs_cmp.0 != Ordering::Equal {
+                return lhs_cmp;
+            }
+            let rhs_cmp = subtree_compare_ordering(lhs_r, rhs_r, interner);
+            if rhs_cmp.0 != Ordering::Equal {
+                return rhs_cmp;
+            }
+            return (format!("{lhs_t:?}").cmp(&format!("{rhs_t:?}")), false);
+        }
+        (Expr::Let(lhs_name, lhs_value, lhs_body), Expr::Let(rhs_name, rhs_value, rhs_body)) => {
+            let name_cmp = interner.resolve(*lhs_name).cmp(interner.resolve(*rhs_name));
+            if name_cmp != Ordering::Equal {
+                return (name_cmp, false);
+            }
+            let value_cmp = subtree_compare_ordering(lhs_value, rhs_value, interner);
+            if value_cmp.0 != Ordering::Equal {
+                return value_cmp;
+            }
+            return subtree_compare_ordering(lhs_body, rhs_body, interner);
+        }
+        (Expr::Matrix(lhs_rows), Expr::Matrix(rhs_rows)) => {
+            let row_cmp = lhs_rows.len().cmp(&rhs_rows.len());
+            if row_cmp != Ordering::Equal {
+                return (row_cmp, false);
+            }
+            for (lhs_row, rhs_row) in lhs_rows.iter().zip(rhs_rows) {
+                let col_cmp = lhs_row.len().cmp(&rhs_row.len());
+                if col_cmp != Ordering::Equal {
+                    return (col_cmp, false);
+                }
+                for (lhs, rhs) in lhs_row.iter().zip(rhs_row) {
+                    let cmp = subtree_compare_ordering(lhs, rhs, interner);
+                    if cmp.0 != Ordering::Equal {
+                        return cmp;
+                    }
+                }
+            }
+            return (Ordering::Equal, false);
+        }
+        _ => {}
+    }
+
+    let node_cmp = expr_node_name(a, interner).cmp(&expr_node_name(b, interner));
+    if node_cmp != Ordering::Equal {
+        return (node_cmp, false);
+    }
+
+    let children_a = expr_children(a);
+    let children_b = expr_children(b);
+    let child_len_cmp = children_a.len().cmp(&children_b.len());
+    if child_len_cmp != Ordering::Equal {
+        return (child_len_cmp, false);
+    }
+    for (lhs, rhs) in children_a.iter().zip(children_b) {
+        let cmp = subtree_compare_ordering(lhs, rhs, interner);
+        if cmp.0 != Ordering::Equal {
+            return cmp;
+        }
+    }
+
+    (format!("{a:?}").cmp(&format!("{b:?}")), false)
+}
+
+pub fn subtree_compare(
+    a: &Expr,
+    b: &Expr,
+    _properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> MatchResult {
+    let (ordering, index_only) = subtree_compare_ordering(a, b, interner);
+    match (ordering, index_only) {
+        (Ordering::Less, true) => MatchResult::MatchIndexLess,
+        (Ordering::Greater, true) => MatchResult::MatchIndexGreater,
+        (Ordering::Less, false) => MatchResult::NoMatchLess,
+        (Ordering::Greater, false) => MatchResult::NoMatchGreater,
+        (Ordering::Equal, true) => MatchResult::NodeMatch,
+        (Ordering::Equal, false) => MatchResult::SubtreeMatch,
+    }
+}
+
+fn sort_order_position(
+    a: lasso::Spur,
+    b: lasso::Spur,
+    properties: &dyn PropertyLookup,
+) -> Option<(usize, usize)> {
+    let a_orders: Vec<Vec<lasso::Spur>> = properties
+        .get_properties(a)
+        .into_iter()
+        .filter_map(|prop| match prop {
+            ax_ir::TensorProperty::SortOrder(order) => Some(order.clone()),
+            _ => None,
+        })
+        .collect();
+    let b_orders: Vec<Vec<lasso::Spur>> = properties
+        .get_properties(b)
+        .into_iter()
+        .filter_map(|prop| match prop {
+            ax_ir::TensorProperty::SortOrder(order) => Some(order.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for order in a_orders {
+        if !b_orders.iter().any(|candidate| candidate == &order) {
+            continue;
+        }
+        let pos_a = order.iter().position(|sym| *sym == a)?;
+        let pos_b = order.iter().position(|sym| *sym == b)?;
+        return Some((pos_a, pos_b));
+    }
+
+    None
+}
+
+pub fn should_swap(
+    a: &Expr,
+    b: &Expr,
+    comparison: MatchResult,
+    properties: &dyn PropertyLookup,
+    _interner: &Interner,
+) -> bool {
+    match comparison {
+        MatchResult::MatchIndexLess => return false,
+        MatchResult::MatchIndexGreater => return true,
+        MatchResult::NodeMatch | MatchResult::SubtreeMatch => return false,
+        MatchResult::NoMatchLess | MatchResult::NoMatchGreater => {}
+    }
+
+    if let (Some(lhs), Some(rhs)) = (expr_head_symbol(a), expr_head_symbol(b)) {
+        if let Some((pos_a, pos_b)) = sort_order_position(lhs, rhs, properties) {
+            return pos_a > pos_b;
+        }
+    }
+
+    matches!(
+        comparison,
+        MatchResult::MatchIndexGreater | MatchResult::NoMatchGreater
+    )
+}
+
+fn collect_explicit_indices<'a>(expr: &'a Expr, out: &mut Vec<&'a Index>) {
+    match expr {
+        Expr::Indexed(_, indices) => out.extend(indices.iter()),
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) | Expr::Call(_, terms) => {
+            for item in terms {
+                collect_explicit_indices(item, out);
+            }
+        }
+        Expr::Pow(base, exp) => {
+            collect_explicit_indices(base, out);
+            collect_explicit_indices(exp, out);
+        }
+        Expr::Neg(inner) => collect_explicit_indices(inner, out),
+        Expr::Complex(re, im) => {
+            collect_explicit_indices(re, out);
+            collect_explicit_indices(im, out);
+        }
+        Expr::FnDef(_, _, body) => collect_explicit_indices(body, out),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_explicit_indices(lhs, out);
+            collect_explicit_indices(rhs, out);
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                collect_explicit_indices(value, out);
+            }
+        }
+        Expr::Let(_, value, body) => {
+            collect_explicit_indices(value, out);
+            collect_explicit_indices(body, out);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_explicit_indices(cell, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pair_commuting_behaviour(a: &Expr, b: &Expr, properties: &dyn PropertyLookup) -> Option<i32> {
+    if let (Some(lhs), Some(rhs)) = (expr_head_symbol(a), expr_head_symbol(b)) {
+        if let Some(explicit) = properties.pair_commuting_behaviour(lhs, rhs) {
+            return Some(explicit);
+        }
+    }
+
+    let a_noncommuting = expr_has_property(a, properties, &ax_ir::TensorProperty::NonCommuting)
+        || expr_has_property(a, properties, &ax_ir::TensorProperty::DiracBar)
+        || expr_has_property(a, properties, &ax_ir::TensorProperty::Derivative)
+        || expr_has_property(a, properties, &ax_ir::TensorProperty::PartialDerivative)
+        || expr_has_property(a, properties, &ax_ir::TensorProperty::CovariantDerivative);
+    let b_noncommuting = expr_has_property(b, properties, &ax_ir::TensorProperty::NonCommuting)
+        || expr_has_property(b, properties, &ax_ir::TensorProperty::DiracBar)
+        || expr_has_property(b, properties, &ax_ir::TensorProperty::Derivative)
+        || expr_has_property(b, properties, &ax_ir::TensorProperty::PartialDerivative)
+        || expr_has_property(b, properties, &ax_ir::TensorProperty::CovariantDerivative);
+    if a_noncommuting || b_noncommuting {
+        return Some(0);
+    }
+
+    let a_anti = expr_has_property(a, properties, &ax_ir::TensorProperty::AntiCommuting);
+    let b_anti = expr_has_property(b, properties, &ax_ir::TensorProperty::AntiCommuting);
+    if a_anti && b_anti {
+        return Some(-1);
+    }
+
+    let a_commuting = expr_has_property(a, properties, &ax_ir::TensorProperty::Commuting);
+    let b_commuting = expr_has_property(b, properties, &ax_ir::TensorProperty::Commuting);
+    if a_commuting || b_commuting {
+        return Some(1);
+    }
+
+    None
+}
+
+fn differential_form_degree(expr: &Expr, properties: &dyn PropertyLookup) -> Option<usize> {
+    let sym = expr_head_symbol(expr)?;
+    properties
+        .get_properties(sym)
+        .into_iter()
+        .find_map(|prop| match prop {
+            ax_ir::TensorProperty::DifferentialFormDegree(n) => Some(*n),
+            _ => None,
+        })
+}
+
+fn index_family_of(idx: &Index, properties: &dyn PropertyLookup) -> Option<lasso::Spur> {
+    idx.index_type.or_else(|| {
+        properties
+            .index_families()
+            .and_then(|families| families.get(&idx.name).map(|family| family.name))
+    })
+}
+
+fn declared_implicit_index_sets(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+) -> Vec<HashSet<lasso::Spur>> {
+    let Some(sym) = expr_head_symbol(expr) else {
+        return Vec::new();
+    };
+    properties
+        .declared_index_slot_families(sym)
+        .into_iter()
+        .map(|slots| slots.into_iter().flatten().collect())
+        .filter(|families: &HashSet<lasso::Spur>| !families.is_empty())
+        .collect()
+}
+
+fn explicit_index_sets(expr: &Expr, properties: &dyn PropertyLookup) -> Vec<HashSet<lasso::Spur>> {
+    let mut indices = Vec::new();
+    collect_explicit_indices(expr, &mut indices);
+    let families: HashSet<lasso::Spur> = indices
+        .into_iter()
+        .filter_map(|idx| index_family_of(idx, properties))
+        .collect();
+    if families.is_empty() {
+        Vec::new()
+    } else {
+        vec![families]
+    }
+}
+
+fn implicit_indices_in_different_sets(a: &Expr, b: &Expr, properties: &dyn PropertyLookup) -> bool {
+    let a_sets = if matches!(a, Expr::Indexed(_, _)) {
+        explicit_index_sets(a, properties)
+    } else {
+        declared_implicit_index_sets(a, properties)
+    };
+    let b_sets = if matches!(b, Expr::Indexed(_, _)) {
+        explicit_index_sets(b, properties)
+    } else {
+        declared_implicit_index_sets(b, properties)
+    };
+
+    if a_sets.is_empty() || b_sets.is_empty() {
+        return false;
+    }
+
+    a_sets
+        .iter()
+        .all(|lhs| b_sets.iter().all(|rhs| lhs.is_disjoint(rhs)))
+}
+
+fn share_self_behaviour(
+    a: &Expr,
+    b: &Expr,
+    properties: &dyn PropertyLookup,
+    property: &ax_ir::TensorProperty,
+) -> bool {
+    expr_head_symbol(a) == expr_head_symbol(b)
+        && expr_has_property(a, properties, property)
+        && expr_has_property(b, properties, property)
+}
+
+fn can_swap_ilist_ilist(a: &Expr, b: &Expr, properties: &dyn PropertyLookup) -> i32 {
+    let mut a_indices = Vec::new();
+    let mut b_indices = Vec::new();
+    collect_explicit_indices(a, &mut a_indices);
+    collect_explicit_indices(b, &mut b_indices);
+
+    let mut sign = 1;
+    for lhs in a_indices {
+        for rhs in &b_indices {
+            let lhs_noncommuting =
+                properties.has_property_kind(lhs.name, &ax_ir::TensorProperty::NonCommuting);
+            let rhs_noncommuting =
+                properties.has_property_kind(rhs.name, &ax_ir::TensorProperty::NonCommuting);
+            if lhs_noncommuting || rhs_noncommuting {
+                return 0;
+            }
+
+            let lhs_anti =
+                properties.has_property_kind(lhs.name, &ax_ir::TensorProperty::AntiCommuting);
+            let rhs_anti =
+                properties.has_property_kind(rhs.name, &ax_ir::TensorProperty::AntiCommuting);
+            if lhs_anti && rhs_anti {
+                sign *= -1;
+            }
+        }
+    }
+
+    sign
+}
+
+fn can_swap_prod_obj(
+    prod: &Expr,
+    obj: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    ignore_implicit: bool,
+) -> i32 {
+    let factors: Vec<&Expr> = match prod {
+        Expr::Mul(items) | Expr::Call(_, items) => items.iter().collect(),
+        Expr::Indexed(base, _) => vec![base.as_ref()],
+        _ => {
+            return can_swap(
+                prod,
+                obj,
+                subtree_compare(prod, obj, properties, interner),
+                properties,
+                interner,
+                ignore_implicit,
+            )
+        }
+    };
+
+    let mut sign = 1;
+    for factor in factors {
+        let next = can_swap(
+            factor,
+            obj,
+            subtree_compare(factor, obj, properties, interner),
+            properties,
+            interner,
+            ignore_implicit,
+        );
+        if next == 0 {
+            return 0;
+        }
+        sign *= next;
+    }
+    sign
+}
+
+fn can_swap_prod_prod(
+    p1: &Expr,
+    p2: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    ignore_implicit: bool,
+) -> i32 {
+    let lhs: Vec<&Expr> = match p1 {
+        Expr::Mul(items) | Expr::Call(_, items) => items.iter().collect(),
+        Expr::Indexed(base, _) => vec![base.as_ref()],
+        _ => return can_swap_prod_obj(p2, p1, properties, interner, ignore_implicit),
+    };
+    let rhs: Vec<&Expr> = match p2 {
+        Expr::Mul(items) | Expr::Call(_, items) => items.iter().collect(),
+        Expr::Indexed(base, _) => vec![base.as_ref()],
+        _ => return can_swap_prod_obj(p1, p2, properties, interner, ignore_implicit),
+    };
+
+    let mut sign = 1;
+    for a in lhs {
+        for b in &rhs {
+            let next = can_swap(
+                a,
+                b,
+                subtree_compare(a, b, properties, interner),
+                properties,
+                interner,
+                ignore_implicit,
+            );
+            if next == 0 {
+                return 0;
+            }
+            sign *= next;
+        }
+    }
+    sign
+}
+
+fn can_swap_sum_obj(
+    sum: &Expr,
+    obj: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    ignore_implicit: bool,
+) -> i32 {
+    let terms: Vec<&Expr> = match sum {
+        Expr::Add(items) | Expr::Call(_, items) => items.iter().collect(),
+        _ => {
+            return can_swap(
+                sum,
+                obj,
+                subtree_compare(sum, obj, properties, interner),
+                properties,
+                interner,
+                ignore_implicit,
+            )
+        }
+    };
+
+    let mut overall = None;
+    for term in terms {
+        let sign = can_swap(
+            term,
+            obj,
+            subtree_compare(term, obj, properties, interner),
+            properties,
+            interner,
+            ignore_implicit,
+        );
+        if sign == 0 {
+            return 0;
+        }
+        match overall {
+            Some(existing) if existing != sign => return 0,
+            None => overall = Some(sign),
+            _ => {}
+        }
+    }
+    overall.unwrap_or(1)
+}
+
+fn can_swap_prod_sum(
+    prod: &Expr,
+    sum: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    ignore_implicit: bool,
+) -> i32 {
+    let terms: Vec<&Expr> = match sum {
+        Expr::Add(items) | Expr::Call(_, items) => items.iter().collect(),
+        _ => return can_swap_prod_obj(prod, sum, properties, interner, ignore_implicit),
+    };
+
+    let mut overall = None;
+    for term in terms {
+        let sign = can_swap_prod_obj(prod, term, properties, interner, ignore_implicit);
+        if sign == 0 {
+            return 0;
+        }
+        match overall {
+            Some(existing) if existing != sign => return 0,
+            None => overall = Some(sign),
+            _ => {}
+        }
+    }
+    overall.unwrap_or(1)
+}
+
+fn can_swap_sum_sum(
+    s1: &Expr,
+    s2: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    ignore_implicit: bool,
+) -> i32 {
+    let lhs: Vec<&Expr> = match s1 {
+        Expr::Add(items) | Expr::Call(_, items) => items.iter().collect(),
+        _ => return can_swap_sum_obj(s2, s1, properties, interner, ignore_implicit),
+    };
+    let rhs: Vec<&Expr> = match s2 {
+        Expr::Add(items) | Expr::Call(_, items) => items.iter().collect(),
+        _ => return can_swap_sum_obj(s1, s2, properties, interner, ignore_implicit),
+    };
+
+    let mut overall = None;
+    for a in lhs {
+        for b in &rhs {
+            let sign = can_swap(
+                a,
+                b,
+                subtree_compare(a, b, properties, interner),
+                properties,
+                interner,
+                ignore_implicit,
+            );
+            if sign == 0 {
+                return 0;
+            }
+            match overall {
+                Some(existing) if existing != sign => return 0,
+                None => overall = Some(sign),
+                _ => {}
+            }
+        }
+    }
+    overall.unwrap_or(1)
+}
+
+pub fn can_swap(
+    a: &Expr,
+    b: &Expr,
+    _comparison: MatchResult,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    ignore_implicit_indices: bool,
+) -> i32 {
+    if let Some(explicit) = pair_commuting_behaviour(a, b, properties) {
+        return explicit;
+    }
+
+    let a_implicit = expr_has_property(a, properties, &ax_ir::TensorProperty::ImplicitIndex)
+        && !matches!(a, Expr::Indexed(_, _));
+    let b_implicit = expr_has_property(b, properties, &ax_ir::TensorProperty::ImplicitIndex)
+        && !matches!(b, Expr::Indexed(_, _));
+    if !ignore_implicit_indices && a_implicit && b_implicit {
+        if !implicit_indices_in_different_sets(a, b, properties) {
+            return 0;
+        }
+    }
+
+    if let (Some(d1), Some(d2)) = (
+        differential_form_degree(a, properties),
+        differential_form_degree(b, properties),
+    ) {
+        if d1 == 0 || d2 == 0 {
+            return 1;
+        }
+        return if (d1 * d2) % 2 == 0 { 1 } else { -1 };
+    }
+
+    if share_self_behaviour(
+        a,
+        b,
+        properties,
+        &ax_ir::TensorProperty::SelfNonCommuting,
+    ) {
+        return 0;
+    }
+    if share_self_behaviour(
+        a,
+        b,
+        properties,
+        &ax_ir::TensorProperty::SelfAntiCommuting,
+    ) {
+        return -1;
+    }
+    if share_self_behaviour(a, b, properties, &ax_ir::TensorProperty::SelfCommuting) {
+        return 1;
+    }
+
+    let index_sign = can_swap_ilist_ilist(a, b, properties);
+    if index_sign == 0 {
+        return 0;
+    }
+
+    let a_prod = expr_has_property(a, properties, &ax_ir::TensorProperty::CommutingAsProduct);
+    let b_prod = expr_has_property(b, properties, &ax_ir::TensorProperty::CommutingAsProduct);
+    let a_sum = expr_has_property(a, properties, &ax_ir::TensorProperty::CommutingAsSum);
+    let b_sum = expr_has_property(b, properties, &ax_ir::TensorProperty::CommutingAsSum);
+
+    let structural = match (a_prod, b_prod, a_sum, b_sum) {
+        (true, true, _, _) => {
+            can_swap_prod_prod(a, b, properties, interner, ignore_implicit_indices)
+        }
+        (true, _, _, true) => {
+            can_swap_prod_sum(a, b, properties, interner, ignore_implicit_indices)
+        }
+        (_, true, true, _) => {
+            can_swap_prod_sum(b, a, properties, interner, ignore_implicit_indices)
+        }
+        (_, _, true, true) => {
+            can_swap_sum_sum(a, b, properties, interner, ignore_implicit_indices)
+        }
+        (true, false, false, false) => {
+            can_swap_prod_obj(a, b, properties, interner, ignore_implicit_indices)
+        }
+        (false, true, false, false) => {
+            can_swap_prod_obj(b, a, properties, interner, ignore_implicit_indices)
+        }
+        (false, false, true, false) => {
+            can_swap_sum_obj(a, b, properties, interner, ignore_implicit_indices)
+        }
+        (false, false, false, true) => {
+            can_swap_sum_obj(b, a, properties, interner, ignore_implicit_indices)
+        }
+        _ => 1,
+    };
+    if structural == 0 {
+        return 0;
+    }
+
+    index_sign * structural
+}
+
+fn comparison_ordering(result: MatchResult) -> Ordering {
+    match result {
+        MatchResult::MatchIndexLess | MatchResult::NoMatchLess => Ordering::Less,
+        MatchResult::MatchIndexGreater | MatchResult::NoMatchGreater => Ordering::Greater,
+        MatchResult::NodeMatch | MatchResult::SubtreeMatch => Ordering::Equal,
+    }
+}
+
+fn cyclic_trace_sort(
+    mut factors: Vec<Expr>,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> (Vec<Expr>, i32) {
+    if factors.len() < 2 {
+        return (factors, 1);
+    }
+
+    let mut best = factors.clone();
+    let mut best_sign = 1;
+    let mut current_sign = 1;
+
+    for _ in 1..factors.len() {
+        let mut rotation_sign = 1;
+        for idx in 0..factors.len() - 1 {
+            let sign = can_swap(
+                &factors[idx],
+                &factors[idx + 1],
+                subtree_compare(&factors[idx], &factors[idx + 1], properties, interner),
+                properties,
+                interner,
+                true,
+            );
+            if sign == 0 {
+                rotation_sign = 0;
+                break;
+            }
+            rotation_sign *= sign;
+        }
+        if rotation_sign == 0 {
+            break;
+        }
+
+        factors.rotate_left(1);
+        current_sign *= rotation_sign;
+
+        let mut better = false;
+        for (candidate, incumbent) in factors.iter().zip(best.iter()) {
+            match comparison_ordering(subtree_compare(candidate, incumbent, properties, interner)) {
+                Ordering::Less => {
+                    better = true;
+                    break;
+                }
+                Ordering::Greater => break,
+                Ordering::Equal => {}
+            }
+        }
+        if better {
+            best = factors.clone();
+            best_sign = current_sign;
+        }
+    }
+
+    (best, best_sign)
 }
 
 fn is_diracbar_factor(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
@@ -3519,45 +4399,6 @@ pub fn sort_product(
     tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
-    fn is_sort_barrier(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
-        expr_has_property(expr, properties, &ax_ir::TensorProperty::NonCommuting)
-            || expr_has_property(expr, properties, &ax_ir::TensorProperty::DiracBar)
-            || expr_has_property(expr, properties, &ax_ir::TensorProperty::GammaMatrixProp)
-            || expr_has_property(expr, properties, &ax_ir::TensorProperty::Derivative)
-            || expr_has_property(expr, properties, &ax_ir::TensorProperty::PartialDerivative)
-            || expr_has_property(
-                expr,
-                properties,
-                &ax_ir::TensorProperty::CovariantDerivative,
-            )
-    }
-
-    fn is_odd(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
-        expr_has_property(expr, properties, &ax_ir::TensorProperty::AntiCommuting)
-    }
-
-    fn sort_commuting_segment(
-        segment: &mut [Expr],
-        properties: &dyn PropertyLookup,
-        interner: &ax_ir::Interner,
-    ) -> bool {
-        let mut negate = false;
-        for i in 1..segment.len() {
-            let mut j = i;
-            while j > 0
-                && tensor_sort_key(&segment[j], interner)
-                    < tensor_sort_key(&segment[j - 1], interner)
-            {
-                if is_odd(&segment[j], properties) && is_odd(&segment[j - 1], properties) {
-                    negate = !negate;
-                }
-                segment.swap(j - 1, j);
-                j -= 1;
-            }
-        }
-        negate
-    }
-
     match expr {
         Expr::Mul(factors) => {
             let sorted: Vec<Expr> = factors
@@ -3565,22 +4406,38 @@ pub fn sort_product(
                 .map(|factor| sort_product(factor, tensor_properties, interner))
                 .collect();
             let mut sorted = normalize_diracbar_bilinear_windows(sorted, tensor_properties);
-            let mut negate = false;
-            let mut start = 0usize;
-            for end in 0..=sorted.len() {
-                if end == sorted.len() || is_sort_barrier(&sorted[end], tensor_properties) {
-                    if end > start {
-                        negate ^= sort_commuting_segment(
-                            &mut sorted[start..end],
+            let mut overall_sign = 1i32;
+            let num = sorted.len();
+
+            for _ in 1..num {
+                for j in 0..num.saturating_sub(1) {
+                    let comparison =
+                        subtree_compare(&sorted[j], &sorted[j + 1], tensor_properties, interner);
+                    if should_swap(
+                        &sorted[j],
+                        &sorted[j + 1],
+                        comparison,
+                        tensor_properties,
+                        interner,
+                    ) {
+                        let swap_sign = can_swap(
+                            &sorted[j],
+                            &sorted[j + 1],
+                            comparison,
                             tensor_properties,
                             interner,
+                            false,
                         );
+                        if swap_sign != 0 {
+                            sorted.swap(j, j + 1);
+                            overall_sign *= swap_sign;
+                        }
                     }
-                    start = end + 1;
                 }
             }
+
             let result = Expr::mul(sorted);
-            if negate {
+            if overall_sign == -1 {
                 Expr::neg(result)
             } else {
                 result
@@ -3597,12 +4454,27 @@ pub fn sort_product(
             sort_product(base, tensor_properties, interner),
             sort_product(exp, tensor_properties, interner),
         ),
-        Expr::Call(f, args) => Expr::Call(
-            *f,
-            args.iter()
+        Expr::Call(f, args) => {
+            let mut sorted_args: Vec<Expr> = args
+                .iter()
                 .map(|arg| sort_product(arg, tensor_properties, interner))
-                .collect(),
-        ),
+                .collect();
+            if tensor_properties.has_property_kind(*f, &ax_ir::TensorProperty::Trace)
+                && sorted_args.len() == 1
+            {
+                if let Expr::Mul(factors) = &sorted_args[0] {
+                    let (rotated, sign) =
+                        cyclic_trace_sort(factors.clone(), tensor_properties, interner);
+                    let rotated_expr = Expr::mul(rotated);
+                    sorted_args[0] = if sign == -1 {
+                        Expr::neg(rotated_expr)
+                    } else {
+                        rotated_expr
+                    };
+                }
+            }
+            Expr::Call(*f, sorted_args)
+        }
         Expr::Complex(re, im) => Expr::Complex(
             Box::new(sort_product(re, tensor_properties, interner)),
             Box::new(sort_product(im, tensor_properties, interner)),
@@ -4705,47 +5577,22 @@ pub fn young_project(
     tableau: &ax_young::YoungTableau,
     interner: &ax_ir::Interner,
 ) -> Expr {
-    // Build column groups (for antisymmetrisation)
-    let n_cols = tableau.cells.first().map_or(0, |r| r.len());
-    let mut col_groups: Vec<Vec<usize>> = Vec::new();
-    for col in 0..n_cols {
-        let group: Vec<usize> = tableau
-            .cells
-            .iter()
-            .filter_map(|row| row.get(col).copied())
-            .collect();
-        if group.len() > 1 {
-            col_groups.push(group);
+    let projector = tableau.projector(false);
+    let mut terms = Vec::new();
+    for (permuted, coeff) in projector.permutations {
+        let mut perm = Vec::new();
+        for original in &projector.original {
+            let pos = permuted
+                .iter()
+                .position(|candidate| candidate == original)
+                .unwrap_or(0);
+            perm.push(pos);
         }
+        let permuted_expr = permute_indices_at_positions(expr, &projector.original, &perm);
+        terms.push(multiply_expr_by_rational(permuted_expr, coeff));
     }
-
-    // Build row groups (for symmetrisation)
-    let mut row_groups: Vec<Vec<usize>> = Vec::new();
-    for row in &tableau.cells {
-        if row.len() > 1 {
-            row_groups.push(row.clone());
-        }
-    }
-
-    // Apply column antisymmetrisation, then row symmetrisation
-    let antisymmed = antisymmetrise_groups(expr, &col_groups, interner);
-    symmetrise_groups(&antisymmed, &row_groups, interner)
-}
-
-fn antisymmetrise_groups(expr: &Expr, groups: &[Vec<usize>], interner: &ax_ir::Interner) -> Expr {
-    let mut result = expr.clone();
-    for group in groups {
-        result = symmetrise(&result, group, true, interner);
-    }
-    result
-}
-
-fn symmetrise_groups(expr: &Expr, groups: &[Vec<usize>], interner: &ax_ir::Interner) -> Expr {
-    let mut result = expr.clone();
-    for group in groups {
-        result = symmetrise(&result, group, false, interner);
-    }
-    result
+    let _ = interner;
+    Expr::add(terms)
 }
 
 /// Apply Young projection to a tensor based on its declared `TableauSymmetry` property.
@@ -4775,7 +5622,11 @@ pub fn young_project_tensor(
                             }
                             cells.push(row);
                         }
-                        let tableau = ax_young::YoungTableau { cells };
+                        let tableau = ax_young::YoungTableau {
+                            rows: cells,
+                            multiplicity: BigRational::one(),
+                            selfdual_column: 0,
+                        };
                         return young_project(expr, &tableau, interner);
                     }
                 }
@@ -5240,6 +6091,7 @@ pub fn diff_component(
             Expr::SetConvention(_, _) => false,
             Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_var(value, var)),
             Expr::Indexed(base, _) => contains_var(base, var),
+            Expr::Group(inner, _) => contains_var(inner, var),
             Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
             Expr::Matrix(rows) => rows
                 .iter()
@@ -5319,6 +6171,7 @@ pub fn diff_component(
                 interner.get_or_intern("diff"),
                 vec![expr.clone(), Expr::Sym(var)],
             ),
+            Expr::Group(inner, rel) => Expr::Group(Box::new(diff(inner, var, interner)), *rel),
             Expr::FnDef(name, params, body) => {
                 Expr::FnDef(*name, params.clone(), Box::new(diff(body, var, interner)))
             }
@@ -5607,6 +6460,7 @@ fn eval_expr(expr: &Expr) -> Expr {
             Expr::Let(*name, Box::new(eval_expr(val)), Box::new(eval_expr(body)))
         }
         Expr::Indexed(base, indices) => Expr::Indexed(Box::new(eval_expr(base)), indices.clone()),
+        Expr::Group(inner, rel) => Expr::Group(Box::new(eval_expr(inner)), *rel),
         Expr::List(items) => Expr::List(items.iter().map(eval_expr).collect()),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
@@ -5639,6 +6493,7 @@ fn node_count(expr: &Expr) -> usize {
                 .sum::<usize>()
         }
         Expr::Indexed(base, _) => 1 + node_count(base),
+        Expr::Group(inner, _) => 1 + node_count(inner),
         Expr::Let(_, val, body) => 1 + node_count(val) + node_count(body),
         Expr::Matrix(rows) => 1 + rows.iter().flatten().map(node_count).sum::<usize>(),
     }
@@ -5744,6 +6599,7 @@ fn expand_expr(expr: &Expr, interner: &Interner) -> Expr {
         Expr::Indexed(base, indices) => {
             Expr::Indexed(Box::new(expand_expr(base, interner)), indices.clone())
         }
+        Expr::Group(inner, rel) => Expr::Group(Box::new(expand_expr(inner, interner)), *rel),
         Expr::Let(name, val, body) => Expr::Let(
             *name,
             Box::new(expand_expr(val, interner)),
@@ -10342,6 +11198,217 @@ mod tests {
     }
 
     #[test]
+    fn sort_product_respects_sort_order() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let mut props = HashMap::new();
+        props.insert(a, vec![ax_ir::TensorProperty::SortOrder(vec![b, a, c])]);
+        props.insert(b, vec![ax_ir::TensorProperty::SortOrder(vec![b, a, c])]);
+
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)]);
+        assert_eq!(
+            sort_product(&expr, &props, &interner),
+            Expr::mul(vec![Expr::Sym(b), Expr::Sym(a)])
+        );
+    }
+
+    #[test]
+    fn sort_product_anticommuting_sign() {
+        let interner = ax_ir::Interner::new();
+        let psi = interner.get_or_intern("psi");
+        let chi = interner.get_or_intern("chi");
+        let mut props = HashMap::new();
+        props.insert(psi, vec![ax_ir::TensorProperty::AntiCommuting]);
+        props.insert(chi, vec![ax_ir::TensorProperty::AntiCommuting]);
+
+        let expr = Expr::mul(vec![Expr::Sym(psi), Expr::Sym(chi)]);
+        let expected = Expr::neg(Expr::mul(vec![Expr::Sym(chi), Expr::Sym(psi)]));
+        assert_eq!(sort_product(&expr, &props, &interner), expected);
+    }
+
+    #[test]
+    fn sort_product_pairwise_anticommuting_sign() {
+        let interner = ax_ir::Interner::new();
+        let psi = interner.get_or_intern("psi");
+        let chi = interner.get_or_intern("chi");
+        let mut props = HashMap::new();
+        props.insert(psi, vec![ax_ir::TensorProperty::AntiCommutingWith(vec![chi])]);
+
+        let expr = Expr::mul(vec![Expr::Sym(psi), Expr::Sym(chi)]);
+        let expected = Expr::neg(Expr::mul(vec![Expr::Sym(chi), Expr::Sym(psi)]));
+        assert_eq!(sort_product(&expr, &props, &interner), expected);
+    }
+
+    #[test]
+    fn sort_product_noncommuting_barrier() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let mut props = HashMap::new();
+        props.insert(a, vec![ax_ir::TensorProperty::NonCommuting]);
+
+        let expr = Expr::mul(vec![Expr::Sym(c), Expr::Sym(a), Expr::Sym(b)]);
+        assert_eq!(sort_product(&expr, &props, &interner), expr);
+    }
+
+    #[test]
+    fn sort_product_self_anticommuting() {
+        let interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = HashMap::new();
+        props.insert(gamma, vec![ax_ir::TensorProperty::SelfAntiCommuting]);
+
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(gamma)),
+                vec![Index {
+                    name: b,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(gamma)),
+                vec![Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        let expected = Expr::neg(Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(gamma)),
+                vec![Index {
+                    name: a,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(gamma)),
+                vec![Index {
+                    name: b,
+                    variance: Variance::Up,
+                    index_type: None,
+                }],
+            ),
+        ]));
+        assert_eq!(sort_product(&expr, &props, &interner), expected);
+    }
+
+    #[test]
+    fn sort_product_commuting_as_product() {
+        let interner = ax_ir::Interner::new();
+        let f = interner.get_or_intern("F");
+        let z = interner.get_or_intern("Z");
+        let mut props = HashMap::new();
+        props.insert(f, vec![ax_ir::TensorProperty::CommutingAsProduct]);
+        props.insert(z, vec![ax_ir::TensorProperty::SelfNonCommuting]);
+        let prod_like = Expr::Call(f, vec![Expr::Sym(z), Expr::Sym(z)]);
+
+        assert_eq!(
+            can_swap(
+                &prod_like,
+                &Expr::Sym(z),
+                MatchResult::NoMatchGreater,
+                &props,
+                &interner,
+                false
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn sort_product_implicit_indices_different_sets_can_swap() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let spacetime = interner.get_or_intern("spacetime");
+        let spinor = interner.get_or_intern("spinor");
+        struct TestProps {
+            props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+            slots: HashMap<lasso::Spur, Vec<Vec<Option<lasso::Spur>>>>,
+        }
+
+        impl PropertyLookup for TestProps {
+            fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
+                self.props
+                    .get(&name)
+                    .map(|props| props.iter().collect())
+                    .unwrap_or_default()
+            }
+
+            fn get_properties_with_indices(
+                &self,
+                name: lasso::Spur,
+                _indices: &[ax_ir::Index],
+            ) -> Vec<&ax_ir::TensorProperty> {
+                self.get_properties(name)
+            }
+
+            fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
+                self.get_properties(name)
+                    .into_iter()
+                    .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+            }
+
+            fn declared_index_slot_families(
+                &self,
+                name: lasso::Spur,
+            ) -> Vec<Vec<Option<lasso::Spur>>> {
+                self.slots.get(&name).cloned().unwrap_or_default()
+            }
+        }
+
+        let mut props = TestProps {
+            props: HashMap::new(),
+            slots: HashMap::new(),
+        };
+        props
+            .props
+            .insert(a, vec![ax_ir::TensorProperty::ImplicitIndex]);
+        props
+            .props
+            .insert(b, vec![ax_ir::TensorProperty::ImplicitIndex]);
+        props.slots.insert(a, vec![vec![Some(spacetime)]]);
+        props.slots.insert(b, vec![vec![Some(spinor)]]);
+
+        let expr = Expr::mul(vec![Expr::Sym(b), Expr::Sym(a)]);
+        assert_eq!(
+            sort_product(&expr, &props, &interner),
+            Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)])
+        );
+    }
+
+    #[test]
+    fn sort_product_cyclic_trace() {
+        let interner = ax_ir::Interner::new();
+        let tr = interner.get_or_intern("Tr");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let c = interner.get_or_intern("C");
+        let mut props = HashMap::new();
+        props.insert(tr, vec![ax_ir::TensorProperty::Trace]);
+
+        let expr = Expr::Call(
+            tr,
+            vec![Expr::mul(vec![Expr::Sym(c), Expr::Sym(b), Expr::Sym(a)])],
+        );
+        let expected = Expr::Call(
+            tr,
+            vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)])],
+        );
+        assert_eq!(sort_product(&expr, &props, &interner), expected);
+    }
+
+    #[test]
     fn meld_satisfies_bianchi_and_weyl_cancellations() {
         let interner = ax_ir::Interner::new();
         let r = interner.get_or_intern("R");
@@ -10951,7 +12018,9 @@ mod tests {
 
         // Column tableau with 2 rows: antisymmetrise in positions (0, 1)
         let tableau = ax_young::YoungTableau {
-            cells: vec![vec![0], vec![1]],
+            rows: vec![vec![0], vec![1]],
+            multiplicity: BigRational::one(),
+            selfdual_column: 0,
         };
 
         let expr = Expr::Indexed(
@@ -10984,7 +12053,9 @@ mod tests {
 
         // Row tableau with 1 row: symmetrise in positions (0, 1)
         let tableau = ax_young::YoungTableau {
-            cells: vec![vec![0, 1]],
+            rows: vec![vec![0, 1]],
+            multiplicity: BigRational::one(),
+            selfdual_column: 0,
         };
 
         let expr = Expr::Indexed(

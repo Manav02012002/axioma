@@ -46,7 +46,7 @@ fn collect_indices(expr: &Expr, out: &mut Vec<ax_ir::Index>) {
             collect_indices(base, out);
             collect_indices(exp, out);
         }
-        Expr::Neg(inner) => collect_indices(inner, out),
+        Expr::Neg(inner) | Expr::Group(inner, _) => collect_indices(inner, out),
         Expr::Complex(re, im) => {
             collect_indices(re, out);
             collect_indices(im, out);
@@ -100,7 +100,7 @@ fn collect_symbols(expr: &Expr, out: &mut Vec<ax_ir::expr::Sym>) {
             collect_symbols(base, out);
             collect_symbols(exp, out);
         }
-        Expr::Neg(inner) => collect_symbols(inner, out),
+        Expr::Neg(inner) | Expr::Group(inner, _) => collect_symbols(inner, out),
         Expr::Complex(re, im) => {
             collect_symbols(re, out);
             collect_symbols(im, out);
@@ -160,6 +160,7 @@ fn node_count(expr: &Expr) -> usize {
                 .sum::<usize>()
         }
         Expr::Let(_, value, body) => 1 + node_count(value) + node_count(body),
+        Expr::Group(inner, _) => 1 + node_count(inner),
     }
 }
 
@@ -190,6 +191,32 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
         ax_ir::TensorProperty::Commuting => "Commuting".to_string(),
         ax_ir::TensorProperty::AntiCommuting => "AntiCommuting".to_string(),
         ax_ir::TensorProperty::NonCommuting => "NonCommuting".to_string(),
+        ax_ir::TensorProperty::CommutingWith(syms) => format!(
+            "CommutingWith({:?})",
+            syms.iter()
+                .map(|s| interner.resolve(*s).to_string())
+                .collect::<Vec<_>>()
+        ),
+        ax_ir::TensorProperty::AntiCommutingWith(syms) => format!(
+            "AntiCommutingWith({:?})",
+            syms.iter()
+                .map(|s| interner.resolve(*s).to_string())
+                .collect::<Vec<_>>()
+        ),
+        ax_ir::TensorProperty::NonCommutingWith(syms) => format!(
+            "NonCommutingWith({:?})",
+            syms.iter()
+                .map(|s| interner.resolve(*s).to_string())
+                .collect::<Vec<_>>()
+        ),
+        ax_ir::TensorProperty::SelfAntiCommuting => "SelfAntiCommuting".to_string(),
+        ax_ir::TensorProperty::SelfNonCommuting => "SelfNonCommuting".to_string(),
+        ax_ir::TensorProperty::SelfCommuting => "SelfCommuting".to_string(),
+        ax_ir::TensorProperty::CommutingAsProduct => "CommutingAsProduct".to_string(),
+        ax_ir::TensorProperty::CommutingAsSum => "CommutingAsSum".to_string(),
+        ax_ir::TensorProperty::MajoranaSpinor => "MajoranaSpinor".to_string(),
+        ax_ir::TensorProperty::WeylSpinor => "WeylSpinor".to_string(),
+        ax_ir::TensorProperty::ImplicitIndex => "ImplicitIndex".to_string(),
         ax_ir::TensorProperty::SortOrder(syms) => format!(
             "SortOrder({:?})",
             syms.iter()

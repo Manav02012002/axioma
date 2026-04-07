@@ -101,7 +101,7 @@ fn expr_contains_var(expr: &Expr, var: lasso::Spur) -> bool {
             terms.iter().any(|term| expr_contains_var(term, var))
         }
         Expr::Pow(base, exp) => expr_contains_var(base, var) || expr_contains_var(exp, var),
-        Expr::Neg(inner) => expr_contains_var(inner, var),
+        Expr::Neg(inner) | Expr::Group(inner, _) => expr_contains_var(inner, var),
         Expr::Call(_, args) => args.iter().any(|arg| expr_contains_var(arg, var)),
         Expr::Complex(re, im) => expr_contains_var(re, var) || expr_contains_var(im, var),
         Expr::FnDef(_, _, body) => expr_contains_var(body, var),

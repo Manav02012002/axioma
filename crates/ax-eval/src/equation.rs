@@ -144,7 +144,9 @@ pub fn expr_contains(expr: &Expr, target: &Expr) -> bool {
         Expr::Pow(base, exp) | Expr::Complex(base, exp) | Expr::Rule(base, exp, _) => {
             expr_contains(base, target) || expr_contains(exp, target)
         }
-        Expr::Neg(inner) | Expr::Indexed(inner, _) => expr_contains(inner, target),
+        Expr::Neg(inner) | Expr::Indexed(inner, _) | Expr::Group(inner, _) => {
+            expr_contains(inner, target)
+        }
         Expr::Call(_, args) => args.iter().any(|arg| expr_contains(arg, target)),
         Expr::FnDef(_, _, body) => expr_contains(body, target),
         Expr::Piecewise(branches) => branches.iter().any(|(value, condition)| {
@@ -405,7 +407,7 @@ fn has_indexed(expr: &Expr) -> bool {
         Expr::Pow(base, exp) | Expr::Complex(base, exp) | Expr::Rule(base, exp, _) => {
             has_indexed(base) || has_indexed(exp)
         }
-        Expr::Neg(inner) => has_indexed(inner),
+        Expr::Neg(inner) | Expr::Group(inner, _) => has_indexed(inner),
         Expr::Call(_, args) => args.iter().any(has_indexed),
         Expr::FnDef(_, _, body) => has_indexed(body),
         Expr::Piecewise(branches) => branches

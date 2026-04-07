@@ -37,6 +37,7 @@ fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
         Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) => false,
         Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_var(value, var)),
         Expr::Indexed(base, _) => contains_var(base, var),
+        Expr::Group(inner, _) => contains_var(inner, var),
         Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
         Expr::Matrix(rows) => rows
             .iter()
@@ -101,6 +102,7 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
             simplify_expr(*exp, interner),
         ),
         Expr::Neg(inner) => Expr::neg(simplify_expr(*inner, interner)),
+        Expr::Group(inner, rel) => Expr::Group(Box::new(simplify_expr(*inner, interner)), rel),
         other => other,
     }
 }
@@ -110,6 +112,7 @@ fn expr_to_rational(expr: &Expr) -> Option<BigRational> {
         Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
         Expr::Rational(r) => Some(r.clone()),
         Expr::Neg(inner) => expr_to_rational(inner).map(|r| -r),
+        Expr::Group(inner, _) => expr_to_rational(inner),
         _ => None,
     }
 }

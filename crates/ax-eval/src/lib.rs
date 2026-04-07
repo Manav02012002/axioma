@@ -159,7 +159,7 @@ fn expr_node_count(expr: &Expr) -> usize {
         Expr::Pow(base, exp) | Expr::Rule(base, exp, _) => {
             1 + expr_node_count(base) + expr_node_count(exp)
         }
-        Expr::Neg(inner) => 1 + expr_node_count(inner),
+        Expr::Neg(inner) | Expr::Group(inner, _) => 1 + expr_node_count(inner),
         Expr::Call(_, args) => 1 + args.iter().map(expr_node_count).sum::<usize>(),
         Expr::Indexed(base, _) => 1 + expr_node_count(base),
         Expr::Matrix(rows) => {
@@ -1046,7 +1046,7 @@ fn grading_rank(grading: Grading) -> usize {
 pub fn infer_grading(expr: &Expr, gradings: &HashMap<lasso::Spur, Grading>) -> Grading {
     match expr {
         Expr::Sym(sym) => gradings.get(sym).copied().unwrap_or(Grading::Even),
-        Expr::Neg(inner) => infer_grading(inner, gradings),
+        Expr::Neg(inner) | Expr::Group(inner, _) => infer_grading(inner, gradings),
         Expr::Mul(factors) => {
             let odd_count = factors
                 .iter()
@@ -2162,6 +2162,10 @@ pub fn symbolic_substitute(
             symbolic_substitute(exp, target, replacement, interner),
         ),
         Expr::Neg(inner) => Expr::neg(symbolic_substitute(inner, target, replacement, interner)),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(symbolic_substitute(inner, target, replacement, interner)),
+            *rel,
+        ),
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()
@@ -2256,6 +2260,10 @@ pub fn multi_substitute(
             multi_substitute(exp, substitutions, interner),
         ),
         Expr::Neg(inner) => Expr::neg(multi_substitute(inner, substitutions, interner)),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(multi_substitute(inner, substitutions, interner)),
+            *rel,
+        ),
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()
@@ -2330,7 +2338,7 @@ fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
             terms.iter().any(|term| contains_var(term, var))
         }
         Expr::Pow(base, exp) => contains_var(base, var) || contains_var(exp, var),
-        Expr::Neg(e) => contains_var(e, var),
+        Expr::Neg(e) | Expr::Group(e, _) => contains_var(e, var),
         Expr::Call(_, args) => args.iter().any(|arg| contains_var(arg, var)),
         Expr::FnDef(_, _, body) => contains_var(body, var),
         Expr::Rule(lhs, rhs, _) => contains_var(lhs, var) || contains_var(rhs, var),
@@ -2860,6 +2868,9 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
                 .collect(),
         ),
         Expr::Neg(e) => Expr::neg(differentiate(e, var, interner)),
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(differentiate(inner, var, interner)), *rel)
+        }
         Expr::Mul(factors) => {
             let terms = factors
                 .iter()
@@ -6383,6 +6394,7 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
             }
         }
         Expr::Neg(e) => Expr::neg(eval(e, env, interner)),
+        Expr::Group(inner, rel) => Expr::Group(Box::new(eval(inner, env, interner)), *rel),
         Expr::Call(f, args) => {
             let evaled_args: Vec<Expr> = args.iter().map(|arg| eval(arg, env, interner)).collect();
             let name = interner.resolve(*f);

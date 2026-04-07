@@ -1881,6 +1881,17 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("Commuting", "property A commuting", "Marks an object as commuting.", "stored by ax-tensor metadata; no direct ax-tensor algorithm currently consults it", "property A commuting"),
         p("AntiCommuting", "property psi anticommuting", "Marks an object as anticommuting.", "canonicalise signed dummy/factor exchange and sort_product graded sign handling", "property psi anticommuting"),
         p("NonCommuting", "property A noncommuting", "Marks an object as noncommuting.", "canonicalise/sort_product factor-order barrier; identical noncommuting tensor factors are not exchanged", "property A noncommuting"),
+        p("CommutingWith", "property A CommutingWith(B)", "Marks an object as explicitly commuting with listed objects.", "sort_product pairwise commutativity lookup", "property A CommutingWith(B)"),
+        p("AntiCommutingWith", "property psi AntiCommutingWith(chi)", "Marks an object as explicitly anticommuting with listed objects.", "sort_product pairwise commutativity sign lookup", "property psi AntiCommutingWith(chi)"),
+        p("NonCommutingWith", "property A NonCommutingWith(B)", "Marks an object as explicitly noncommuting with listed objects.", "sort_product pairwise commutativity barrier lookup", "property A NonCommutingWith(B)"),
+        p("SelfAntiCommuting", "property gamma self_anticommuting", "Marks identical-head objects as anticommuting with themselves.", "sort_product self-commutation sign lookup", "property gamma self_anticommuting"),
+        p("SelfNonCommuting", "property X self_noncommuting", "Marks identical-head objects as noncommuting with themselves.", "sort_product self-commutation barrier lookup", "property X self_noncommuting"),
+        p("SelfCommuting", "property X self_commuting", "Marks identical-head objects as commuting with themselves.", "sort_product self-commutation lookup", "property X self_commuting"),
+        p("CommutingAsProduct", "property F commuting_as_product", "Determines commutativity by checking product-like components pairwise.", "sort_product product-like commutativity lookup", "property F commuting_as_product"),
+        p("CommutingAsSum", "property F commuting_as_sum", "Determines commutativity by checking sum-like components termwise.", "sort_product sum-like commutativity lookup", "property F commuting_as_sum"),
+        p("MajoranaSpinor", "property psi majorana_spinor", "Marks a spinor as Majorana.", "stored by ax-tensor metadata", "property psi majorana_spinor"),
+        p("WeylSpinor", "property psi weyl_spinor", "Marks a spinor as Weyl.", "stored by ax-tensor metadata", "property psi weyl_spinor"),
+        p("ImplicitIndex", "property T implicit_index", "Marks an object as carrying implicit indices.", "sort_product implicit-index commutativity barrier lookup", "property T implicit_index"),
         p("SortOrder", "property T sort_order([...])", "Declares an explicit preferred order of symbols.", "stored by ax-tensor metadata; no direct ax-tensor algorithm currently consults it", "property T sort_order([A, B, C])"),
         p("TableauSymmetry", "property T tableau_symmetry(shape=[...], indices=[...])", "Declares a Young-tableau symmetry shape and slot assignment.", "canonicalise slot/sign handling, meld tableaux_from_properties, young_project_tensor", "property T tableau_symmetry(shape=[2,1], indices=[0,1,2])"),
         p("SatisfiesBianchi", "property R satisfies_bianchi", "Marks a tensor as satisfying a Bianchi identity.", "meld tableaux_from_properties Bianchi cancellation hook", "property R satisfies_bianchi"),
@@ -2518,6 +2529,54 @@ fn parse_property_string(
     if lower == "noncommuting" || lower == "non_commuting" {
         return Ok(ax_ir::TensorProperty::NonCommuting);
     }
+    if let Some(body) = trimmed
+        .strip_prefix("CommutingWith(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return Ok(ax_ir::TensorProperty::CommutingWith(parse_sym_list(
+            body, state,
+        )));
+    }
+    if let Some(body) = trimmed
+        .strip_prefix("AntiCommutingWith(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return Ok(ax_ir::TensorProperty::AntiCommutingWith(parse_sym_list(
+            body, state,
+        )));
+    }
+    if let Some(body) = trimmed
+        .strip_prefix("NonCommutingWith(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return Ok(ax_ir::TensorProperty::NonCommutingWith(parse_sym_list(
+            body, state,
+        )));
+    }
+    if lower == "selfanticommuting" || lower == "self_anticommuting" {
+        return Ok(ax_ir::TensorProperty::SelfAntiCommuting);
+    }
+    if lower == "selfnoncommuting" || lower == "self_noncommuting" {
+        return Ok(ax_ir::TensorProperty::SelfNonCommuting);
+    }
+    if lower == "selfcommuting" || lower == "self_commuting" {
+        return Ok(ax_ir::TensorProperty::SelfCommuting);
+    }
+    if lower == "commutingasproduct" || lower == "commuting_as_product" {
+        return Ok(ax_ir::TensorProperty::CommutingAsProduct);
+    }
+    if lower == "commutingassum" || lower == "commuting_as_sum" {
+        return Ok(ax_ir::TensorProperty::CommutingAsSum);
+    }
+    if lower == "majoranaspinor" || lower == "majorana_spinor" {
+        return Ok(ax_ir::TensorProperty::MajoranaSpinor);
+    }
+    if lower == "weylspinor" || lower == "weyl_spinor" {
+        return Ok(ax_ir::TensorProperty::WeylSpinor);
+    }
+    if lower == "implicitindex" || lower == "implicit_index" {
+        return Ok(ax_ir::TensorProperty::ImplicitIndex);
+    }
     if lower == "satisfiesbianchi" || lower == "satisfies_bianchi" || lower == "bianchi" {
         return Ok(ax_ir::TensorProperty::SatisfiesBianchi);
     }
@@ -2641,7 +2700,7 @@ fn has_indices(expr: &ax_ir::Expr) -> bool {
         }
         ax_ir::Expr::Matrix(rows) => rows.iter().flatten().any(has_indices),
         ax_ir::Expr::Pow(base, exp) => has_indices(base) || has_indices(exp),
-        ax_ir::Expr::Neg(inner) => has_indices(inner),
+        ax_ir::Expr::Neg(inner) | ax_ir::Expr::Group(inner, _) => has_indices(inner),
         ax_ir::Expr::Complex(re, im) => has_indices(re) || has_indices(im),
         ax_ir::Expr::Call(_, args) => args.iter().any(has_indices),
         ax_ir::Expr::FnDef(_, _, body) => has_indices(body),

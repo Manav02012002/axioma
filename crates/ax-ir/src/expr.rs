@@ -74,6 +74,17 @@ pub enum TensorProperty {
     Commuting,
     AntiCommuting,
     NonCommuting,
+    CommutingWith(Vec<Sym>),
+    AntiCommutingWith(Vec<Sym>),
+    NonCommutingWith(Vec<Sym>),
+    SelfAntiCommuting,
+    SelfNonCommuting,
+    SelfCommuting,
+    CommutingAsProduct,
+    CommutingAsSum,
+    MajoranaSpinor,
+    WeylSpinor,
+    ImplicitIndex,
     SortOrder(Vec<Sym>),
     TableauSymmetry {
         shape: Vec<usize>,
@@ -172,6 +183,11 @@ pub enum Condition {
     False,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParentRel {
+    ExplicitGroup,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     Int(BigInt),
@@ -191,6 +207,7 @@ pub enum Expr {
     SetConvention(String, String),
     Piecewise(Vec<(Expr, Condition)>),
     Indexed(Box<Expr>, Vec<Index>),
+    Group(Box<Expr>, ParentRel),
     Let(Sym, Box<Expr>, Box<Expr>),
     List(Vec<Expr>),
     Matrix(Vec<Vec<Expr>>),
@@ -237,6 +254,7 @@ fn as_numeric(expr: &Expr) -> Option<BigRational> {
     match expr {
         Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
         Expr::Rational(r) => Some(r.clone()),
+        Expr::Group(inner, _) => as_numeric(inner),
         _ => None,
     }
 }
@@ -244,6 +262,7 @@ fn as_numeric(expr: &Expr) -> Option<BigRational> {
 fn as_complex(expr: &Expr) -> Option<(Expr, Expr)> {
     match expr {
         Expr::Complex(re, im) => Some((re.as_ref().clone(), im.as_ref().clone())),
+        Expr::Group(inner, _) => as_complex(inner),
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Some((expr.clone(), Expr::zero())),
         _ => None,
     }
@@ -277,6 +296,7 @@ fn expr_sort_key(e: &Expr) -> ExprSortKey {
         Expr::Assume(_, _) => ExprSortKey::Other(format!("{e:?}")),
         Expr::SetConvention(_, _) => ExprSortKey::Other(format!("{e:?}")),
         Expr::Piecewise(_) => ExprSortKey::Other(format!("{e:?}")),
+        Expr::Group(_, _) => ExprSortKey::Other(format!("{e:?}")),
         _ => ExprSortKey::Other(format!("{e:?}")),
     }
 }
@@ -609,6 +629,7 @@ impl Expr {
 
     pub fn neg(e: Expr) -> Expr {
         match e {
+            Expr::Group(inner, rel) => Expr::Group(Box::new(Expr::neg(*inner)), rel),
             Expr::Int(n) => Expr::Int(-n),
             Expr::Rational(r) => Expr::Rational(-r),
             Expr::Complex(re, im) => normalize_complex(Expr::neg(*re), Expr::neg(*im)),
@@ -629,6 +650,14 @@ impl Expr {
             }
             other => Expr::Neg(Box::new(other)),
         }
+    }
+
+    pub fn group(e: Expr) -> Expr {
+        Expr::Group(Box::new(e), ParentRel::ExplicitGroup)
+    }
+
+    pub fn group_with_rel(e: Expr, rel: ParentRel) -> Expr {
+        Expr::Group(Box::new(e), rel)
     }
 }
 
@@ -653,5 +682,23 @@ mod tests {
         let b = Expr::Complex(Box::new(Expr::one()), Box::new(Expr::neg(Expr::one())));
         let prod = Expr::mul(vec![a, b]);
         assert_eq!(prod, Expr::Int(2.into()));
+    }
+
+    #[test]
+    fn grouped_factor_is_not_collapsed_into_power() {
+        let sym = lasso::Spur::default();
+        let x = Expr::Sym(sym);
+        let grouped = Expr::group(x.clone());
+        let prod = Expr::mul(vec![grouped.clone(), x.clone()]);
+        assert_eq!(prod, Expr::Mul(vec![grouped, x]));
+    }
+
+    #[test]
+    fn grouped_term_is_not_combined_with_ungrouped_term() {
+        let sym = lasso::Spur::default();
+        let x = Expr::Sym(sym);
+        let grouped = Expr::group(x.clone());
+        let sum = Expr::add(vec![grouped.clone(), x.clone()]);
+        assert_eq!(sum, Expr::Add(vec![x, grouped]));
     }
 }
