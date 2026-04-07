@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#172554"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="720" rx="28" fill="url(#bg)"/>
+  <rect x="42" y="42" width="1116" height="636" rx="20" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <rect x="42" y="42" width="1116" height="54" rx="20" fill="#1e293b"/>
+  <circle cx="84" cy="69" r="8" fill="#ef4444"/>
+  <circle cx="110" cy="69" r="8" fill="#f59e0b"/>
+  <circle cx="136" cy="69" r="8" fill="#10b981"/>
+  <rect x="72" y="132" width="380" height="500" rx="14" fill="#0b1220" stroke="#23314e"/>
+  <rect x="486" y="132" width="622" height="500" rx="14" fill="#0b1220" stroke="#23314e"/>
+  <text x="110" y="188" fill="#e2e8f0" font-family="Menlo, Monaco, monospace" font-size="28">property R riemann_symmetry;</text>
+  <text x="110" y="234" fill="#7dd3fc" font-family="Menlo, Monaco, monospace" font-size="28">T[mu-, nu+] + T[nu+, mu-]</text>
+  <text x="110" y="280" fill="#fde68a" font-family="Menlo, Monaco, monospace" font-size="28">1 + 1;</text>
+  <text x="530" y="184" fill="#93c5fd" font-family="Menlo, Monaco, monospace" font-size="26">Axioma Compute</text>
+  <rect x="530" y="214" width="520" height="60" rx="10" fill="#111827" stroke="#334155"/>
+  <text x="554" y="252" fill="#cbd5e1" font-family="Menlo, Monaco, monospace" font-size="24">Enter Axioma expression...</text>
+  <rect x="530" y="310" width="520" height="130" rx="14" fill="#172033" stroke="#3b82f6"/>
+  <text x="556" y="352" fill="#60a5fa" font-family="Menlo, Monaco, monospace" font-size="24">In[1]: 1 + 1;</text>
+  <text x="556" y="398" fill="#a7f3d0" font-family="Menlo, Monaco, monospace" font-size="28">Out[1]: 2</text>
+  <text x="556" y="492" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="34">Screenshot Placeholder</text>
+  <text x="556" y="534" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="24">Replace this image with a real Extension Development Host capture.</text>
+</svg>

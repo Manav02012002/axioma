@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "axioma": {
+      "command": "axioma-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

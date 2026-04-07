@@ -1,22 +1,183 @@
 {
   "name": "axioma",
   "displayName": "Axioma",
-  "description": "Axioma scientific computing language support",
-  "version": "0.1.0",
-  "engines": { "vscode": "^1.80.0" },
-  "categories": ["Programming Languages"],
-  "contributes": {
-    "languages": [{
-      "id": "axioma",
-      "aliases": ["Axioma", "axioma"],
-      "extensions": [".ax"],
-      "configuration": "./language-configuration.json"
-    }],
-    "grammars": [{
-      "language": "axioma",
-      "scopeName": "source.axioma",
-      "path": "./syntaxes/axioma.tmLanguage.json"
-    }]
+  "description": "Axioma scientific computing language - tensor algebra, GR, QFT, and more",
+  "version": "0.2.0",
+  "publisher": "axioma",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Manav02012002/axioma"
   },
-  "main": "./extension.js"
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages", "Formatters", "Linters"],
+  "keywords": ["axioma", "tensor", "physics", "GR", "QFT", "CAS", "symbolic"],
+  "activationEvents": [
+    "onLanguage:axioma",
+    "onCommand:axioma.evaluate",
+    "onCommand:axioma.evaluateSelection",
+    "onCommand:axioma.showPanel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "axioma",
+        "aliases": ["Axioma", "axioma"],
+        "extensions": [".ax", ".axioma"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/axioma-light.png",
+          "dark": "./icons/axioma-dark.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "axioma",
+        "scopeName": "source.axioma",
+        "path": "./syntaxes/axioma.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "axioma.evaluate",
+        "title": "Axioma: Evaluate File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "axioma.evaluateSelection",
+        "title": "Axioma: Evaluate Selection"
+      },
+      {
+        "command": "axioma.evaluateLine",
+        "title": "Axioma: Evaluate Current Line"
+      },
+      {
+        "command": "axioma.showPanel",
+        "title": "Axioma: Show Compute Panel"
+      },
+      {
+        "command": "axioma.clearPanel",
+        "title": "Axioma: Clear Compute Panel"
+      },
+      {
+        "command": "axioma.restartLsp",
+        "title": "Axioma: Restart Language Server"
+      },
+      {
+        "command": "axioma.restartMcp",
+        "title": "Axioma: Restart Compute Server"
+      },
+      {
+        "command": "axioma.showWorkflows",
+        "title": "Axioma: Show Available Workflows"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "axioma.evaluateSelection",
+        "key": "shift+enter",
+        "when": "editorTextFocus && editorLangId == axioma"
+      },
+      {
+        "command": "axioma.evaluateLine",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "editorTextFocus && editorLangId == axioma"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "axioma.evaluate",
+          "when": "editorLangId == axioma",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "axioma.evaluateSelection",
+          "when": "editorLangId == axioma && editorHasSelection",
+          "group": "axioma"
+        },
+        {
+          "command": "axioma.evaluateLine",
+          "when": "editorLangId == axioma",
+          "group": "axioma"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Axioma",
+      "properties": {
+        "axioma.lspPath": {
+          "type": "string",
+          "default": "axioma-lsp",
+          "description": "Path to the axioma-lsp binary. If not absolute, searched in PATH."
+        },
+        "axioma.mcpPath": {
+          "type": "string",
+          "default": "axioma-mcp",
+          "description": "Path to the axioma-mcp binary. If not absolute, searched in PATH."
+        },
+        "axioma.mcpTimeout": {
+          "type": "number",
+          "default": 60,
+          "description": "Timeout in seconds for MCP tool calls."
+        },
+        "axioma.renderMode": {
+          "type": "string",
+          "enum": ["latex", "unicode", "both"],
+          "default": "both",
+          "description": "How to render results in the compute panel."
+        },
+        "axioma.autoEvaluate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically evaluate expressions on save."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "axioma-explorer",
+          "title": "Axioma",
+          "icon": "./icons/axioma-dark.png"
+        }
+      ]
+    },
+    "views": {
+      "axioma-explorer": [
+        {
+          "id": "axioma.stateView",
+          "name": "State",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package",
+    "test": "node ./out/test/runTest.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.0"
+  }
 }

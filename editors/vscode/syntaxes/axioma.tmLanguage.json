@@ -1,13 +1,316 @@
 {
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Axioma",
   "scopeName": "source.axioma",
   "patterns": [
-    { "match": "//.*$", "name": "comment.line.double-slash.axioma" },
-    { "match": "\\b(let|in|rule|import|module|assume|if|then|else|true|false)\\b", "name": "keyword.control.axioma" },
-    { "match": "\\b(sin|cos|tan|exp|log|sqrt|abs|diff|integrate|series|solve|expand|simplify|det|inv|transpose|christoffel|riemann|ricci|einstein|metric|diag|plot|dsolve|rk4|rewrite|commutator|ket|bra|pauli_x|pauli_y|pauli_z)\\b", "name": "entity.name.function.axioma" },
-    { "match": "\\b(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|mu|nu|xi|pi|rho|sigma|tau|phi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Sigma|Phi|Psi|Omega)\\b", "name": "constant.language.greek.axioma" },
-    { "match": "\\b\\d+(\\.\\d+)?\\b", "name": "constant.numeric.axioma" },
-    { "match": "[+\\-*/^=<>!]|=>", "name": "keyword.operator.axioma" },
-    { "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*_\\b", "name": "variable.parameter.pattern.axioma" },
-    { "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b", "name": "variable.other.axioma" }
-  ]
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#ruleDeclaration" },
+    { "include": "#propertyDeclaration" },
+    { "include": "#assumeDeclaration" },
+    { "include": "#conventionDeclaration" },
+    { "include": "#indicesDeclaration" },
+    { "include": "#functionDefinition" },
+    { "include": "#indexExpression" },
+    { "include": "#numbers" },
+    { "include": "#booleans" },
+    { "include": "#builtinFunctions" },
+    { "include": "#greekConstants" },
+    { "include": "#storageKeywords" },
+    { "include": "#controlKeywords" },
+    { "include": "#operators" },
+    { "include": "#patternVariables" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.axioma",
+          "match": "//.*$"
+        },
+        {
+          "include": "#blockComment"
+        }
+      ]
+    },
+    "blockComment": {
+      "name": "comment.block.axioma",
+      "begin": "/\\*",
+      "beginCaptures": {
+        "0": { "name": "comment.block.axioma" }
+      },
+      "end": "\\*/",
+      "endCaptures": {
+        "0": { "name": "comment.block.axioma" }
+      },
+      "patterns": [
+        { "include": "#blockComment" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.axioma",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "match": "\\\\.",
+              "name": "constant.character.escape.axioma"
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.axioma",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.axioma",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "booleans": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.axioma",
+          "match": "\\b(?:true|false)\\b"
+        }
+      ]
+    },
+    "storageKeywords": {
+      "patterns": [
+        {
+          "name": "storage.type.axioma",
+          "match": "\\b(?:module|import|let|rule)\\b"
+        }
+      ]
+    },
+    "controlKeywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.axioma",
+          "match": "\\b(?:in|if|then|else|assume|grassmann|indices|coordinates|property|weight|depends|convention|parallel|piecewise|indexset|operator|dim|values|position|fixed|free|true|false|nonzero|even|odd)\\b"
+        }
+      ]
+    },
+    "conventionDeclaration": {
+      "name": "meta.convention.declaration.axioma",
+      "begin": "\\b(convention)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.axioma" }
+      },
+      "end": "(?=;|$)",
+      "patterns": [
+        { "include": "#comments" },
+        {
+          "name": "support.type.property-name.axioma",
+          "match": "\\b(?:metric_signature|riemann_sign|ricci_contraction|levi_civita_norm|fourier_sign)\\b"
+        },
+        {
+          "name": "support.constant.convention.axioma",
+          "match": "\\b(?:mtw|weinberg|mostly_plus|mostly_minus|first_third|first_fourth|plus_one|minus_one|sqrt_g|plus_i|minus_i)\\b"
+        },
+        { "include": "#identifiers" }
+      ]
+    },
+    "indicesDeclaration": {
+      "name": "meta.indices.declaration.axioma",
+      "begin": "\\b(indices)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.axioma" }
+      },
+      "end": "(?=;|$)",
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#indexExpression" },
+        {
+          "name": "keyword.control.axioma",
+          "match": "\\b(?:dim|values|position|fixed|free)\\b"
+        },
+        { "include": "#numbers" },
+        { "include": "#greekConstants" },
+        { "include": "#identifiers" }
+      ]
+    },
+    "propertyDeclaration": {
+      "name": "meta.property.declaration.axioma",
+      "begin": "\\b(property)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.axioma" }
+      },
+      "end": "(?=;|$)",
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#indexExpression" },
+        {
+          "name": "keyword.other.property.axioma",
+          "match": "\\b(?:symmetric|antisymmetric|riemann_symmetry|riemann|metric|inverse_metric|kronecker_delta|kronecker|epsilon|epsilon_tensor|traceless|diagonal|trace|derivative|partial_derivative|covariant_derivative|spinor|dirac_bar|gamma_matrix|commuting|anticommuting|noncommuting|sort_order|tableau_symmetry|bianchi|satisfies_bianchi|weyl|weyl_tensor|differential_form|self_anticommuting|self_noncommuting|self_commuting|commuting_as_product|commuting_as_sum|majorana|implicit_index)\\b"
+        },
+        {
+          "name": "constant.language.greek.axioma",
+          "match": "\\b(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)\\b"
+        },
+        { "include": "#patternVariables" },
+        { "include": "#builtinFunctions" },
+        { "include": "#operators" },
+        { "include": "#numbers" },
+        { "include": "#identifiers" }
+      ]
+    },
+    "assumeDeclaration": {
+      "name": "meta.assume.declaration.axioma",
+      "begin": "\\b(assume)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.axioma" }
+      },
+      "end": "(?=;|$)",
+      "patterns": [
+        { "include": "#comments" },
+        {
+          "name": "keyword.other.assumption.axioma",
+          "match": "\\b(?:real|positive|negative|integer)\\b"
+        },
+        {
+          "name": "constant.language.greek.axioma",
+          "match": "\\b(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)\\b"
+        },
+        { "include": "#patternVariables" },
+        { "include": "#identifiers" }
+      ]
+    },
+    "ruleDeclaration": {
+      "name": "meta.rule.declaration.axioma",
+      "begin": "\\b(rule)\\b",
+      "beginCaptures": {
+        "1": { "name": "storage.type.axioma" }
+      },
+      "end": "(?=;|$)",
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        {
+          "match": "(\\b[A-Za-z_][A-Za-z0-9_]*\\b)(\\s*:)",
+          "captures": {
+            "1": { "name": "entity.name.function.axioma" },
+            "2": { "name": "punctuation.separator.key-value.axioma" }
+          }
+        },
+        {
+          "name": "keyword.operator.arrow.axioma",
+          "match": "=>"
+        },
+        { "include": "#indexExpression" },
+        { "include": "#patternVariables" },
+        { "include": "#builtinFunctions" },
+        { "include": "#greekConstants" },
+        { "include": "#numbers" },
+        { "include": "#booleans" },
+        { "include": "#operators" },
+        { "include": "#identifiers" }
+      ]
+    },
+    "functionDefinition": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\b(?=\\s*\\([^\\)]*\\)\\s*=)",
+          "captures": {
+            "1": { "name": "entity.name.function.axioma" }
+          }
+        }
+      ]
+    },
+    "builtinFunctions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.axioma",
+          "match": "\\b(?:sin|cos|tan|sec|csc|cot|asin|acos|atan|sinh|cosh|tanh|exp|log|ln|sqrt|abs|sign|floor|ceil|diff|integrate|series|limit|solve|expand|simplify|collect_terms|factor_out|factor_in|det|inv|transpose|eigenvalues|eigenvectors|norm|rank|trace|adjoint|christoffel|riemann|ricci|einstein|kretschner|weyl|geodesic|scalar_curvature|metric|diag|ket|bra|braket|commutator|anticommutator|pauli_x|pauli_y|pauli_z|gamma_trace|join_gamma|fierz|expand_diracbar|split_gamma|sort_spinors|canonicalise|sort_product|meld|eliminate_metric|eliminate_kronecker|rename_dummies|distribute|unwrap|product_rule|integrate_by_parts|epsilon_to_delta|expand_delta|reduce_delta|decompose|decompose_product|young_project|plot|dsolve|rk4|rewrite|subs|to_cpp|to_python|to_rust)\\b"
+        }
+      ]
+    },
+    "greekConstants": {
+      "patterns": [
+        {
+          "name": "constant.language.greek.axioma",
+          "match": "\\b(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.axioma",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.axioma",
+          "match": "\\b(?:and|or|not)\\b"
+        },
+        {
+          "name": "keyword.operator.axioma",
+          "match": "==|!=|<=|>=|[+\\-*/^=<>]"
+        }
+      ]
+    },
+    "patternVariables": {
+      "patterns": [
+        {
+          "name": "variable.parameter.pattern.axioma",
+          "match": "\\b[A-Za-z][A-Za-z0-9]*_\\b"
+        }
+      ]
+    },
+    "indexExpression": {
+      "patterns": [
+        {
+          "name": "meta.index.expression.axioma",
+          "begin": "\\[",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.index.axioma" }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.index.axioma" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#strings" },
+            {
+              "match": "([A-Za-z_][A-Za-z0-9_]*)([+-])",
+              "captures": {
+                "1": { "name": "variable.other.axioma" },
+                "2": { "name": "entity.name.tag.index.variance.axioma" }
+              }
+            },
+            {
+              "name": "constant.language.greek.axioma",
+              "match": "\\b(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Upsilon|Phi|Psi|Omega)\\b"
+            },
+            {
+              "name": "variable.other.axioma",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            },
+            {
+              "name": "keyword.operator.axioma",
+              "match": ","
+            }
+          ]
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.axioma",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
 }
