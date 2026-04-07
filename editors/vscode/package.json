@@ -4,7 +4,7 @@
   "description": "Axioma scientific computing language - tensor algebra, GR, QFT, and more",
   "version": "0.2.0",
   "publisher": "axioma",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Manav02012002/axioma"
