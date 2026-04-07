@@ -5449,41 +5449,41 @@ fn builtin_call(
         }
         "expand_diracbar" | "expand_bar" => {
             if args.len() == 1 {
-                let diracbar_sym = find_tensor_property_sym(env, |prop| {
-                    matches!(prop, ax_ir::TensorProperty::DiracBar)
-                })
-                .unwrap_or_else(|| interner.get_or_intern("bar"));
-                let gamma_sym = find_tensor_property_sym(env, |prop| {
-                    matches!(prop, ax_ir::TensorProperty::GammaMatrixProp)
-                })
-                .unwrap_or_else(|| interner.get_or_intern("gamma"));
-                let metric_sym =
-                    find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
-                ax_qm::expand_diracbar(&args[0], diracbar_sym, gamma_sym, metric_sym, interner)
+                ax_qm::expand_diracbar_full(&args[0], &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }
         }
         "sort_spinors" | "diracbar_sort" => {
             if args.len() == 1 {
-                let diracbar_sym = find_tensor_property_sym(env, |prop| {
-                    matches!(prop, ax_ir::TensorProperty::DiracBar)
-                })
-                .unwrap_or_else(|| interner.get_or_intern("bar"));
-                let gamma_sym = find_tensor_property_sym(env, |prop| {
-                    matches!(prop, ax_ir::TensorProperty::GammaMatrixProp)
-                })
-                .unwrap_or_else(|| interner.get_or_intern("gamma"));
-                ax_qm::diracbar_sort(&args[0], diracbar_sym, gamma_sym, &env.operators, interner)
+                ax_qm::sort_spinors(&args[0], &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }
         }
         "join_gamma" => {
             if args.len() == 1 {
-                let gamma_sym = interner.get_or_intern("gamma");
-                let metric_sym = interner.get_or_intern("g");
-                ax_qm::join_gammas_in_expr(&args[0], gamma_sym, metric_sym, interner)
+                let metric_sym = find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
+                let metric = Expr::Sym(metric_sym);
+                match &args[0] {
+                    Expr::Mul(factors) if factors.len() == 2 => ax_qm::join_gamma_full(
+                        &factors[0],
+                        &factors[1],
+                        None,
+                        true,
+                        false,
+                        &metric,
+                        &env.property_store,
+                        interner,
+                    ),
+                    _ => {
+                        let gamma_sym = find_tensor_property_sym(env, |prop| {
+                            matches!(prop, ax_ir::TensorProperty::GammaMatrixProp)
+                        })
+                        .unwrap_or_else(|| interner.get_or_intern("gamma"));
+                        ax_qm::join_gammas_in_expr(&args[0], gamma_sym, metric_sym, interner)
+                    }
+                }
             } else {
                 Expr::Call(f, args)
             }
@@ -5502,7 +5502,7 @@ fn builtin_call(
                         }
                     })
                     .unwrap_or(true);
-                ax_qm::split_gamma(&args[0], gamma, g, on_back, interner)
+                ax_qm::split_gamma_full(&args[0], on_back, &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }

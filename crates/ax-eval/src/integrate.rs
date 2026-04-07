@@ -170,7 +170,7 @@ fn is_unevaluated_integrate(expr: &Expr, interner: &ax_ir::Interner) -> bool {
         Expr::Pow(base, exp) => {
             is_unevaluated_integrate(base, interner) || is_unevaluated_integrate(exp, interner)
         }
-        Expr::Neg(e) => is_unevaluated_integrate(e, interner),
+        Expr::Neg(e) | Expr::Group(e, _) => is_unevaluated_integrate(e, interner),
         _ => false,
     }
 }
@@ -199,13 +199,24 @@ fn is_named_unary_call(
 }
 
 fn match_var_squared(term: &Expr, var: lasso::Spur) -> bool {
-    matches!(term, Expr::Pow(base, exp) if is_var(base, var) && matches!(exp.as_ref(), Expr::Int(n) if *n == 2.into()))
+    match term {
+        Expr::Group(inner, _) => match_var_squared(inner, var),
+        Expr::Pow(base, exp) => {
+            is_var(base, var) && matches!(exp.as_ref(), Expr::Int(n) if *n == 2.into())
+        }
+        _ => false,
+    }
 }
 
 fn extract_inv_quadratic(expr: &Expr, var: lasso::Spur) -> Option<Expr> {
     match expr {
+        Expr::Group(inner, _) => extract_inv_quadratic(inner, var),
         Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if *n == (-1).into()) => {
-            let Expr::Add(terms) = base.as_ref() else {
+            let inner_base = match base.as_ref() {
+                Expr::Group(inner, _) => inner.as_ref(),
+                other => other,
+            };
+            let Expr::Add(terms) = inner_base else {
                 return None;
             };
             if terms.len() != 2 {
@@ -231,6 +242,7 @@ fn extract_inv_quadratic(expr: &Expr, var: lasso::Spur) -> Option<Expr> {
 
 fn is_one_minus_var_sq(expr: &Expr, var: lasso::Spur) -> bool {
     match expr {
+        Expr::Group(inner, _) => is_one_minus_var_sq(inner, var),
         Expr::Add(terms) if terms.len() == 2 => {
             terms
                 .iter()
@@ -304,6 +316,7 @@ fn negate_expr(expr: &Expr) -> Expr {
 
 fn decompose_quadratic_form(expr: &Expr, var: lasso::Spur) -> Option<(Expr, QuadraticSign)> {
     match expr {
+        Expr::Group(inner, _) => decompose_quadratic_form(inner, var),
         Expr::Add(terms) if terms.len() == 2 => {
             let (t0_has_var, t1_has_var) =
                 (contains_var(&terms[0], var), contains_var(&terms[1], var));
@@ -342,10 +355,12 @@ fn match_sqrt_quadratic(
     interner: &ax_ir::Interner,
 ) -> Option<(Expr, QuadraticSign, BigRational)> {
     match expr {
+        Expr::Group(inner, _) => match_sqrt_quadratic(inner, var, interner),
         Expr::Call(f, args) if interner.resolve(*f) == "sqrt" && args.len() == 1 => {
             if let Some((a_sq, sign)) = decompose_quadratic_form(&args[0], var) {
                 return Some((a_sq, sign, BigRational::new(1.into(), 2.into())));
             }
+            None
         }
         Expr::Pow(base, exp) => {
             if let Some(r) = expr_to_rational(exp) {
@@ -362,6 +377,7 @@ fn match_sqrt_quadratic(
                     }
                 }
             }
+            None
         }
         Expr::Mul(factors) => {
             for factor in factors {
@@ -369,10 +385,10 @@ fn match_sqrt_quadratic(
                     return Some(result);
                 }
             }
+            None
         }
-        _ => {}
+        _ => None,
     }
-    None
 }
 
 fn trig_sub_a_minus_x(
@@ -438,6 +454,7 @@ pub fn try_trig_substitution(
 
 fn table_integrate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Option<Expr> {
     match expr {
+        Expr::Group(inner, _) => table_integrate(inner, var, interner),
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) if !contains_var(expr, var) => {
             Some(Expr::mul(vec![expr.clone(), Expr::Sym(var)]))
         }
@@ -826,6 +843,10 @@ pub fn try_integration_by_parts(
 }
 
 pub fn integrate(expr: &ax_ir::Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> ax_ir::Expr {
+    if let Expr::Group(inner, _) = expr {
+        return integrate(inner, var, interner);
+    }
+
     if let Some(result) = table_integrate(expr, var, interner) {
         return result;
     }

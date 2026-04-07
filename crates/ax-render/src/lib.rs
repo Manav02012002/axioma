@@ -564,6 +564,10 @@ fn render(expr: &Expr, parent_prec: u8, interner: &ax_ir::Interner) -> String {
             format!("\\begin{{cases}} {body} \\end{{cases}}")
         }
         Expr::Indexed(base, indices) => render_indexed(base, indices, interner),
+        Expr::Group(inner, _) => {
+            let rendered = format!("\\left({}\\right)", render(inner, PREC_TOP, interner));
+            wrap_if_needed(rendered, PREC_ATOM, parent_prec)
+        }
         Expr::Let(name, val, body) => format!(
             "\\text{{let }} {} = {} \\text{{ in }} {}",
             symbol_to_latex(*name, interner),

@@ -2,12 +2,20 @@ use ax_ir::Expr;
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
+fn strip_outer_groups(expr: Expr) -> Expr {
+    match expr {
+        Expr::Group(inner, _) => strip_outer_groups(*inner),
+        other => other,
+    }
+}
+
 fn is_zero(expr: &Expr) -> bool {
     match expr {
         Expr::Int(n) => n.is_zero(),
         Expr::Rational(r) => r.is_zero(),
         Expr::Float(f) => *f == 0.0,
         Expr::Complex(re, im) => is_zero(re) && is_zero(im),
+        Expr::Group(inner, _) => is_zero(inner),
         _ => false,
     }
 }
@@ -16,6 +24,7 @@ fn is_infinity(expr: &Expr, interner: &ax_ir::Interner) -> bool {
     match expr {
         Expr::Sym(s) => matches!(interner.resolve(*s), "inf" | "infty" | "neg_inf"),
         Expr::Float(f) => f.is_infinite(),
+        Expr::Group(inner, _) => is_infinity(inner, interner),
         _ => false,
     }
 }
@@ -25,6 +34,7 @@ fn is_nan_or_indeterminate(expr: &Expr, interner: &ax_ir::Interner) -> bool {
         Expr::Float(f) => f.is_nan() || f.is_infinite(),
         Expr::Sym(s) => matches!(interner.resolve(*s), "inf" | "infty" | "neg_inf" | "nan"),
         Expr::Call(f, _) => interner.resolve(*f) == "limit",
+        Expr::Group(inner, _) => is_nan_or_indeterminate(inner, interner),
         _ => false,
     }
 }
@@ -38,7 +48,7 @@ fn try_substitution(
     if let Some((_, denom)) = extract_fraction(expr) {
         let mut denom_env = crate::Env::new();
         denom_env.bindings.insert(var, point.clone());
-        let denom_value = crate::eval(&denom, &denom_env, interner);
+        let denom_value = strip_outer_groups(crate::eval(&denom, &denom_env, interner));
         if is_zero(&denom_value) || is_nan_or_indeterminate(&denom_value, interner) {
             return None;
         }
@@ -46,7 +56,7 @@ fn try_substitution(
 
     let mut env = crate::Env::new();
     env.bindings.insert(var, point.clone());
-    let result = crate::eval(expr, &env, interner);
+    let result = strip_outer_groups(crate::eval(expr, &env, interner));
     if is_nan_or_indeterminate(&result, interner) {
         None
     } else {
@@ -56,11 +66,20 @@ fn try_substitution(
 
 fn extract_fraction(expr: &Expr) -> Option<(Expr, Expr)> {
     match expr {
+        Expr::Group(inner, _) => extract_fraction(inner),
         Expr::Mul(factors) => {
             let mut numer_parts = Vec::new();
             let mut denom_parts = Vec::new();
             for factor in factors {
                 match factor {
+                    Expr::Group(inner, _) => {
+                        if let Some((numer, denom)) = extract_fraction(inner) {
+                            numer_parts.push(numer);
+                            denom_parts.push(denom);
+                        } else {
+                            numer_parts.push(factor.clone());
+                        }
+                    }
                     Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if *n == (-1).into()) =>
                     {
                         denom_parts.push(base.as_ref().clone());
@@ -125,7 +144,7 @@ fn degree_of_var(expr: &Expr, var: lasso::Spur) -> Option<usize> {
     match expr {
         Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Some(0),
         Expr::Sym(s) => Some(if *s == var { 1 } else { 0 }),
-        Expr::Neg(inner) => degree_of_var(inner, var),
+        Expr::Neg(inner) | Expr::Group(inner, _) => degree_of_var(inner, var),
         Expr::Add(terms) => terms
             .iter()
             .map(|term| degree_of_var(term, var))
@@ -151,6 +170,7 @@ fn degree_of_var(expr: &Expr, var: lasso::Spur) -> Option<usize> {
 fn leading_coefficient(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Option<Expr> {
     let degree = degree_of_var(expr, var)?;
     match expr {
+        Expr::Group(inner, _) => leading_coefficient(inner, var, interner),
         Expr::Add(terms) => {
             let leading_terms = terms
                 .iter()

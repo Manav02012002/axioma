@@ -378,6 +378,14 @@ fn collect_flat_add(expr: &Expr) -> Expr {
 }
 
 pub fn expand(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    fn additive_terms(expr: &Expr) -> Option<Vec<Expr>> {
+        match expr {
+            Expr::Add(terms) => Some(terms.clone()),
+            Expr::Group(inner, _) => additive_terms(inner),
+            _ => None,
+        }
+    }
+
     let _ = interner;
     match expr {
         Expr::Complex(re, im) => Expr::Complex(
@@ -398,14 +406,10 @@ pub fn expand(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
                 return Expr::mul(expanded_factors);
             }
 
-            if let Some((idx, terms)) =
-                expanded_factors.iter().enumerate().find_map(|(i, factor)| {
-                    if let Expr::Add(terms) = factor {
-                        Some((i, terms.clone()))
-                    } else {
-                        None
-                    }
-                })
+            if let Some((idx, terms)) = expanded_factors
+                .iter()
+                .enumerate()
+                .find_map(|(i, factor)| additive_terms(factor).map(|terms| (i, terms)))
             {
                 let rest = expanded_factors
                     .iter()
@@ -431,11 +435,11 @@ pub fn expand(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
         Expr::Pow(base, exp) => {
             let expanded_base = expand(base, interner);
             let expanded_exp = expand(exp, interner);
-            if let (Expr::Add(terms), Expr::Int(n)) = (&expanded_base, &expanded_exp) {
+            if let (Some(terms), Expr::Int(n)) = (additive_terms(&expanded_base), &expanded_exp) {
                 if *n > 1.into() {
                     if let Some(power) = n.to_u32() {
                         if (2..=8).contains(&power) && terms.len() * (power as usize) <= 12 {
-                            let sum = Expr::Add(terms.clone());
+                            let sum = Expr::Add(terms);
                             let repeated = (0..power).map(|_| sum.clone()).collect::<Vec<_>>();
                             return expand(&Expr::Mul(repeated), interner);
                         }
@@ -446,7 +450,7 @@ pub fn expand(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
         }
         Expr::Neg(e) => {
             let inner = expand(e, interner);
-            if let Expr::Add(terms) = inner {
+            if let Some(terms) = additive_terms(&inner) {
                 let expanded = Expr::add(terms.into_iter().map(Expr::neg).collect());
                 collect_flat_add(&expanded)
             } else {
@@ -1511,10 +1515,162 @@ pub fn simplify(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
     eval(&e7, &Env::new(), interner)
 }
 
+fn strip_group_ref(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Group(inner, _) => strip_group_ref(inner),
+        other => other,
+    }
+}
+
+fn match_named_square(expr: &Expr, name: &str, interner: &ax_ir::Interner) -> Option<Expr> {
+    match strip_group_ref(expr) {
+        Expr::Pow(base, exp) if matches!(exp.as_ref(), Expr::Int(n) if *n == 2.into()) => {
+            match strip_group_ref(base) {
+                Expr::Call(f, args) if interner.resolve(*f) == name && args.len() == 1 => {
+                    Some(args[0].clone())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn trig_identity_once(expr: &Expr, interner: &ax_ir::Interner) -> Option<Expr> {
+    let tan_sym = interner.get_or_intern("tan");
+    let sec_sym = interner.get_or_intern("sec");
+
+    match strip_group_ref(expr) {
+        Expr::Add(terms) if terms.len() == 2 => {
+            let t0 = strip_group_ref(&terms[0]);
+            let t1 = strip_group_ref(&terms[1]);
+
+            if let (Some(a0), Some(a1)) = (
+                match_named_square(t0, "sin", interner),
+                match_named_square(t1, "cos", interner),
+            ) {
+                if a0 == a1 {
+                    return Some(Expr::one());
+                }
+            }
+            if let (Some(a0), Some(a1)) = (
+                match_named_square(t0, "cos", interner),
+                match_named_square(t1, "sin", interner),
+            ) {
+                if a0 == a1 {
+                    return Some(Expr::one());
+                }
+            }
+
+            let one_minus = |one_term: &Expr, other_term: &Expr| match strip_group_ref(one_term) {
+                Expr::Int(n) if *n == 1.into() => match strip_group_ref(other_term) {
+                    Expr::Neg(inner) => {
+                        if let Some(arg) = match_named_square(inner, "sin", interner) {
+                            return Some(Expr::pow(
+                                Expr::Call(interner.get_or_intern("cos"), vec![arg]),
+                                Expr::Int(2.into()),
+                            ));
+                        }
+                        if let Some(arg) = match_named_square(inner, "cos", interner) {
+                            return Some(Expr::pow(
+                                Expr::Call(interner.get_or_intern("sin"), vec![arg]),
+                                Expr::Int(2.into()),
+                            ));
+                        }
+                        None
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            if let Some(result) = one_minus(t0, t1) {
+                return Some(result);
+            }
+            if let Some(result) = one_minus(t1, t0) {
+                return Some(result);
+            }
+
+            if let (Some(arg), Expr::Int(n)) = (match_named_square(t0, "tan", interner), t1) {
+                if *n == 1.into() {
+                    return Some(Expr::pow(Expr::Call(sec_sym, vec![arg]), Expr::Int(2.into())));
+                }
+            }
+            if let (Expr::Int(n), Some(arg)) = (t0, match_named_square(t1, "tan", interner)) {
+                if *n == 1.into() {
+                    return Some(Expr::pow(Expr::Call(sec_sym, vec![arg]), Expr::Int(2.into())));
+                }
+            }
+            if let (Some(arg), Expr::Neg(inner)) = (match_named_square(t0, "sec", interner), t1) {
+                if matches!(strip_group_ref(inner), Expr::Int(n) if *n == 1.into()) {
+                    return Some(Expr::pow(Expr::Call(tan_sym, vec![arg]), Expr::Int(2.into())));
+                }
+            }
+            if let (Expr::Neg(inner), Some(arg)) = (t0, match_named_square(t1, "sec", interner)) {
+                if matches!(strip_group_ref(inner), Expr::Int(n) if *n == 1.into()) {
+                    return Some(Expr::pow(Expr::Call(tan_sym, vec![arg]), Expr::Int(2.into())));
+                }
+            }
+
+            None
+        }
+        _ => None,
+    }
+}
+
 pub fn trig_simplify(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
-    let rules = build_trig_rules(interner);
-    let result = ax_rewrite::rewrite_fixed_point(&rules, expr, interner, 20);
-    crate::eval(&result, &crate::Env::new(), interner)
+    let recursed = match expr {
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(trig_simplify(re, interner)),
+            Box::new(trig_simplify(im, interner)),
+        ),
+        Expr::Add(terms) => Expr::add(terms.iter().map(|t| trig_simplify(t, interner)).collect()),
+        Expr::Mul(factors) => {
+            Expr::mul(factors.iter().map(|f| trig_simplify(f, interner)).collect())
+        }
+        Expr::Pow(base, exp) => Expr::pow(trig_simplify(base, interner), trig_simplify(exp, interner)),
+        Expr::Neg(inner) => Expr::neg(trig_simplify(inner, interner)),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter().map(|arg| trig_simplify(arg, interner)).collect(),
+        ),
+        Expr::FnDef(name, params, body) => {
+            Expr::FnDef(*name, params.clone(), Box::new(trig_simplify(body, interner)))
+        }
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(trig_simplify(lhs, interner)),
+            Box::new(trig_simplify(rhs, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| (trig_simplify(value, interner), condition.clone()))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => {
+            Expr::Indexed(Box::new(trig_simplify(base, interner)), indices.clone())
+        }
+        Expr::Group(inner, rel) => Expr::Group(Box::new(trig_simplify(inner, interner)), *rel),
+        Expr::Let(name, val, body) => Expr::Let(
+            *name,
+            Box::new(trig_simplify(val, interner)),
+            Box::new(trig_simplify(body, interner)),
+        ),
+        Expr::List(items) => Expr::List(items.iter().map(|i| trig_simplify(i, interner)).collect()),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| row.iter().map(|cell| trig_simplify(cell, interner)).collect())
+                .collect(),
+        ),
+        _ => expr.clone(),
+    };
+
+    if let Some(result) = trig_identity_once(&recursed, interner) {
+        return crate::eval(&result, &crate::Env::new(), interner);
+    }
+
+    recursed
 }
 
 /// Factor out common factors from terms in a sum.

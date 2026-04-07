@@ -304,6 +304,7 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
         Expr::Int(n) => (n.to_string(), PREC_POW),
         Expr::Rational(r) => (render_fractional_or_plain(r), PREC_POW),
         Expr::Float(f) => (format_float(*f), PREC_POW),
+        Expr::Group(inner, _) => render(inner, interner),
         Expr::Complex(re, im) => {
             if matches!(im.as_ref(), Expr::Int(n) if *n == 0.into()) {
                 return render(re, interner);

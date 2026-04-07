@@ -2,6 +2,8 @@
 
 use ax_ir::{Expr, Index, TensorProperty, Variance};
 use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::One;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +38,258 @@ pub enum FierzError {
     MalformedBilinear,
     AmbiguousSpinorOrder,
     SpinorOrderMismatch,
+}
+
+fn qm_error_expr(name: &str, expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern(name), vec![expr.clone()])
+}
+
+fn property_sym(expr: &Expr) -> Option<lasso::Spur> {
+    match expr {
+        Expr::Sym(sym) => Some(*sym),
+        Expr::Call(sym, _) => Some(*sym),
+        Expr::Indexed(base, _) => property_sym(base),
+        _ => None,
+    }
+}
+
+fn expr_has_property(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup, kind: &TensorProperty) -> bool {
+    property_sym(expr)
+        .map(|sym| properties.has_property_kind(sym, kind))
+        .unwrap_or(false)
+}
+
+fn prop_sort_order(sym: lasso::Spur, properties: &dyn ax_tensor::PropertyLookup) -> Option<Vec<lasso::Spur>> {
+    properties.get_properties(sym).into_iter().find_map(|prop| match prop {
+        TensorProperty::SortOrder(order) => Some(order.clone()),
+        _ => None,
+    })
+}
+
+fn is_majorana_spinor_expr(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup) -> bool {
+    property_sym(expr)
+        .map(|sym| {
+            properties.has_property_kind(sym, &TensorProperty::Spinor)
+                && properties.has_property_kind(sym, &TensorProperty::MajoranaSpinor)
+        })
+        .unwrap_or(false)
+}
+
+fn is_weyl_spinor_expr(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup) -> bool {
+    property_sym(expr)
+        .map(|sym| properties.has_property_kind(sym, &TensorProperty::WeylSpinor))
+        .unwrap_or(false)
+}
+
+fn index_family_name(idx: &Index, properties: &dyn ax_tensor::PropertyLookup) -> Option<lasso::Spur> {
+    idx.index_type.or_else(|| {
+        properties
+            .index_families()
+            .and_then(|families| families.get(&idx.name).map(|family| family.name))
+    })
+}
+
+fn index_family_dimension(idx: &Index, properties: &dyn ax_tensor::PropertyLookup) -> Option<usize> {
+    let family_name = index_family_name(idx, properties)?;
+    properties
+        .index_families()
+        .and_then(|families| families.get(&family_name).and_then(|family| family.dimension))
+        .or_else(|| {
+            properties
+                .index_families()
+                .and_then(|families| families.get(&idx.name).and_then(|family| family.dimension))
+        })
+}
+
+fn collect_all_index_names(expr: &Expr, out: &mut HashSet<lasso::Spur>) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            for idx in indices {
+                out.insert(idx.name);
+            }
+            collect_all_index_names(base, out);
+        }
+        Expr::Add(items) | Expr::Mul(items) | Expr::List(items) | Expr::Call(_, items) => {
+            for item in items {
+                collect_all_index_names(item, out);
+            }
+        }
+        Expr::Pow(base, exp) => {
+            collect_all_index_names(base, out);
+            collect_all_index_names(exp, out);
+        }
+        Expr::Neg(inner) | Expr::Group(inner, _) => collect_all_index_names(inner, out),
+        Expr::Complex(re, im) => {
+            collect_all_index_names(re, out);
+            collect_all_index_names(im, out);
+        }
+        Expr::FnDef(_, _, body) => collect_all_index_names(body, out),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_all_index_names(lhs, out);
+            collect_all_index_names(rhs, out);
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                collect_all_index_names(value, out);
+            }
+        }
+        Expr::Let(_, value, body) => {
+            collect_all_index_names(value, out);
+            collect_all_index_names(body, out);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_all_index_names(cell, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+#[derive(Clone, Debug)]
+struct GammaExprData {
+    head: Expr,
+    sym: Option<lasso::Spur>,
+    indices: Vec<Index>,
+}
+
+fn gamma_expr_data(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup) -> Option<GammaExprData> {
+    match expr {
+        Expr::Call(sym, args) if properties.has_property_kind(*sym, &TensorProperty::GammaMatrixProp) => {
+            let indices = args
+                .iter()
+                .filter_map(|arg| match arg {
+                    Expr::Sym(name) => Some(Index {
+                        name: *name,
+                        variance: Variance::Up,
+                        index_type: None,
+                    }),
+                    Expr::Indexed(_, idxs) if idxs.len() == 1 => Some(idxs[0].clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            Some(GammaExprData {
+                head: Expr::Sym(*sym),
+                sym: Some(*sym),
+                indices,
+            })
+        }
+        Expr::Indexed(base, indices)
+            if property_sym(base)
+                .map(|sym| properties.has_property_kind(sym, &TensorProperty::GammaMatrixProp))
+                .unwrap_or(false) =>
+        {
+            Some(GammaExprData {
+                head: (**base).clone(),
+                sym: property_sym(base),
+                indices: indices.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn build_gamma_expr(head: &Expr, indices: &[Index]) -> Expr {
+    match head {
+        Expr::Sym(sym) if indices.iter().all(|idx| idx.index_type.is_none() && idx.variance == Variance::Up) => {
+            Expr::Call(*sym, indices.iter().map(|idx| Expr::Sym(idx.name)).collect())
+        }
+        _ => Expr::Indexed(Box::new(head.clone()), indices.to_vec()),
+    }
+}
+
+fn build_metric_contraction(metric: &Expr, left: &Index, right: &Index) -> Expr {
+    match metric {
+        Expr::Sym(_) | Expr::Call(_, _) | Expr::Indexed(_, _) => Expr::Indexed(
+            Box::new(metric.clone()),
+            vec![
+                Index {
+                    name: left.name,
+                    variance: Variance::Up,
+                    index_type: left.index_type,
+                },
+                Index {
+                    name: right.name,
+                    variance: Variance::Up,
+                    index_type: right.index_type,
+                },
+            ],
+        ),
+        _ => Expr::mul(vec![metric.clone(), Expr::Sym(left.name), Expr::Sym(right.name)]),
+    }
+}
+
+fn build_generalised_delta(
+    uppers: &[Index],
+    lowers: &[Index],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let sym = interner.get_or_intern("generalised_delta");
+    let mut args = Vec::with_capacity(uppers.len() + lowers.len());
+    args.extend(uppers.iter().map(|idx| Expr::Sym(idx.name)));
+    args.extend(lowers.iter().map(|idx| Expr::Sym(idx.name)));
+    Expr::Call(sym, args)
+}
+
+fn permutation_parity(selection: &[usize]) -> i32 {
+    let mut inversions = 0usize;
+    for i in 0..selection.len() {
+        for j in i + 1..selection.len() {
+            if selection[i] > selection[j] {
+                inversions += 1;
+            }
+        }
+    }
+    if inversions % 2 == 0 { 1 } else { -1 }
+}
+
+fn combinations_of(n: usize, k: usize) -> Vec<Vec<usize>> {
+    fn helper(start: usize, n: usize, k: usize, current: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if current.len() == k {
+            out.push(current.clone());
+            return;
+        }
+        for i in start..n {
+            current.push(i);
+            helper(i + 1, n, k, current, out);
+            current.pop();
+        }
+    }
+
+    let mut out = Vec::new();
+    let mut current = Vec::new();
+    helper(0, n, k, &mut current, &mut out);
+    out
+}
+
+fn factorial(n: usize) -> BigInt {
+    (1..=n).fold(BigInt::one(), |acc, k| acc * BigInt::from(k))
+}
+
+fn fresh_dummy_from_family(
+    family: &ax_ir::IndexFamily,
+    used: &mut HashSet<lasso::Spur>,
+    interner: &ax_ir::Interner,
+) -> lasso::Spur {
+    for value in &family.values {
+        if used.insert(*value) {
+            return *value;
+        }
+    }
+    let mut counter = 0usize;
+    loop {
+        let candidate = interner.get_or_intern(&format!(
+            "{}_{}",
+            interner.resolve(family.name),
+            counter
+        ));
+        counter += 1;
+        if used.insert(candidate) {
+            return candidate;
+        }
+    }
 }
 
 impl FierzError {
@@ -920,6 +1174,287 @@ pub fn join_gammas_in_expr(
     }
 }
 
+pub fn sort_spinors(
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mapped = factors
+                .iter()
+                .map(|factor| sort_spinors(factor, properties, interner))
+                .collect::<Vec<_>>();
+
+            let mut out = mapped.clone();
+            for i in 0..mapped.len() {
+                let bar_factor = &mapped[i];
+                if !expr_has_property(bar_factor, properties, &TensorProperty::DiracBar) {
+                    continue;
+                }
+                let Expr::Call(bar_sym, args) = bar_factor else {
+                    continue;
+                };
+                if args.len() != 1 || !is_majorana_spinor_expr(&args[0], properties) {
+                    continue;
+                }
+                let left_spinor = args[0].clone();
+                let left_sym = match property_sym(&left_spinor) {
+                    Some(sym) => sym,
+                    None => continue,
+                };
+
+                let mut gamma_pos = None;
+                let mut spinor_pos = None;
+                for j in i + 1..mapped.len() {
+                    let candidate = &mapped[j];
+                    if expr_has_property(candidate, properties, &TensorProperty::DiracBar) {
+                        break;
+                    }
+                    if expr_has_property(candidate, properties, &TensorProperty::GammaMatrixProp) {
+                        if gamma_pos.is_some() {
+                            return qm_error_expr("sort_spinors_join_gamma_first", expr, interner);
+                        }
+                        gamma_pos = Some(j);
+                        continue;
+                    }
+                    if expr_has_property(candidate, properties, &TensorProperty::Spinor) {
+                        spinor_pos = Some(j);
+                        break;
+                    }
+                    if !matches!(candidate, Expr::Int(_) | Expr::Rational(_) | Expr::Float(_)) {
+                        break;
+                    }
+                }
+
+                let Some(j) = spinor_pos else {
+                    continue;
+                };
+                let right_spinor = mapped[j].clone();
+                if !is_majorana_spinor_expr(&right_spinor, properties) {
+                    return qm_error_expr("sort_spinors_second_not_majorana", expr, interner);
+                }
+                let right_sym = match property_sym(&right_spinor) {
+                    Some(sym) => sym,
+                    None => continue,
+                };
+                let Some(order) = prop_sort_order(left_sym, properties) else {
+                    continue;
+                };
+                let Some(pos_left) = order.iter().position(|sym| *sym == left_sym) else {
+                    continue;
+                };
+                let Some(pos_right) = order.iter().position(|sym| *sym == right_sym) else {
+                    continue;
+                };
+                if pos_left <= pos_right {
+                    continue;
+                }
+
+                let gamma_rank = gamma_pos
+                    .and_then(|pos| gamma_expr_data(&mapped[pos], properties).map(|data| data.indices.len()))
+                    .unwrap_or(0);
+                let majorana_sign = if ((gamma_rank * (gamma_rank + 1)) / 2) % 2 == 0 {
+                    1
+                } else {
+                    -1
+                };
+                let comparison = ax_tensor::subtree_compare(&left_spinor, &right_spinor, properties, interner);
+                let swap_sign = ax_tensor::can_swap(
+                    &left_spinor,
+                    &right_spinor,
+                    comparison,
+                    properties,
+                    interner,
+                    false,
+                );
+                if swap_sign == 0 {
+                    continue;
+                }
+                let total_sign = majorana_sign * swap_sign;
+                out[i] = Expr::Call(*bar_sym, vec![right_spinor.clone()]);
+                out[j] = left_spinor.clone();
+                let reordered = Expr::mul(out);
+                return if total_sign < 0 { Expr::neg(reordered) } else { reordered };
+            }
+
+            Expr::mul(mapped)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms.iter().map(|term| sort_spinors(term, properties, interner)).collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(sort_spinors(inner, properties, interner)),
+        Expr::Pow(base, exp) => Expr::pow(
+            sort_spinors(base, properties, interner),
+            sort_spinors(exp, properties, interner),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(sort_spinors(re, properties, interner)),
+            Box::new(sort_spinors(im, properties, interner)),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter().map(|arg| sort_spinors(arg, properties, interner)).collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(sort_spinors(base, properties, interner)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(Box::new(sort_spinors(inner, properties, interner)), *rel),
+        _ => expr.clone(),
+    }
+}
+
+pub fn join_gamma_full(
+    gam1: &Expr,
+    gam2: &Expr,
+    dimension: Option<usize>,
+    expand: bool,
+    use_generalised_delta: bool,
+    metric: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let Some(g1) = gamma_expr_data(gam1, properties) else {
+        return Expr::mul(vec![gam1.clone(), gam2.clone()]);
+    };
+    let Some(g2) = gamma_expr_data(gam2, properties) else {
+        return Expr::mul(vec![gam1.clone(), gam2.clone()]);
+    };
+
+    let rank1 = g1.indices.len();
+    let rank2 = g2.indices.len();
+    let inferred_dim = g1
+        .indices
+        .iter()
+        .chain(g2.indices.iter())
+        .filter_map(|idx| index_family_dimension(idx, properties))
+        .max();
+    let dim = dimension.or(inferred_dim);
+
+    let families1: HashSet<_> = g1.indices.iter().filter_map(|idx| index_family_name(idx, properties)).collect();
+    let families2: HashSet<_> = g2.indices.iter().filter_map(|idx| index_family_name(idx, properties)).collect();
+    if !families1.is_empty() && !families2.is_empty() && families1 != families2 {
+        return qm_error_expr("join_gamma_incompatible_index_sets", &Expr::mul(vec![gam1.clone(), gam2.clone()]), interner);
+    }
+
+    let dup1: HashSet<_> = g1.indices.iter().map(|idx| idx.name).collect();
+    if dup1.len() != g1.indices.len() {
+        return Expr::zero();
+    }
+    let dup2: HashSet<_> = g2.indices.iter().map(|idx| idx.name).collect();
+    if dup2.len() != g2.indices.len() {
+        return Expr::zero();
+    }
+
+    let mut terms = Vec::new();
+    let max_i = rank1.min(rank2);
+    for i in 0..=max_i {
+        let free_rank = rank1 + rank2 - 2 * i;
+        if dim.is_some_and(|d| free_rank > d) {
+            continue;
+        }
+        let coeff = BigRational::new(
+            factorial(rank1) * factorial(rank2),
+            factorial(rank1 - i) * factorial(rank2 - i) * factorial(i),
+        );
+
+        if i == 0 {
+            let mut free = g1.indices.clone();
+            free.extend(g2.indices.clone());
+            let gamma = if free.is_empty() {
+                Expr::one()
+            } else {
+                build_gamma_expr(&g1.head, &free)
+            };
+            terms.push(if coeff.is_one() { gamma } else { Expr::mul(vec![Expr::Rational(coeff), gamma]) });
+            continue;
+        }
+
+        let left_choices = combinations_of(rank1, i);
+        let right_choices = combinations_of(rank2, i);
+        let mut contracted_terms = Vec::new();
+        for left in &left_choices {
+            for right in &right_choices {
+                let left_sign = permutation_parity(left);
+                let right_sign = permutation_parity(right);
+                let mut free = g1
+                    .indices
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, item)| (!left.contains(&idx)).then_some(item.clone()))
+                    .collect::<Vec<_>>();
+                free.extend(
+                    g2.indices
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, item)| (!right.contains(&idx)).then_some(item.clone())),
+                );
+                let gamma_part = if free.is_empty() {
+                    Expr::one()
+                } else {
+                    build_gamma_expr(&g1.head, &free)
+                };
+                let contraction = if use_generalised_delta {
+                    let uppers = left.iter().map(|idx| g1.indices[*idx].clone()).collect::<Vec<_>>();
+                    let lowers = right.iter().map(|idx| g2.indices[*idx].clone()).collect::<Vec<_>>();
+                    build_generalised_delta(&uppers, &lowers, interner)
+                } else {
+                    let metrics = left
+                        .iter()
+                        .zip(right.iter())
+                        .map(|(li, ri)| build_metric_contraction(metric, &g1.indices[*li], &g2.indices[*ri]))
+                        .collect::<Vec<_>>();
+                    if metrics.is_empty() {
+                        Expr::one()
+                    } else {
+                        Expr::mul(metrics)
+                    }
+                };
+                let mut term = Expr::mul(vec![gamma_part, contraction]);
+                if left_sign * right_sign < 0 {
+                    term = Expr::neg(term);
+                }
+                contracted_terms.push(term);
+                if !expand {
+                    break;
+                }
+            }
+            if !expand {
+                break;
+            }
+        }
+
+        let contraction_sum = if contracted_terms.len() == 1 {
+            contracted_terms.pop().unwrap()
+        } else {
+            Expr::add(contracted_terms)
+        };
+        if expand && !coeff.is_one() {
+            match contraction_sum {
+                Expr::Add(items) => {
+                    terms.extend(
+                        items.into_iter().map(|item| Expr::mul(vec![Expr::Rational(coeff.clone()), item])),
+                    );
+                }
+                other => terms.push(Expr::mul(vec![Expr::Rational(coeff), other])),
+            }
+        } else {
+            terms.push(if coeff.is_one() {
+                contraction_sum
+            } else {
+                Expr::mul(vec![Expr::Rational(coeff), contraction_sum])
+            });
+        }
+    }
+
+    if terms.is_empty() {
+        Expr::zero()
+    } else {
+        Expr::add(terms)
+    }
+}
+
 fn binomial(n: usize, k: usize) -> usize {
     if k > n {
         return 0;
@@ -1529,6 +2064,63 @@ pub fn expand_diracbar(
     }
 }
 
+pub fn expand_diracbar_full(
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Call(f, args) if properties.has_property_kind(*f, &TensorProperty::DiracBar) && args.len() == 1 => {
+            let inner = expand_diracbar_full(&args[0], properties, interner);
+            let Expr::Mul(factors) = inner else {
+                return Expr::Call(*f, vec![inner]);
+            };
+            if factors.len() != 2 {
+                return Expr::Call(*f, vec![Expr::Mul(factors)]);
+            }
+            let (gamma_expr, spinor) = if expr_has_property(&factors[0], properties, &TensorProperty::GammaMatrixProp)
+            {
+                (factors[0].clone(), factors[1].clone())
+            } else if expr_has_property(&factors[1], properties, &TensorProperty::GammaMatrixProp) {
+                (factors[1].clone(), factors[0].clone())
+            } else {
+                return Expr::Call(*f, vec![Expr::Mul(factors)]);
+            };
+            let rank = gamma_expr_data(&gamma_expr, properties)
+                .map(|data| data.indices.len())
+                .unwrap_or(0);
+            let sign = if ((rank * (rank + 1)) / 2) % 2 == 0 { 1 } else { -1 };
+            let flipped = Expr::mul(vec![Expr::Call(*f, vec![spinor]), gamma_expr]);
+            if sign < 0 { Expr::neg(flipped) } else { flipped }
+        }
+        Expr::Add(terms) => Expr::add(
+            terms.iter().map(|term| expand_diracbar_full(term, properties, interner)).collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors.iter().map(|factor| expand_diracbar_full(factor, properties, interner)).collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(expand_diracbar_full(inner, properties, interner)),
+        Expr::Pow(base, exp) => Expr::pow(
+            expand_diracbar_full(base, properties, interner),
+            expand_diracbar_full(exp, properties, interner),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(expand_diracbar_full(re, properties, interner)),
+            Box::new(expand_diracbar_full(im, properties, interner)),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter().map(|arg| expand_diracbar_full(arg, properties, interner)).collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(expand_diracbar_full(base, properties, interner)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(Box::new(expand_diracbar_full(inner, properties, interner)), *rel),
+        _ => expr.clone(),
+    }
+}
+
 pub fn diracbar_sort(
     expr: &Expr,
     diracbar_sym: lasso::Spur,
@@ -1630,6 +2222,165 @@ pub fn diracbar_sort(
         ),
         _ => expr.clone(),
     }
+}
+
+pub fn fierz_full(
+    expr: &Expr,
+    spinor_order: &[Expr; 4],
+    dimension: usize,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let parsed = parse_fierz_input(expr, Some(properties), interner).ok()?;
+    let desired = spinor_order
+        .iter()
+        .map(property_sym)
+        .collect::<Option<Vec<_>>>()?;
+    let desired = [desired[0], desired[1], desired[2], desired[3]];
+    let right_order = [parsed.pair.psi1, parsed.pair.psi2, parsed.pair.psi3, parsed.pair.psi4];
+    let wrong_order = [parsed.pair.psi1, parsed.pair.psi4, parsed.pair.psi3, parsed.pair.psi2];
+    if desired == right_order {
+        return None;
+    }
+    if desired != wrong_order {
+        return None;
+    }
+
+    let spinor_dim = if dimension % 2 == 0 {
+        1usize << (dimension / 2)
+    } else {
+        1usize << ((dimension - 1) / 2)
+    };
+    let use_weyl = spinor_order
+        .iter()
+        .all(|spinor| is_weyl_spinor_expr(spinor, properties));
+    let max_rank = if use_weyl { dimension / 2 } else { dimension };
+    let gamma_sym = property_sym(&Expr::Call(interner.get_or_intern("gamma"), vec![]))
+        .unwrap_or_else(|| interner.get_or_intern("gamma"));
+
+    let mut used = HashSet::new();
+    collect_all_index_names(expr, &mut used);
+    let family = properties
+        .index_families()
+        .and_then(|families| families.values().next().cloned());
+
+    let mut terms = Vec::new();
+    for rank in 0..=max_rank {
+        let coeff = -BigRational::new(BigInt::one(), BigInt::from(spinor_dim) * factorial(rank));
+        let gamma_indices = if let Some(info) = &family {
+            (0..rank)
+                .map(|_| {
+                    fresh_dummy_from_family(info, &mut used, interner)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            (0..rank)
+                .map(|idx| interner.get_or_intern(&format!("_fierz{rank}_{idx}")))
+                .collect::<Vec<_>>()
+        };
+
+        let first_gamma = if gamma_indices.is_empty() {
+            None
+        } else {
+            Some(Expr::Call(
+                gamma_sym,
+                gamma_indices.iter().map(|idx| Expr::Sym(*idx)).collect(),
+            ))
+        };
+        let mut second_chain = Vec::new();
+        if !parsed.pair.gamma_a.is_empty() {
+            second_chain.push(Expr::Call(
+                gamma_sym,
+                parsed.pair.gamma_a.iter().map(|idx| Expr::Sym(*idx)).collect(),
+            ));
+        }
+        if !gamma_indices.is_empty() {
+            second_chain.push(Expr::Call(
+                gamma_sym,
+                gamma_indices.iter().map(|idx| Expr::Sym(*idx)).collect(),
+            ));
+        }
+        if !parsed.pair.gamma_b.is_empty() {
+            second_chain.push(Expr::Call(
+                gamma_sym,
+                parsed.pair.gamma_b.iter().rev().map(|idx| Expr::Sym(*idx)).collect(),
+            ));
+        }
+
+        let mut first_bilinear = vec![Expr::Sym(desired[0])];
+        if let Some(gamma) = first_gamma {
+            first_bilinear.push(gamma);
+        }
+        first_bilinear.push(Expr::Sym(desired[1]));
+
+        let mut second_bilinear = vec![Expr::Sym(desired[2])];
+        second_bilinear.extend(second_chain);
+        second_bilinear.push(Expr::Sym(desired[3]));
+
+        let mut term_factors = parsed.pair.remaining_factors.clone();
+        term_factors.push(Expr::Rational(coeff));
+        term_factors.push(Expr::mul(first_bilinear));
+        term_factors.push(Expr::mul(second_bilinear));
+        terms.push(Expr::mul(term_factors));
+    }
+
+    Some(Expr::add(terms))
+}
+
+pub fn split_gamma_full(
+    gamma_expr: &Expr,
+    on_back: bool,
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let Some(data) = gamma_expr_data(gamma_expr, properties) else {
+        return gamma_expr.clone();
+    };
+    if data.indices.len() <= 1 {
+        return gamma_expr.clone();
+    }
+
+    let metric = Expr::Sym(interner.get_or_intern("g"));
+    let (left_indices, right_indices) = if on_back {
+        (
+            data.indices[..data.indices.len() - 1].to_vec(),
+            vec![data.indices[data.indices.len() - 1].clone()],
+        )
+    } else {
+        (
+            vec![data.indices[0].clone()],
+            data.indices[1..].to_vec(),
+        )
+    };
+    let lhs = build_gamma_expr(&data.head, &left_indices);
+    let rhs = build_gamma_expr(&data.head, &right_indices);
+    let product = Expr::mul(vec![lhs.clone(), rhs.clone()]);
+    let joined = join_gamma_full(&lhs, &rhs, None, true, true, &metric, properties, interner);
+
+    let joined_terms = match joined {
+        Expr::Add(terms) => terms,
+        other => vec![other],
+    };
+    let original_data = gamma_expr_data(gamma_expr, properties);
+    let mut rest = Vec::new();
+    for term in joined_terms {
+        let rank_match = match &term {
+            Expr::Mul(factors) => factors.iter().any(|factor| {
+                gamma_expr_data(factor, properties)
+                    .map(|candidate| original_data.as_ref().map(|d| candidate.indices == d.indices).unwrap_or(false))
+                    .unwrap_or(false)
+            }),
+            _ => gamma_expr_data(&term, properties)
+                .map(|candidate| original_data.as_ref().map(|d| candidate.indices == d.indices).unwrap_or(false))
+                .unwrap_or(false),
+        };
+        if !rank_match {
+            rest.push(Expr::neg(term));
+        }
+    }
+    let mut out_terms = vec![product];
+    out_terms.extend(rest);
+    Expr::add(out_terms)
 }
 
 fn fresh_fierz_indices(
@@ -1948,6 +2699,10 @@ pub fn split_gamma(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prop_map() -> HashMap<lasso::Spur, Vec<TensorProperty>> {
+        HashMap::new()
+    }
 
     #[test]
     fn pauli_commutation() {
@@ -2617,5 +3372,238 @@ mod tests {
             "result of split on a sum should be an Add, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn sort_spinors_majorana_flip_sign() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let chi = interner.get_or_intern("chi");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = prop_map();
+        props.insert(bar, vec![TensorProperty::DiracBar]);
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        props.insert(
+            psi,
+            vec![
+                TensorProperty::Spinor,
+                TensorProperty::MajoranaSpinor,
+                TensorProperty::AntiCommuting,
+                TensorProperty::SortOrder(vec![chi, psi]),
+            ],
+        );
+        props.insert(
+            chi,
+            vec![
+                TensorProperty::Spinor,
+                TensorProperty::MajoranaSpinor,
+                TensorProperty::AntiCommuting,
+                TensorProperty::SortOrder(vec![chi, psi]),
+            ],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]),
+            Expr::Sym(chi),
+        ]);
+        let result = sort_spinors(&expr, &props, &interner);
+        let expected = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(chi)]),
+            Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]),
+            Expr::Sym(psi),
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn join_gamma_rank1_rank1_4d() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let eta = interner.get_or_intern("eta");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = prop_map();
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        let result = join_gamma_full(
+            &Expr::Call(gamma, vec![Expr::Sym(a)]),
+            &Expr::Call(gamma, vec![Expr::Sym(b)]),
+            Some(4),
+            true,
+            false,
+            &Expr::Sym(eta),
+            &props,
+            &mut interner,
+        );
+        match result {
+            Expr::Add(terms) => assert_eq!(terms.len(), 2),
+            other => panic!("expected add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn join_gamma_rank2_rank1_4d() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let eta = interner.get_or_intern("eta");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let mut props = prop_map();
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        let result = join_gamma_full(
+            &Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]),
+            &Expr::Call(gamma, vec![Expr::Sym(c)]),
+            Some(4),
+            true,
+            false,
+            &Expr::Sym(eta),
+            &props,
+            &mut interner,
+        );
+        match result {
+            Expr::Add(terms) => assert!(terms.len() >= 3),
+            other => panic!("expected add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn join_gamma_duplicate_index_zero() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let eta = interner.get_or_intern("eta");
+        let a = interner.get_or_intern("a");
+        let mut props = prop_map();
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        let result = join_gamma_full(
+            &Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(a)]),
+            &Expr::Call(gamma, vec![]),
+            Some(4),
+            true,
+            false,
+            &Expr::Sym(eta),
+            &props,
+            &mut interner,
+        );
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn join_gamma_generalised_delta() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let eta = interner.get_or_intern("eta");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let mut props = prop_map();
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        let result = join_gamma_full(
+            &Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]),
+            &Expr::Call(gamma, vec![Expr::Sym(c), Expr::Sym(d)]),
+            Some(4),
+            true,
+            true,
+            &Expr::Sym(eta),
+            &props,
+            &mut interner,
+        );
+        let printed = ax_ir::pretty_print(&result, &interner);
+        assert!(printed.contains("generalised_delta"));
+    }
+
+    #[test]
+    fn expand_diracbar_sign() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let eps = interner.get_or_intern("eps");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let mut props = prop_map();
+        props.insert(bar, vec![TensorProperty::DiracBar]);
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        let odd = Expr::Call(
+            bar,
+            vec![Expr::mul(vec![Expr::Call(gamma, vec![Expr::Sym(a)]), Expr::Sym(eps)])],
+        );
+        let even = Expr::Call(
+            bar,
+            vec![Expr::mul(vec![
+                Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]),
+                Expr::Sym(psi),
+            ])],
+        );
+        let odd_result = expand_diracbar_full(&odd, &props, &interner);
+        let even_result = expand_diracbar_full(&even, &props, &interner);
+        let odd_str = format!("{odd_result:?}");
+        assert!(matches!(odd_result, Expr::Neg(_)) || odd_str.contains("-1"));
+        assert!(!matches!(even_result, Expr::Neg(_)));
+    }
+
+    #[test]
+    fn split_gamma_back_full() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let mut props = prop_map();
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        let expr = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let result = split_gamma_full(&expr, true, &props, &mut interner);
+        assert!(matches!(result, Expr::Add(_)));
+    }
+
+    #[test]
+    fn split_gamma_front_full() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let mut props = prop_map();
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        let expr = Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)]);
+        let result = split_gamma_full(&expr, false, &props, &mut interner);
+        assert!(matches!(result, Expr::Add(_)));
+    }
+
+    #[test]
+    fn fierz_full_reorders_wrong_spinor_order() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let bar = interner.get_or_intern("bar");
+        let psi1 = interner.get_or_intern("psi1");
+        let psi2 = interner.get_or_intern("psi2");
+        let psi3 = interner.get_or_intern("psi3");
+        let psi4 = interner.get_or_intern("psi4");
+        let mu = interner.get_or_intern("mu");
+        let mut props = prop_map();
+        props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
+        props.insert(bar, vec![TensorProperty::DiracBar]);
+        for sym in [psi1, psi2, psi3, psi4] {
+            props.insert(sym, vec![TensorProperty::Spinor, TensorProperty::AntiCommuting]);
+        }
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi1)]),
+            Expr::Call(gamma, vec![Expr::Sym(mu)]),
+            Expr::Sym(psi4),
+            Expr::Call(bar, vec![Expr::Sym(psi3)]),
+            Expr::Sym(psi2),
+        ]);
+        let order = [
+            Expr::Sym(psi1),
+            Expr::Sym(psi2),
+            Expr::Sym(psi3),
+            Expr::Sym(psi4),
+        ];
+        let result = fierz_full(&expr, &order, 4, &props, &mut interner);
+        assert!(matches!(result, Some(Expr::Add(_))));
     }
 }
