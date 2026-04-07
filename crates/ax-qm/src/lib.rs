@@ -1,4 +1,12 @@
 #![forbid(unsafe_code)]
+#![allow(
+    clippy::manual_contains,
+    clippy::manual_range_patterns,
+    clippy::needless_range_loop,
+    clippy::only_used_in_recursion,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
 
 use ax_ir::{Expr, Index, TensorProperty, Variance};
 use num_bigint::BigInt;
@@ -151,6 +159,7 @@ fn collect_all_index_names(expr: &Expr, out: &mut HashSet<lasso::Spur>) {
 #[derive(Clone, Debug)]
 struct GammaExprData {
     head: Expr,
+    #[allow(dead_code)]
     sym: Option<lasso::Spur>,
     indices: Vec<Index>,
 }

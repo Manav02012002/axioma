@@ -1,4 +1,10 @@
 #![forbid(unsafe_code)]
+#![allow(
+    clippy::if_same_then_else,
+    clippy::manual_is_multiple_of,
+    clippy::needless_range_loop,
+    clippy::too_many_arguments
+)]
 
 use ax_ir::{Expr, Index, IndexFamily, Interner, TensorProperty, Variance};
 use ax_tensor::PropertyLookup;

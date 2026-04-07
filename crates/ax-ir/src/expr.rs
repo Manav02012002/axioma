@@ -30,16 +30,11 @@ pub struct IndexFamily {
     pub parent: Option<Sym>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum IndexPosition {
+    #[default]
     Free,
     Fixed,
-}
-
-impl Default for IndexPosition {
-    fn default() -> Self {
-        IndexPosition::Free
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -142,19 +137,14 @@ pub enum FourierSign {
     PlusI,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum TrustLevel {
     Exact,
     UnderAssumptions,
     Heuristic,
     NumericallyChecked,
+    #[default]
     Unverified,
-}
-
-impl Default for TrustLevel {
-    fn default() -> Self {
-        TrustLevel::Unverified
-    }
 }
 
 impl Default for Convention {
@@ -645,6 +635,7 @@ impl Expr {
         Expr::Pow(Box::new(base), Box::new(exp))
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn neg(e: Expr) -> Expr {
         match e {
             Expr::Group(inner, rel) => Expr::Group(Box::new(Expr::neg(*inner)), rel),

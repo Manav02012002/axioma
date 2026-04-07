@@ -1,4 +1,14 @@
 #![forbid(unsafe_code)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::if_same_then_else,
+    clippy::needless_range_loop,
+    clippy::only_used_in_recursion,
+    clippy::redundant_closure,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::useless_vec
+)]
 
 pub mod adjform;
 pub mod index_classifier;
@@ -2135,6 +2145,7 @@ pub fn solve_rational_system(
     Some(x)
 }
 
+#[allow(dead_code)]
 fn substitute_indices(expr: &Expr, assignment: &HashMap<lasso::Spur, lasso::Spur>) -> Expr {
     match expr {
         Expr::Indexed(base, indices) => {
@@ -2215,6 +2226,7 @@ fn substitute_indices(expr: &Expr, assignment: &HashMap<lasso::Spur, lasso::Spur
     }
 }
 
+#[allow(dead_code)]
 fn evaluate_with_rules(expr: &Expr, rules: &[ComponentRule]) -> Expr {
     match expr {
         Expr::Indexed(base, indices) => {

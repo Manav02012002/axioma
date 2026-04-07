@@ -1,4 +1,11 @@
 #![forbid(unsafe_code)]
+#![allow(
+    clippy::get_first,
+    clippy::if_same_then_else,
+    clippy::incompatible_msrv,
+    clippy::manual_map,
+    clippy::only_used_in_recursion
+)]
 
 pub mod diagnostics;
 pub mod equation;
@@ -5509,8 +5516,6 @@ fn builtin_call(
         }
         "split_gamma" => {
             if !args.is_empty() {
-                let gamma = interner.get_or_intern("gamma");
-                let g = interner.get_or_intern("g");
                 let on_back = args
                     .get(1)
                     .map(|a| {
@@ -6267,7 +6272,7 @@ fn builtin_call(
 
 /// Focus on sub-expressions matching a pattern.
 /// Returns (matching_terms, remainder) from the top-level sum.
-pub fn zoom(expr: &Expr, pattern: &Expr, interner: &ax_ir::Interner) -> (Expr, Expr) {
+pub fn zoom(expr: &Expr, pattern: &Expr, _interner: &ax_ir::Interner) -> (Expr, Expr) {
     match expr {
         Expr::Add(terms) => {
             let mut matching = Vec::new();

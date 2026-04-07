@@ -18,7 +18,7 @@ name = "ax_cli"
 path = "src/lib.rs"
 
 [features]
-default = ["notebook"]
+default = ["notebook", "plugins"]
 notebook = ["dep:ax-notebook"]
 plugins = ["dep:ax-plugin-api", "dep:ax-plugin-host"]
 
@@ -40,7 +40,7 @@ ax-ir = { path = "../ax-ir" }
 ax-core-ir = { path = "../ax-core-ir" }
 ax-eval = { path = "../ax-eval" }
 ax-render = { path = "../ax-render" }
-rustyline = "15"
+rustyline = { version = "15", features = ["derive"] }
 toml = "0.8"
 
 # Optional dependencies

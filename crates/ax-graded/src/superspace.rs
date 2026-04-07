@@ -1,3 +1,5 @@
+#![allow(clippy::manual_repeat_n)]
+
 use crate::{GradedSymbolTable, Grading};
 use ax_ir::{Expr, Index, Interner};
 use lasso::Spur;

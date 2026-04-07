@@ -2890,7 +2890,7 @@ fn expr_or_struct_response_with_change(
     } else {
         format!("{algorithm_name} did not change the expression")
     };
-    let mut response = match output_expr {
+    let response = match output_expr {
         ax_ir::Expr::Matrix(rows) => matrix_response(rows, state)?,
         ax_ir::Expr::List(items) => list_response(items, state)?,
         other => return expr_response_with_change(input_expr, other, algorithm_name, state),
@@ -3759,6 +3759,7 @@ fn handle_lower_eq_entry(
     expr_response_with_change(&expr, result, "lower_eq", state)
 }
 
+#[allow(dead_code)]
 fn list_builtin_response(
     name: &str,
     expr: ax_ir::Expr,
@@ -3772,6 +3773,7 @@ fn list_builtin_response(
     )
 }
 
+#[allow(dead_code)]
 fn eval_call_response(
     name: &str,
     args: Vec<ax_ir::Expr>,

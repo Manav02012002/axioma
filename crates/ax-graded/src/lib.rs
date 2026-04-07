@@ -1,3 +1,5 @@
+#![allow(clippy::manual_is_multiple_of)]
+
 pub mod brst;
 pub mod d_algebra;
 pub mod superspace;

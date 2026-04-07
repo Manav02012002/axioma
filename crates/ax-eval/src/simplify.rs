@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::{eval, Env};
 use ax_ir::Expr;
 use num_bigint::BigInt;

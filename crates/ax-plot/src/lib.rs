@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::type_complexity, clippy::useless_format)]
 
 use ax_ir::Expr;
 use num_traits::ToPrimitive;

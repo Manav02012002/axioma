@@ -223,7 +223,7 @@ pub fn all_orbits_parallel(generators: &[Perm], n: usize) -> Vec<usize> {
 /// Returns (nu, w) where:
 /// - nu[i] is the point that maps to i on the path from `point` to i
 /// - w[i] is the index of the generator used (or usize::MAX if not reached)
-/// Together they encode the path from `point` to any point in its orbit.
+///   Together they encode the path from `point` to any point in its orbit.
 pub fn schreier_vector(point: usize, generators: &[Perm], n: usize) -> (Vec<usize>, Vec<usize>) {
     let mut nu = vec![usize::MAX; n];
     let mut w = vec![usize::MAX; n];
@@ -641,12 +641,11 @@ pub fn group_order(sgs: &SGS) -> u64 {
 
 fn compare_on_free_indices(a: &[usize], b: &[usize], free_indices: &[usize]) -> std::cmp::Ordering {
     for &idx in free_indices {
-        match (a.get(idx), b.get(idx)) {
-            (Some(lhs), Some(rhs)) => match lhs.cmp(rhs) {
+        if let (Some(lhs), Some(rhs)) = (a.get(idx), b.get(idx)) {
+            match lhs.cmp(rhs) {
                 std::cmp::Ordering::Equal => {}
                 non_eq => return non_eq,
-            },
-            _ => {}
+            }
         }
     }
     a.cmp(b)

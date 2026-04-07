@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::needless_range_loop)]
 
 use ax_ir::Expr;
 use ax_tensor::SymbolicMatrix;

@@ -1,3 +1,5 @@
+#![allow(clippy::manual_contains, clippy::too_many_arguments)]
+
 use num_rational::BigRational;
 use num_traits::{One, Zero};
 use std::collections::HashMap;

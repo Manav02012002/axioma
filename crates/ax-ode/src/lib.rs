@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::too_many_arguments)]
 
 use ax_ir::Expr;
 use num_rational::BigRational;
