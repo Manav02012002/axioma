@@ -1,20 +1,110 @@
 #![forbid(unsafe_code)]
 
+mod constants;
+
+use ax_eval::{
+    algorithm_entries, builtin_entries, callable_entries, registry::format_tensor_property,
+    CallableEntry, Env, ParamType,
+};
+use ax_ir::{Expr, Interner, TensorProperty};
+use constants::{
+    convention_values, greek_to_unicode, property_documentation, GREEK_LETTERS, KEYWORDS,
+    PROPERTY_NAMES,
+};
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Write};
+use std::ops::Range;
+
+#[derive(Debug, Clone)]
+struct DocumentAnalysis {
+    exprs: Vec<ax_ir::Expr>,
+    symbols: Vec<(String, Range<usize>, SymbolKind)>,
+    functions_used: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum SymbolKind {
+    Variable,
+    Function,
+    Index,
+    Property,
+    TensorSymbol,
+    Coordinate,
+    Module,
+}
+
+struct LspState {
+    interner: ax_ir::Interner,
+    documents: HashMap<String, String>,
+    analyses: HashMap<String, DocumentAnalysis>,
+    env: ax_eval::Env,
+}
+
+#[derive(Clone, Copy)]
+struct FunctionDoc {
+    name: &'static str,
+    signature: &'static str,
+    description: &'static str,
+    example: &'static str,
+}
+
+impl LspState {
+    fn new() -> Self {
+        Self {
+            interner: Interner::new(),
+            documents: HashMap::new(),
+            analyses: HashMap::new(),
+            env: Env::new(),
+        }
+    }
+
+    fn upsert_document(&mut self, uri: String, text: String) {
+        self.documents.insert(uri, text);
+        self.rebuild_analyses();
+    }
+
+    fn rebuild_analyses(&mut self) {
+        self.analyses.clear();
+        self.env = Env::new();
+
+        let mut uris: Vec<String> = self.documents.keys().cloned().collect();
+        uris.sort();
+
+        for uri in uris {
+            if let Some(text) = self.documents.get(&uri).cloned() {
+                let lowered = ax_core_ir::lower(&text, &self.interner);
+                let exprs = if lowered.exprs.is_empty() {
+                    lowered.expr.into_iter().collect()
+                } else {
+                    lowered.exprs
+                };
+
+                for expr in &exprs {
+                    apply_expr_declarations(expr, &mut self.env, &self.interner);
+                }
+
+                let analysis = analyse_document(&text, &exprs, &self.env, &self.interner);
+                self.analyses.insert(uri, analysis);
+            }
+        }
+    }
+}
 
 fn main() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = stdin.lock();
     let mut writer = stdout.lock();
-
-    let interner = ax_ir::Interner::new();
+    let mut state = LspState::new();
 
     loop {
         match read_message(&mut reader) {
             Ok(msg) => {
-                if let Some(response) = handle_message(&msg, &interner) {
-                    write_message(&mut writer, &response);
+                if let Some(response) = handle_message(&msg, &mut state) {
+                    if response != Value::Null {
+                        write_message(&mut writer, &response);
+                    }
                 }
             }
             Err(_) => break,
@@ -22,7 +112,7 @@ fn main() {
     }
 }
 
-fn read_message(reader: &mut impl BufRead) -> io::Result<serde_json::Value> {
+fn read_message(reader: &mut impl BufRead) -> io::Result<Value> {
     let mut content_length = 0usize;
     loop {
         let mut line = String::new();
@@ -47,7 +137,7 @@ fn read_message(reader: &mut impl BufRead) -> io::Result<serde_json::Value> {
     serde_json::from_slice(&body).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-fn write_message(writer: &mut impl Write, msg: &serde_json::Value) {
+fn write_message(writer: &mut impl Write, msg: &Value) {
     if let Ok(body) = serde_json::to_string(msg) {
         let header = format!("Content-Length: {}\r\n\r\n", body.len());
         let _ = writer.write_all(header.as_bytes());
@@ -58,19 +148,88 @@ fn write_message(writer: &mut impl Write, msg: &serde_json::Value) {
 
 fn offset_to_position(text: &str, offset: usize) -> (usize, usize) {
     let clamped = offset.min(text.len());
-    let prefix = &text[..clamped];
-    let line = prefix.matches('\n').count();
-    let character = clamped - prefix.rfind('\n').map_or(0, |p| p + 1);
+    let mut line = 0usize;
+    let mut character = 0usize;
+
+    for (byte_idx, ch) in text.char_indices() {
+        if byte_idx >= clamped {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += 1;
+        }
+    }
+
     (line, character)
 }
 
-fn handle_message(msg: &serde_json::Value, interner: &ax_ir::Interner) -> Option<serde_json::Value> {
+fn position_to_offset(text: &str, line: usize, character: usize) -> usize {
+    let mut current_line = 0usize;
+    let mut current_col = 0usize;
+
+    for (byte_idx, ch) in text.char_indices() {
+        if current_line == line && current_col == character {
+            return byte_idx;
+        }
+        if ch == '\n' {
+            if current_line == line {
+                return byte_idx;
+            }
+            current_line += 1;
+            current_col = 0;
+        } else if current_line == line {
+            current_col += 1;
+        }
+    }
+
+    text.len()
+}
+
+fn is_ident_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
+fn word_at_offset(text: &str, offset: usize) -> Option<&str> {
+    let clamped = offset.min(text.len());
+    let mut ranges = identifier_ranges(text);
+    if let Some((start, end)) = ranges
+        .drain(..)
+        .find(|(start, end)| *start <= clamped && clamped <= *end)
+    {
+        return text.get(start..end);
+    }
+    None
+}
+
+fn identifier_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = None;
+
+    for (idx, ch) in text.char_indices() {
+        if is_ident_char(ch) {
+            if start.is_none() {
+                start = Some(idx);
+            }
+        } else if let Some(begin) = start.take() {
+            out.push((begin, idx));
+        }
+    }
+    if let Some(begin) = start {
+        out.push((begin, text.len()));
+    }
+    out
+}
+
+fn handle_message(msg: &Value, state: &mut LspState) -> Option<Value> {
     let method = msg.get("method")?.as_str()?;
 
     match method {
         "initialize" => {
             let id = msg.get("id")?;
-            Some(serde_json::json!({
+            Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
                 "result": {
@@ -78,8 +237,13 @@ fn handle_message(msg: &serde_json::Value, interner: &ax_ir::Interner) -> Option
                         "textDocumentSync": 1,
                         "hoverProvider": true,
                         "completionProvider": {
-                            "triggerCharacters": [".", "(", "["]
+                            "triggerCharacters": [".", "(", "[", " "],
+                            "resolveProvider": false
                         },
+                        "signatureHelpProvider": {
+                            "triggerCharacters": ["(", ","]
+                        },
+                        "codeActionProvider": true,
                         "diagnosticProvider": {
                             "interFileDependencies": false,
                             "workspaceDiagnostics": false
@@ -87,97 +251,989 @@ fn handle_message(msg: &serde_json::Value, interner: &ax_ir::Interner) -> Option
                     },
                     "serverInfo": {
                         "name": "axioma-lsp",
-                        "version": "0.1.0"
+                        "version": "0.2.0"
                     }
                 }
             }))
         }
         "initialized" => None,
-        "textDocument/didOpen" | "textDocument/didChange" => {
+        "textDocument/didOpen" => {
             let params = msg.get("params")?;
             let text_doc = params.get("textDocument")?;
-            let uri = text_doc.get("uri")?.as_str()?;
-
-            let text = if method == "textDocument/didOpen" {
-                text_doc.get("text")?.as_str()?
-            } else {
-                let changes = params.get("contentChanges")?.as_array()?;
-                changes.first()?.get("text")?.as_str()?
-            };
-
-            let lowered = ax_core_ir::lower(text, interner);
-            let diagnostics: Vec<serde_json::Value> = lowered
-                .errors
-                .iter()
-                .map(|err| {
-                    let (start_line, start_col) = offset_to_position(text, err.span.start);
-                    let (end_line, end_col) = offset_to_position(text, err.span.end);
-                    serde_json::json!({
-                        "range": {
-                            "start": { "line": start_line, "character": start_col },
-                            "end": { "line": end_line, "character": end_col }
-                        },
-                        "severity": 1,
-                        "message": err.message
-                    })
-                })
-                .collect();
-
-            Some(serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/publishDiagnostics",
-                "params": {
-                    "uri": uri,
-                    "diagnostics": diagnostics
-                }
-            }))
+            let uri = text_doc.get("uri")?.as_str()?.to_string();
+            let text = text_doc.get("text")?.as_str()?.to_string();
+            state.upsert_document(uri.clone(), text);
+            Some(publish_diagnostics(state, &uri))
+        }
+        "textDocument/didChange" => {
+            let params = msg.get("params")?;
+            let text_doc = params.get("textDocument")?;
+            let uri = text_doc.get("uri")?.as_str()?.to_string();
+            let changes = params.get("contentChanges")?.as_array()?;
+            let text = changes.first()?.get("text")?.as_str()?.to_string();
+            state.upsert_document(uri.clone(), text);
+            Some(publish_diagnostics(state, &uri))
         }
         "textDocument/hover" => {
             let id = msg.get("id")?;
-            Some(serde_json::json!({
+            let params = msg.get("params")?;
+            let result = handle_hover(state, params);
+            Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": null
+                "result": result.unwrap_or(Value::Null)
             }))
         }
         "textDocument/completion" => {
             let id = msg.get("id")?;
-            let items: Vec<serde_json::Value> = vec![
-                "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
-                "mu", "nu", "xi", "pi", "rho", "sigma", "tau", "phi", "chi", "psi", "omega",
-                "Gamma", "Delta", "Theta", "Lambda", "Sigma", "Phi", "Psi", "Omega",
-                "sin", "cos", "tan", "exp", "log", "sqrt", "abs", "diff", "integrate",
-                "series", "solve", "expand", "simplify", "det", "inv", "transpose",
-                "christoffel", "riemann", "ricci", "einstein", "kretschner",
-                "metric", "diag", "ket", "bra", "commutator", "pauli_x", "pauli_y", "pauli_z",
-                "plot", "dsolve", "rk4", "rewrite",
-            ]
-            .iter()
-            .map(|name| {
-                serde_json::json!({
-                    "label": name,
-                    "kind": if name.chars().next().unwrap_or('a').is_lowercase() && name.len() > 2 { 3 } else { 6 },
-                })
-            })
-            .collect();
-
-            Some(serde_json::json!({
+            let params = msg.get("params")?;
+            let result = handle_completion(state, params);
+            Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": items
+                "result": result.unwrap_or_else(|| json!([]))
+            }))
+        }
+        "textDocument/signatureHelp" => {
+            let id = msg.get("id")?;
+            let params = msg.get("params")?;
+            let result = handle_signature_help(state, params);
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result.unwrap_or(Value::Null)
+            }))
+        }
+        "textDocument/codeAction" => {
+            let id = msg.get("id")?;
+            let params = msg.get("params")?;
+            let result = handle_code_action(state, params);
+            Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result.unwrap_or_else(|| json!([]))
             }))
         }
         "shutdown" => {
             let id = msg.get("id")?;
-            Some(serde_json::json!({
+            Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": null
+                "result": Value::Null
             }))
         }
         "exit" => {
             std::process::exit(0);
         }
         _ => None,
+    }
+}
+
+fn publish_diagnostics(state: &LspState, uri: &str) -> Value {
+    let text = state.documents.get(uri).map(String::as_str).unwrap_or("");
+    let lowered = ax_core_ir::lower(text, &state.interner);
+    let (_node, parse_diags) = ax_syntax::parser::parse_file(text);
+
+    let mut diagnostics = Vec::new();
+
+    for err in &lowered.errors {
+        let (start_line, start_col) = offset_to_position(text, err.span.start);
+        let (end_line, end_col) = offset_to_position(text, err.span.end);
+        diagnostics.push(json!({
+            "range": {
+                "start": { "line": start_line, "character": start_col },
+                "end": { "line": end_line, "character": end_col }
+            },
+            "severity": 1,
+            "source": "axioma-lsp",
+            "message": err.message
+        }));
+    }
+
+    for diag in parse_diags {
+        let (start_line, start_col) = offset_to_position(text, diag.span.start);
+        let (end_line, end_col) = offset_to_position(text, diag.span.end);
+        diagnostics.push(json!({
+            "range": {
+                "start": { "line": start_line, "character": start_col },
+                "end": { "line": end_line, "character": end_col }
+            },
+            "severity": match diag.severity {
+                ax_syntax::Severity::Error => 1,
+                ax_syntax::Severity::Warning => 2
+            },
+            "source": "axioma-syntax",
+            "message": diag.message
+        }));
+    }
+
+    json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": uri,
+            "diagnostics": diagnostics
+        }
+    })
+}
+
+fn handle_hover(state: &LspState, params: &Value) -> Option<Value> {
+    let uri = params.get("textDocument")?.get("uri")?.as_str()?;
+    let position = params.get("position")?;
+    let line = position.get("line")?.as_u64()? as usize;
+    let character = position.get("character")?.as_u64()? as usize;
+
+    let text = state.documents.get(uri)?;
+    let offset = position_to_offset(text, line, character);
+    let word = word_at_offset(text, offset)?;
+
+    let mut content_parts = Vec::new();
+    if let Some(doc) = lookup_function_doc(word) {
+        content_parts.push(format!("**{}**\n\n{}", doc.name, doc.description));
+        content_parts.push(format!("```\n{}\n```", doc.signature));
+        content_parts.push(format!("Example: `{}`", doc.example));
+    } else {
+        let entries = callable_entries();
+        if let Some(entry) = entries.iter().find(|entry| entry.name == word) {
+            content_parts.push(format!("**{}**\n\n{}", entry.name, entry.description));
+            if !entry.parameters.is_empty() {
+                let params_str = entry
+                    .parameters
+                    .iter()
+                    .map(|param| {
+                        let optional = if param.required { "" } else { "?" };
+                        format!(
+                            "{}{}: {}",
+                            param.name,
+                            optional,
+                            format_param_type(&param.param_type)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                content_parts.push(format!("```\n{}({})\n```", entry.name, params_str));
+            }
+            content_parts.push(format!("Example: `{}`", brief_example(entry)));
+        }
+    }
+
+    let sym = state.interner.get_or_intern(word);
+    let props = state.env.property_store.get_all(sym);
+    if !props.is_empty() {
+        let props_str = props
+            .iter()
+            .map(|prop| format_tensor_property(prop, &state.interner))
+            .collect::<Vec<_>>()
+            .join(", ");
+        content_parts.push(format!("**Properties:** {}", props_str));
+    }
+
+    if let Some(unicode) = greek_to_unicode(word) {
+        content_parts.push(format!("Greek letter: `{}`", unicode));
+    }
+
+    if let Some(family) = state.env.index_families.get(&sym) {
+        let values = family
+            .values
+            .iter()
+            .map(|value| state.interner.resolve(*value).to_string())
+            .collect::<Vec<_>>();
+        content_parts.push(format!(
+            "**Index family:** `{}`\n\nValues: {}\n\nDimension: {}",
+            state.interner.resolve(family.name),
+            if values.is_empty() {
+                "(none)".to_string()
+            } else {
+                values.join(", ")
+            },
+            family
+                .dimension
+                .map(|dim| dim.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ));
+    } else if let Some(family_sym) = state.env.index_to_family.get(&sym) {
+        if let Some(family) = state.env.index_families.get(family_sym) {
+            let values = family
+                .values
+                .iter()
+                .map(|value| state.interner.resolve(*value).to_string())
+                .collect::<Vec<_>>();
+            content_parts.push(format!(
+                "**Index:** `{}` belongs to family `{}`\n\nValues: {}",
+                word,
+                state.interner.resolve(*family_sym),
+                if values.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    values.join(", ")
+                }
+            ));
+        }
+    }
+
+    if content_parts.is_empty() {
+        return None;
+    }
+
+    Some(json!({
+        "contents": {
+            "kind": "markdown",
+            "value": content_parts.join("\n\n---\n\n")
+        }
+    }))
+}
+
+fn handle_completion(state: &LspState, params: &Value) -> Option<Value> {
+    let uri = params.get("textDocument")?.get("uri")?.as_str()?;
+    let position = params.get("position")?;
+    let line_num = position.get("line")?.as_u64()? as usize;
+    let character = position.get("character")?.as_u64()? as usize;
+
+    let text = state.documents.get(uri)?;
+    let line_text = text.lines().nth(line_num).unwrap_or("");
+    let prefix = slice_to_char(line_text, character);
+
+    let mut items = Vec::new();
+
+    if is_after_property_context(prefix) {
+        for name in PROPERTY_NAMES {
+            items.push(json!({
+                "label": name,
+                "kind": 13,
+                "detail": "tensor property",
+                "documentation": property_documentation(name),
+            }));
+        }
+    } else if is_after_assume_context(prefix) {
+        for name in ["real", "positive", "negative", "integer"] {
+            items.push(json!({
+                "label": name,
+                "kind": 14
+            }));
+        }
+    } else if let Some(field) = detect_convention_context(prefix) {
+        for value in convention_values(field) {
+            items.push(json!({
+                "label": value,
+                "kind": 13
+            }));
+        }
+    } else {
+        for kw in KEYWORDS {
+            items.push(json!({
+                "label": kw,
+                "kind": 14
+            }));
+        }
+
+        for entry in callable_entries() {
+            let snippet = make_snippet(&entry);
+            items.push(json!({
+                "label": entry.name,
+                "kind": 3,
+                "detail": brief_signature(&entry),
+                "documentation": { "kind": "markdown", "value": format!("{}\n\nExample: `{}`", entry.description, brief_example(&entry)) },
+                "insertText": snippet,
+                "insertTextFormat": 2
+            }));
+        }
+
+        for doc in function_docs() {
+            items.push(json!({
+                "label": doc.name,
+                "kind": 3,
+                "detail": doc.signature,
+                "documentation": { "kind": "markdown", "value": format!("{}\n\nExample: `{}`", doc.description, doc.example) }
+            }));
+        }
+
+        for &(name, unicode) in GREEK_LETTERS {
+            items.push(json!({
+                "label": name,
+                "kind": 6,
+                "detail": unicode
+            }));
+        }
+
+        for symbol in declared_symbols(state) {
+            items.push(json!({
+                "label": symbol,
+                "kind": 6
+            }));
+        }
+    }
+
+    Some(json!(items))
+}
+
+fn handle_signature_help(state: &LspState, params: &Value) -> Option<Value> {
+    let uri = params.get("textDocument")?.get("uri")?.as_str()?;
+    let position = params.get("position")?;
+    let line_num = position.get("line")?.as_u64()? as usize;
+    let character = position.get("character")?.as_u64()? as usize;
+
+    let text = state.documents.get(uri)?;
+    let line_text = text.lines().nth(line_num)?;
+    let prefix = slice_to_char(line_text, character);
+    let (func_name, active_param) = find_function_call_context(prefix)?;
+
+    if let Some(doc) = lookup_function_doc(func_name) {
+        let params = parse_signature_parameters(doc.signature);
+        let params_info: Vec<Value> = params
+            .iter()
+            .map(|param| json!({ "label": param, "documentation": "" }))
+            .collect();
+        return Some(json!({
+            "signatures": [{
+                "label": doc.signature,
+                "documentation": { "kind": "markdown", "value": format!("{}\n\nExample: `{}`", doc.description, doc.example) },
+                "parameters": params_info
+            }],
+            "activeSignature": 0,
+            "activeParameter": active_param.min(params.len().saturating_sub(1))
+        }));
+    }
+
+    let entries = callable_entries();
+    let entry = entries.iter().find(|entry| entry.name == func_name)?;
+    let params_info: Vec<Value> = entry
+        .parameters
+        .iter()
+        .map(|param| {
+            json!({
+                "label": param.name,
+                "documentation": param.description
+            })
+        })
+        .collect();
+
+    let sig_label = format!(
+        "{}({})",
+        entry.name,
+        entry
+            .parameters
+            .iter()
+            .map(|param| {
+                if param.required {
+                    param.name.to_string()
+                } else {
+                    format!("{}?", param.name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    Some(json!({
+        "signatures": [{
+            "label": sig_label,
+            "documentation": { "kind": "markdown", "value": format!("{}\n\nExample: `{}`", entry.description, brief_example(entry)) },
+            "parameters": params_info
+        }],
+        "activeSignature": 0,
+        "activeParameter": active_param.min(entry.parameters.len().saturating_sub(1))
+    }))
+}
+
+fn handle_code_action(state: &LspState, params: &Value) -> Option<Value> {
+    let uri = params.get("textDocument")?.get("uri")?.as_str()?;
+    let text = state.documents.get(uri)?;
+    let (_node, diags) = ax_syntax::parser::parse_file(text);
+
+    let actions: Vec<Value> = diags
+        .iter()
+        .flat_map(|diag| {
+            diag.fixits.iter().map(|fixit| {
+                let (start_line, start_col) = offset_to_position(text, fixit.span.start);
+                let (end_line, end_col) = offset_to_position(text, fixit.span.end);
+                json!({
+                    "title": fixit.message,
+                    "kind": "quickfix",
+                    "edit": {
+                        "changes": {
+                            uri: [{
+                                "range": {
+                                    "start": { "line": start_line, "character": start_col },
+                                    "end": { "line": end_line, "character": end_col }
+                                },
+                                "newText": fixit.replacement
+                            }]
+                        }
+                    }
+                })
+            })
+        })
+        .collect();
+
+    Some(json!(actions))
+}
+
+fn slice_to_char(text: &str, char_count: usize) -> &str {
+    if char_count == 0 {
+        return "";
+    }
+    let mut end = text.len();
+    let mut seen = 0usize;
+    for (idx, _) in text.char_indices() {
+        if seen == char_count {
+            end = idx;
+            break;
+        }
+        seen += 1;
+    }
+    if seen < char_count {
+        text
+    } else {
+        &text[..end]
+    }
+}
+
+fn is_after_property_context(prefix: &str) -> bool {
+    let trimmed = prefix.trim_end();
+    let mut parts = trimmed.split_whitespace();
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some("property"), Some(ident), None, None) if ident.chars().all(is_ident_char)
+    )
+}
+
+fn is_after_assume_context(prefix: &str) -> bool {
+    let trimmed = prefix.trim_end();
+    let mut parts = trimmed.split_whitespace();
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some("assume"), Some(ident), None, None) if ident.chars().all(is_ident_char)
+    )
+}
+
+fn detect_convention_context(prefix: &str) -> Option<&str> {
+    let trimmed = prefix.trim_end();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    match parts.as_slice() {
+        ["convention", field] => Some(field),
+        _ => None,
+    }
+}
+
+fn brief_signature(entry: &CallableEntry) -> String {
+    format!(
+        "{}({})",
+        entry.name,
+        entry
+            .parameters
+            .iter()
+            .map(|param| param.name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn brief_example(entry: &CallableEntry) -> &'static str {
+    ax_eval::builtin_entries()
+        .into_iter()
+        .find(|builtin| builtin.name == entry.name)
+        .map(|builtin| builtin.example)
+        .or_else(|| {
+            ax_eval::algorithm_entries()
+                .into_iter()
+                .find(|algorithm| algorithm.name == entry.name)
+                .map(|algorithm| algorithm.example)
+        })
+        .unwrap_or(entry.name)
+}
+
+fn make_snippet(entry: &CallableEntry) -> String {
+    if entry.parameters.is_empty() {
+        return entry.name.to_string();
+    }
+
+    let params = entry
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(idx, param)| format!("${{{}:{}}}", idx + 1, param.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}({})", entry.name, params)
+}
+
+fn format_param_type(param_type: &ParamType) -> String {
+    match param_type {
+        ParamType::ExprId => "expr".to_string(),
+        ParamType::Code => "code".to_string(),
+        ParamType::Symbol => "symbol".to_string(),
+        ParamType::SymbolList => "symbol[]".to_string(),
+        ParamType::Integer => "integer".to_string(),
+        ParamType::Float => "float".to_string(),
+        ParamType::StringEnum(options) => format!("enum({})", options.join(" | ")),
+        ParamType::Matrix => "matrix".to_string(),
+        ParamType::Optional(inner) => format!("optional {}", format_param_type(inner)),
+    }
+}
+
+fn find_function_call_context(prefix: &str) -> Option<(&str, usize)> {
+    let mut depth = 0i32;
+    let mut comma_count = 0usize;
+    let bytes = prefix.as_bytes();
+    let mut i = bytes.len();
+
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => {
+                if depth == 0 {
+                    let before = &prefix[..i];
+                    let func_name = before
+                        .trim_end_matches(|c: char| c.is_whitespace())
+                        .rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                        .next()?;
+                    if func_name.is_empty() {
+                        return None;
+                    }
+                    return Some((func_name, comma_count));
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => comma_count += 1,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn declared_symbols(state: &LspState) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+
+    for analysis in state.analyses.values() {
+        for (name, _, _) in &analysis.symbols {
+            if seen.insert(name.clone()) {
+                out.push(name.clone());
+            }
+        }
+    }
+
+    for sym in state.env.property_store.symbols() {
+        let name = state.interner.resolve(sym).to_string();
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    for sym in state.env.coordinates.iter().copied() {
+        let name = state.interner.resolve(sym).to_string();
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    for sym in state.env.index_families.keys().copied() {
+        let name = state.interner.resolve(sym).to_string();
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    for sym in state.env.index_to_family.keys().copied() {
+        let name = state.interner.resolve(sym).to_string();
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    for sym in state.env.assumptions.keys().copied() {
+        let name = state.interner.resolve(sym).to_string();
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    for sym in state.env.bindings.keys().copied() {
+        let name = state.interner.resolve(sym).to_string();
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+
+    out.sort();
+    out
+}
+
+fn function_docs() -> Vec<FunctionDoc> {
+    let mut docs = Vec::new();
+    let mut seen = HashSet::new();
+
+    for builtin in builtin_entries() {
+        if seen.insert(builtin.name) {
+            docs.push(FunctionDoc {
+                name: builtin.name,
+                signature: builtin.signature,
+                description: builtin.description,
+                example: builtin.example,
+            });
+        }
+    }
+
+    for algorithm in algorithm_entries() {
+        if seen.insert(algorithm.name) {
+            docs.push(FunctionDoc {
+                name: algorithm.name,
+                signature: algorithm.signature,
+                description: algorithm.description,
+                example: algorithm.example,
+            });
+        }
+    }
+
+    for alias in [
+        FunctionDoc {
+            name: "diff",
+            signature: "diff(expr, var)",
+            description:
+                "Take a symbolic derivative with chain, product, and builtin function rules.",
+            example: "diff(sin(x^2), x)",
+        },
+        FunctionDoc {
+            name: "dsolve",
+            signature: "dsolve(equation, y, x)",
+            description: "Solve simple separable or first-order linear ODEs symbolically.",
+            example: "dsolve(y - x, y, x)",
+        },
+    ] {
+        if seen.insert(alias.name) {
+            docs.push(alias);
+        }
+    }
+
+    docs
+}
+
+fn lookup_function_doc(name: &str) -> Option<FunctionDoc> {
+    function_docs().into_iter().find(|doc| doc.name == name)
+}
+
+fn parse_signature_parameters(signature: &str) -> Vec<String> {
+    let Some(open) = signature.find('(') else {
+        return Vec::new();
+    };
+    let Some(close) = signature.rfind(')') else {
+        return Vec::new();
+    };
+    if close <= open + 1 {
+        return Vec::new();
+    }
+    signature[open + 1..close]
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.split(':')
+                .next()
+                .unwrap_or(part)
+                .trim()
+                .trim_start_matches('&')
+                .to_string()
+        })
+        .collect()
+}
+
+fn apply_expr_declarations(expr: &Expr, env: &mut Env, interner: &Interner) {
+    let _ = ax_eval::apply_coordinate_declaration(expr, env, interner);
+    let _ = ax_eval::apply_property_declaration(expr, env, interner);
+    let _ = ax_eval::apply_index_declaration(expr, env, interner);
+    let _ = ax_eval::apply_parallel_declaration(expr, env, interner);
+    let _ = ax_eval::apply_set_convention(expr, env);
+
+    match expr {
+        Expr::Assume(sym, assumptions) => {
+            env.assumptions.insert(*sym, assumptions.clone());
+        }
+        Expr::FnDef(name, _, body) => {
+            env.bindings.insert(*name, (**body).clone());
+        }
+        Expr::Let(name, value, _) => {
+            env.bindings.insert(*name, (**value).clone());
+        }
+        Expr::Call(f, args) => match interner.resolve(*f) {
+            "__declare_depends" => apply_depends_declaration(args, env),
+            "__declare_weight" => apply_weight_declaration(args, env, interner),
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+fn apply_depends_declaration(args: &[Expr], env: &mut Env) {
+    let Some(Expr::Sym(symbol)) = args.first() else {
+        return;
+    };
+    let Some(Expr::List(deps)) = args.get(1) else {
+        return;
+    };
+    let dependency_symbols = deps
+        .iter()
+        .filter_map(|expr| match expr {
+            Expr::Sym(sym) => Some(*sym),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let property = TensorProperty::Depends(dependency_symbols);
+    env.tensor_properties
+        .entry(*symbol)
+        .or_default()
+        .push(property.clone());
+    env.property_store.declare_simple(*symbol, property);
+}
+
+fn apply_weight_declaration(args: &[Expr], env: &mut Env, interner: &Interner) {
+    let Some(Expr::Sym(symbol)) = args.first() else {
+        return;
+    };
+    let Some(weight_expr) = args.get(1) else {
+        return;
+    };
+    let label = match args.get(2) {
+        Some(Expr::Sym(label_sym)) => interner.resolve(*label_sym).to_string(),
+        _ => "field".to_string(),
+    };
+
+    let weight = match weight_expr {
+        Expr::Int(value) => value.to_string().parse::<i64>().ok(),
+        Expr::Neg(inner) => match inner.as_ref() {
+            Expr::Int(value) => value.to_string().parse::<i64>().ok().map(|v| -v),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    if let Some(weight) = weight {
+        env.weights.insert((*symbol, label), weight);
+    }
+}
+
+fn analyse_document(
+    text: &str,
+    exprs: &[Expr],
+    env: &Env,
+    interner: &Interner,
+) -> DocumentAnalysis {
+    let mut functions_used = Vec::new();
+    for expr in exprs {
+        collect_functions(expr, interner, &mut functions_used);
+    }
+    functions_used.sort();
+    functions_used.dedup();
+
+    let property_names: HashSet<&str> = PROPERTY_NAMES.iter().copied().collect();
+    let callable_names: HashSet<&str> = callable_entries()
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    let coordinates: HashSet<String> = env
+        .coordinates
+        .iter()
+        .map(|sym| interner.resolve(*sym).to_string())
+        .collect();
+    let indices: HashSet<String> = env
+        .index_to_family
+        .keys()
+        .map(|sym| interner.resolve(*sym).to_string())
+        .collect();
+    let tensor_symbols: HashSet<String> = env
+        .property_store
+        .symbols()
+        .into_iter()
+        .map(|sym| interner.resolve(sym).to_string())
+        .collect();
+
+    let modules = detect_module_symbols(text);
+    let properties = detect_property_symbols(text);
+
+    let mut symbols = Vec::new();
+    for (start, end) in identifier_ranges(text) {
+        let name = text[start..end].to_string();
+        let kind = if property_names.contains(name.as_str()) || properties.contains(&name) {
+            SymbolKind::Property
+        } else if callable_names.contains(name.as_str()) {
+            SymbolKind::Function
+        } else if indices.contains(&name) {
+            SymbolKind::Index
+        } else if coordinates.contains(&name) {
+            SymbolKind::Coordinate
+        } else if modules.contains(&name) {
+            SymbolKind::Module
+        } else if tensor_symbols.contains(&name) {
+            SymbolKind::TensorSymbol
+        } else {
+            SymbolKind::Variable
+        };
+        symbols.push((name, start..end, kind));
+    }
+
+    DocumentAnalysis {
+        exprs: exprs.to_vec(),
+        symbols,
+        functions_used,
+    }
+}
+
+fn collect_functions(expr: &Expr, interner: &Interner, out: &mut Vec<String>) {
+    match expr {
+        Expr::Call(f, args) => {
+            out.push(interner.resolve(*f).to_string());
+            for arg in args {
+                collect_functions(arg, interner, out);
+            }
+        }
+        Expr::Add(items) | Expr::Mul(items) | Expr::List(items) => {
+            for item in items {
+                collect_functions(item, interner, out);
+            }
+        }
+        Expr::Pow(base, exp) => {
+            collect_functions(base, interner, out);
+            collect_functions(exp, interner, out);
+        }
+        Expr::Neg(inner) | Expr::Group(inner, _) => collect_functions(inner, interner, out),
+        Expr::Complex(re, im) => {
+            collect_functions(re, interner, out);
+            collect_functions(im, interner, out);
+        }
+        Expr::FnDef(_, _, body) => collect_functions(body, interner, out),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_functions(lhs, interner, out);
+            collect_functions(rhs, interner, out);
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                collect_functions(value, interner, out);
+            }
+        }
+        Expr::Indexed(base, _) => collect_functions(base, interner, out),
+        Expr::Let(_, value, body) => {
+            collect_functions(value, interner, out);
+            collect_functions(body, interner, out);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_functions(cell, interner, out);
+                }
+            }
+        }
+        Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_)
+        | Expr::Sym(_)
+        | Expr::Import(_)
+        | Expr::Assume(_, _)
+        | Expr::SetConvention(_, _) => {}
+    }
+}
+
+fn detect_property_symbols(text: &str) -> HashSet<String> {
+    text.lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            match parts.as_slice() {
+                ["property", symbol, ..] => Some((*symbol).to_string()),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn detect_module_symbols(text: &str) -> HashSet<String> {
+    let mut modules = HashSet::new();
+    for line in text.lines() {
+        let parts: Vec<&str> = line
+            .split(|ch: char| ch.is_whitespace() || ch == '.')
+            .filter(|part| !part.is_empty())
+            .collect();
+        if parts.first() == Some(&"module") || parts.first() == Some(&"import") {
+            for part in parts.into_iter().skip(1) {
+                if part.chars().all(is_ident_char) {
+                    modules.insert(part.to_string());
+                }
+            }
+        }
+    }
+    modules
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hover_params(uri: &str, line: usize, character: usize) -> Value {
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        })
+    }
+
+    fn completion_params(uri: &str, line: usize, character: usize) -> Value {
+        hover_params(uri, line, character)
+    }
+
+    #[test]
+    fn hover_on_known_function_returns_docs() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "diff(x^2, x)".into());
+        let response = handle_hover(&state, &hover_params("test.ax", 0, 1)).unwrap();
+        let value = response["contents"]["value"].as_str().unwrap();
+        assert!(value.contains("diff"));
+        assert!(value.contains("diff(expr, var)"));
+    }
+
+    #[test]
+    fn completion_after_property_keyword_returns_property_names() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "property R ".into());
+        let response = handle_completion(&state, &completion_params("test.ax", 0, 11)).unwrap();
+        let labels = response
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"riemann_symmetry"));
+        assert!(labels.contains(&"symmetric"));
+        assert!(!labels.contains(&"diff"));
+    }
+
+    #[test]
+    fn completion_general_returns_functions_and_keywords() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "".into());
+        let response = handle_completion(&state, &completion_params("test.ax", 0, 0)).unwrap();
+        let labels = response
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"let"));
+        assert!(labels.contains(&"diff"));
+    }
+
+    #[test]
+    fn signature_help_inside_function_call() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "diff(x^2, ".into());
+        let response = handle_signature_help(&state, &hover_params("test.ax", 0, 10)).unwrap();
+        assert_eq!(response["activeParameter"].as_u64(), Some(1));
+        let label = response["signatures"][0]["label"].as_str().unwrap();
+        assert!(label.contains("diff(expr, var)"));
+    }
+
+    #[test]
+    fn code_action_for_parse_error_with_fixit() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "let x = 1 + ".into());
+        let response = handle_code_action(
+            &state,
+            &json!({
+                "textDocument": { "uri": "test.ax" }
+            }),
+        )
+        .unwrap();
+        assert!(response.is_array());
     }
 }

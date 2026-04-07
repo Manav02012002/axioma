@@ -14,6 +14,7 @@ members = [
   "crates/ax-forms",
   "crates/ax-graded",
   "crates/ax-linalg",
+  "crates/ax-lsp",
   "crates/ax-mcp",
   "crates/ax-notebook",
   "crates/ax-ode",
@@ -36,11 +37,9 @@ members = [
 ]
 # Excluded from default build (require system deps or are optional):
 # - crates/ax-jupyter (requires libzmq)
-# - crates/ax-lsp (standalone binary)
 # - plugins/axp-echo (WASM plugin example)
 exclude = [
   "crates/ax-jupyter",
-  "crates/ax-lsp",
   "plugins/axp-echo",
 ]
 

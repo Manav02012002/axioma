@@ -309,6 +309,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ax-lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ax-core-ir",
+ "ax-eval",
+ "ax-ir",
+ "ax-render",
+ "ax-syntax",
+ "lasso",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ax-mcp"
 version = "0.1.0"
 dependencies = [
