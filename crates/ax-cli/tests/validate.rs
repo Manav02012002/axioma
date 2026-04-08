@@ -23,11 +23,8 @@ fn blake3_hex(bytes: &[u8]) -> String {
 
 fn run_id(schema_hash_hex: &str, script_hash_hex: &str) -> String {
     let mut h = blake3::Hasher::new();
-    h.update(b"axioma/");
-    h.update(b"0.1.0");
-    h.update(b"\n");
     h.update(schema_hash_hex.as_bytes());
-    h.update(b"\n");
+    h.update(b":");
     h.update(script_hash_hex.as_bytes());
     h.finalize().to_hex().to_string()
 }
@@ -66,11 +63,19 @@ fn bad_script_exits_nonzero_and_emits_diag_code() {
 
 #[test]
 fn ok_script_writes_expected_trace_file() {
-    let schema_bytes = fs::read(repo_file("spec/aas.schema.json")).expect("read schema");
-    let script_bytes = fs::read(repo_file("examples/ok.aas.json")).expect("read script");
+    let schema_json: serde_json::Value = serde_json::from_slice(
+        &fs::read(repo_file("spec/aas.schema.json")).expect("read schema"),
+    )
+    .expect("parse schema json");
+    let script_json: serde_json::Value = serde_json::from_slice(
+        &fs::read(repo_file("examples/ok.aas.json")).expect("read script"),
+    )
+    .expect("parse script json");
 
-    let schema_hash = blake3_hex(&schema_bytes);
-    let script_hash = blake3_hex(&script_bytes);
+    let schema_hash =
+        blake3_hex(&serde_json::to_vec(&schema_json).expect("serialize schema json"));
+    let script_hash =
+        blake3_hex(&serde_json::to_vec(&script_json).expect("serialize script json"));
     let rid = run_id(&schema_hash, &script_hash);
 
     let out = bin()
@@ -106,7 +111,7 @@ fn paths_command_outputs_root_spec_build() {
     let spec = v["spec"].as_str().expect("spec str");
     let build = v["build"].as_str().expect("build str");
 
-    assert!(root.ends_with("/Dev/axioma"), "root={root}");
-    assert!(spec.ends_with("/Dev/axioma/spec"), "spec={spec}");
-    assert!(build.ends_with("/Dev/axioma/build"), "build={build}");
+    assert_eq!(PathBuf::from(root), repo_root(), "root={root}");
+    assert_eq!(PathBuf::from(spec), repo_root().join("spec"), "spec={spec}");
+    assert_eq!(PathBuf::from(build), repo_root().join("build"), "build={build}");
 }
