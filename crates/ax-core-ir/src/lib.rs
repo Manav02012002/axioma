@@ -570,8 +570,41 @@ impl<'a> Cursor<'a> {
     }
 
     fn parse_condition(&mut self) -> Result<Condition, LowerError> {
+        self.parse_or_condition()
+    }
+
+    fn parse_or_condition(&mut self) -> Result<Condition, LowerError> {
+        let mut cond = self.parse_and_condition()?;
+        loop {
+            self.skip_ws();
+            if !self.consume_keyword("or") {
+                break;
+            }
+            let rhs = self.parse_and_condition()?;
+            cond = Condition::Or(Box::new(cond), Box::new(rhs));
+        }
+        Ok(cond)
+    }
+
+    fn parse_and_condition(&mut self) -> Result<Condition, LowerError> {
+        let mut cond = self.parse_not_condition()?;
+        loop {
+            self.skip_ws();
+            if !self.consume_keyword("and") {
+                break;
+            }
+            let rhs = self.parse_not_condition()?;
+            cond = Condition::And(Box::new(cond), Box::new(rhs));
+        }
+        Ok(cond)
+    }
+
+    fn parse_not_condition(&mut self) -> Result<Condition, LowerError> {
         self.skip_ws();
 
+        if self.consume_keyword("not") {
+            return Ok(Condition::Not(Box::new(self.parse_not_condition()?)));
+        }
         if self.consume_keyword("true") {
             return Ok(Condition::True);
         }
@@ -579,6 +612,10 @@ impl<'a> Cursor<'a> {
             return Ok(Condition::False);
         }
 
+        self.parse_comparison_condition()
+    }
+
+    fn parse_comparison_condition(&mut self) -> Result<Condition, LowerError> {
         let lhs = self.parse_add()?;
         self.skip_ws();
 
@@ -1405,6 +1442,20 @@ mod tests {
         if let Some(ax_ir::Expr::Call(f, args)) = result.expr {
             assert_eq!(interner.resolve(f), "__declare_property");
             assert!(matches!(args[0], ax_ir::Expr::Indexed(_, _)));
+            assert!(matches!(args[1], ax_ir::Expr::Call(_, _)));
+        } else {
+            panic!("expected __declare_property call");
+        }
+    }
+
+    #[test]
+    fn parse_property_tableau_symmetry_with_args() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("property T tableau_symmetry([2, 1], [0, 1, 2])", &interner);
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        if let Some(ax_ir::Expr::Call(f, args)) = result.expr {
+            assert_eq!(interner.resolve(f), "__declare_property");
+            assert!(matches!(args[0], ax_ir::Expr::Sym(_)));
             assert!(matches!(args[1], ax_ir::Expr::Call(_, _)));
         } else {
             panic!("expected __declare_property call");

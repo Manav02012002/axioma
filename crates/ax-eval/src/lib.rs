@@ -1411,6 +1411,18 @@ pub fn apply_property_declaration(
             _ => None,
         }
     };
+    let parse_usize_list = |expr: &Expr| -> Option<Vec<usize>> {
+        match expr {
+            Expr::List(entries) => entries
+                .iter()
+                .map(|entry| match entry {
+                    Expr::Int(n) => n.to_usize(),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }
+    };
     let mut add_property = |property: ax_ir::TensorProperty| {
         env.tensor_properties
             .entry(tensor)
@@ -1594,11 +1606,17 @@ pub fn apply_property_declaration(
             ))
         }
         "tableau_symmetry" => {
-            add_property(ax_ir::TensorProperty::RiemannSymmetry);
-            Some(format!(
-                "attached property tableau_symmetry to {}",
-                interner.resolve(tensor)
-            ))
+            if prop_args.len() == 2 {
+                let shape = parse_usize_list(&prop_args[0])?;
+                let indices = parse_usize_list(&prop_args[1])?;
+                add_property(ax_ir::TensorProperty::TableauSymmetry { shape, indices });
+                Some(format!(
+                    "attached property tableau_symmetry to {}",
+                    interner.resolve(tensor)
+                ))
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -8152,6 +8170,68 @@ mod tests {
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert!(rendered.contains("T[a-, b-]"), "got {rendered}");
         assert!(rendered.contains("T[b-, a-]"), "got {rendered}");
+    }
+
+    #[test]
+    fn tableau_symmetry_property_declaration_projects_end_to_end() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("property T tableau_symmetry([1, 1], [0, 1])", &interner)
+            .expr
+            .expect("tableau property decl");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(
+            message.is_some(),
+            "expected tableau_symmetry declaration to be applied"
+        );
+
+        let expr = ax_core_ir::lower("young_project(T[a-,b-]);", &interner)
+            .expr
+            .expect("young project expr");
+        let result = eval(&expr, &env, &interner);
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("T[a-, b-]"), "got {rendered}");
+        assert!(rendered.contains("T[b-, a-]"), "got {rendered}");
+    }
+
+    #[test]
+    fn satisfies_bianchi_property_declaration_melds_to_zero() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("property R satisfies_bianchi", &interner)
+            .expr
+            .expect("bianchi property decl");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(message.is_some(), "expected satisfies_bianchi declaration");
+
+        let expr = ax_core_ir::lower(
+            "meld(R[a-,b-,c-,d-] + R[a-,c-,d-,b-] + R[a-,d-,b-,c-]);",
+            &interner,
+        )
+        .expr
+        .expect("meld expr");
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn weyl_tensor_property_declaration_melds_to_zero() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("property C weyl_tensor", &interner)
+            .expr
+            .expect("weyl property decl");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(message.is_some(), "expected weyl_tensor declaration");
+
+        let expr = ax_core_ir::lower(
+            "meld(C[a-,b-,c-,d-] + C[a-,c-,d-,b-] + C[a-,d-,b-,c-]);",
+            &interner,
+        )
+        .expr
+        .expect("meld expr");
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::zero());
     }
 
     #[test]
