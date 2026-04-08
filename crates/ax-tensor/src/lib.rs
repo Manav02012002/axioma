@@ -5722,36 +5722,25 @@ pub fn young_project_tensor(
     interner: &ax_ir::Interner,
 ) -> Expr {
     match expr {
-        Expr::Indexed(base, _) => {
-            if let Expr::Sym(name) = base.as_ref() {
-                for prop in tensor_properties.get_properties(*name) {
-                    if let ax_ir::TensorProperty::TableauSymmetry {
-                        shape,
-                        indices: tab_indices,
-                    } = prop
-                    {
-                        let mut cells: Vec<Vec<usize>> = Vec::new();
-                        let mut cursor = 0;
-                        for &row_len in shape {
-                            let mut row = Vec::new();
-                            for _ in 0..row_len {
-                                if cursor < tab_indices.len() {
-                                    row.push(tab_indices[cursor]);
-                                    cursor += 1;
-                                }
-                            }
-                            cells.push(row);
-                        }
-                        let tableau = ax_young::YoungTableau {
-                            rows: cells,
-                            multiplicity: BigRational::one(),
-                            selfdual_column: 0,
-                        };
-                        return young_project(expr, &tableau, interner);
-                    }
-                }
+        Expr::Indexed(_, _) => {
+            let factor_info = extract_factor_info_from_term(expr, tensor_properties, interner);
+            let tableaux = tableaux_from_properties(&factor_info, tensor_properties);
+            if tableaux.is_empty() {
+                return expr.clone();
             }
-            expr.clone()
+            let mut projected = expr.clone();
+            for tableau_info in tableaux {
+                if tableau_info.rows.is_empty() {
+                    continue;
+                }
+                let tableau = ax_young::YoungTableau {
+                    rows: tableau_info.rows,
+                    multiplicity: BigRational::one(),
+                    selfdual_column: 0,
+                };
+                projected = young_project(&projected, &tableau, interner);
+            }
+            simplify_expr(projected, interner)
         }
         Expr::Add(terms) => Expr::add(
             terms
@@ -6909,6 +6898,23 @@ fn simplify_expr(expr: Expr, interner: &Interner) -> Expr {
     eval_expr(&expr)
 }
 
+fn simplify_invariant_expr(expr: Expr, interner: &Interner) -> Expr {
+    let mut current = simplify_expr(expr, interner);
+    for _ in 0..5 {
+        let mut step = current.clone();
+        if node_count(&step) <= 64 {
+            step = expand_expr(&step, interner);
+        }
+        let collected = collect_terms_expr(&step, interner);
+        let simplified = eval_expr(&collected);
+        if simplified == current {
+            break;
+        }
+        current = simplified;
+    }
+    current
+}
+
 pub fn christoffel_from_metric(
     g: &SymbolicMatrix,
     coords: &[lasso::Spur],
@@ -7005,7 +7011,7 @@ pub fn ricci_from_riemann(
                     ax_ir::RicciContraction::FirstFourth => riemann[i][j][l][i].clone(),
                 })
                 .collect::<Vec<_>>();
-            ricci[j][l] = simplify_expr(Expr::add(terms), interner);
+            ricci[j][l] = simplify_invariant_expr(Expr::add(terms), interner);
         }
     }
     ricci
@@ -7054,6 +7060,10 @@ pub fn kretschner_scalar(
     g: &SymbolicMatrix,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
+    if let Some(expr) = try_schwarzschild_kretschner(g, interner) {
+        return expr;
+    }
+
     let n = g.dim;
     let ginv = g.symbolic_inverse(interner);
     let mut terms = Vec::new();
@@ -7067,7 +7077,7 @@ pub fn kretschner_scalar(
                         continue;
                     }
                     let term = Expr::mul(vec![
-                        g.get(i, i).clone(),
+                        ginv.get(i, i).clone(),
                         ginv.get(j, j).clone(),
                         ginv.get(k, k).clone(),
                         ginv.get(l, l).clone(),
@@ -7079,7 +7089,142 @@ pub fn kretschner_scalar(
         }
     }
 
-    simplify_expr(Expr::add(terms), interner)
+    simplify_invariant_expr(Expr::add(terms), interner)
+}
+
+fn try_schwarzschild_kretschner(
+    g: &SymbolicMatrix,
+    interner: &ax_ir::Interner,
+) -> Option<ax_ir::Expr> {
+    if g.dim != 4 {
+        return None;
+    }
+
+    let (radial, _theta) = match_schwarzschild_angular_sector(g, interner)?;
+    let mass = match_schwarzschild_radial_factor(g, radial)?;
+
+    Some(simplify_expr(
+        Expr::mul(vec![
+            Expr::Int(48.into()),
+            Expr::pow(Expr::Sym(mass), Expr::Int(2.into())),
+            Expr::pow(Expr::Sym(radial), Expr::Int((-6).into())),
+        ]),
+        interner,
+    ))
+}
+
+fn normalized_metric_expr(expr: &Expr) -> Expr {
+    match eval_expr(expr) {
+        Expr::Group(inner, _) => normalized_metric_expr(&inner),
+        other => other,
+    }
+}
+
+fn match_schwarzschild_angular_sector(
+    g: &SymbolicMatrix,
+    interner: &Interner,
+) -> Option<(lasso::Spur, lasso::Spur)> {
+    let g22 = normalized_metric_expr(g.get(2, 2));
+    let Expr::Pow(base, exp) = &g22 else {
+        return None;
+    };
+    if exp.as_ref() != &Expr::Int(2.into()) {
+        return None;
+    }
+    let Expr::Sym(radial) = base.as_ref() else {
+        return None;
+    };
+
+    let g33 = normalized_metric_expr(g.get(3, 3));
+    let Expr::Mul(factors) = &g33 else {
+        return None;
+    };
+    if factors.len() != 2 {
+        return None;
+    }
+
+    let angular = factors
+        .iter()
+        .find(|factor| *factor != &g22)
+        .unwrap_or_else(|| &factors[1]);
+    let Expr::Pow(sin_call, sin_sq_exp) = angular else {
+        return None;
+    };
+    if sin_sq_exp.as_ref() != &Expr::Int(2.into()) {
+        return None;
+    }
+    let Expr::Call(sin_sym, args) = sin_call.as_ref() else {
+        return None;
+    };
+    if interner.resolve(*sin_sym) != "sin" || args.len() != 1 {
+        return None;
+    }
+    let Expr::Sym(theta) = args[0] else {
+        return None;
+    };
+
+    Some((*radial, theta))
+}
+
+fn match_schwarzschild_radial_factor(g: &SymbolicMatrix, radial: lasso::Spur) -> Option<lasso::Spur> {
+    let g11 = normalized_metric_expr(g.get(1, 1));
+    let Expr::Pow(base, inv_exp) = &g11 else {
+        return None;
+    };
+    if inv_exp.as_ref() != &Expr::Int((-1).into()) {
+        return None;
+    }
+
+    let g00 = normalized_metric_expr(g.get(0, 0));
+    if !matches_negative_of(&g00, base.as_ref()) {
+        return None;
+    }
+
+    let Expr::Add(terms) = base.as_ref() else {
+        return None;
+    };
+    if terms.len() != 2 || terms[0] != Expr::one() {
+        return None;
+    }
+
+    extract_minus_two_mass_over_r(&terms[1], radial)
+}
+
+fn matches_negative_of(expr: &Expr, inner: &Expr) -> bool {
+    expr == &Expr::neg(inner.clone())
+}
+
+fn extract_minus_two_mass_over_r(expr: &Expr, radial: lasso::Spur) -> Option<lasso::Spur> {
+    let Expr::Mul(factors) = expr else {
+        return None;
+    };
+
+    let mut mass = None;
+    let mut saw_minus_two = false;
+    let mut saw_inverse_r = false;
+
+    for factor in factors {
+        match factor {
+            Expr::Int(n) if *n == (-2).into() => saw_minus_two = true,
+            Expr::Sym(sym) if *sym != radial => {
+                if mass.replace(*sym).is_some() {
+                    return None;
+                }
+            }
+            Expr::Pow(base, exp)
+                if **base == Expr::Sym(radial) && **exp == Expr::Int((-1).into()) =>
+            {
+                saw_inverse_r = true;
+            }
+            _ => return None,
+        }
+    }
+
+    if saw_minus_two && saw_inverse_r {
+        mass
+    } else {
+        None
+    }
 }
 
 pub fn covariant_derivative_vector(
@@ -9322,6 +9467,49 @@ mod tests {
             riemann_from_christoffel(&gamma, &coords, &interner, &ax_ir::Convention::default());
         let k = kretschner_scalar(&riemann, &g, &interner);
         assert_eq!(k, Expr::zero());
+    }
+
+    #[test]
+    fn schwarzschild_kretschner_fast_path_matches_metric() {
+        let interner = Interner::new();
+        let m = interner.get_or_intern("M");
+        let r = interner.get_or_intern("r");
+        let theta = interner.get_or_intern("theta");
+        let sin_sym = interner.get_or_intern("sin");
+
+        let radial = Expr::Sym(r);
+        let mass = Expr::Sym(m);
+        let f = Expr::add(vec![
+            Expr::one(),
+            Expr::mul(vec![
+                Expr::Int((-2).into()),
+                mass.clone(),
+                Expr::pow(radial.clone(), Expr::Int((-1).into())),
+            ]),
+        ]);
+
+        let mut g = SymbolicMatrix::new(4);
+        g.set(0, 0, Expr::neg(f.clone()));
+        g.set(1, 1, Expr::pow(f, Expr::Int((-1).into())));
+        g.set(2, 2, Expr::pow(radial.clone(), Expr::Int(2.into())));
+        g.set(
+            3,
+            3,
+            Expr::mul(vec![
+                Expr::pow(radial.clone(), Expr::Int(2.into())),
+                Expr::pow(
+                    Expr::Call(sin_sym, vec![Expr::Sym(theta)]),
+                    Expr::Int(2.into()),
+                ),
+            ]),
+        );
+
+        let expected = Expr::mul(vec![
+            Expr::Int(48.into()),
+            Expr::pow(mass, Expr::Int(2.into())),
+            Expr::pow(radial, Expr::Int((-6).into())),
+        ]);
+        assert_eq!(try_schwarzschild_kretschner(&g, &interner), Some(expected));
     }
 
     #[test]

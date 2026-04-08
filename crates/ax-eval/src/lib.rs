@@ -5950,12 +5950,16 @@ fn builtin_call(
             if args.len() == 1 {
                 if let Some(riemann) = expr_to_4d(&args[0]) {
                     let n = riemann.len();
-                    Expr::Matrix(ax_tensor::ricci_from_riemann(
-                        &riemann,
-                        n,
+                    aggressive_eval_simplify(
+                        &Expr::Matrix(ax_tensor::ricci_from_riemann(
+                            &riemann,
+                            n,
+                            interner,
+                            &env.convention,
+                        )),
+                        env,
                         interner,
-                        &env.convention,
-                    ))
+                    )
                 } else {
                     Expr::Call(f, args)
                 }
@@ -6549,26 +6553,32 @@ pub(crate) fn to_f64(expr: &Expr) -> Option<f64> {
     }
 }
 
+fn expr_to_rows(expr: &Expr) -> Option<Vec<Vec<Expr>>> {
+    match expr {
+        Expr::Matrix(rows) => Some(rows.clone()),
+        Expr::List(level2) => level2
+            .iter()
+            .map(|row| match row {
+                Expr::List(level3) => Some(level3.clone()),
+                Expr::Matrix(rows) if rows.len() == 1 => rows.first().cloned(),
+                _ => None,
+            })
+            .collect(),
+        Expr::Group(inner, _) => expr_to_rows(inner),
+        _ => None,
+    }
+}
+
 fn expr_to_3d(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
-    let Expr::List(level1) = expr else {
-        return None;
-    };
-    level1
-        .iter()
-        .map(|item| match item {
-            Expr::Matrix(rows) => Some(rows.clone()),
-            Expr::List(level2) => level2
-                .iter()
-                .map(|row| {
-                    let Expr::List(level3) = row else {
-                        return None;
-                    };
-                    Some(level3.clone())
-                })
-                .collect::<Option<Vec<_>>>(),
-            _ => None,
-        })
-        .collect()
+    match expr {
+        Expr::List(level1) => level1.iter().map(expr_to_rows).collect(),
+        Expr::Matrix(rows) => rows
+            .iter()
+            .map(|row| expr_to_rows(&Expr::List(row.clone())))
+            .collect(),
+        Expr::Group(inner, _) => expr_to_3d(inner),
+        _ => None,
+    }
 }
 
 fn expr_3d_to_list(data: Vec<Vec<Vec<Expr>>>) -> Expr {
@@ -6579,34 +6589,96 @@ fn expr_3d_to_list(data: Vec<Vec<Vec<Expr>>>) -> Expr {
     )
 }
 
+fn expr_to_3d_level(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
+    match expr {
+        Expr::List(level2) => level2.iter().map(expr_to_rows).collect(),
+        Expr::Matrix(rows) => rows
+            .iter()
+            .map(|row| expr_to_rows(&Expr::List(row.clone())))
+            .collect(),
+        Expr::Group(inner, _) => expr_to_3d_level(inner),
+        _ => None,
+    }
+}
+
 fn expr_to_4d(expr: &Expr) -> Option<Vec<Vec<Vec<Vec<Expr>>>>> {
-    let Expr::List(level1) = expr else {
-        return None;
-    };
-    level1
-        .iter()
-        .map(|item| {
-            let Expr::List(level2) = item else {
-                return None;
-            };
-            level2
+    match expr {
+        Expr::List(level1) => level1.iter().map(expr_to_3d_level).collect(),
+        Expr::Matrix(rows) => rows
+            .iter()
+            .map(|row| expr_to_3d_level(&Expr::List(row.clone())))
+            .collect(),
+        Expr::Group(inner, _) => expr_to_4d(inner),
+        _ => None,
+    }
+}
+
+fn simplifier_node_count(expr: &Expr) -> usize {
+    match expr {
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) => {
+            1 + terms.iter().map(simplifier_node_count).sum::<usize>()
+        }
+        Expr::Pow(base, exp) => 1 + simplifier_node_count(base) + simplifier_node_count(exp),
+        Expr::Neg(inner) => 1 + simplifier_node_count(inner),
+        Expr::Call(_, args) => 1 + args.iter().map(simplifier_node_count).sum::<usize>(),
+        Expr::Complex(re, im) => 1 + simplifier_node_count(re) + simplifier_node_count(im),
+        Expr::FnDef(_, _, body) => 1 + simplifier_node_count(body),
+        Expr::Rule(lhs, rhs, _) => 1 + simplifier_node_count(lhs) + simplifier_node_count(rhs),
+        Expr::Piecewise(cases) => {
+            1 + cases
                 .iter()
-                .map(|item2| match item2 {
-                    Expr::Matrix(rows) => Some(rows.clone()),
-                    Expr::List(level3) => level3
-                        .iter()
-                        .map(|item3| {
-                            let Expr::List(level4) = item3 else {
-                                return None;
-                            };
-                            Some(level4.clone())
-                        })
-                        .collect::<Option<Vec<_>>>(),
-                    _ => None,
+                .map(|(value, _)| simplifier_node_count(value))
+                .sum::<usize>()
+        }
+        Expr::Indexed(base, _) => 1 + simplifier_node_count(base),
+        Expr::Group(inner, _) => 1 + simplifier_node_count(inner),
+        Expr::Let(_, val, body) => 1 + simplifier_node_count(val) + simplifier_node_count(body),
+        Expr::Matrix(rows) => 1 + rows.iter().flatten().map(simplifier_node_count).sum::<usize>(),
+        _ => 1,
+    }
+}
+
+fn aggressive_eval_simplify(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
+    match expr {
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| aggressive_eval_simplify(cell, env, interner))
+                        .collect()
                 })
-                .collect::<Option<Vec<_>>>()
-        })
-        .collect()
+                .collect(),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| aggressive_eval_simplify(item, env, interner))
+                .collect(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(aggressive_eval_simplify(inner, env, interner)),
+            *rel,
+        ),
+        _ => {
+            let mut current = eval(expr, env, interner);
+            for _ in 0..6 {
+                let mut step = current.clone();
+                if simplifier_node_count(&step) <= 256 {
+                    step = simplify::expand(&step, interner);
+                }
+                let collected = simplify::collect_terms(&step, interner);
+                let evaled = simplify::rationalize_expanded_numerator(
+                    &eval(&collected, env, interner),
+                    interner,
+                );
+                if evaled == current {
+                    break;
+                }
+                current = evaled;
+            }
+            current
+        }
+    }
 }
 
 fn expr_4d_to_list(data: Vec<Vec<Vec<Vec<Expr>>>>) -> Expr {
@@ -8037,5 +8109,108 @@ mod tests {
             !rendered.contains("join_gammas_in_expr"),
             "alias should evaluate, got {rendered}"
         );
+    }
+
+    #[test]
+    fn dsolve_evaluates_first_order_ode_written_with_diff_on_lhs() {
+        let (result, interner) = eval_src("dsolve(diff(y, x) - y, y, x);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("solve_ode"), "got {rendered}");
+        assert!(rendered.contains("exp"), "got {rendered}");
+    }
+
+    #[test]
+    fn ricci_accepts_tensor_bound_in_environment() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let src = "riemann(christoffel(metric(diag(1, x^2, y^2)), [x, y, z]), [x, y, z]);";
+        let lowered = ax_core_ir::lower(src, &interner);
+        let riem_expr = lowered.expr.expect("riemann expr");
+        let riem_value = eval(&riem_expr, &env, &interner);
+        let riem_sym = interner.get_or_intern("Riem");
+        env.bindings.insert(riem_sym, riem_value.clone());
+
+        let ricci_sym = interner.get_or_intern("ricci");
+        let result = eval(&Expr::Call(ricci_sym, vec![Expr::Sym(riem_sym)]), &env, &interner);
+        assert!(
+            matches!(result, Expr::Matrix(_)),
+            "expected matrix from bound riemann tensor, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn young_project_respects_symmetric_property() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let t = interner.get_or_intern("T");
+        env.property_store
+            .declare_simple(t, ax_ir::TensorProperty::Symmetric(vec![0, 1]));
+        let lowered = ax_core_ir::lower("young_project(T[a-,b-]);", &interner);
+        let expr = lowered.expr.expect("young_project expr");
+        let result = eval(&expr, &env, &interner);
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("T[a-, b-]"), "got {rendered}");
+        assert!(rendered.contains("T[b-, a-]"), "got {rendered}");
+    }
+
+    #[test]
+    fn brst_demo_nilpotency_evaluates_to_zero() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let setup = ax_core_ir::lower("setup_brst_ym(A, c, cbar, B, e);", &interner)
+            .expr
+            .expect("setup expr");
+        let setup_msg = apply_brst_setup(&setup, &mut env, &interner);
+        assert!(setup_msg.is_some(), "expected BRST setup to initialize env");
+        let expr = ax_core_ir::lower("brst(brst(A));", &interner)
+            .expr
+            .expect("brst expr");
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn schwarzschild_ricci_demo_collapses_to_zero_matrix() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let expr = ax_core_ir::lower(
+            "ricci(riemann(christoffel(metric(diag(-(1 - 2M/r), 1/(1 - 2M/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi]));",
+            &interner,
+        )
+        .expr
+        .expect("schwarzschild ricci expr");
+        let result = eval(&expr, &env, &interner);
+        match result {
+            Expr::Matrix(rows) => {
+                assert!(
+                    rows.iter()
+                        .flatten()
+                        .all(|entry| *entry == Expr::zero()),
+                    "expected zero Ricci matrix, got {:?}",
+                    rows
+                );
+            }
+            other => panic!("expected Schwarzschild Ricci matrix, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn schwarzschild_kretschner_demo_collapses_to_closed_form() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let expr = ax_core_ir::lower(
+            "kretschner(riemann(christoffel(metric(diag(-(1 - 2M/r), 1/(1 - 2M/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi]), metric(diag(-(1 - 2M/r), 1/(1 - 2M/r), r^2, r^2 * sin(theta)^2)));",
+            &interner,
+        )
+        .expr
+        .expect("schwarzschild kretschner expr");
+        let result = eval(&expr, &env, &interner);
+        let expected = Expr::mul(vec![
+            Expr::Int(48.into()),
+            Expr::pow(Expr::Sym(interner.get_or_intern("M")), Expr::Int(2.into())),
+            Expr::pow(Expr::Sym(interner.get_or_intern("r")), Expr::Int((-6).into())),
+        ]);
+        assert_eq!(result, expected);
     }
 }
