@@ -6307,10 +6307,25 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "exterior_d" | "d" => {
+        "wedge" => {
             if args.len() == 2 {
-                match (&args[0], &args[1]) {
-                    (field, Expr::List(coords_exprs)) => {
+                match (ax_forms::form_from_expr(&args[0]), ax_forms::form_from_expr(&args[1])) {
+                    (Some(a), Some(b)) => {
+                        let dim = a.dim.max(b.dim);
+                        let a = ax_forms::resize_form(&a, dim);
+                        let b = ax_forms::resize_form(&b, dim);
+                        ax_forms::form_to_expr(&ax_forms::wedge(&a, &b, interner))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "exterior_d" | "d" => {
+            let coords = if args.len() == 2 {
+                match &args[1] {
+                    Expr::List(coords_exprs) => {
                         let coords = coords_exprs
                             .iter()
                             .map(|expr| match expr {
@@ -6319,13 +6334,62 @@ fn builtin_call(
                             })
                             .collect::<Option<Vec<_>>>();
                         if let Some(coords) = coords {
-                            let form = if let Some(one_form) = ax_forms::one_form_from_expr(field) {
-                                one_form
-                            } else {
-                                ax_forms::scalar_form(field, coords.len())
-                            };
-                            ax_forms::form_to_expr(&ax_forms::exterior_derivative(
-                                &form, &coords, interner,
+                            Some(coords)
+                        } else {
+                            return Expr::Call(f, args);
+                        }
+                    }
+                    _ => return Expr::Call(f, args),
+                }
+            } else if args.len() == 1 {
+                let mut coords = env.coordinates.iter().copied().collect::<Vec<_>>();
+                coords.sort_by_key(|sym| interner.resolve(*sym).to_string());
+                (!coords.is_empty()).then_some(coords)
+            } else {
+                None
+            };
+            if let Some(coords) = coords {
+                let field = &args[0];
+                let form = ax_forms::form_from_expr(field)
+                    .map(|form| ax_forms::resize_form(&form, coords.len()))
+                    .unwrap_or_else(|| ax_forms::scalar_form(field, coords.len()));
+                ax_forms::form_to_expr(&ax_forms::exterior_derivative(&form, &coords, interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "hodge_star" => {
+            if args.len() == 2 {
+                match (&args[0], matrix_to_symbolic(&args[1])) {
+                    (field, Some(metric)) => {
+                        let form = ax_forms::form_from_expr(field)
+                            .map(|form| ax_forms::resize_form(&form, metric.dim))
+                            .unwrap_or_else(|| ax_forms::scalar_form(field, metric.dim));
+                        ax_forms::form_to_expr(&ax_forms::hodge_dual(&form, &metric, interner))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "codifferential" => {
+            if args.len() == 3 {
+                match (&args[0], matrix_to_symbolic(&args[1]), &args[2]) {
+                    (field, Some(metric), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let Some(coords) = coords {
+                            let form = ax_forms::form_from_expr(field)
+                                .map(|form| ax_forms::resize_form(&form, metric.dim))
+                                .unwrap_or_else(|| ax_forms::scalar_form(field, metric.dim));
+                            ax_forms::form_to_expr(&ax_forms::codifferential(
+                                &form, &metric, &coords, interner,
                             ))
                         } else {
                             Expr::Call(f, args)
@@ -6337,18 +6401,48 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "hodge_star" => {
+        "interior_product" => {
             if args.len() == 2 {
-                match (&args[0], matrix_to_symbolic(&args[1])) {
-                    (field, Some(metric)) => {
-                        let form = if let Some(one_form) = ax_forms::one_form_from_expr(field) {
-                            one_form
-                        } else if let Some(two_form) = ax_forms::two_form_from_expr(field) {
-                            two_form
+                match (&args[0], &args[1]) {
+                    (Expr::List(vector), field) => {
+                        let form = ax_forms::form_from_expr(field).map(|form| {
+                            ax_forms::resize_form(&form, vector.len())
+                        });
+                        if let Some(form) = form {
+                            ax_forms::form_to_expr(&ax_forms::interior_product(
+                                vector, &form, interner,
+                            ))
                         } else {
-                            ax_forms::scalar_form(field, metric.dim)
-                        };
-                        ax_forms::form_to_expr(&ax_forms::hodge_dual(&form, &metric, interner))
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "lie_derivative_form" => {
+            if args.len() == 3 {
+                match (&args[0], &args[1], &args[2]) {
+                    (field, Expr::List(vector), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let form = ax_forms::form_from_expr(field).map(|form| {
+                            ax_forms::resize_form(&form, vector.len())
+                        });
+                        if let (Some(coords), Some(form)) = (coords, form) {
+                            ax_forms::form_to_expr(&ax_forms::lie_derivative_form(
+                                vector, &form, &coords, interner,
+                            ))
+                        } else {
+                            Expr::Call(f, args)
+                        }
                     }
                     _ => Expr::Call(f, args),
                 }
@@ -7577,9 +7671,50 @@ mod tests {
             "lower errors: {:?}",
             result.errors
         );
-        let expr = result.expr.expect("expected expression");
-        let env = Env::new();
-        (eval(&expr, &env, &interner), interner)
+        if result.exprs.len() <= 1 {
+            let expr = result.expr.expect("expected expression");
+            let env = Env::new();
+            return (eval(&expr, &env, &interner), interner);
+        }
+        let mut env = Env::new();
+        let mut last = Expr::zero();
+        for expr in result.exprs {
+            if apply_set_convention(&expr, &mut env).is_some()
+                || apply_parallel_declaration(&expr, &mut env, &interner).is_some()
+                || apply_graded_declaration(&expr, &mut env, &interner).is_some()
+                || apply_superspace_setup(&expr, &mut env, &interner).is_some()
+                || apply_brst_setup(&expr, &mut env, &interner).is_some()
+                || apply_property_declaration(&expr, &mut env, &interner).is_some()
+                || apply_coordinate_declaration(&expr, &mut env, &interner).is_some()
+                || apply_index_declaration(&expr, &mut env, &interner).is_some()
+            {
+                last = Expr::zero();
+                continue;
+            }
+
+            let result = eval(&expr, &env, &interner);
+            if let Expr::FnDef(name, _, _) = &result {
+                env.bindings.insert(*name, result.clone());
+            }
+            let _ = register_rule(&result, &mut env, &interner);
+            let _ = apply_coordinate_declaration(&result, &mut env, &interner);
+            let _ = apply_grassmann_declaration(&result, &mut env, &interner);
+            let _ = apply_operator_declaration(&result, &mut env, &interner);
+            if let Expr::Assume(var, assumptions) = &result {
+                env.assumptions
+                    .entry(*var)
+                    .or_default()
+                    .extend(assumptions.clone());
+            }
+            if let Expr::Let(name, val, _) = &expr {
+                let evaled_val = eval(val, &env, &interner);
+                env.bindings.insert(*name, evaled_val.clone());
+                last = evaled_val;
+            } else {
+                last = result;
+            }
+        }
+        (last, interner)
     }
 
     #[test]
@@ -8689,6 +8824,42 @@ mod tests {
         assert!(rendered.contains("d2chi_dtdt"), "got {rendered}");
         assert!(rendered.contains("χ") || rendered.contains("chi"), "got {rendered}");
         assert!(rendered.contains("φ") || rendered.contains("phi"), "got {rendered}");
+    }
+
+    #[test]
+    fn wedge_source_eval_accepts_general_public_name() {
+        let (result, interner) = eval_src("wedge([P, Q], [R, S]);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("wedge("), "got {rendered}");
+        assert!(rendered.contains("PS") || rendered.contains("P*S"), "got {rendered}");
+    }
+
+    #[test]
+    fn exterior_d_uses_declared_coordinates_when_omitted() {
+        let (result, interner) = eval_src("coordinates [x, y]; d([P, Q]);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("d("), "got {rendered}");
+        assert_eq!(rendered, "[[0, 0], [0, 0]]", "got {rendered}");
+    }
+
+    #[test]
+    fn codifferential_and_interior_product_reduce() {
+        let (result, interner) = eval_src(
+            "let g = metric(diag(1, 1)); [codifferential([P, Q], g, [x, y]), interior_product([1, 0], [[0, M], [-M, 0]])];",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("codifferential"), "got {rendered}");
+        assert!(!rendered.contains("interior_product"), "got {rendered}");
+        assert!(rendered.contains("M"), "got {rendered}");
+    }
+
+    #[test]
+    fn lie_derivative_form_reduces() {
+        let (result, interner) =
+            eval_src("lie_derivative_form([x, 0], [1, 0], [x, y]);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("lie_derivative_form"), "got {rendered}");
+        assert!(rendered.contains("[1, 0]"), "got {rendered}");
     }
 
     #[test]

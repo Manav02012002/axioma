@@ -238,20 +238,30 @@ pub fn hodge_dual(form: &DiffForm, g: &SymbolicMatrix, interner: &ax_ir::Interne
 }
 
 pub fn one_form_from_expr(expr: &Expr) -> Option<DiffForm> {
-    let Expr::List(items) = expr else {
-        return None;
-    };
-    let mut components = BTreeMap::new();
-    for (i, item) in items.iter().enumerate() {
-        if *item != Expr::zero() {
-            components.insert(vec![i], item.clone());
+    match expr {
+        Expr::List(items)
+            if items
+                .iter()
+                .all(|item| matches!(item, Expr::List(pair) if pair.len() == 2)) =>
+        {
+            let generic = form_from_expr(expr)?;
+            (generic.degree == 1).then_some(generic)
         }
+        Expr::List(items) => {
+            let mut components = BTreeMap::new();
+            for (i, item) in items.iter().enumerate() {
+                if *item != Expr::zero() {
+                    components.insert(vec![i], item.clone());
+                }
+            }
+            Some(DiffForm {
+                degree: 1,
+                dim: items.len(),
+                components,
+            })
+        }
+        _ => None,
     }
-    Some(DiffForm {
-        degree: 1,
-        dim: items.len(),
-        components,
-    })
 }
 
 pub fn two_form_from_expr(expr: &Expr) -> Option<DiffForm> {
@@ -279,6 +289,75 @@ pub fn two_form_from_expr(expr: &Expr) -> Option<DiffForm> {
     })
 }
 
+pub fn form_from_expr(expr: &Expr) -> Option<DiffForm> {
+    match expr {
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Sym(_) | Expr::Add(_)
+        | Expr::Mul(_) | Expr::Pow(_, _) | Expr::Neg(_) | Expr::Call(_, _) | Expr::Group(_, _) => {
+            Some(scalar_form(expr, 0))
+        }
+        Expr::List(items)
+            if items
+                .iter()
+                .all(|item| matches!(item, Expr::List(pair) if pair.len() == 2)) =>
+        {
+            let mut components = BTreeMap::new();
+            let mut degree = None;
+            let mut max_idx = None;
+            for item in items {
+                let Expr::List(pair) = item else {
+                    return None;
+                };
+                let basis = match &pair[0] {
+                    Expr::List(indices) => indices
+                        .iter()
+                        .map(|idx| match idx {
+                            Expr::Int(n) => num_traits::ToPrimitive::to_usize(n),
+                            _ => None,
+                        })
+                        .collect::<Option<Vec<_>>>()?,
+                    _ => return None,
+                };
+                if let Some(existing_degree) = degree {
+                    if existing_degree != basis.len() {
+                        return None;
+                    }
+                } else {
+                    degree = Some(basis.len());
+                }
+                if basis.windows(2).any(|window| window[0] >= window[1]) {
+                    return None;
+                }
+                if let Some(last) = basis.last() {
+                    max_idx = Some(max_idx.map_or(*last, |current: usize| current.max(*last)));
+                }
+                let value = pair[1].clone();
+                if value != Expr::zero() {
+                    components.insert(basis, value);
+                }
+            }
+            Some(DiffForm {
+                degree: degree.unwrap_or(0),
+                dim: max_idx.map_or(0, |idx| idx + 1),
+                components,
+            })
+        }
+        Expr::List(items) => one_form_from_expr(expr).or_else(|| {
+            Some(DiffForm {
+                degree: 1,
+                dim: items.len(),
+                components: items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| **item != Expr::zero())
+                    .map(|(i, item)| (vec![i], item.clone()))
+                    .collect(),
+            })
+        }),
+        Expr::Matrix(_) => two_form_from_expr(expr),
+        _ => None,
+    }
+}
+
 pub fn scalar_form(expr: &Expr, dim: usize) -> DiffForm {
     let mut components = BTreeMap::new();
     if *expr != Expr::zero() {
@@ -287,6 +366,87 @@ pub fn scalar_form(expr: &Expr, dim: usize) -> DiffForm {
     DiffForm {
         degree: 0,
         dim,
+        components,
+    }
+}
+
+pub fn resize_form(form: &DiffForm, dim: usize) -> DiffForm {
+    assert!(dim >= form.dim);
+    DiffForm {
+        degree: form.degree,
+        dim,
+        components: form.components.clone(),
+    }
+}
+
+pub fn interior_product(
+    vector: &[Expr],
+    form: &DiffForm,
+    interner: &ax_ir::Interner,
+) -> DiffForm {
+    assert_eq!(vector.len(), form.dim);
+    if form.degree == 0 {
+        return scalar_form(&Expr::zero(), form.dim);
+    }
+    let mut components = BTreeMap::new();
+    for (basis, value) in &form.components {
+        for (pos, idx) in basis.iter().enumerate() {
+            let vector_component = vector[*idx].clone();
+            if vector_component == Expr::zero() {
+                continue;
+            }
+            let mut reduced_basis = basis.clone();
+            reduced_basis.remove(pos);
+            let mut term = Expr::mul(vec![vector_component, value.clone()]);
+            if pos % 2 == 1 {
+                term = Expr::neg(term);
+            }
+            add_component(&mut components, reduced_basis, term, interner);
+        }
+    }
+    DiffForm {
+        degree: form.degree.saturating_sub(1),
+        dim: form.dim,
+        components,
+    }
+}
+
+pub fn codifferential(
+    form: &DiffForm,
+    g: &SymbolicMatrix,
+    coords: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> DiffForm {
+    let star = hodge_dual(form, g, interner);
+    let d_star = exterior_derivative(&star, coords, interner);
+    let mut result = hodge_dual(&d_star, g, interner);
+    let exponent = (form.dim * (form.degree + 1) + 1) % 2;
+    if exponent == 1 {
+        result.components = result
+            .components
+            .into_iter()
+            .map(|(basis, value)| (basis, Expr::neg(value)))
+            .collect();
+    }
+    result
+}
+
+pub fn lie_derivative_form(
+    vector: &[Expr],
+    form: &DiffForm,
+    coords: &[lasso::Spur],
+    interner: &ax_ir::Interner,
+) -> DiffForm {
+    let interior_then_d = interior_product(vector, &exterior_derivative(form, coords, interner), interner);
+    let d_then_interior =
+        exterior_derivative(&interior_product(vector, form, interner), coords, interner);
+    let mut components = interior_then_d.components.clone();
+    for (basis, value) in d_then_interior.components {
+        add_component(&mut components, basis, value, interner);
+    }
+    DiffForm {
+        degree: form.degree,
+        dim: form.dim,
         components,
     }
 }
@@ -417,5 +577,64 @@ mod tests {
             *dydx.components.get(&vec![0, 1]).unwrap_or(&Expr::zero()),
             Expr::neg(Expr::one())
         );
+    }
+
+    #[test]
+    fn parse_generic_three_form_round_trip() {
+        let expr = Expr::List(vec![Expr::List(vec![
+            Expr::List(vec![Expr::Int(0.into()), Expr::Int(1.into()), Expr::Int(2.into())]),
+            Expr::one(),
+        ])]);
+        let form = form_from_expr(&expr).expect("generic form");
+        assert_eq!(form.degree, 3);
+        assert_eq!(form.dim, 3);
+        assert_eq!(form_to_expr(&form), expr);
+    }
+
+    #[test]
+    fn interior_product_reduces_degree() {
+        let interner = ax_ir::Interner::new();
+        let vector = vec![Expr::one(), Expr::zero(), Expr::zero()];
+        let form = DiffForm {
+            degree: 2,
+            dim: 3,
+            components: BTreeMap::from([(vec![0, 2], Expr::one())]),
+        };
+        let result = interior_product(&vector, &form, &interner);
+        assert_eq!(result.degree, 1);
+        assert_eq!(result.components.get(&vec![2]), Some(&Expr::one()));
+    }
+
+    #[test]
+    fn codifferential_of_constant_one_form_is_zero() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let metric =
+            ax_tensor::SymbolicMatrix::from_diagonal(vec![Expr::one(), Expr::one()]);
+        let form = DiffForm {
+            degree: 1,
+            dim: 2,
+            components: BTreeMap::from([(vec![0], Expr::one())]),
+        };
+        let delta = codifferential(&form, &metric, &[x, y], &interner);
+        assert!(delta.components.values().all(|value| *value == Expr::zero()));
+    }
+
+    #[test]
+    fn lie_derivative_form_matches_cartan_on_constant_vector() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let omega = DiffForm {
+            degree: 1,
+            dim: 2,
+            components: BTreeMap::from([
+                (vec![0], Expr::Sym(x)),
+                (vec![1], Expr::zero()),
+            ]),
+        };
+        let result = lie_derivative_form(&[Expr::one(), Expr::zero()], &omega, &[x, y], &interner);
+        assert_eq!(form_to_expr(&result), Expr::List(vec![Expr::one(), Expr::zero()]));
     }
 }

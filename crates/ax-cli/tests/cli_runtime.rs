@@ -484,6 +484,27 @@ fn run_variational_module_exposes_functional_derivatives_and_systems() {
 }
 
 #[test]
+fn run_differential_forms_module_exposes_forms_operations() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/physics/differential_forms.ax")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .expect("run differential forms module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[[0, -1"), "stdout:\n{stdout}");
+    assert!(stdout.contains("∂x²/∂x") || stdout.contains("2x"), "stdout:\n{stdout}");
+    assert!(stdout.contains("[-1Q, P]"), "stdout:\n{stdout}");
+    assert!(stdout.contains("M") && stdout.contains("[0"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn run_qm_spin_module_exposes_pauli_commutator() {
     let out = bin()
         .current_dir(repo_root())

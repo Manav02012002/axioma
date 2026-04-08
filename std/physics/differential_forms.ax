@@ -1,0 +1,26 @@
+// Differential forms on a 2D Euclidean patch.
+
+coordinates [x, y]
+
+let A = [P, Q]
+let B = [R, S]
+let F = [[0, M], [-M, 0]]
+let g = metric(diag(1, 1))
+
+let A_wedge_B = wedge(A, B)
+let dphi = d(x^2 + y^2)
+let dA = d(A)
+let ddphi = d(dphi)
+let star_A = hodge_star(A, g)
+let delta_A = codifferential(A, g, [x, y])
+let iXF = interior_product([1, 0], F)
+let lie_A = lie_derivative_form(A, [1, 0], [x, y])
+
+A_wedge_B
+dphi
+dA
+ddphi
+star_A
+delta_A
+iXF
+lie_A
