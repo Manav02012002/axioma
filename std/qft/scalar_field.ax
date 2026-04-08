@@ -1,6 +1,8 @@
-// Scalar field theory
-// Free scalar Lagrangian:
-// L = (1/2)(∂_μ φ)(∂^μ φ) - (1/2) m^2 φ^2
-// Equation of motion (Klein-Gordon):
-// (□ + m^2) φ = 0
-// where □ = ∂_μ ∂^μ is the d'Alembertian
+// Free scalar field via the Klein-Gordon Lagrangian.
+let dphi_dt = dphi_dt
+let dphi_dx = dphi_dx
+let dphi_dy = dphi_dy
+let dphi_dz = dphi_dz
+let L = 1/2 * (dphi_dt^2 - dphi_dx^2 - dphi_dy^2 - dphi_dz^2) - 1/2 * m^2 * phi^2
+let EOM = euler_lagrange(L, phi, [dphi_dt, dphi_dx, dphi_dy, dphi_dz], [t, x, y, z])
+EOM

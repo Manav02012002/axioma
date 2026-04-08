@@ -266,6 +266,86 @@ fn run_cosmology_perturbation_example_executes_end_to_end() {
 }
 
 #[test]
+fn run_qft_examples_execute_end_to_end() {
+    for rel in ["examples/brst_qed.ax", "examples/wess_zumino_model.ax"] {
+        let out = bin()
+            .current_dir(repo_root())
+            .args(["run", repo_file(rel).to_string_lossy().as_ref()])
+            .output()
+            .expect("run qft example");
+
+        assert!(out.status.success(), "{rel} stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if rel.ends_with("brst_qed.ax") {
+            assert!(stdout.contains("initialized Yang-Mills BRST setup"), "stdout:\n{stdout}");
+            assert!(stdout.contains("\n0\n"), "stdout:\n{stdout}");
+            assert!(stdout.contains("\n-1\n"), "stdout:\n{stdout}");
+        } else {
+            assert!(stdout.contains("initialized N=1 superspace"), "stdout:\n{stdout}");
+            assert!(stdout.contains("F_Phi"), "stdout:\n{stdout}");
+            assert!(stdout.contains("F_bar_Phi_bar"), "stdout:\n{stdout}");
+        }
+    }
+}
+
+#[test]
+fn run_qft_std_modules_execute_end_to_end() {
+    for rel in [
+        "std/qft/brst.ax",
+        "std/qft/dirac.ax",
+        "std/qft/gamma.ax",
+        "std/qft/normal_ordering.ax",
+        "std/qft/scalar_field.ax",
+        "std/qft/spinor_helicity.ax",
+        "std/qft/superspace.ax",
+    ] {
+        let out = bin()
+            .current_dir(repo_root())
+            .args(["run", repo_file(rel).to_string_lossy().as_ref()])
+            .output()
+            .expect("run qft std module");
+
+        assert!(out.status.success(), "{rel} stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        match rel {
+            "std/qft/brst.ax" => {
+                assert!(stdout.contains("initialized Yang-Mills BRST setup"), "stdout:\n{stdout}");
+                assert!(stdout.contains("partial(c)"), "stdout:\n{stdout}");
+                assert!(stdout.contains("\ntrue\n"), "stdout:\n{stdout}");
+            }
+            "std/qft/dirac.ax" => {
+                assert!(stdout.contains("bar(ψ)"), "stdout:\n{stdout}");
+                assert!(stdout.contains("gamma(μ)"), "stdout:\n{stdout}");
+                assert!(!stdout.contains("fierz("), "stdout:\n{stdout}");
+            }
+            "std/qft/gamma.ax" => {
+                assert!(stdout.contains("gamma(μ, ν)"), "stdout:\n{stdout}");
+                assert!(stdout.contains("4g^μ^ν"), "stdout:\n{stdout}");
+            }
+            "std/qft/normal_ordering.ax" => {
+                assert!(stdout.contains("creation(a)annihilation(a)"), "stdout:\n{stdout}");
+                assert!(stdout.contains("number_state(a, 1)"), "stdout:\n{stdout}");
+            }
+            "std/qft/scalar_field.ax" => {
+                assert!(stdout.contains("dphi_dt"), "stdout:\n{stdout}");
+                assert!(stdout.contains("m²φ"), "stdout:\n{stdout}");
+            }
+            "std/qft/spinor_helicity.ax" => {
+                assert!(stdout.contains("⟨12⟩"), "stdout:\n{stdout}");
+                assert!(stdout.contains("s_{12}"), "stdout:\n{stdout}");
+                assert!(stdout.contains("z"), "stdout:\n{stdout}");
+            }
+            "std/qft/superspace.ax" => {
+                assert!(stdout.contains("initialized N=1 superspace"), "stdout:\n{stdout}");
+                assert!(stdout.contains("F_Phi"), "stdout:\n{stdout}");
+                assert!(stdout.contains("theta_bar"), "stdout:\n{stdout}");
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
 fn run_frw_module_has_only_time_derivatives_of_scale_factor() {
     let out = bin()
         .current_dir(repo_root())

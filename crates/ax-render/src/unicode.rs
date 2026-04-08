@@ -142,6 +142,11 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
         .iter()
         .map(|arg| render_with_paren(arg, PREC_TOP, interner))
         .collect::<Vec<_>>();
+    let spinor_labels_unicode = || {
+        args.iter()
+            .map(|arg| spinor_label_unicode(arg, interner))
+            .collect::<Vec<_>>()
+    };
 
     match (name, args.len()) {
         ("__eq", 2) => format!("{} = {}", rendered_args[0], rendered_args[1]),
@@ -160,12 +165,31 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
             spinor_label_unicode(&args[0], interner),
             spinor_label_unicode(&args[1], interner)
         ),
-        ("__mandelstam3", 3) | ("__mandelstam_multi", 3) => format!(
+        ("__mandelstam_multi", n) if n >= 2 => {
+            format!("s_{{{}}}", spinor_labels_unicode().join(""))
+        }
+        ("__mandelstam3", 3) => format!(
             "s_{{{}{}{}}}",
             spinor_label_unicode(&args[0], interner),
             spinor_label_unicode(&args[1], interner),
             spinor_label_unicode(&args[2], interner)
         ),
+        ("__angle_chain", n) if n >= 2 => {
+            let labels = spinor_labels_unicode();
+            format!("⟨{}|{}|{}⟩", labels[0], labels[1..n - 1].join(""), labels[n - 1])
+        }
+        ("__square_chain", n) if n >= 2 => {
+            let labels = spinor_labels_unicode();
+            format!("[{}|{}|{}]", labels[0], labels[1..n - 1].join(""), labels[n - 1])
+        }
+        ("__angle_square_chain", n) if n >= 2 => {
+            let labels = spinor_labels_unicode();
+            format!("⟨{}|{}|{}]", labels[0], labels[1..n - 1].join(""), labels[n - 1])
+        }
+        ("__square_angle_chain", n) if n >= 2 => {
+            let labels = spinor_labels_unicode();
+            format!("[{}|{}|{}⟩", labels[0], labels[1..n - 1].join(""), labels[n - 1])
+        }
         ("__four_bracket", 4) => format!(
             "⟨{}{}{}{}⟩",
             spinor_label_unicode(&args[0], interner),

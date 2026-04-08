@@ -1,7 +1,12 @@
-// Dirac equation setup
-// The Dirac equation: (iγ^μ ∂_μ - m)ψ = 0
-// Gamma matrix trace identities:
-// Tr(I) = 4
-// Tr(γ^μ) = 0
-// Tr(γ^μ γ^ν) = 4 η^{μν}
-// Tr(odd number of γ) = 0
+// Dirac / spinor manipulations.
+property bar dirac_bar
+property psi spinor
+property psi majorana_spinor
+property psi1 majorana_spinor
+property psi2 majorana_spinor
+property psi3 majorana_spinor
+property psi4 majorana_spinor
+property gamma gamma_matrix
+expand_diracbar(bar(gamma(mu) * psi))
+sort_product(bar(psi) * psi * gamma(mu))
+fierz(bar(psi1) * gamma(mu) * psi2 * bar(psi3) * psi4)

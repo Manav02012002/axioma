@@ -249,6 +249,36 @@ fn label_from_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<ax_spinor:
     }
 }
 
+fn labels_from_exprs(args: &[Expr], interner: &ax_ir::Interner) -> Option<Vec<ax_spinor::Label>> {
+    args.iter()
+        .map(|arg| label_from_expr(arg, interner))
+        .collect::<Option<Vec<_>>>()
+}
+
+fn labels_from_list_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<ax_spinor::Label>> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    labels_from_exprs(items, interner)
+}
+
+fn spinor_multi_mandelstam_expr(
+    labels: Vec<ax_spinor::Label>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match labels.as_slice() {
+        [i, j] => spinor_to_expr(&ax_spinor::SpinorExpr::Mandelstam(*i, *j), interner),
+        [i, j, k] => spinor_to_expr(&ax_spinor::SpinorExpr::Mandelstam3(*i, *j, *k), interner),
+        _ => spinor_to_expr(
+            &ax_spinor::SpinorExpr::Product(vec![ax_spinor::SpinorTerm::new(
+                BigRational::from_integer(1.into()),
+                vec![ax_spinor::SpinorFactor::Mandelstam(labels)],
+            )]),
+            interner,
+        ),
+    }
+}
+
 fn int_from_expr(expr: &Expr) -> Option<u16> {
     match expr {
         Expr::Int(n) => n.to_u16(),
@@ -786,6 +816,13 @@ fn expr_to_spinor(e: &Expr, interner: &ax_ir::Interner) -> Option<ax_spinor::Spi
                 label_from_expr(&args[2], interner)?,
             ))
         }
+        Expr::Call(f, args) if interner.resolve(*f) == "__mandelstam_multi" && args.len() >= 2 => {
+            let labels = labels_from_exprs(args, interner)?;
+            Some(ax_spinor::SpinorExpr::Product(vec![ax_spinor::SpinorTerm::new(
+                BigRational::from_integer(1.into()),
+                vec![ax_spinor::SpinorFactor::Mandelstam(labels)],
+            )]))
+        }
         Expr::Call(f, args) if interner.resolve(*f) == "__angle_chain" && args.len() >= 2 => {
             let labels = args
                 .iter()
@@ -877,13 +914,38 @@ fn expr_to_spinor(e: &Expr, interner: &ax_ir::Interner) -> Option<ax_spinor::Spi
                             label_from_expr(&args[1], interner)?,
                         ));
                     }
-                    Expr::Call(f, args)
-                        if interner.resolve(*f) == "__mandelstam" && args.len() == 2 =>
-                    {
+                    Expr::Call(f, args) if interner.resolve(*f) == "__mandelstam" && args.len() == 2 => {
                         spinor_factors.push(ax_spinor::SpinorFactor::Mandelstam(vec![
                             label_from_expr(&args[0], interner)?,
                             label_from_expr(&args[1], interner)?,
                         ]));
+                    }
+                    Expr::Call(f, args)
+                        if interner.resolve(*f) == "__mandelstam_multi" && args.len() >= 2 =>
+                    {
+                        spinor_factors.push(ax_spinor::SpinorFactor::Mandelstam(
+                            labels_from_exprs(args, interner)?,
+                        ));
+                    }
+                    Expr::Call(f, args)
+                        if interner.resolve(*f) == "__angle_square_chain" && args.len() >= 2 =>
+                    {
+                        let labels = labels_from_exprs(args, interner)?;
+                        spinor_factors.push(ax_spinor::SpinorFactor::AngleSquare(
+                            labels[0],
+                            labels[1..labels.len() - 1].to_vec(),
+                            labels[labels.len() - 1],
+                        ));
+                    }
+                    Expr::Call(f, args)
+                        if interner.resolve(*f) == "__square_angle_chain" && args.len() >= 2 =>
+                    {
+                        let labels = labels_from_exprs(args, interner)?;
+                        spinor_factors.push(ax_spinor::SpinorFactor::SquareAngle(
+                            labels[0],
+                            labels[1..labels.len() - 1].to_vec(),
+                            labels[labels.len() - 1],
+                        ));
                     }
                     Expr::Sym(s) => spinor_factors.push(ax_spinor::SpinorFactor::SymbolicParam(*s)),
                     Expr::Pow(base, exp) => {
@@ -3420,6 +3482,32 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "angle_chain" | "square_chain" | "angle_square_chain" | "square_angle_chain" => {
+            if args.len() == 3 {
+                let start = label_from_expr(&args[0], interner);
+                let middle = labels_from_list_expr(&args[1], interner);
+                let end = label_from_expr(&args[2], interner);
+                match (start, middle, end) {
+                    (Some(i), Some(middle), Some(j)) => {
+                        let expr = match name {
+                            "angle_chain" => ax_spinor::SpinorExpr::AngleChain(i, middle, j),
+                            "square_chain" => ax_spinor::SpinorExpr::SquareChain(i, middle, j),
+                            "angle_square_chain" => {
+                                ax_spinor::SpinorExpr::AngleSquareChain(i, middle, j)
+                            }
+                            "square_angle_chain" => {
+                                ax_spinor::SpinorExpr::SquareAngleChain(i, middle, j)
+                            }
+                            _ => unreachable!(),
+                        };
+                        spinor_to_expr(&expr, interner)
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "mandelstam" => {
             if args.len() == 2 {
                 match (
@@ -3428,6 +3516,17 @@ fn builtin_call(
                 ) {
                     (Some(i), Some(j)) => spinor_to_expr(&ax_spinor::SpinorExpr::s(i, j), interner),
                     _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "mandelstam_multi" => {
+            if args.len() == 1 {
+                if let Some(labels) = labels_from_list_expr(&args[0], interner) {
+                    spinor_multi_mandelstam_expr(labels, interner)
+                } else {
+                    Expr::Call(f, args)
                 }
             } else {
                 Expr::Call(f, args)
@@ -4070,7 +4169,7 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "filter_ghost" => {
+        "filter_ghost" | "filter_ghost_number" => {
             if args.len() == 2 {
                 if let Expr::Int(n) = &args[1] {
                     if let Some(target) = n.to_i32() {
@@ -5732,9 +5831,40 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "fierz" => {
+            if args.len() == 1 {
+                match ax_qm::try_fierz_auto_with_properties(&args[0], 4, &env.property_store, interner) {
+                    Ok(result) => result,
+                    Err(_) => ax_qm::fierz_auto(&args[0], 4, interner),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "expand_diracbar" | "expand_bar" => {
             if args.len() == 1 {
-                ax_qm::expand_diracbar_full(&args[0], &env.property_store, interner)
+                let full = ax_qm::expand_diracbar_full(&args[0], &env.property_store, interner);
+                if full != args[0] {
+                    full
+                } else {
+                    let diracbar_sym = find_tensor_property_sym(env, |prop| {
+                        matches!(prop, ax_ir::TensorProperty::DiracBar)
+                    })
+                    .unwrap_or_else(|| interner.get_or_intern("bar"));
+                    let gamma_sym = find_tensor_property_sym(env, |prop| {
+                        matches!(prop, ax_ir::TensorProperty::GammaMatrixProp)
+                    })
+                    .unwrap_or_else(|| interner.get_or_intern("gamma"));
+                    let metric_sym =
+                        find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
+                    ax_qm::expand_diracbar(
+                        &args[0],
+                        diracbar_sym,
+                        gamma_sym,
+                        metric_sym,
+                        interner,
+                    )
+                }
             } else {
                 Expr::Call(f, args)
             }
@@ -5785,7 +5915,18 @@ fn builtin_call(
                         }
                     })
                     .unwrap_or(true);
-                ax_qm::split_gamma_full(&args[0], on_back, &env.property_store, interner)
+                let full = ax_qm::split_gamma_full(&args[0], on_back, &env.property_store, interner);
+                if full != args[0] {
+                    full
+                } else {
+                    let gamma_sym = find_tensor_property_sym(env, |prop| {
+                        matches!(prop, ax_ir::TensorProperty::GammaMatrixProp)
+                    })
+                    .unwrap_or_else(|| interner.get_or_intern("gamma"));
+                    let metric_sym =
+                        find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
+                    ax_qm::split_gamma(&args[0], gamma_sym, metric_sym, on_back, interner)
+                }
             } else {
                 Expr::Call(f, args)
             }
@@ -8614,6 +8755,131 @@ mod tests {
             .expect("brst expr");
         let result = eval(&expr, &env, &interner);
         assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn brst_filter_ghost_number_alias_projects_selected_sector() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let setup = ax_core_ir::lower("setup_brst_ym(A, c, cbar, B, e);", &interner)
+            .expr
+            .expect("setup expr");
+        let setup_msg = apply_brst_setup(&setup, &mut env, &interner);
+        assert!(setup_msg.is_some(), "expected BRST setup to initialize env");
+        let expr = ax_core_ir::lower("filter_ghost_number(c + cbar + B, 1);", &interner)
+            .expr
+            .expect("filter ghost expr");
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::Sym(interner.get_or_intern("c")));
+    }
+
+    #[test]
+    fn qft_expand_diracbar_source_eval_reduces() {
+        let (result, interner) = eval_src("expand_diracbar(bar(gamma(mu) * psi));");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("expand_diracbar"), "got {rendered}");
+        assert!(!rendered.contains("bar(gamma"), "got {rendered}");
+        assert!(rendered.contains("bar(psi)"), "got {rendered}");
+        assert!(rendered.contains("gamma(mu)"), "got {rendered}");
+    }
+
+    #[test]
+    fn qft_fierz_source_eval_reduces() {
+        let (result, interner) =
+            eval_src("fierz(bar(psi1) * gamma(mu) * psi2 * bar(psi3) * psi4);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("fierz("), "got {rendered}");
+        assert!(matches!(result, Expr::Add(_)), "expected Fierz sum, got {rendered}");
+    }
+
+    #[test]
+    fn qft_spinor_helicity_public_chain_and_mandelstam_aliases_reduce_cleanly() {
+        let (chain, interner) = eval_src("expand_chain(angle_square_chain(1, [2], 3));");
+        let chain_rendered = ax_render::to_unicode(&chain, &interner);
+        assert_eq!(chain_rendered, "⟨12⟩[23]");
+
+        let (contracted, interner) = eval_src("contract_adjacent(angle(1,2) * square(2,3));");
+        let contracted_rendered = ax_render::to_unicode(&contracted, &interner);
+        assert_eq!(contracted_rendered, "⟨1|2|3]");
+
+        let (collected, interner) = eval_src("collect_mandelstam(angle(1,2) * square(2,1));");
+        let collected_rendered = ax_render::to_unicode(&collected, &interner);
+        assert_eq!(collected_rendered, "s_{12}");
+
+        let (multi, interner) = eval_src("mandelstam_multi([1, 2, 3]);");
+        let multi_rendered = ax_render::to_unicode(&multi, &interner);
+        assert_eq!(multi_rendered, "s_{123}");
+
+        let (expanded_multi, interner) = eval_src("expand_mandelstam(mandelstam_multi([1, 2, 3]));");
+        let expanded_rendered = ax_render::to_unicode(&expanded_multi, &interner);
+        assert!(expanded_rendered.contains("⟨12⟩[21]"), "got {expanded_rendered}");
+        assert!(!expanded_rendered.contains("__"), "got {expanded_rendered}");
+    }
+
+    #[test]
+    fn qft_gamma_source_ops_reduce_cleanly() {
+        let (split, interner) = eval_src("split_gamma(gamma(mu, nu));");
+        let split_rendered = ax_ir::pretty_print(&split, &interner);
+        assert!(!split_rendered.contains("split_gamma"), "got {split_rendered}");
+        assert!(split_rendered.contains("gamma(mu)") && split_rendered.contains("gamma(nu)"), "got {split_rendered}");
+
+        let (trace5, interner) = eval_src("gamma5_trace([mu, nu, rho, sigma]);");
+        let trace5_rendered = ax_render::to_unicode(&trace5, &interner);
+        assert_eq!(trace5_rendered, "-4ε^μ^ν^ρ^σi");
+    }
+
+    #[test]
+    fn qft_superspace_extended_ops_reduce_after_setup() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let setup = ax_core_ir::lower("setup_superspace(1);", &interner)
+            .expr
+            .expect("setup superspace expr");
+        let setup_msg = apply_superspace_setup(&setup, &mut env, &interner);
+        assert!(setup_msg.is_some(), "expected superspace setup to initialize env");
+
+        let d_squared = ax_core_ir::lower("d_squared(chiral_superfield(Phi));", &interner)
+            .expr
+            .expect("d_squared expr");
+        let d_squared_result = eval(&d_squared, &env, &interner);
+        let d_squared_rendered = ax_ir::pretty_print(&d_squared_result, &interner);
+        assert_eq!(d_squared_rendered, "-2*F_Phi(x0, x1, x2, x3)");
+
+        let d_bar_squared = ax_core_ir::lower("d_bar_squared(antichiral_superfield(Phi_bar));", &interner)
+            .expr
+            .expect("d_bar_squared expr");
+        let d_bar_squared_result = eval(&d_bar_squared, &env, &interner);
+        let d_bar_squared_rendered = ax_ir::pretty_print(&d_bar_squared_result, &interner);
+        assert_eq!(d_bar_squared_rendered, "2*F_bar_Phi_bar(x0, x1, x2, x3)");
+
+        let extract = ax_core_ir::lower("extract_component(vector_superfield_wz(V), [1,1]);", &interner)
+            .expr
+            .expect("extract component expr");
+        let extract_result = eval(&extract, &env, &interner);
+        assert_eq!(extract_result, Expr::zero());
+    }
+
+    #[test]
+    fn qft_brst_field_actions_reduce_after_setup() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let setup = ax_core_ir::lower("setup_brst_ym(A, c, cbar, B, g);", &interner)
+            .expr
+            .expect("setup brst expr");
+        let setup_msg = apply_brst_setup(&setup, &mut env, &interner);
+        assert!(setup_msg.is_some(), "expected BRST setup to initialize env");
+
+        let brst_cbar = ax_core_ir::lower("brst(cbar);", &interner)
+            .expr
+            .expect("brst cbar expr");
+        let brst_cbar_result = eval(&brst_cbar, &env, &interner);
+        assert_eq!(brst_cbar_result, Expr::Sym(interner.get_or_intern("B")));
+
+        let brst_b = ax_core_ir::lower("brst(B);", &interner)
+            .expr
+            .expect("brst B expr");
+        let brst_b_result = eval(&brst_b, &env, &interner);
+        assert_eq!(brst_b_result, Expr::zero());
     }
 
     #[test]
