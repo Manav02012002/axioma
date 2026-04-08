@@ -313,14 +313,60 @@ impl FierzError {
     }
 }
 
-fn operator_kind(
+fn operator_info(
     expr: &Expr,
     operators: &HashMap<lasso::Spur, OperatorKind>,
-) -> Option<OperatorKind> {
+    interner: &ax_ir::Interner,
+) -> Option<(OperatorKind, Option<Expr>)> {
     match expr {
-        Expr::Sym(sym) => operators.get(sym).copied(),
+        Expr::Sym(sym) => operators
+            .get(sym)
+            .copied()
+            .map(|kind| (kind, Some(Expr::Sym(*sym)))),
+        Expr::Call(f, args) if args.len() == 1 => match interner.resolve(*f) {
+            "creation" => Some((OperatorKind::Creation, Some(args[0].clone()))),
+            "annihilation" => Some((OperatorKind::Annihilation, Some(args[0].clone()))),
+            _ => None,
+        },
         _ => None,
     }
+}
+
+fn modes_match(lhs: &Option<Expr>, rhs: &Option<Expr>) -> bool {
+    matches!((lhs, rhs), (Some(a), Some(b)) if a == b)
+}
+
+fn normal_order_mul(
+    factors: Vec<Expr>,
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    for i in 0..factors.len().saturating_sub(1) {
+        let left = operator_info(&factors[i], operators, interner);
+        let right = operator_info(&factors[i + 1], operators, interner);
+        if let (
+            Some((OperatorKind::Annihilation, left_mode)),
+            Some((OperatorKind::Creation, right_mode)),
+        ) = (left, right)
+        {
+            let mut swapped = factors.clone();
+            swapped.swap(i, i + 1);
+            let reordered = normal_order_mul(swapped, operators, interner);
+            if modes_match(&left_mode, &right_mode) {
+                let mut remaining = factors.clone();
+                remaining.remove(i + 1);
+                remaining.remove(i);
+                let contraction = if remaining.is_empty() {
+                    Expr::one()
+                } else {
+                    normal_order_mul(remaining, operators, interner)
+                };
+                return simplify_expr(Expr::add(vec![reordered, contraction]));
+            }
+            return reordered;
+        }
+    }
+    Expr::mul(factors)
 }
 
 pub fn normal_order_simple(
@@ -328,23 +374,13 @@ pub fn normal_order_simple(
     operators: &HashMap<lasso::Spur, OperatorKind>,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
-    let _ = interner;
     match expr {
         Expr::Mul(factors) => {
-            let mut other = Vec::new();
-            let mut creation = Vec::new();
-            let mut annihilation = Vec::new();
-            for factor in factors {
-                let simplified = normal_order_simple(factor, operators, interner);
-                match operator_kind(&simplified, operators) {
-                    Some(OperatorKind::Creation) => creation.push(simplified),
-                    Some(OperatorKind::Annihilation) => annihilation.push(simplified),
-                    None => other.push(simplified),
-                }
-            }
-            other.extend(creation);
-            other.extend(annihilation);
-            Expr::mul(other)
+            let simplified = factors
+                .iter()
+                .map(|factor| normal_order_simple(factor, operators, interner))
+                .collect();
+            normal_order_mul(simplified, operators, interner)
         }
         Expr::Add(terms) => Expr::add(
             terms

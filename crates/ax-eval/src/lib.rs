@@ -281,6 +281,161 @@ fn extract_sym(expr: &Expr, interner: &ax_ir::Interner) -> lasso::Spur {
     }
 }
 
+fn creation_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("creation"), vec![mode])
+}
+
+fn annihilation_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("annihilation"), vec![mode])
+}
+
+fn number_state_expr(mode: Expr, n: usize, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(
+        interner.get_or_intern("number_state"),
+        vec![mode, Expr::Int(BigInt::from(n))],
+    )
+}
+
+fn vacuum_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
+    number_state_expr(mode, 0, interner)
+}
+
+fn sqrt_usize_expr(n: usize, interner: &ax_ir::Interner) -> Expr {
+    match n {
+        0 => Expr::zero(),
+        1 => Expr::one(),
+        _ => builtin_unary("sqrt", Expr::Int(BigInt::from(n)), interner),
+    }
+}
+
+fn decompose_scalar_times_state(expr: &Expr, interner: &ax_ir::Interner) -> Option<(Expr, Expr)> {
+    match expr {
+        Expr::Call(f, args) if interner.resolve(*f) == "number_state" && args.len() == 2 => {
+            Some((Expr::one(), expr.clone()))
+        }
+        Expr::Mul(factors) => {
+            let mut scalar = Vec::new();
+            let mut state = None;
+            for factor in factors {
+                match factor {
+                    Expr::Call(f, args)
+                        if interner.resolve(*f) == "number_state" && args.len() == 2 =>
+                    {
+                        if state.is_some() {
+                            return None;
+                        }
+                        state = Some(factor.clone());
+                    }
+                    _ => scalar.push(factor.clone()),
+                }
+            }
+            state.map(|state_expr| {
+                let scalar_expr = if scalar.is_empty() {
+                    Expr::one()
+                } else {
+                    Expr::mul(scalar)
+                };
+                (scalar_expr, state_expr)
+            })
+        }
+        _ => None,
+    }
+}
+
+fn apply_abstract_qm_operator(
+    operator: &Expr,
+    state: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    if let Expr::Add(terms) = state {
+        return Some(Expr::add(
+            terms.iter()
+                .filter_map(|term| apply_abstract_qm_operator(operator, term, interner))
+                .collect(),
+        ));
+    }
+
+    let (scalar, basis_state) = decompose_scalar_times_state(state, interner)?;
+    let Expr::Call(state_head, state_args) = &basis_state else {
+        return None;
+    };
+    if interner.resolve(*state_head) != "number_state" || state_args.len() != 2 {
+        return None;
+    }
+    let mode = state_args[0].clone();
+    let n = usize_from_expr(&state_args[1])?;
+
+    let applied = match operator {
+        Expr::Call(f, args) if args.len() == 1 && interner.resolve(*f) == "creation" => {
+            if args[0] != mode {
+                return None;
+            }
+            Expr::mul(vec![
+                sqrt_usize_expr(n + 1, interner),
+                number_state_expr(mode.clone(), n + 1, interner),
+            ])
+        }
+        Expr::Call(f, args) if args.len() == 1 && interner.resolve(*f) == "annihilation" => {
+            if args[0] != mode {
+                return None;
+            }
+            if n == 0 {
+                Expr::zero()
+            } else {
+                Expr::mul(vec![
+                    sqrt_usize_expr(n, interner),
+                    number_state_expr(mode.clone(), n - 1, interner),
+                ])
+            }
+        }
+        Expr::Add(terms) => {
+            Expr::add(
+                terms.iter()
+                    .map(|term| {
+                        apply_abstract_qm_operator(term, &basis_state, interner)
+                            .unwrap_or_else(|| Expr::mul(vec![term.clone(), basis_state.clone()]))
+                    })
+                    .collect(),
+            )
+        }
+        Expr::Mul(factors) => {
+            let mut scalar_factors = Vec::new();
+            let mut current = basis_state.clone();
+            let mut applied_any = false;
+            for factor in factors.iter().rev() {
+                if let Some(next) = apply_abstract_qm_operator(factor, &current, interner) {
+                    current = next;
+                    applied_any = true;
+                } else {
+                    scalar_factors.push(factor.clone());
+                }
+            }
+
+            if !applied_any {
+                return Some(Expr::mul(vec![Expr::mul(factors.clone()), basis_state.clone()]));
+            }
+
+            scalar_factors.reverse();
+            if scalar_factors.is_empty() {
+                current
+            } else {
+                let mut combined = scalar_factors;
+                combined.push(current);
+                Expr::mul(combined)
+            }
+        }
+        _ => return None,
+    };
+
+    Some(if scalar == Expr::one() {
+        applied
+    } else if applied == Expr::zero() {
+        Expr::zero()
+    } else {
+        Expr::mul(vec![scalar, applied])
+    })
+}
+
 fn find_tensor_property_sym(
     env: &Env,
     property: fn(&ax_ir::TensorProperty) -> bool,
@@ -5479,7 +5634,89 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "creation" | "annihilation" => Expr::Call(f, args),
+        "creation" => {
+            if args.len() == 1 {
+                creation_expr(args[0].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "annihilation" => {
+            if args.len() == 1 {
+                annihilation_expr(args[0].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "number_state" => {
+            if args.len() == 2 {
+                match usize_from_expr(&args[1]) {
+                    Some(n) => number_state_expr(args[0].clone(), n, interner),
+                    None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "vacuum" => {
+            if args.len() == 1 {
+                vacuum_expr(args[0].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "number_operator" => {
+            if args.len() == 1 {
+                Expr::mul(vec![
+                    creation_expr(args[0].clone(), interner),
+                    annihilation_expr(args[0].clone(), interner),
+                ])
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "hamiltonian_ho" => match args.as_slice() {
+            [mode] => Expr::mul(vec![
+                Expr::add(vec![
+                    Expr::mul(vec![
+                        creation_expr(mode.clone(), interner),
+                        annihilation_expr(mode.clone(), interner),
+                    ]),
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                ]),
+            ]),
+            [mode, omega] => Expr::mul(vec![
+                omega.clone(),
+                Expr::add(vec![
+                    Expr::mul(vec![
+                        creation_expr(mode.clone(), interner),
+                        annihilation_expr(mode.clone(), interner),
+                    ]),
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                ]),
+            ]),
+            [mode, hbar, omega] => Expr::mul(vec![
+                hbar.clone(),
+                omega.clone(),
+                Expr::add(vec![
+                    Expr::mul(vec![
+                        creation_expr(mode.clone(), interner),
+                        annihilation_expr(mode.clone(), interner),
+                    ]),
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                ]),
+            ]),
+            _ => Expr::Call(f, args),
+        },
+        "apply_operator" => {
+            if args.len() == 2 {
+                apply_abstract_qm_operator(&args[0], &args[1], interner)
+                    .map(|expr| eval(&expr, env, interner))
+                    .unwrap_or_else(|| Expr::Call(f, args))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "normal_order" => {
             if args.len() == 1 {
                 ax_qm::normal_order(&args[0], &env.operators, interner)
@@ -8427,6 +8664,61 @@ mod tests {
             "expected evaluated Regge-Wheeler equation, got {rw_rendered}"
         );
         assert!(rw_rendered.contains("Psi_RW"), "got {rw_rendered}");
+    }
+
+    #[test]
+    fn qm_pauli_commutator_matches_two_i_sigma_z() {
+        let (result, interner) = eval_src("commutator(pauli_x(), pauli_y());");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "[[0 + 2*i, 0], [0, 0 + -2*i]]");
+    }
+
+    #[test]
+    fn qm_bell_partial_trace_is_maximally_mixed() {
+        let (result, interner) = eval_src(
+            "partial_trace(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2, A);",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "[[1/2, 0], [0, 1/2]]");
+    }
+
+    #[test]
+    fn qm_normal_order_adds_bosonic_commutator_term() {
+        let (result, interner) = eval_src("normal_order(annihilation(a) * creation(a));");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + creation(a)*annihilation(a)");
+    }
+
+    #[test]
+    fn qm_abstract_number_operator_acts_diagonally_on_fock_states() {
+        let (result, interner) =
+            eval_src("apply_operator(number_operator(a), number_state(a, 2));");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "2*number_state(a, 2)");
+    }
+
+    #[test]
+    fn qm_abstract_harmonic_oscillator_hamiltonian_has_correct_energy() {
+        let (result, interner) = eval_src(
+            "apply_operator(hamiltonian_ho(a, hbar, omega), number_state(a, 1));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "3/2*hbar*omega*number_state(a, 1)");
+    }
+
+    #[test]
+    fn qm_creation_and_annihilation_act_on_vacuum_and_excited_states() {
+        let (created, interner) = eval_src("apply_operator(creation(a), vacuum(a));");
+        let created_rendered = ax_ir::pretty_print(&created, &interner);
+        assert_eq!(created_rendered, "number_state(a, 1)");
+
+        let (annihilated, interner) =
+            eval_src("apply_operator(annihilation(a), number_state(a, 2));");
+        let annihilated_rendered = ax_ir::pretty_print(&annihilated, &interner);
+        assert_eq!(annihilated_rendered, "2^1/2*number_state(a, 1)");
+
+        let (vacuum_lowered, _) = eval_src("apply_operator(annihilation(a), vacuum(a));");
+        assert_eq!(vacuum_lowered, Expr::zero());
     }
 
     #[test]

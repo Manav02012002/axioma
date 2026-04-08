@@ -1,7 +1,15 @@
-// Quantum harmonic oscillator
-// Creation and annihilation operators (matrix representation for truncated Hilbert space)
-// For N-level truncation:
-// a|n⟩ = √n |n-1⟩
-// a†|n⟩ = √(n+1) |n+1⟩
-// Number operator: N = a†a
-// Hamiltonian: H = ℏω(N + 1/2)
+// Abstract harmonic oscillator for a single mode `ho`.
+let a_op = annihilation(ho)
+let adag_op = creation(ho)
+let n_op = number_operator(ho)
+let h_op = hamiltonian_ho(ho, hbar, omega)
+
+let vac = vacuum(ho)
+let one = apply_operator(adag_op, vac)
+let two = apply_operator(adag_op, one)
+let lowered_two = apply_operator(a_op, two)
+let number_on_two = apply_operator(n_op, two)
+let energy_on_one = apply_operator(h_op, one)
+let normal_reordered = normal_order(annihilation(ho) * creation(ho))
+
+[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered]

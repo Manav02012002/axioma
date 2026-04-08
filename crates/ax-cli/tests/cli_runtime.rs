@@ -205,6 +205,24 @@ fn run_command_executes_file() {
 }
 
 #[test]
+fn run_qm_tutorial_executes_end_to_end() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("examples/qm_tutorial.ax").to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run qm tutorial");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[[2i, 0], [0, -2i]]"), "stdout:\n{stdout}");
+    assert!(stdout.contains("[[1, 0], [0, 0]]"), "stdout:\n{stdout}");
+    assert!(stdout.contains("\n1\n"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn run_gr_tutorial_executes_end_to_end() {
     let out = bin()
         .current_dir(repo_root())
@@ -322,6 +340,57 @@ fn run_cosmology_perturbation_module_exposes_demo_bindings() {
     assert!(stdout.contains("second_order_00_constraint"), "stdout:\n{stdout}");
     assert!(stdout.contains("H_star"), "stdout:\n{stdout}");
     assert!(stdout.contains("16ε"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn run_qm_spin_module_exposes_pauli_commutator() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args(["run", repo_file("std/qm/spin.ax").to_string_lossy().as_ref()])
+        .output()
+        .expect("run qm spin module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[[0, 1], [1, 0]]"), "stdout:\n{stdout}");
+    assert!(stdout.contains("[[2i, 0], [0, -2i]]"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn run_qm_bell_module_exposes_reduced_density_matrix() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args(["run", repo_file("std/qm/bell.ax").to_string_lossy().as_ref()])
+        .output()
+        .expect("run qm bell module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[2^(-½), 0, 0, 2^(-½)]"), "stdout:\n{stdout}");
+    assert!(stdout.contains("[[½, 0], [0, ½]]"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn run_qm_harmonic_oscillator_module_exposes_abstract_oscillator_algebra() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/qm/harmonic_oscillator.ax")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .expect("run qm harmonic oscillator module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("annihilation(ho)"), "stdout:\n{stdout}");
+    assert!(stdout.contains("creation(ho)"), "stdout:\n{stdout}");
+    assert!(stdout.contains("number_state(ho, 1)"), "stdout:\n{stdout}");
+    assert!(stdout.contains("√2number_state(ho, 2)"), "stdout:\n{stdout}");
+    assert!(stdout.contains("1 + creation(ho)annihilation(ho)"), "stdout:\n{stdout}");
+    assert!(stdout.contains("3/2hbarωnumber_state(ho, 1)"), "stdout:\n{stdout}");
 }
 
 #[test]
