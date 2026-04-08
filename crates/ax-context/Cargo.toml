@@ -10,3 +10,7 @@ path = "src/lib.rs"
 anyhow = { workspace = true }
 serde = { workspace = true }
 toml = "0.8"
+
+[dev-dependencies]
+ax-eval = { path = "../ax-eval" }
+ax-ir = { path = "../ax-ir" }
