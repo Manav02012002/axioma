@@ -548,9 +548,143 @@ npm run package
 
 `ax-notebook` provides a browser-oriented notebook server. The `axioma` CLI exposes `notebook` when built with the `notebook` feature. In this workspace, `ax-cli` enables `notebook` by default.
 
+Notebook server behavior is session-scoped rather than process-global:
+
+- each browser tab gets its own session identifier
+- execution state is isolated per session
+- `/reset` resets only the targeted session
+- session state expires after inactivity and is cleaned up server-side
+
+Notebook export and browser rendering also use an explicit trust model:
+
+- local interactive notebooks are treated as `trusted_local`
+- imported/shared content is treated as `untrusted`
+- untrusted HTML and SVG pass through sanitization
+- untrusted LaTeX-sensitive content is escaped before export
+
 ### Jupyter
 
-`ax-jupyter` exists in the repository but is excluded from the default workspace build because it requires `libzmq`.
+`ax-jupyter` is the standalone Jupyter kernel crate. It is excluded from the default workspace build because it requires `libzmq`, but it now has a complete product-facing install path through the `axioma-jupyter` binary.
+
+Build the kernel binary directly:
+
+```bash
+cargo build --manifest-path crates/ax-jupyter/Cargo.toml --bin axioma-jupyter
+```
+
+Print the generated kernelspec without installing it:
+
+```bash
+cargo run --manifest-path crates/ax-jupyter/Cargo.toml --bin axioma-jupyter -- \
+  print-kernelspec \
+  --binary "$(pwd)/crates/ax-jupyter/target/debug/axioma-jupyter"
+```
+
+Install a user kernelspec for a normal Jupyter frontend:
+
+```bash
+cargo run --manifest-path crates/ax-jupyter/Cargo.toml --bin axioma-jupyter -- \
+  install \
+  --user \
+  --binary "$(pwd)/crates/ax-jupyter/target/debug/axioma-jupyter"
+```
+
+You can also make startup behavior explicit at install time:
+
+```bash
+cargo run --manifest-path crates/ax-jupyter/Cargo.toml --bin axioma-jupyter -- \
+  install \
+  --user \
+  --binary "$(pwd)/crates/ax-jupyter/target/debug/axioma-jupyter" \
+  --working-dir "$(pwd)" \
+  --std-path "$(pwd)/std"
+```
+
+That writes a `kernel.json` containing:
+
+- `argv`: the `axioma-jupyter` binary plus the `{connection_file}` placeholder
+- `interrupt_mode: "message"` so control-channel interrupts use Jupyter protocol messages rather than OS signals
+- `env` entries for `AXIOMA_JUPYTER_WORKDIR` and `AXIOMA_STD_PATH` when provided
+- metadata describing the Axioma kernel session/trust model
+
+Kernel startup behavior is explicit:
+
+- If `AXIOMA_JUPYTER_WORKDIR` is set, Axioma uses it as the module-resolution working directory.
+- Otherwise, it uses the process current working directory inherited from the frontend.
+- Import search paths are then built deterministically from:
+  1. `AXIOMA_STD_PATH`, if set
+  2. the resolved working directory
+  3. executable-relative standard-library locations
+
+At startup the kernel logs:
+
+- connection file path
+- bound transport endpoints
+- resolved working directory
+- effective `AXIOMA_STD_PATH`
+- final import search path list
+
+That output is intended to make notebook-launch failures diagnosable without guessing at hidden environment state.
+
+The kernel now implements the core interactive request set mainstream frontends expect:
+
+- `kernel_info_request`
+- `execute_request`
+- `complete_request`
+- `inspect_request`
+- `history_request`
+- `is_complete_request`
+- `interrupt_request`
+- `shutdown_request`
+
+Execution behavior follows the normal Jupyter model closely:
+
+- normal evaluation publishes `status(busy) -> execute_input -> stream/display/result/error -> execute_reply -> status(idle)`
+- ordinary final values are emitted as `execute_result`, not `display_data`
+- explicit side-channel rich displays use `display_data`
+- `text/plain` fallback is always present for ordinary expression results
+- rich MIME bundles can include `text/latex`, `text/markdown`, `text/html`, `image/svg+xml`, and `application/json`
+- `execution_count` advances only for execute requests that count in history
+- `silent` execution suppresses visible `Out[n]` behavior
+- `store_history = false` keeps execution visible but does not advance stored history
+
+The kernel is now resilient under real frontend traffic:
+
+- malformed frames, bad signatures, invalid JSON, and unsupported message types do not terminate the process
+- request-level failures are classified and handled without corrupting kernel state
+- parent headers and metadata objects are propagated correctly on replies and IOPub messages
+- control-channel interrupts cancel real in-flight evaluation cooperatively rather than faking success
+
+Notebook/kernel integration details:
+
+- Notebook browser tabs use per-tab sessions for `ax-notebook`; Jupyter kernel state is per-kernel-process.
+- Notebook and Jupyter now use the same import/module search-path construction and shared import-resolution behavior.
+- Exported notebook HTML/LaTeX uses the trust/sanitization model documented in the notebook section and in code comments.
+- Jupyter interrupts are cooperative and protocol-driven. A running evaluation is cancelled through the control channel, returns an interrupted error, restores `idle`, and leaves subsequent execution working normally.
+- Jupyter shutdown is graceful. The kernel replies to `shutdown_request`, cancels in-flight work if needed, lets the active execute finish its protocol cleanup, and then exits.
+
+Testing the kernel directly:
+
+```bash
+cargo test --manifest-path crates/ax-jupyter/Cargo.toml
+```
+
+That test suite includes signed protocol/integration coverage for:
+
+- execute success and failure ordering
+- completion, inspection, history, and completeness detection
+- interrupt and shutdown lifecycle
+- malformed-message recovery
+- rich MIME output emission
+- notebook/kernel semantic parity for shared behaviors such as import resolution
+
+Deliberately out of scope for now:
+
+- Jupyter comms/widgets
+- debugger protocol support
+- stdin request handling
+
+Those areas are not claimed as supported until they are wired through end to end.
 
 ### Plugins
 
