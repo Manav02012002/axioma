@@ -13,27 +13,6 @@ pub enum EquivResult {
     Unknown,
 }
 
-fn to_f64(expr: &Expr) -> Option<f64> {
-    match expr {
-        Expr::Int(n) => num_traits::ToPrimitive::to_f64(n),
-        Expr::Rational(r) => Some(
-            num_traits::ToPrimitive::to_f64(r.numer())?
-                / num_traits::ToPrimitive::to_f64(r.denom())?,
-        ),
-        Expr::Float(f) => Some(*f),
-        Expr::Complex(re, im) => {
-            let re = to_f64(re)?;
-            let im = to_f64(im)?;
-            if im == 0.0 {
-                Some(re)
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
 fn numeric_eval_expr(expr: &Expr, env: &ax_eval::Env, interner: &ax_ir::Interner) -> Option<f64> {
     match expr {
         Expr::Int(n) => num_traits::ToPrimitive::to_f64(n),
@@ -111,6 +90,7 @@ fn contains_indexed(expr: &Expr) -> bool {
         Expr::Rule(lhs, rhs, _) => contains_indexed(lhs) || contains_indexed(rhs),
         Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_indexed(value)),
         Expr::Let(_, value, body) => contains_indexed(value) || contains_indexed(body),
+        Expr::Group(inner, _) => contains_indexed(inner),
         Expr::Matrix(rows) => rows.iter().flatten().any(contains_indexed),
         Expr::Int(_)
         | Expr::Rational(_)
