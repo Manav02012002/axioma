@@ -1,9 +1,9 @@
 [package]
 name = "ax-jupyter"
 version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.78"
 
 [[bin]]
 name = "axioma-jupyter"
@@ -14,10 +14,13 @@ ax-ir = { path = "../ax-ir" }
 ax-core-ir = { path = "../ax-core-ir" }
 ax-eval = { path = "../ax-eval" }
 ax-render = { path = "../ax-render" }
-lasso = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-anyhow = { workspace = true }
+ax-syntax = { path = "../ax-syntax" }
+ax-context = { path = "../ax-context" }
+ax-notebook = { path = "../ax-notebook" }
+lasso = { version = "0.7", features = ["serialize"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
 uuid = { version = "1", features = ["v4"] }
 zmq = "0.10"
 hmac = "0.12"
