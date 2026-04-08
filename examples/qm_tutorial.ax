@@ -12,6 +12,6 @@ let up = ket(0)
 let down = ket(1)
 // Inner product: ⟨up|down⟩ = 0
 braket(up, down)
-// Expectation value: ⟨up|σ_z|up⟩
-let result = matmul(sz, [[1], [0]])
-braket(up, [result[0][0], result[1][0]])
+// Expectation value: ⟨up|σ_z|up⟩ = Tr(|up><up| σ_z)
+let rho_up = outer(up, up)
+trace_mat(matmul(rho_up, sz))

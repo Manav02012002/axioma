@@ -5487,7 +5487,7 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "join_gamma" => {
+        "join_gamma" | "join_gammas_in_expr" => {
             if args.len() == 1 {
                 let metric_sym = find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
                 let metric = Expr::Sym(metric_sym);
@@ -6135,6 +6135,14 @@ fn builtin_call(
                             diag_args.clone(),
                         ))
                     }
+                    Expr::Matrix(rows) => {
+                        let dim = rows.len();
+                        if rows.iter().all(|row| row.len() == dim) {
+                            Expr::Matrix(rows.clone())
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
                     _ => Expr::Call(f, args),
                 }
             } else {
@@ -6349,6 +6357,7 @@ fn structurally_matches(expr: &Expr, pattern: &Expr) -> bool {
 }
 
 pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
+    ax_ir::abort_if_cancelled();
     match expr {
         Expr::Int(n) => Expr::Int(n.clone()),
         Expr::Rational(r) => Expr::Rational(r.clone()),
@@ -6546,11 +6555,9 @@ fn expr_to_3d(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
     };
     level1
         .iter()
-        .map(|item| {
-            let Expr::List(level2) = item else {
-                return None;
-            };
-            level2
+        .map(|item| match item {
+            Expr::Matrix(rows) => Some(rows.clone()),
+            Expr::List(level2) => level2
                 .iter()
                 .map(|row| {
                     let Expr::List(level3) = row else {
@@ -6558,7 +6565,8 @@ fn expr_to_3d(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
                     };
                     Some(level3.clone())
                 })
-                .collect::<Option<Vec<_>>>()
+                .collect::<Option<Vec<_>>>(),
+            _ => None,
         })
         .collect()
 }
@@ -6583,11 +6591,9 @@ fn expr_to_4d(expr: &Expr) -> Option<Vec<Vec<Vec<Vec<Expr>>>>> {
             };
             level2
                 .iter()
-                .map(|item2| {
-                    let Expr::List(level3) = item2 else {
-                        return None;
-                    };
-                    level3
+                .map(|item2| match item2 {
+                    Expr::Matrix(rows) => Some(rows.clone()),
+                    Expr::List(level3) => level3
                         .iter()
                         .map(|item3| {
                             let Expr::List(level4) = item3 else {
@@ -6595,7 +6601,8 @@ fn expr_to_4d(expr: &Expr) -> Option<Vec<Vec<Vec<Vec<Expr>>>>> {
                             };
                             Some(level4.clone())
                         })
-                        .collect::<Option<Vec<_>>>()
+                        .collect::<Option<Vec<_>>>(),
+                    _ => None,
                 })
                 .collect::<Option<Vec<_>>>()
         })
@@ -7353,6 +7360,51 @@ mod tests {
     }
 
     #[test]
+    fn metric_accepts_evaluated_matrix_argument() {
+        let (e, _) = eval_src("metric(diag(1,2));");
+        match e {
+            Expr::Matrix(rows) => {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0][0], Expr::Int(1.into()));
+                assert_eq!(rows[1][1], Expr::Int(2.into()));
+            }
+            other => panic!("expected Matrix, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn christoffel_riemann_ricci_and_geodesic_accept_evaluated_tensors() {
+        let (gamma, _) = eval_src("christoffel(metric(diag(1, x^2)), [x, y]);");
+        assert!(
+            matches!(gamma, Expr::List(_)),
+            "expected christoffel tensor, got {:?}",
+            gamma
+        );
+
+        let (riemann, _) = eval_src("riemann(christoffel(metric(diag(1, x^2)), [x, y]), [x, y]);");
+        assert!(
+            matches!(riemann, Expr::List(_)),
+            "expected riemann tensor, got {:?}",
+            riemann
+        );
+
+        let (ricci, _) =
+            eval_src("ricci(riemann(christoffel(metric(diag(1, x^2)), [x, y]), [x, y]));");
+        assert!(
+            matches!(ricci, Expr::Matrix(_)),
+            "expected ricci matrix, got {:?}",
+            ricci
+        );
+
+        let (geodesic, _) = eval_src("geodesic(christoffel(metric(diag(1, x^2)), [x, y]), [x, y]);");
+        assert!(
+            matches!(geodesic, Expr::List(_)),
+            "expected geodesic equations, got {:?}",
+            geodesic
+        );
+    }
+
+    #[test]
     fn inverse_2x2() {
         let (e, _) = eval_src("inv([[1,0],[0,2]]);");
         match e {
@@ -7975,5 +8027,15 @@ mod tests {
             Expr::Sym(psi),
         ]);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn join_gammas_in_expr_alias_evaluates() {
+        let (result, interner) = eval_src("join_gammas_in_expr(gamma(mu) * gamma(nu));");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            !rendered.contains("join_gammas_in_expr"),
+            "alias should evaluate, got {rendered}"
+        );
     }
 }
