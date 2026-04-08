@@ -6,8 +6,8 @@ This repository is not a thin wrapper over SymPy, Mathematica, or a Python runti
 
 Project links:
 
-- Repository: `https://github.com/Manav02012002/axioma`
-- Webpage: `https://manav02012002.github.io/axioma-webpage/#features`
+- Repository: [github.com/Manav02012002/axioma](https://github.com/Manav02012002/axioma)
+- Webpage: [Project Axioma Website](https://manav02012002.github.io/axioma-webpage/#features)
 
 ## Table Of Contents
 
