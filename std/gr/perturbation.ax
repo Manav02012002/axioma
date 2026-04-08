@@ -1,0 +1,11 @@
+// Metric perturbation theory around a flat FRW-like background.
+let g0 = metric(diag(-1, a(t)^2, a(t)^2, a(t)^2))
+let g0inv = inv(g0)
+let h = metric([[2Phi, 0, 0, 0], [0, -2Psi * a(t)^2, 0, 0], [0, 0, -2Psi * a(t)^2, 0], [0, 0, 0, -2Psi * a(t)^2]])
+let coords = [t, x, y, z]
+
+let inverse_series = perturb_inverse(g, g0, g0inv, h, eps, 1)
+let christoffel_series = perturb_christoffel(g, g0, g0inv, h, eps, coords, 1)
+let ricci_series = perturb_ricci(g, g0, g0inv, h, eps, coords, 1)
+
+[inverse_series, christoffel_series, ricci_series]

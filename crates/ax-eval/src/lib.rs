@@ -8380,6 +8380,56 @@ mod tests {
     }
 
     #[test]
+    fn cosmology_linearized_einstein_second_order_exposes_expected_labels() {
+        let (result, interner) = eval_src("linearized_einstein(2);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("second_order_00_constraint"), "got {rendered}");
+        assert!(rendered.contains("second_order_ij_traceless"), "got {rendered}");
+    }
+
+    #[test]
+    fn cosmology_bardeen_variables_include_phi_b_and_psi_b() {
+        let (result, interner) = eval_src("bardeen();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("Phi_B"), "got {rendered}");
+        assert!(rendered.contains("Psi_B"), "got {rendered}");
+    }
+
+    #[test]
+    fn cosmology_tensor_scalar_ratio_is_16epsilon() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let expr = ax_core_ir::lower("tensor_scalar_ratio();", &interner)
+            .expr
+            .expect("tensor scalar ratio expr");
+        let result = eval(&expr, &env, &interner);
+        let expected = Expr::mul(vec![
+            Expr::Int(16.into()),
+            Expr::Sym(interner.get_or_intern("epsilon")),
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn cosmology_black_hole_master_equations_evaluate_not_symbolic_calls() {
+        let (zerilli, interner) = eval_src("zerilli(2);");
+        let zerilli_rendered = ax_ir::pretty_print(&zerilli, &interner);
+        assert!(
+            !zerilli_rendered.contains("zerilli("),
+            "expected evaluated Zerilli equation, got {zerilli_rendered}"
+        );
+        assert!(zerilli_rendered.contains("Psi_Z"), "got {zerilli_rendered}");
+
+        let (regge_wheeler, interner) = eval_src("regge_wheeler(2);");
+        let rw_rendered = ax_ir::pretty_print(&regge_wheeler, &interner);
+        assert!(
+            !rw_rendered.contains("regge_wheeler("),
+            "expected evaluated Regge-Wheeler equation, got {rw_rendered}"
+        );
+        assert!(rw_rendered.contains("Psi_RW"), "got {rw_rendered}");
+    }
+
+    #[test]
     fn schwarzschild_ricci_demo_collapses_to_zero_matrix() {
         let interner = ax_ir::Interner::new();
         let env = Env::new();

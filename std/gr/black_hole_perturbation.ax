@@ -1,0 +1,7 @@
+// Schwarzschild black-hole perturbation theory.
+// This module exposes the standard Regge-Wheeler/Zerilli demo objects for l = 2.
+let rw_modes = regge_wheeler_decompose(2)
+let zerilli_equation = zerilli(2)
+let regge_wheeler_equation = regge_wheeler(2)
+
+[rw_modes, zerilli_equation, regge_wheeler_equation]

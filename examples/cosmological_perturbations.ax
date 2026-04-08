@@ -2,9 +2,15 @@
 let eqs = linearized_einstein(1)
 // The four linearized Einstein equations:
 eqs
+// Gauge-invariant scalar potentials:
+bardeen()
+// Second-order scalar Einstein equations:
+linearized_einstein(2)
 // Mukhanov-Sasaki equation for curvature perturbation:
 mukhanov_sasaki()
 // Leading-order power spectrum:
 power_spectrum()
 // Spectral index:
 spectral_index()
+// Tensor-to-scalar ratio:
+tensor_scalar_ratio()

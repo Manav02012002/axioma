@@ -1,0 +1,12 @@
+// Cosmological perturbation theory on an FRW background.
+// This module collects the main scalar-mode perturbation objects used in demos.
+let scalar_modes = svt_decompose()
+let bardeen_potentials = bardeen()
+let linear_einstein = linearized_einstein(1)
+let second_order_einstein = linearized_einstein(2)
+let ms_equation = mukhanov_sasaki()
+let scalar_power_spectrum = power_spectrum()
+let scalar_spectral_index = spectral_index()
+let tensor_to_scalar_ratio = tensor_scalar_ratio()
+
+[scalar_modes, bardeen_potentials, linear_einstein, second_order_einstein, ms_equation, scalar_power_spectrum, scalar_spectral_index, tensor_to_scalar_ratio]

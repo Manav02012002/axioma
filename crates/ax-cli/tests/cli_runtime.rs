@@ -227,6 +227,27 @@ fn run_gr_tutorial_executes_end_to_end() {
 }
 
 #[test]
+fn run_cosmology_perturbation_example_executes_end_to_end() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("examples/cosmological_perturbations.ax")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .expect("run cosmological perturbations example");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("00_constraint"), "stdout:\n{stdout}");
+    assert!(stdout.contains("ij_traceless"), "stdout:\n{stdout}");
+    assert!(stdout.contains("H_star"), "stdout:\n{stdout}");
+    assert!(stdout.contains("eta_sr"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn run_frw_module_has_only_time_derivatives_of_scale_factor() {
     let out = bin()
         .current_dir(repo_root())
@@ -280,6 +301,47 @@ fn run_kerr_newman_module_exposes_full_metric_matrix() {
     assert!(stdout.contains("sin(θ)²"), "stdout:\n{stdout}");
     assert!(stdout.contains("[[-1("), "stdout:\n{stdout}");
     assert!(stdout.contains("Q²"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn run_cosmology_perturbation_module_exposes_demo_bindings() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/cosmology/perturbation.ax")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .expect("run cosmology perturbation module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Phi_B"), "stdout:\n{stdout}");
+    assert!(stdout.contains("second_order_00_constraint"), "stdout:\n{stdout}");
+    assert!(stdout.contains("H_star"), "stdout:\n{stdout}");
+    assert!(stdout.contains("16ε"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn run_black_hole_perturbation_module_exposes_master_equations() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/gr/black_hole_perturbation.ax")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .expect("run black-hole perturbation module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("even_parity"), "stdout:\n{stdout}");
+    assert!(stdout.contains("Psi_Z"), "stdout:\n{stdout}");
+    assert!(stdout.contains("Psi_RW"), "stdout:\n{stdout}");
 }
 
 #[test]
