@@ -4,6 +4,11 @@ pub mod pool;
 pub mod pretty;
 
 use std::cell::Cell;
+use std::cell::RefCell;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Instant;
 
 pub use expr::{
@@ -17,6 +22,32 @@ pub use pretty::pretty_print;
 
 thread_local! {
     static CURRENT_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    static CURRENT_CANCELLATION: RefCell<Option<CancellationToken>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecutionAbort {
+    Interrupted,
+    TimedOut,
 }
 
 pub fn current_deadline() -> Option<Instant> {
@@ -32,13 +63,42 @@ pub fn with_deadline<T>(deadline: Option<Instant>, f: impl FnOnce() -> T) -> T {
     })
 }
 
+pub fn with_cancellation<T>(token: Option<CancellationToken>, f: impl FnOnce() -> T) -> T {
+    CURRENT_CANCELLATION.with(|slot| {
+        let previous = slot.replace(token);
+        let out = f();
+        let _ = slot.replace(previous);
+        out
+    })
+}
+
+pub fn current_cancellation() -> Option<CancellationToken> {
+    CURRENT_CANCELLATION.with(|slot| slot.borrow().clone())
+}
+
 pub fn check_deadline() -> Result<(), String> {
+    if current_cancellation()
+        .as_ref()
+        .is_some_and(CancellationToken::is_cancelled)
+    {
+        return Err("execution interrupted".to_string());
+    }
     if let Some(deadline) = current_deadline() {
         if Instant::now() > deadline {
             return Err("computation timed out".to_string());
         }
     }
     Ok(())
+}
+
+pub fn abort_if_cancelled() {
+    match check_deadline() {
+        Ok(()) => {}
+        Err(message) if message == "execution interrupted" => {
+            std::panic::panic_any(ExecutionAbort::Interrupted)
+        }
+        Err(_) => std::panic::panic_any(ExecutionAbort::TimedOut),
+    }
 }
 
 #[cfg(test)]
