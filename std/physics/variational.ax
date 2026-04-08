@@ -1,0 +1,13 @@
+// Variational-calculus workflows: functional derivative, coupled systems,
+// and first variation of an action density.
+
+let L_mech = 1/2 * m * x_dot^2 - 1/2 * k * x^2
+let eom_mech = functional_derivative(L_mech, x, [x_dot], [t])
+let delta_L_mech = vary_action(L_mech, x, delta_x, [x_dot], [delta_x_dot])
+
+let L_fields = 1/2 * phi_t^2 + 1/2 * chi_t^2 - g * phi * chi
+let eoms_fields = euler_lagrange_system(L_fields, [[phi, [phi_t]], [chi, [chi_t]]], [t])
+
+eom_mech
+delta_L_mech
+eoms_fields

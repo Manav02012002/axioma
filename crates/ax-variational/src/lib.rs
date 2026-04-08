@@ -90,6 +90,9 @@ pub fn functional_derivative(
     coords: &[lasso::Spur],
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
+    if field_derivs.len() != coords.len() {
+        return Expr::zero();
+    }
     let d_l_d_field = ax_tensor::diff_component(lagrangian, field, interner);
     let derivative_sum = coords
         .iter()
@@ -133,6 +136,9 @@ pub fn vary_action(
     variation_derivs: &[lasso::Spur],
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
+    if field_derivs.len() != variation_derivs.len() {
+        return Expr::zero();
+    }
     let direct = Expr::mul(vec![
         ax_tensor::diff_component(lagrangian, field, interner),
         Expr::Sym(variation),
@@ -200,5 +206,83 @@ mod tests {
         let result = functional_derivative(&lagrangian, x, &[v], &[t], &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains("k") || pp.contains("m"), "got: {}", pp);
+    }
+
+    #[test]
+    fn euler_lagrange_system_coupled_fields() {
+        let interner = ax_ir::Interner::new();
+        let phi = interner.get_or_intern("phi");
+        let chi = interner.get_or_intern("chi");
+        let phi_t = interner.get_or_intern("phi_t");
+        let chi_t = interner.get_or_intern("chi_t");
+        let t = interner.get_or_intern("t");
+        let g = interner.get_or_intern("g");
+        let lagrangian = Expr::add(vec![
+            Expr::mul(vec![
+                Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
+                Expr::pow(Expr::Sym(phi_t), Expr::Int(2.into())),
+            ]),
+            Expr::mul(vec![
+                Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
+                Expr::pow(Expr::Sym(chi_t), Expr::Int(2.into())),
+            ]),
+            Expr::neg(Expr::mul(vec![Expr::Sym(g), Expr::Sym(phi), Expr::Sym(chi)])),
+        ]);
+        let result = euler_lagrange_system(
+            &lagrangian,
+            &[(phi, vec![phi_t]), (chi, vec![chi_t])],
+            &[t],
+            &interner,
+        );
+        let rendered = result
+            .iter()
+            .map(|expr| ax_ir::pretty_print(expr, &interner))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(rendered.contains("d2phi_dtdt"), "got {rendered}");
+        assert!(rendered.contains("d2chi_dtdt"), "got {rendered}");
+    }
+
+    #[test]
+    fn vary_action_uses_all_variation_terms() {
+        let interner = ax_ir::Interner::new();
+        let phi = interner.get_or_intern("phi");
+        let dphi_t = interner.get_or_intern("dphi_t");
+        let delta_phi = interner.get_or_intern("delta_phi");
+        let delta_phi_t = interner.get_or_intern("delta_phi_t");
+        let m = interner.get_or_intern("m");
+        let lagrangian = Expr::add(vec![
+            Expr::mul(vec![
+                Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
+                Expr::pow(Expr::Sym(dphi_t), Expr::Int(2.into())),
+            ]),
+            Expr::neg(Expr::mul(vec![
+                Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
+                Expr::Sym(m),
+                Expr::pow(Expr::Sym(phi), Expr::Int(2.into())),
+            ])),
+        ]);
+        let result = vary_action(
+            &lagrangian,
+            phi,
+            delta_phi,
+            &[dphi_t],
+            &[delta_phi_t],
+            &interner,
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("delta_phi"), "got {rendered}");
+        assert!(rendered.contains("delta_phi_t"), "got {rendered}");
+    }
+
+    #[test]
+    fn mismatched_variational_lists_return_zero() {
+        let interner = ax_ir::Interner::new();
+        let phi = interner.get_or_intern("phi");
+        let phi_t = interner.get_or_intern("phi_t");
+        let t = interner.get_or_intern("t");
+        let lagrangian = Expr::pow(Expr::Sym(phi_t), Expr::Int(2.into()));
+        let result = functional_derivative(&lagrangian, phi, &[phi_t], &[t, t], &interner);
+        assert_eq!(result, Expr::zero());
     }
 }

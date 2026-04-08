@@ -463,6 +463,27 @@ fn run_maxwell_module_exposes_field_strength_and_eom() {
 }
 
 #[test]
+fn run_variational_module_exposes_functional_derivatives_and_systems() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/physics/variational.ax")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .expect("run variational module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("d2x_dtdt"), "stdout:\n{stdout}");
+    assert!(stdout.contains("delta_x"), "stdout:\n{stdout}");
+    assert!(stdout.contains("d2phi_dtdt"), "stdout:\n{stdout}");
+    assert!(stdout.contains("d2chi_dtdt"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn run_qm_spin_module_exposes_pauli_commutator() {
     let out = bin()
         .current_dir(repo_root())

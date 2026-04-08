@@ -5972,7 +5972,98 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
-        "vary" => {
+        "functional_derivative" => {
+            if args.len() == 4 {
+                match (&args[0], &args[1], &args[2], &args[3]) {
+                    (
+                        lagrangian,
+                        Expr::Sym(field),
+                        Expr::List(field_derivs),
+                        Expr::List(coords),
+                    ) => {
+                        let field_derivs = field_derivs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let coords = coords
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let (Some(field_derivs), Some(coords)) = (field_derivs, coords) {
+                            ax_variational::functional_derivative(
+                                lagrangian,
+                                *field,
+                                &field_derivs,
+                                &coords,
+                                interner,
+                            )
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "euler_lagrange_system" => {
+            if args.len() == 3 {
+                match (&args[0], &args[1], &args[2]) {
+                    (lagrangian, fields_expr, Expr::List(coords)) => {
+                        let field_rows: Vec<Expr> = match fields_expr {
+                            Expr::List(fields) => fields.clone(),
+                            Expr::Matrix(rows) => rows
+                                .iter()
+                                .map(|row| Expr::List(row.clone()))
+                                .collect(),
+                            _ => return Expr::Call(f, args),
+                        };
+                        let fields = field_rows
+                            .iter()
+                            .map(|entry| match entry {
+                                Expr::List(pair) if pair.len() == 2 => match (&pair[0], &pair[1]) {
+                                    (Expr::Sym(field), Expr::List(derivs)) => derivs
+                                        .iter()
+                                        .map(|expr| match expr {
+                                            Expr::Sym(sym) => Some(*sym),
+                                            _ => None,
+                                        })
+                                        .collect::<Option<Vec<_>>>()
+                                        .map(|derivs| (*field, derivs)),
+                                    _ => None,
+                                },
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let coords = coords
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let (Some(fields), Some(coords)) = (fields, coords) {
+                            Expr::List(ax_variational::euler_lagrange_system(
+                                lagrangian, &fields, &coords, interner,
+                            ))
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "vary_action" | "vary" => {
             if args.len() == 5 {
                 match (&args[0], &args[1], &args[2], &args[3], &args[4]) {
                     (
@@ -8564,6 +8655,40 @@ mod tests {
         assert!(!rendered.contains("solve_ode"), "got {rendered}");
         assert!(!rendered.contains("integrate"), "got {rendered}");
         assert!(rendered.contains("exp"), "got {rendered}");
+    }
+
+    #[test]
+    fn functional_derivative_source_eval_reduces() {
+        let (result, interner) =
+            eval_src("functional_derivative(1/2 * m * x_dot^2 - 1/2 * k * x^2, x, [x_dot], [t]);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("functional_derivative"), "got {rendered}");
+        assert!(rendered.contains("d2x_dtdt"), "got {rendered}");
+        assert!(rendered.contains("k*x") || rendered.contains("kx"), "got {rendered}");
+    }
+
+    #[test]
+    fn vary_action_source_eval_reduces() {
+        let (result, interner) = eval_src(
+            "vary_action(1/2 * m * x_dot^2 - 1/2 * k * x^2, x, delta_x, [x_dot], [delta_x_dot]);",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("vary_action"), "got {rendered}");
+        assert!(rendered.contains("delta_x"), "got {rendered}");
+        assert!(rendered.contains("delta_x_dot"), "got {rendered}");
+    }
+
+    #[test]
+    fn euler_lagrange_system_source_eval_reduces() {
+        let (result, interner) = eval_src(
+            "euler_lagrange_system(1/2 * phi_t^2 + 1/2 * chi_t^2 - g * phi * chi, [[phi, [phi_t]], [chi, [chi_t]]], [t]);",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("euler_lagrange_system"), "got {rendered}");
+        assert!(rendered.contains("d2phi_dtdt"), "got {rendered}");
+        assert!(rendered.contains("d2chi_dtdt"), "got {rendered}");
+        assert!(rendered.contains("χ") || rendered.contains("chi"), "got {rendered}");
+        assert!(rendered.contains("φ") || rendered.contains("phi"), "got {rendered}");
     }
 
     #[test]
