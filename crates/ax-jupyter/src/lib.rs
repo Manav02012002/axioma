@@ -1617,7 +1617,7 @@ impl KernelRuntime {
     fn wait_for_execution_result(&mut self) -> ProcessResult {
         match self
             .completion_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(30))
         {
             Ok(completion) => self.collect_finished_execution(completion),
             Err(err) => {
