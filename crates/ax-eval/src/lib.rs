@@ -2954,6 +2954,10 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
             }
         }
         Expr::Call(f, args) => {
+            if args.iter().all(|arg| !contains_var(arg, var)) {
+                return Expr::Int(0.into());
+            }
+
             let name = interner.resolve(*f);
             if args.len() != 1 {
                 return diff_call(expr, var, interner);
@@ -7652,6 +7656,12 @@ mod tests {
     }
 
     #[test]
+    fn diff_unknown_function_with_independent_argument_is_zero() {
+        let (result, _) = eval_src("diff(a(t), x);");
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
     fn apply_user_rule() {
         let interner = ax_ir::Interner::new();
         let mut env = Env::new();
@@ -8155,6 +8165,125 @@ mod tests {
             "expected matrix from bound riemann tensor, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn minkowski_christoffel_is_zero_tensor() {
+        let (gamma, _) = eval_src("christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]);");
+        match gamma {
+            Expr::List(level1) => {
+                for slice in level1 {
+                    match slice {
+                        Expr::Matrix(rows) => {
+                            assert!(
+                                rows.iter().flatten().all(|entry| *entry == Expr::zero()),
+                                "expected all Minkowski Christoffel entries to vanish, got {:?}",
+                                rows
+                            );
+                        }
+                        Expr::List(rows) => {
+                            for row in rows {
+                                match row {
+                                    Expr::List(entries) => {
+                                        assert!(
+                                            entries.iter().all(|entry| *entry == Expr::zero()),
+                                            "expected all Minkowski Christoffel entries to vanish, got {:?}",
+                                            entries
+                                        );
+                                    }
+                                    other => panic!("expected row list, got {:?}", other),
+                                }
+                            }
+                        }
+                        other => panic!("expected matrix slice, got {:?}", other),
+                    }
+                }
+            }
+            other => panic!("expected Christoffel tensor list, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn frw_christoffel_does_not_include_spatial_derivatives_of_scale_factor() {
+        let (gamma, interner) =
+            eval_src("christoffel(metric(diag(-1, a(t)^2, a(t)^2, a(t)^2)), [t, x, y, z]);");
+        let rendered = ax_ir::pretty_print(&gamma, &interner);
+        assert!(
+            !rendered.contains("diff(a(t), x)"),
+            "FRW Christoffel should not depend on ∂a/∂x, got {rendered}"
+        );
+        assert!(
+            !rendered.contains("diff(a(t), y)"),
+            "FRW Christoffel should not depend on ∂a/∂y, got {rendered}"
+        );
+        assert!(
+            !rendered.contains("diff(a(t), z)"),
+            "FRW Christoffel should not depend on ∂a/∂z, got {rendered}"
+        );
+        assert!(
+            rendered.contains("diff(a(t), t)"),
+            "FRW Christoffel should retain time-derivative dependence, got {rendered}"
+        );
+    }
+
+    #[test]
+    fn de_sitter_christoffel_is_evaluated_tensor_not_symbolic_call() {
+        let (gamma, interner) = eval_src(
+            "christoffel(metric(diag(-(1 - r^2/3), 1/(1 - r^2/3), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]);",
+        );
+        let rendered = ax_ir::pretty_print(&gamma, &interner);
+        assert!(
+            !rendered.contains("christoffel("),
+            "expected evaluated de Sitter Christoffel tensor, got {rendered}"
+        );
+        assert!(matches!(gamma, Expr::List(_)), "got {:?}", gamma);
+    }
+
+    #[test]
+    fn schwarzschild_ricci_scalar_collapses_to_zero() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let expr = ax_core_ir::lower(
+            "ricci_scalar(ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), inv(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2))));",
+            &interner,
+        )
+        .expr
+        .expect("schwarzschild ricci scalar expr");
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn schwarzschild_einstein_tensor_collapses_to_zero_matrix() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let expr = ax_core_ir::lower(
+            "einstein(ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), ricci_scalar(ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), inv(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)))), metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)));",
+            &interner,
+        )
+        .expr
+        .expect("schwarzschild einstein expr");
+        let result = eval(&expr, &env, &interner);
+        match result {
+            Expr::Matrix(rows) => {
+                assert!(
+                    rows.iter().flatten().all(|entry| *entry == Expr::zero()),
+                    "expected zero Einstein tensor, got {:?}",
+                    rows
+                );
+            }
+            other => panic!("expected Einstein tensor matrix, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn covariant_diff_in_flat_space_reduces_to_partial_derivative() {
+        let (result, interner) = eval_src(
+            "covariant_diff([f(t, x, y, z), 0, 0, 0], christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), 0, [t, x, y, z]);",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("diff(f(t, x, y, z), t)"), "got {rendered}");
+        assert!(!rendered.contains("christoffel("), "got {rendered}");
     }
 
     #[test]

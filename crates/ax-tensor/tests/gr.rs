@@ -196,3 +196,54 @@ fn geodesic_flat_space() {
         );
     }
 }
+
+#[test]
+fn frw_christoffel_only_depends_on_time_derivative_of_scale_factor() {
+    let interner = int();
+    let a = interner.get_or_intern("a");
+    let t = interner.get_or_intern("t");
+    let x = interner.get_or_intern("x");
+    let y = interner.get_or_intern("y");
+    let z = interner.get_or_intern("z");
+    let scale = Expr::Call(a, vec![Expr::Sym(t)]);
+    let g = SymbolicMatrix::from_diagonal(vec![
+        Expr::Int((-1).into()),
+        Expr::pow(scale.clone(), Expr::Int(2.into())),
+        Expr::pow(scale.clone(), Expr::Int(2.into())),
+        Expr::pow(scale.clone(), Expr::Int(2.into())),
+    ]);
+    let coords = vec![t, x, y, z];
+    let gamma = christoffel_from_metric(&g, &coords, &interner);
+    let rendered = ax_ir::pretty_print(
+        &Expr::List(
+            gamma
+                .iter()
+                .map(|plane| {
+                    Expr::List(
+                        plane
+                            .iter()
+                            .map(|row| Expr::List(row.iter().cloned().collect()))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        ),
+        &interner,
+    );
+    assert!(
+        rendered.contains("diff(a(t), t)"),
+        "expected FRW Christoffel to depend on time derivative, got {rendered}"
+    );
+    assert!(
+        !rendered.contains("diff(a(t), x)"),
+        "FRW Christoffel should not depend on diff(a(t), x), got {rendered}"
+    );
+    assert!(
+        !rendered.contains("diff(a(t), y)"),
+        "FRW Christoffel should not depend on diff(a(t), y), got {rendered}"
+    );
+    assert!(
+        !rendered.contains("diff(a(t), z)"),
+        "FRW Christoffel should not depend on diff(a(t), z), got {rendered}"
+    );
+}

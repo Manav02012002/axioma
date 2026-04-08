@@ -6271,15 +6271,16 @@ pub fn diff_component(
                     diff(&args[0], var, interner),
                 ]),
                 "sqrt" => diff(&Expr::pow(args[0].clone(), one_half()), var, interner),
+                _ if !contains_var(&args[0], var) => Expr::zero(),
                 _ => Expr::Call(
                     interner.get_or_intern("diff"),
                     vec![expr.clone(), Expr::Sym(var)],
                 ),
             },
-            Expr::Call(_, _) | Expr::Indexed(_, _) => Expr::Call(
-                interner.get_or_intern("diff"),
-                vec![expr.clone(), Expr::Sym(var)],
-            ),
+            Expr::Call(_, _) | Expr::Indexed(_, _) if !contains_var(expr, var) => Expr::zero(),
+            Expr::Call(_, _) | Expr::Indexed(_, _) => {
+                Expr::Call(interner.get_or_intern("diff"), vec![expr.clone(), Expr::Sym(var)])
+            }
             Expr::Group(inner, rel) => Expr::Group(Box::new(diff(inner, var, interner)), *rel),
             Expr::FnDef(name, params, body) => {
                 Expr::FnDef(*name, params.clone(), Box::new(diff(body, var, interner)))
