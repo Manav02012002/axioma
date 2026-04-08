@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
+pub mod execution;
 pub mod output;
 
 use anyhow::{anyhow, Context, Result};
 use ax_ir::Expr;
+use execution::{apply_import, assume_message, is_plot_call};
 pub use output::MimeBundle;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Response, Server};
@@ -617,90 +619,6 @@ pub fn export_html(cells: &[CellData]) -> String {
     export_html_with_title(cells, Some("Axioma Export"))
 }
 
-fn assume_message(
-    var: ax_ir::expr::Sym,
-    assumptions: &[ax_ir::Assumption],
-    interner: &ax_ir::Interner,
-) -> String {
-    format!(
-        "assumed {} is {}",
-        interner.resolve(var),
-        assumptions
-            .iter()
-            .map(|a| format!("{a:?}").to_lowercase())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
-}
-
-fn handle_import(
-    path: &[ax_ir::expr::Sym],
-    env: &mut ax_eval::Env,
-    interner: &ax_ir::Interner,
-    search_paths: &[PathBuf],
-) -> Result<()> {
-    let import_name = path
-        .iter()
-        .map(|sym| interner.resolve(*sym))
-        .collect::<Vec<_>>()
-        .join(".");
-    let file_path = ax_eval::resolve_import(path, interner, search_paths)
-        .ok_or_else(|| anyhow!(ax_context::format_import_resolution_error(&import_name, search_paths)))?;
-    let source = std::fs::read_to_string(&file_path)?;
-    let lowered = ax_core_ir::lower(&source, interner);
-
-    if !lowered.errors.is_empty() {
-        let joined = lowered
-            .errors
-            .iter()
-            .map(|error| error.message.as_str())
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(anyhow!("failed to lower import {import_name}: {joined}"));
-    }
-
-    let mut nested_search_paths = vec![file_path.parent().unwrap_or(Path::new(".")).to_path_buf()];
-    nested_search_paths.extend_from_slice(search_paths);
-
-    for expr in lowered.exprs {
-        match &expr {
-            Expr::Import(import_path) => {
-                handle_import(import_path, env, interner, &nested_search_paths)?
-            }
-            Expr::Let(name, val, _) => {
-                let evaled_val = ax_eval::eval(val, env, interner);
-                env.bindings.insert(*name, evaled_val);
-            }
-            Expr::FnDef(name, _, _) => {
-                let result = ax_eval::eval(&expr, env, interner);
-                env.bindings.insert(*name, result);
-            }
-            Expr::Rule(_, _, _) => {
-                let result = ax_eval::eval(&expr, env, interner);
-                let _ = ax_eval::register_rule(&result, env, interner);
-            }
-            Expr::Assume(var, assumptions) => {
-                env.assumptions
-                    .entry(*var)
-                    .or_default()
-                    .extend(assumptions.clone());
-            }
-            Expr::SetConvention(_, _) => {
-                let _ = ax_eval::apply_set_convention(&expr, env);
-            }
-            _ => {
-                let _ = ax_eval::eval(&expr, env, interner);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn is_plot_call(expr: &Expr, interner: &ax_ir::Interner) -> bool {
-    matches!(expr, Expr::Call(f, _) if interner.resolve(*f) == "plot")
-}
-
 pub fn handle_eval(
     body: &str,
     env: &mut ax_eval::Env,
@@ -760,7 +678,7 @@ pub fn handle_eval(
         };
 
         if let Expr::Import(path) = expr {
-            if let Err(err) = handle_import(path, env, interner, search_paths) {
+            if let Err(err) = apply_import(path, env, interner, search_paths) {
                 return EvalResponse {
                     unicode: None,
                     latex: None,
