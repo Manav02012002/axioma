@@ -43,6 +43,18 @@ h1 { font-size: 24px; font-weight: 500; margin-bottom: 20px; color: #333; }
 </div>
 <script>
 let cellCount = 0;
+const NOTEBOOK_TRUST = {
+  currentSession: 'trusted_local',
+  importedOrShared: 'untrusted'
+};
+const SESSION_STORAGE_KEY = 'axiomaNotebookSessionId';
+const notebookSessionId = getOrCreateSessionId();
+
+// Browser policy:
+// - text and errors are inserted via textContent only
+// - SVG from the local kernel is still sanitized before DOM insertion
+// - imported/shared notebook content should be treated as untrusted
+//   and exported with trust = "untrusted"
 
 function addCell() {
   cellCount++;
@@ -50,17 +62,26 @@ function addCell() {
   const div = document.createElement('div');
   div.className = 'cell';
   div.id = id;
-  div.innerHTML = `
-    <div class="cell-input">
-      <div class="cell-label">In [${cellCount}]</div>
-      <textarea class="cell-editor" rows="1" placeholder="Type Axioma expression..."
-        onkeydown="handleKey(event, '${id}')"
-        oninput="autoResize(this)"></textarea>
-    </div>
-    <div class="cell-output" id="${id}-output"></div>
-  `;
+  const input = document.createElement('div');
+  input.className = 'cell-input';
+  const label = document.createElement('div');
+  label.className = 'cell-label';
+  label.textContent = `In [${cellCount}]`;
+  const textarea = document.createElement('textarea');
+  textarea.className = 'cell-editor';
+  textarea.rows = 1;
+  textarea.placeholder = 'Type Axioma expression...';
+  textarea.addEventListener('keydown', (event) => handleKey(event, id));
+  textarea.addEventListener('input', () => autoResize(textarea));
+  const output = document.createElement('div');
+  output.className = 'cell-output';
+  output.id = `${id}-output`;
+  input.appendChild(label);
+  input.appendChild(textarea);
+  div.appendChild(input);
+  div.appendChild(output);
   document.getElementById('cells').appendChild(div);
-  div.querySelector('textarea').focus();
+  textarea.focus();
 }
 
 function autoResize(el) {
@@ -82,45 +103,27 @@ async function runCell(cellId) {
   const source = textarea.value.trim();
   if (!source) return;
 
-  output.innerHTML = '<span style="color:#999">evaluating...</span>';
+  clearNode(output);
+  const pending = document.createElement('span');
+  pending.style.color = '#999';
+  pending.textContent = 'evaluating...';
+  output.appendChild(pending);
 
   try {
     const resp = await fetch('/eval', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: notebookHeaders(),
       body: JSON.stringify({ source })
     });
     const data = await resp.json();
 
     if (data.error) {
-      output.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
+      renderError(output, data.error);
     } else {
-      let html = '';
-      if (data.latex) {
-        html += '<div class="latex-output" id="' + cellId + '-katex"></div>';
-      }
-      if (data.unicode) {
-        html += `<div class="unicode-output">${escapeHtml(data.unicode)}</div>`;
-      }
-      if (data.svg) {
-        html += `<div class="svg-output">${data.svg}</div>`;
-      }
-      output.innerHTML = html;
-
-      if (data.latex) {
-        try {
-          const katexEl = document.getElementById(cellId + '-katex');
-          katex.render(data.latex, katexEl, {
-            displayMode: true, throwOnError: false
-          });
-          katexEl.setAttribute('data-latex', data.latex);
-        } catch(err) {
-          document.getElementById(cellId + '-katex').textContent = data.latex;
-        }
-      }
+      renderOutput(output, cellId, data);
     }
   } catch (err) {
-    output.innerHTML = `<div class="error">Connection error: ${err.message}</div>`;
+    renderError(output, `Connection error: ${err.message}`);
   }
 
   const cells = document.querySelectorAll('.cell');
@@ -137,16 +140,21 @@ async function runAll() {
 }
 
 async function resetKernel() {
-  await fetch('/reset', { method: 'POST' });
-  document.querySelectorAll('.cell-output').forEach(el => el.innerHTML = '');
+  await fetch('/reset', { method: 'POST', headers: notebookHeaders() });
+  document.querySelectorAll('.cell-output').forEach(clearNode);
 }
 
 async function exportLatex() {
   const cells = collectCells();
   const resp = await fetch('/export/latex', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cells, title: 'Axioma Notebook', author: '' })
+    headers: notebookHeaders(),
+    body: JSON.stringify({
+      cells,
+      title: 'Axioma Notebook',
+      author: '',
+      trust: NOTEBOOK_TRUST.currentSession
+    })
   });
   const text = await resp.text();
   download('notebook.tex', text);
@@ -156,8 +164,13 @@ async function exportHTML() {
   const cells = collectCells();
   const resp = await fetch('/export/html', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cells, title: 'Axioma Notebook', author: '' })
+    headers: notebookHeaders(),
+    body: JSON.stringify({
+      cells,
+      title: 'Axioma Notebook',
+      author: '',
+      trust: NOTEBOOK_TRUST.currentSession
+    })
   });
   const text = await resp.text();
   download('notebook.html', text);
@@ -180,6 +193,114 @@ function collectCells() {
   return cells;
 }
 
+function renderError(output, message) {
+  clearNode(output);
+  const div = document.createElement('div');
+  div.className = 'error';
+  div.textContent = message;
+  output.appendChild(div);
+}
+
+function renderOutput(output, cellId, data) {
+  clearNode(output);
+
+  if (data.latex) {
+    const katexEl = document.createElement('div');
+    katexEl.className = 'latex-output';
+    katexEl.id = `${cellId}-katex`;
+    output.appendChild(katexEl);
+    try {
+      katex.render(data.latex, katexEl, {
+        displayMode: true, throwOnError: false
+      });
+      katexEl.setAttribute('data-latex', data.latex);
+    } catch (err) {
+      katexEl.textContent = data.latex;
+    }
+  }
+
+  if (data.unicode) {
+    const unicodeEl = document.createElement('div');
+    unicodeEl.className = 'unicode-output';
+    unicodeEl.textContent = data.unicode;
+    output.appendChild(unicodeEl);
+  }
+
+  if (data.svg) {
+    const svgEl = document.createElement('div');
+    svgEl.className = 'svg-output';
+    appendSanitizedSvg(svgEl, data.svg);
+    output.appendChild(svgEl);
+  }
+}
+
+function clearNode(node) {
+  while (node.firstChild) {
+    node.removeChild(node.firstChild);
+  }
+}
+
+function appendSanitizedSvg(target, svgMarkup) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(svgMarkup, 'image/svg+xml');
+  const svg = doc.documentElement;
+  if (!svg || svg.nodeName.toLowerCase() !== 'svg') {
+    target.textContent = 'Blocked unsafe SVG output';
+    return;
+  }
+  const sanitized = sanitizeSvgElement(svg);
+  if (!sanitized) {
+    target.textContent = 'Blocked unsafe SVG output';
+    return;
+  }
+  target.appendChild(sanitized);
+}
+
+function sanitizeSvgElement(node) {
+  const allowedTags = new Set([
+    'svg', 'g', 'path', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'rect',
+    'text', 'tspan', 'defs', 'clipPath', 'linearGradient', 'radialGradient', 'stop',
+    'title', 'desc'
+  ]);
+  const allowedAttrs = new Set([
+    'xmlns', 'viewBox', 'width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy',
+    'r', 'rx', 'ry', 'd', 'points', 'fill', 'fill-opacity', 'stroke', 'stroke-width',
+    'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'transform', 'opacity',
+    'font-size', 'font-family', 'text-anchor', 'class', 'id', 'offset', 'stop-color',
+    'stop-opacity', 'gradientUnits', 'gradientTransform', 'clip-path', 'xmlns:xlink',
+    'xlink:href', 'href'
+  ]);
+  const tag = node.nodeName;
+  if (!allowedTags.has(tag)) {
+    return null;
+  }
+  const clean = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const attr of Array.from(node.attributes || [])) {
+    const name = attr.name;
+    const value = attr.value;
+    if (name.startsWith('on') || !allowedAttrs.has(name)) {
+      continue;
+    }
+    if ((name === 'href' || name === 'xlink:href') && !value.trim().startsWith('#')) {
+      continue;
+    }
+    clean.setAttribute(name, value);
+  }
+  for (const child of Array.from(node.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE || child.nodeType === Node.CDATA_SECTION_NODE) {
+      clean.appendChild(document.createTextNode(child.textContent || ''));
+      continue;
+    }
+    if (child.nodeType === Node.ELEMENT_NODE) {
+      const sanitizedChild = sanitizeSvgElement(child);
+      if (sanitizedChild) {
+        clean.appendChild(sanitizedChild);
+      }
+    }
+  }
+  return clean;
+}
+
 function download(filename, text) {
   const a = document.createElement('a');
   a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(text);
@@ -187,10 +308,23 @@ function download(filename, text) {
   a.click();
 }
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+function getOrCreateSessionId() {
+  const existing = sessionStorage.getItem(SESSION_STORAGE_KEY);
+  if (existing) {
+    return existing;
+  }
+  const created = (crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `axioma-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  sessionStorage.setItem(SESSION_STORAGE_KEY, created);
+  return created;
+}
+
+function notebookHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'X-Axioma-Session': notebookSessionId
+  };
 }
 
 addCell();
