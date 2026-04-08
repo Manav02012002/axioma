@@ -423,6 +423,46 @@ fn run_cosmology_perturbation_module_exposes_demo_bindings() {
 }
 
 #[test]
+fn run_classical_mechanics_module_exposes_euler_lagrange_equations() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/physics/classical_mechanics.ax")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .expect("run classical mechanics module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("d2x_dtdt"), "stdout:\n{stdout}");
+    assert!(stdout.contains("kx"), "stdout:\n{stdout}");
+    assert!(stdout.contains("sin(θ)"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn run_maxwell_module_exposes_field_strength_and_eom() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/physics/maxwell.ax")
+                .to_string_lossy()
+                .as_ref(),
+        ])
+        .output()
+        .expect("run maxwell module");
+
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("A1_t - A0_x"), "stdout:\n{stdout}");
+    assert!(stdout.contains("d2A0_dxdx"), "stdout:\n{stdout}");
+    assert!(stdout.contains("d2A1_dtdt"), "stdout:\n{stdout}");
+}
+
+#[test]
 fn run_qm_spin_module_exposes_pauli_commutator() {
     let out = bin()
         .current_dir(repo_root())

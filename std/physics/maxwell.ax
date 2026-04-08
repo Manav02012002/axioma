@@ -1,4 +1,19 @@
-// Maxwell's equations from Lagrangian
-// L = -(1/4) F_{μν} F^{μν}
-// where F_{μν} = ∂_μ A_ν - ∂_ν A_μ
-// This is more complex — just set up the structure
+// Maxwell theory from a flat-space field-strength Lagrangian.
+// The variational interface uses explicit derivative symbols such as A0_x.
+
+let F_tx = A1_t - A0_x
+let F_ty = A2_t - A0_y
+let F_tz = A3_t - A0_z
+let F_xy = A2_x - A1_y
+let F_xz = A3_x - A1_z
+let F_yz = A3_y - A2_z
+
+let L = 1/2 * (F_tx^2 + F_ty^2 + F_tz^2 - F_xy^2 - F_xz^2 - F_yz^2)
+
+let gauss_law = euler_lagrange(L, A0, [A0_t, A0_x, A0_y, A0_z], [t, x, y, z])
+let ampere_x = euler_lagrange(L, A1, [A1_t, A1_x, A1_y, A1_z], [t, x, y, z])
+
+F_tx
+L
+gauss_law
+ampere_x

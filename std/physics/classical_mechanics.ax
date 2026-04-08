@@ -1,5 +1,15 @@
-// Classical mechanics utilities
-// Lagrangian mechanics:
-// euler_lagrange(L, q, [dq_dt], [t]) gives the equation of motion
-// Example: Simple pendulum
-// L = (1/2) m l^2 theta_dot^2 + m g l cos(theta)
+// Classical mechanics via Euler-Lagrange equations.
+// The variational interface uses explicit derivative symbols such as x_dot.
+
+let L_free = 1/2 * m * x_dot^2
+let free_particle = euler_lagrange(L_free, x, [x_dot], [t])
+
+let L_ho = 1/2 * m * x_dot^2 - 1/2 * k * x^2
+let harmonic_oscillator = euler_lagrange(L_ho, x, [x_dot], [t])
+
+let L_pendulum = 1/2 * m * l^2 * theta_dot^2 + m * g * l * cos(theta)
+let pendulum = euler_lagrange(L_pendulum, theta, [theta_dot], [t])
+
+free_particle
+harmonic_oscillator
+pendulum

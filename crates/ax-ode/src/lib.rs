@@ -53,6 +53,93 @@ fn integrate_call(expr: Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> E
     )
 }
 
+fn monomial_power(expr: &Expr, var: lasso::Spur) -> Option<i64> {
+    match expr {
+        Expr::Sym(sym) if *sym == var => Some(1),
+        Expr::Pow(base, exp) => match (base.as_ref(), exp.as_ref()) {
+            (Expr::Sym(sym), Expr::Int(n)) if *sym == var => num_traits::ToPrimitive::to_i64(n),
+            _ => None,
+        },
+        Expr::Group(inner, _) => monomial_power(inner, var),
+        _ => None,
+    }
+}
+
+fn integrate_elementary(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Option<Expr> {
+    let _ = interner;
+    match expr {
+        Expr::Group(inner, _) => integrate_elementary(inner, var, interner),
+        Expr::Neg(inner) => Some(Expr::neg(integrate_elementary(inner, var, interner)?)),
+        Expr::Add(terms) => {
+            let integrated = terms
+                .iter()
+                .map(|term| integrate_elementary(term, var, interner))
+                .collect::<Option<Vec<_>>>()?;
+            Some(simplify_expr(Expr::add(integrated), interner))
+        }
+        _ if !contains_var(expr, var) => Some(if expr == &Expr::one() {
+            Expr::Sym(var)
+        } else {
+            simplify_expr(Expr::mul(vec![expr.clone(), Expr::Sym(var)]), interner)
+        }),
+        Expr::Sym(sym) if *sym == var => Some(simplify_expr(
+            Expr::mul(vec![
+                expr_from_rational(BigRational::new(1.into(), 2.into())),
+                Expr::pow(Expr::Sym(var), Expr::Int(2.into())),
+            ]),
+            interner,
+        )),
+        Expr::Pow(_, _) => {
+            let power = monomial_power(expr, var)?;
+            if power == -1 {
+                Some(Expr::Call(
+                    interner.get_or_intern("log"),
+                    vec![Expr::Sym(var)],
+                ))
+            } else {
+                let next_power = power + 1;
+                Some(simplify_expr(
+                    Expr::mul(vec![
+                        expr_from_rational(BigRational::new(1.into(), next_power.into())),
+                        Expr::pow(Expr::Sym(var), Expr::Int(next_power.into())),
+                    ]),
+                    interner,
+                ))
+            }
+        }
+        Expr::Mul(factors) => {
+            let mut coefficient = Vec::new();
+            let mut total_power = 0i64;
+            for factor in factors {
+                if !contains_var(factor, var) {
+                    coefficient.push(factor.clone());
+                    continue;
+                }
+                total_power += monomial_power(factor, var)?;
+            }
+            let monomial = if total_power == 0 {
+                Expr::one()
+            } else if total_power == 1 {
+                Expr::Sym(var)
+            } else {
+                Expr::pow(Expr::Sym(var), Expr::Int(total_power.into()))
+            };
+            let integral = integrate_elementary(&monomial, var, interner)?;
+            if coefficient.is_empty() {
+                Some(integral)
+            } else {
+                coefficient.push(integral);
+                Some(simplify_expr(Expr::mul(coefficient), interner))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn integrate_if_simple(expr: Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Expr {
+    integrate_elementary(&expr, var, interner).unwrap_or_else(|| integrate_call(expr, var, interner))
+}
+
 fn constant_symbol(interner: &ax_ir::Interner) -> Expr {
     Expr::Sym(interner.get_or_intern("C"))
 }
@@ -441,6 +528,8 @@ fn eval_numeric(
 fn separable_factors(expr: &Expr, y_sym: lasso::Spur, x_sym: lasso::Spur) -> Option<(Expr, Expr)> {
     let factors = match expr {
         Expr::Mul(factors) => factors.clone(),
+        Expr::Neg(inner) => vec![Expr::Int((-1).into()), inner.as_ref().clone()],
+        Expr::Group(inner, _) => return separable_factors(inner, y_sym, x_sym),
         _ => vec![expr.clone()],
     };
     let mut x_terms = Vec::new();
@@ -455,10 +544,10 @@ fn separable_factors(expr: &Expr, y_sym: lasso::Spur, x_sym: lasso::Spur) -> Opt
             (true, true) => return None,
         }
     }
-    if x_terms.is_empty() || y_terms.is_empty() {
-        None
-    } else {
-        Some((Expr::mul(x_terms), Expr::mul(y_terms)))
+    match (x_terms.is_empty(), y_terms.is_empty()) {
+        (false, false) => Some((Expr::mul(x_terms), Expr::mul(y_terms))),
+        (true, false) => Some((Expr::one(), Expr::mul(y_terms))),
+        _ => None,
     }
 }
 
@@ -481,20 +570,23 @@ fn solve_separable(
             constant_symbol(interner),
             Expr::Call(
                 interner.get_or_intern("exp"),
-                vec![integrate_call(g_x, x_sym, interner)],
+                vec![integrate_if_simple(g_x, x_sym, interner)],
             ),
         ]));
     }
 
-    Some(Expr::add(vec![
-        integrate_call(
-            Expr::mul(vec![Expr::pow(h_y, Expr::Int((-1).into()))]),
-            y_sym,
-            interner,
-        ),
-        Expr::neg(integrate_call(g_x, x_sym, interner)),
-        Expr::neg(constant_symbol(interner)),
-    ]))
+    Some(simplify_expr(
+        Expr::add(vec![
+            integrate_if_simple(
+                Expr::mul(vec![Expr::pow(h_y, Expr::Int((-1).into()))]),
+                y_sym,
+                interner,
+            ),
+            Expr::neg(integrate_if_simple(g_x, x_sym, interner)),
+            Expr::neg(constant_symbol(interner)),
+        ]),
+        interner,
+    ))
 }
 
 fn solve_linear(
@@ -506,44 +598,175 @@ fn solve_linear(
     let Expr::Add(terms) = equation else {
         return None;
     };
-    if terms.len() != 2 {
+    let mut q_terms = Vec::new();
+    let mut y_coeff_terms = Vec::new();
+    for term in terms {
+        if let Some(coeff) = derivative_coefficient(term, &Expr::Sym(y_sym)) {
+            if contains_var(&coeff, y_sym) {
+                return None;
+            }
+            y_coeff_terms.push(coeff);
+        } else {
+            q_terms.push(term.clone());
+        }
+    }
+    if y_coeff_terms.is_empty() || q_terms.iter().any(|term| contains_var(term, y_sym)) {
         return None;
     }
 
-    let (q_term, py_term) = match (&terms[0], &terms[1]) {
-        (q, Expr::Neg(inner)) => (q.clone(), inner.as_ref().clone()),
-        (Expr::Neg(inner), q) => (q.clone(), inner.as_ref().clone()),
-        _ => return None,
-    };
-    let Expr::Mul(factors) = py_term else {
-        return None;
-    };
-    if factors.len() != 2 {
-        return None;
-    }
-    let p = if factors[0] == Expr::Sym(y_sym) && !contains_var(&factors[1], y_sym) {
-        factors[1].clone()
-    } else if factors[1] == Expr::Sym(y_sym) && !contains_var(&factors[0], y_sym) {
-        factors[0].clone()
-    } else {
-        return None;
-    };
-    if contains_var(&q_term, y_sym) || contains_var(&p, y_sym) {
-        return None;
-    }
+    let a = simplify_expr(Expr::add(y_coeff_terms), interner);
+    let q_term = simplify_expr(Expr::add(q_terms), interner);
+    let p = simplify_expr(Expr::neg(a), interner);
 
     let mu = Expr::Call(
         interner.get_or_intern("exp"),
-        vec![integrate_call(p.clone(), x_sym, interner)],
+        vec![integrate_if_simple(p.clone(), x_sym, interner)],
     );
     let solution = Expr::mul(vec![
         Expr::pow(mu.clone(), Expr::Int((-1).into())),
         Expr::add(vec![
-            integrate_call(Expr::mul(vec![mu.clone(), q_term]), x_sym, interner),
+            integrate_if_simple(Expr::mul(vec![mu.clone(), q_term]), x_sym, interner),
             constant_symbol(interner),
         ]),
     ]);
     Some(solution)
+}
+
+fn solve_rhs_only(
+    equation: &Expr,
+    y_sym: lasso::Spur,
+    x_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    if contains_var(equation, y_sym) {
+        return None;
+    }
+    Some(simplify_expr(
+        Expr::add(vec![
+            integrate_if_simple(equation.clone(), x_sym, interner),
+            constant_symbol(interner),
+        ]),
+        interner,
+    ))
+}
+
+fn first_derivative_expr(
+    y_sym: lasso::Spur,
+    x_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    Expr::Call(
+        interner.get_or_intern("diff"),
+        vec![Expr::Sym(y_sym), Expr::Sym(x_sym)],
+    )
+}
+
+fn derivative_coefficient(term: &Expr, derivative: &Expr) -> Option<Expr> {
+    match term {
+        Expr::Group(inner, _) => derivative_coefficient(inner, derivative),
+        t if t == derivative => Some(Expr::one()),
+        Expr::Neg(inner) => derivative_coefficient(inner, derivative).map(Expr::neg),
+        Expr::Mul(factors) => {
+            let mut coeffs = Vec::new();
+            let mut found = 0usize;
+            for factor in factors {
+                if factor == derivative {
+                    found += 1;
+                } else {
+                    coeffs.push(factor.clone());
+                }
+            }
+            if found == 1 {
+                Some(Expr::mul(coeffs))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn normalize_first_order_rhs(
+    equation: &Expr,
+    y_sym: lasso::Spur,
+    x_sym: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let derivative = first_derivative_expr(y_sym, x_sym, interner);
+    let terms = match equation {
+        Expr::Add(terms) => terms.clone(),
+        Expr::Group(inner, _) => return normalize_first_order_rhs(inner, y_sym, x_sym, interner),
+        _ => vec![equation.clone()],
+    };
+
+    let mut derivative_coeffs = Vec::new();
+    let mut rest_terms = Vec::new();
+
+    for term in terms {
+        if let Some(coeff) = derivative_coefficient(&term, &derivative) {
+            if contains_var(&coeff, y_sym) {
+                return None;
+            }
+            derivative_coeffs.push(coeff);
+        } else {
+            rest_terms.push(term);
+        }
+    }
+
+    if derivative_coeffs.is_empty() {
+        return None;
+    }
+
+    let total_coeff = simplify_expr(Expr::add(derivative_coeffs), interner);
+    let rest = simplify_expr(Expr::add(rest_terms), interner);
+    let rhs = if total_coeff == Expr::one() {
+        Expr::neg(rest)
+    } else {
+        Expr::mul(vec![
+            Expr::neg(rest),
+            Expr::pow(total_coeff, Expr::Int((-1).into())),
+        ])
+    };
+    Some(simplify_expr(rhs, interner))
+}
+
+fn normalize_highest_derivative_rhs(
+    equation: &Expr,
+    derivative: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let terms = match equation {
+        Expr::Add(terms) => terms.clone(),
+        Expr::Group(inner, _) => return normalize_highest_derivative_rhs(inner, derivative, interner),
+        _ => vec![equation.clone()],
+    };
+
+    let mut derivative_coeffs = Vec::new();
+    let mut rest_terms = Vec::new();
+
+    for term in terms {
+        if let Some(coeff) = derivative_coefficient(&term, derivative) {
+            derivative_coeffs.push(coeff);
+        } else {
+            rest_terms.push(term);
+        }
+    }
+
+    if derivative_coeffs.is_empty() {
+        return None;
+    }
+
+    let total_coeff = simplify_expr(Expr::add(derivative_coeffs), interner);
+    let rest = simplify_expr(Expr::add(rest_terms), interner);
+    let rhs = if total_coeff == Expr::one() {
+        Expr::neg(rest)
+    } else {
+        Expr::mul(vec![
+            Expr::neg(rest),
+            Expr::pow(total_coeff, Expr::Int((-1).into())),
+        ])
+    };
+    Some(simplify_expr(rhs, interner))
 }
 
 pub fn solve_ode(
@@ -552,15 +775,20 @@ pub fn solve_ode(
     x_sym: lasso::Spur,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
-    if let Some(solution) = solve_separable(equation, y_sym, x_sym, interner) {
+    let normalized = normalize_first_order_rhs(equation, y_sym, x_sym, interner)
+        .unwrap_or_else(|| equation.clone());
+    if let Some(solution) = solve_rhs_only(&normalized, y_sym, x_sym, interner) {
         return simplify_expr(solution, interner);
     }
-    if let Some(solution) = solve_linear(equation, y_sym, x_sym, interner) {
+    if let Some(solution) = solve_separable(&normalized, y_sym, x_sym, interner) {
+        return simplify_expr(solution, interner);
+    }
+    if let Some(solution) = solve_linear(&normalized, y_sym, x_sym, interner) {
         return simplify_expr(solution, interner);
     }
     Expr::Call(
         interner.get_or_intern("solve_ode"),
-        vec![equation.clone(), Expr::Sym(y_sym), Expr::Sym(x_sym)],
+        vec![normalized, Expr::Sym(y_sym), Expr::Sym(x_sym)],
     )
 }
 
@@ -755,9 +983,19 @@ pub fn first_order_form(
     }
 
     // Last equation: v_{n-1}' = rhs
-    // Substitute each derivative diff^k(x, t) → aux_vars[k] in the ode,
+    // If the caller passed a full ODE containing the highest derivative, first
+    // isolate that derivative to get an explicit right-hand side.
+    let highest_derivative = make_nth_derivative(dependent_var, independent_var, max_order, diff_sym);
+    let base_rhs = if detected_order == 0 {
+        ode.clone()
+    } else {
+        normalize_highest_derivative_rhs(ode, &highest_derivative, interner)
+            .unwrap_or_else(|| ode.clone())
+    };
+
+    // Substitute each lower derivative diff^k(x, t) → aux_vars[k] in the rhs,
     // from the highest order down so inner substitutions don't mis-match.
-    let mut rhs = ode.clone();
+    let mut rhs = base_rhs;
     for i in (1..max_order).rev() {
         let deriv_expr = make_nth_derivative(dependent_var, independent_var, i, diff_sym);
         rhs = substitute_expr(&rhs, &deriv_expr, &Expr::Sym(aux_vars[i]));
@@ -893,6 +1131,72 @@ mod tests {
     }
 
     #[test]
+    fn solve_first_order_ode_written_with_derivative_on_lhs() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let diff = interner.get_or_intern("diff");
+        let equation = Expr::add(vec![
+            Expr::Call(diff, vec![Expr::Sym(y), Expr::Sym(x)]),
+            Expr::neg(Expr::Sym(y)),
+        ]);
+        let result = solve_ode(&equation, y, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(pp.contains("exp"), "got: {}", pp);
+        assert!(!pp.contains("solve_ode"), "got: {}", pp);
+    }
+
+    #[test]
+    fn solve_inhomogeneous_rhs_only_ode() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let diff = interner.get_or_intern("diff");
+        let equation = Expr::add(vec![
+            Expr::Call(diff, vec![Expr::Sym(y), Expr::Sym(x)]),
+            Expr::neg(Expr::Sym(x)),
+        ]);
+        let result = solve_ode(&equation, y, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(!pp.contains("solve_ode"), "got: {pp}");
+        assert!(pp.contains("x²") || pp.contains("x^2"), "got: {pp}");
+    }
+
+    #[test]
+    fn solve_linear_ode_reduces_elementary_integrating_factor() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let diff = interner.get_or_intern("diff");
+        let equation = Expr::add(vec![
+            Expr::Call(diff, vec![Expr::Sym(y), Expr::Sym(x)]),
+            Expr::mul(vec![Expr::Sym(x), Expr::Sym(y)]),
+        ]);
+        let result = solve_ode(&equation, y, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(!pp.contains("solve_ode"), "got: {pp}");
+        assert!(!pp.contains("integrate"), "got: {pp}");
+        assert!(pp.contains("exp"), "got: {pp}");
+    }
+
+    #[test]
+    fn solve_autonomous_separable_ode() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let diff = interner.get_or_intern("diff");
+        let equation = Expr::add(vec![
+            Expr::Call(diff, vec![Expr::Sym(y), Expr::Sym(x)]),
+            Expr::neg(Expr::pow(Expr::Sym(y), Expr::Int(2.into()))),
+        ]);
+        let result = solve_ode(&equation, y, x, &interner);
+        let pp = ax_ir::pretty_print(&result, &interner);
+        assert!(!pp.contains("solve_ode"), "got: {pp}");
+        assert!(!pp.contains("integrate"), "got: {pp}");
+        assert!(pp.contains("y"), "got: {pp}");
+    }
+
+    #[test]
     fn rk4_exponential() {
         let interner = ax_ir::Interner::new();
         let x = interner.get_or_intern("x");
@@ -957,6 +1261,8 @@ mod tests {
         let x_d1 = interner.get_or_intern("x_d1");
         assert_eq!(system[0].0, Expr::Sym(x));
         assert_eq!(system[0].1, Expr::Sym(x_d1));
+        assert_eq!(system[1].0, Expr::Sym(x_d1));
+        assert_eq!(system[1].1, Expr::neg(Expr::Sym(x)));
     }
 
     #[test]

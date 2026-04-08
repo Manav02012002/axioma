@@ -6833,8 +6833,32 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
         Expr::Neg(e) => Expr::neg(eval(e, env, interner)),
         Expr::Group(inner, rel) => Expr::Group(Box::new(eval(inner, env, interner)), *rel),
         Expr::Call(f, args) => {
-            let evaled_args: Vec<Expr> = args.iter().map(|arg| eval(arg, env, interner)).collect();
             let name = interner.resolve(*f);
+            match name {
+                "dsolve" => {
+                    if args.len() == 3 {
+                        if let (Expr::Sym(y), Expr::Sym(x)) = (&args[1], &args[2]) {
+                            return ax_ode::solve_ode(&args[0], *y, *x, interner);
+                        }
+                    }
+                }
+                "first_order_form" => {
+                    if args.len() >= 3 {
+                        if let (Expr::Sym(dep), Expr::Sym(indep)) = (&args[1], &args[2]) {
+                            let system =
+                                ax_ode::first_order_form(&args[0], *dep, *indep, interner);
+                            return Expr::List(
+                                system
+                                    .into_iter()
+                                    .map(|(lhs, rhs)| Expr::List(vec![lhs, rhs]))
+                                    .collect(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+            let evaled_args: Vec<Expr> = args.iter().map(|arg| eval(arg, env, interner)).collect();
             let result = builtin_call(name, *f, evaled_args.clone(), interner, env);
             if let Expr::Call(returned_f, _) = &result {
                 if *returned_f == *f {
@@ -8522,6 +8546,23 @@ mod tests {
         let (result, interner) = eval_src("dsolve(diff(y, x) - y, y, x);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert!(!rendered.contains("solve_ode"), "got {rendered}");
+        assert!(rendered.contains("exp"), "got {rendered}");
+    }
+
+    #[test]
+    fn dsolve_evaluates_rhs_only_first_order_ode() {
+        let (result, interner) = eval_src("dsolve(diff(y, x) - x, y, x);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("solve_ode"), "got {rendered}");
+        assert!(rendered.contains("x²") || rendered.contains("x^2"), "got {rendered}");
+    }
+
+    #[test]
+    fn dsolve_reduces_elementary_integrating_factor() {
+        let (result, interner) = eval_src("dsolve(diff(y, x) + x*y, y, x);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("solve_ode"), "got {rendered}");
+        assert!(!rendered.contains("integrate"), "got {rendered}");
         assert!(rendered.contains("exp"), "got {rendered}");
     }
 
