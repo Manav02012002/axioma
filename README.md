@@ -4,6 +4,11 @@ Axioma is a Rust-native symbolic computing system aimed at physics-heavy workflo
 
 This repository is not a thin wrapper over SymPy, Mathematica, or a Python runtime. The core stack is implemented in Rust and is organized as a workspace of language, IR, evaluator, tensor, rendering, tooling, and integration crates.
 
+Project links:
+
+- Repository: `https://github.com/Manav02012002/axioma`
+- Webpage: `https://manav02012002.github.io/axioma-webpage/#features`
+
 ## Table Of Contents
 
 - [What Axioma Is](#what-axioma-is)
