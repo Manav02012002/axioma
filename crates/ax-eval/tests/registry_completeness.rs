@@ -79,6 +79,7 @@ fn all_properties_have_entries() {
         "Derivative",
         "PartialDerivative",
         "CovariantDerivative",
+        "TableauInherit",
         "Depends",
         "Spinor",
         "DiracBar",

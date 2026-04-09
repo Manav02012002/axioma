@@ -179,6 +179,7 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
         ax_ir::TensorProperty::Derivative => "Derivative".to_string(),
         ax_ir::TensorProperty::PartialDerivative => "PartialDerivative".to_string(),
         ax_ir::TensorProperty::CovariantDerivative => "CovariantDerivative".to_string(),
+        ax_ir::TensorProperty::TableauInherit => "TableauInherit".to_string(),
         ax_ir::TensorProperty::Depends(syms) => format!(
             "Depends({:?})",
             syms.iter()

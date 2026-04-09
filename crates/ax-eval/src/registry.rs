@@ -2065,6 +2065,7 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("Derivative", "property D derivative", "Marks a symbol as a derivative operator.", "canonicalise dummy-boundary classification, sort_product noncommuting barrier, component derivative handling", "property D derivative"),
         p("PartialDerivative", "property D partial_derivative", "Marks a symbol as a partial derivative operator.", "canonicalise dummy-boundary classification, sort_product noncommuting barrier, component derivative handling", "property partial partial_derivative"),
         p("CovariantDerivative", "property nabla covariant_derivative", "Marks a symbol as a covariant derivative operator.", "canonicalise dummy-boundary classification and sort_product noncommuting barrier", "property nabla covariant_derivative"),
+        p("TableauInherit", "property nabla tableau_inherit", "Marks a derivative-like head as inheriting tableau-style symmetry metadata from the immediately following tensor factor, with inherited slot numbers shifted by the derivative-slot count.", "composite derivative*tensor projector lookup for inherited TableauSymmetry and SatisfiesBianchi metadata", "property nabla tableau_inherit"),
         p("Depends", "depends T [x, y, ...]", "Declares that a tensor depends on listed symbols.", "stored by ax-tensor metadata; no direct ax-tensor algorithm currently consults it", "depends phi [x, t]"),
         p("Spinor", "property psi spinor", "Marks a tensor as carrying spinor indices.", "canonicalise_product dummy classification via metric_symmetry_for_slots", "property psi spinor"),
         p("DiracBar", "property psibar dirac_bar", "Marks a symbol as a Dirac-bar object.", "canonicalize_indices local argument canonicalisation, sort_product barred-bilinear normalization/barrier handling, and ax-qm DiracBar expansion/sorting", "property psibar dirac_bar"),
@@ -2695,6 +2696,7 @@ pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::In
         TensorProperty::Derivative => "Derivative".to_string(),
         TensorProperty::PartialDerivative => "PartialDerivative".to_string(),
         TensorProperty::CovariantDerivative => "CovariantDerivative".to_string(),
+        TensorProperty::TableauInherit => "TableauInherit".to_string(),
         TensorProperty::Depends(syms) => format!(
             "Depends({})",
             syms.iter()
@@ -2900,6 +2902,9 @@ fn parse_property_string(
     }
     if lower == "covariantderivative" || lower == "covariant_derivative" {
         return Ok(ax_ir::TensorProperty::CovariantDerivative);
+    }
+    if lower == "tableauinherit" || lower == "tableau_inherit" {
+        return Ok(ax_ir::TensorProperty::TableauInherit);
     }
     if lower == "spinor" {
         return Ok(ax_ir::TensorProperty::Spinor);

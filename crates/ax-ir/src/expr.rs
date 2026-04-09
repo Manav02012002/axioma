@@ -63,6 +63,7 @@ pub enum TensorProperty {
     Derivative,
     PartialDerivative,
     CovariantDerivative,
+    TableauInherit,
     Depends(Vec<Sym>),
     Spinor,
     DiracBar,

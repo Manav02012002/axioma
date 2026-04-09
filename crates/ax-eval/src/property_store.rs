@@ -147,6 +147,12 @@ impl PropertyStore {
             .collect()
     }
 
+    pub fn inherits_tableau(&self, name: lasso::Spur) -> bool {
+        self.get_all(name)
+            .into_iter()
+            .any(|prop| matches!(prop, TensorProperty::TableauInherit))
+    }
+
     pub fn has_property(
         &self,
         name: lasso::Spur,
@@ -347,17 +353,104 @@ pub fn property_discriminant_matches(a: &TensorProperty, b: &TensorProperty) -> 
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
+fn shifted_tableau_inherited_properties(
+    props: &[TensorProperty],
+    offset: usize,
+    follower_rank: usize,
+) -> Vec<TensorProperty> {
+    let composite_rank = offset + follower_rank;
+    let mut inherited = Vec::new();
+
+    let has_bianchi = props
+        .iter()
+        .any(|prop| matches!(prop, TensorProperty::SatisfiesBianchi { .. }));
+
+    for prop in props {
+        match prop {
+            TensorProperty::TableauSymmetry { shape, indices } => {
+                let shifted = indices.iter().map(|slot| slot + offset).collect::<Vec<_>>();
+                if shifted.iter().all(|slot| *slot < composite_rank) {
+                    inherited.push(TensorProperty::TableauSymmetry {
+                        shape: shape.clone(),
+                        indices: shifted,
+                    });
+                }
+            }
+            TensorProperty::SatisfiesBianchi { slots } => {
+                let shifted = [
+                    slots[0] + offset,
+                    slots[1] + offset,
+                    slots[2] + offset,
+                    slots[3] + offset,
+                ];
+                if shifted.iter().all(|slot| *slot < composite_rank) {
+                    inherited.push(TensorProperty::SatisfiesBianchi { slots: shifted });
+                }
+            }
+            TensorProperty::DimensionDependentIdentity => {
+                inherited.push(TensorProperty::DimensionDependentIdentity);
+            }
+            TensorProperty::Traceless => {
+                inherited.push(TensorProperty::Traceless);
+            }
+            TensorProperty::WeylTensor => {
+                inherited.push(TensorProperty::Traceless);
+                if offset + 4 <= composite_rank {
+                    inherited.push(TensorProperty::TableauSymmetry {
+                        shape: vec![2, 2],
+                        indices: vec![offset, offset + 1, offset + 2, offset + 3],
+                    });
+                    inherited.push(TensorProperty::SatisfiesBianchi {
+                        slots: [offset, offset + 1, offset + 2, offset + 3],
+                    });
+                }
+            }
+            TensorProperty::RiemannSymmetry => {
+                if has_bianchi && offset + 4 <= composite_rank {
+                    inherited.push(TensorProperty::TableauSymmetry {
+                        shape: vec![2, 2],
+                        indices: vec![offset, offset + 1, offset + 2, offset + 3],
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    inherited
+}
+
 impl ax_tensor::PropertyLookup for PropertyStore {
-    fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
-        self.get_all(name)
+    fn get_properties(&self, name: lasso::Spur) -> Vec<ax_ir::TensorProperty> {
+        self.get_all(name).into_iter().cloned().collect()
     }
 
     fn get_properties_with_indices(
         &self,
         name: lasso::Spur,
         indices: &[ax_ir::Index],
-    ) -> Vec<&ax_ir::TensorProperty> {
-        self.get(name, indices, &self.index_to_family)
+        successor: Option<(lasso::Spur, &[ax_ir::Index])>,
+    ) -> Vec<ax_ir::TensorProperty> {
+        let mut properties = self
+            .get(name, indices, &self.index_to_family)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let leader_inherits = properties
+            .iter()
+            .any(|prop| matches!(prop, TensorProperty::TableauInherit));
+        if leader_inherits {
+            if let Some((follower_name, follower_indices)) = successor {
+                let follower =
+                    self.get_properties_with_indices(follower_name, follower_indices, None);
+                properties.extend(shifted_tableau_inherited_properties(
+                    &follower,
+                    indices.len().saturating_sub(follower_indices.len()),
+                    follower_indices.len(),
+                ));
+            }
+        }
+        properties
     }
 
     fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {

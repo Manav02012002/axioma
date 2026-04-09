@@ -52,12 +52,33 @@ pub trait ComponentEvalEnv {
 }
 
 pub trait PropertyLookup: Send + Sync {
-    fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty>;
+    fn get_properties(&self, name: lasso::Spur) -> Vec<ax_ir::TensorProperty>;
     fn get_properties_with_indices(
         &self,
         name: lasso::Spur,
         indices: &[ax_ir::Index],
-    ) -> Vec<&ax_ir::TensorProperty>;
+        successor: Option<(lasso::Spur, &[ax_ir::Index])>,
+    ) -> Vec<ax_ir::TensorProperty>;
+    fn get_composite_properties_with_indices(
+        &self,
+        leader_name: lasso::Spur,
+        leader_indices: &[ax_ir::Index],
+        follower_name: lasso::Spur,
+        follower_indices: &[ax_ir::Index],
+    ) -> Vec<ax_ir::TensorProperty> {
+        let inherited = self.get_properties_with_indices(
+            leader_name,
+            leader_indices,
+            Some((follower_name, follower_indices)),
+        );
+        let leader_inherits = inherited
+            .iter()
+            .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauInherit));
+        if !leader_inherits {
+            return inherited;
+        }
+        inherited
+    }
     fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool;
     fn pair_commuting_behaviour(&self, a: lasso::Spur, b: lasso::Spur) -> Option<i32> {
         let explicit = |source: lasso::Spur, target: lasso::Spur| {
@@ -85,24 +106,38 @@ pub trait PropertyLookup: Send + Sync {
 }
 
 impl PropertyLookup for HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> {
-    fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
-        self.get(&name)
-            .map(|props| props.iter().collect())
-            .unwrap_or_default()
+    fn get_properties(&self, name: lasso::Spur) -> Vec<ax_ir::TensorProperty> {
+        self.get(&name).cloned().unwrap_or_default()
     }
 
     fn get_properties_with_indices(
         &self,
         name: lasso::Spur,
-        _indices: &[ax_ir::Index],
-    ) -> Vec<&ax_ir::TensorProperty> {
-        self.get_properties(name)
+        indices: &[ax_ir::Index],
+        successor: Option<(lasso::Spur, &[ax_ir::Index])>,
+    ) -> Vec<ax_ir::TensorProperty> {
+        let mut properties = self.get_properties(name);
+        let leader_inherits = properties
+            .iter()
+            .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauInherit));
+        if leader_inherits {
+            if let Some((follower_name, follower_indices)) = successor {
+                let follower =
+                    self.get_properties_with_indices(follower_name, follower_indices, None);
+                properties.extend(shifted_tableau_inherited_properties(
+                    &follower,
+                    indices.len().saturating_sub(follower_indices.len()),
+                    follower_indices.len(),
+                ));
+            }
+        }
+        properties
     }
 
     fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
         self.get_properties(name)
             .into_iter()
-            .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+            .any(|prop| std::mem::discriminant(&prop) == std::mem::discriminant(kind))
     }
 }
 
@@ -144,6 +179,7 @@ impl ComponentEvalEnv for DefaultEvalEnv {
 #[derive(Clone, Debug)]
 pub struct TensorFactorInfo {
     pub name: lasso::Spur,
+    pub indices: Vec<ax_ir::Index>,
     pub n_indices: usize,
     pub start_position: usize,
     pub properties: Vec<ax_ir::TensorProperty>,
@@ -238,6 +274,7 @@ struct InheritedCovariantRiemannKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum YoungProjectTargetSpec {
     Direct(YoungProjectFactorSpec),
+    InheritedTableau(YoungProjectFactorSpec),
     InheritedCovariantRiemann {
         key: InheritedCovariantRiemannKey,
         occurrence: usize,
@@ -528,13 +565,10 @@ pub fn extract_factor_info(
     for factor in factors {
         if let ax_ir::Expr::Indexed(base, indices) = factor {
             if let Some(name) = expr_head_symbol(base) {
-                let props = tensor_properties
-                    .get_properties_with_indices(name, indices)
-                    .into_iter()
-                    .cloned()
-                    .collect();
+                let props = tensor_properties.get_properties_with_indices(name, indices, None);
                 result.push(TensorFactorInfo {
                     name,
+                    indices: indices.clone(),
                     n_indices: indices.len(),
                     start_position: position,
                     properties: props,
@@ -732,11 +766,7 @@ fn remove_traceless_traces(
         let Expr::Sym(name) = base.as_ref() else {
             continue;
         };
-        let factor_props = properties
-            .get_properties_with_indices(*name, indices)
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let factor_props = properties.get_properties_with_indices(*name, indices, None);
         if !has_traceless_property(&factor_props) {
             continue;
         }
@@ -777,7 +807,7 @@ fn remove_vanishing_diagonal(
             continue;
         };
         if !properties
-            .get_properties_with_indices(*name, indices)
+            .get_properties_with_indices(*name, indices, None)
             .iter()
             .any(|prop| matches!(prop, ax_ir::TensorProperty::Diagonal))
         {
@@ -825,9 +855,9 @@ where
     indexed_symbol_and_indices(expr)
         .map(|(sym, indices)| {
             properties
-                .get_properties_with_indices(sym, indices)
+                .get_properties_with_indices(sym, indices, None)
                 .into_iter()
-                .any(|prop| predicate(prop))
+                .any(|prop| predicate(&prop))
         })
         .unwrap_or(false)
 }
@@ -2158,6 +2188,116 @@ fn has_explicit_riemann_tensor_properties(
             .any(|prop| matches!(prop, ax_ir::TensorProperty::SatisfiesBianchi { .. }))
 }
 
+fn shifted_tableau_inherited_properties(
+    props: &[ax_ir::TensorProperty],
+    offset: usize,
+    follower_rank: usize,
+) -> Vec<ax_ir::TensorProperty> {
+    let composite_rank = offset + follower_rank;
+    let mut inherited = Vec::new();
+
+    for prop in props {
+        match prop {
+            ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
+                let shifted = indices.iter().map(|slot| slot + offset).collect::<Vec<_>>();
+                if shifted.iter().all(|slot| *slot < composite_rank) {
+                    inherited.push(ax_ir::TensorProperty::TableauSymmetry {
+                        shape: shape.clone(),
+                        indices: shifted,
+                    });
+                }
+            }
+            ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
+                let shifted = [
+                    slots[0] + offset,
+                    slots[1] + offset,
+                    slots[2] + offset,
+                    slots[3] + offset,
+                ];
+                if shifted.iter().all(|slot| *slot < composite_rank) {
+                    inherited.push(ax_ir::TensorProperty::SatisfiesBianchi { slots: shifted });
+                }
+            }
+            ax_ir::TensorProperty::DimensionDependentIdentity => {
+                inherited.push(ax_ir::TensorProperty::DimensionDependentIdentity);
+            }
+            ax_ir::TensorProperty::Traceless => {
+                inherited.push(ax_ir::TensorProperty::Traceless);
+            }
+            ax_ir::TensorProperty::WeylTensor => {
+                inherited.push(ax_ir::TensorProperty::Traceless);
+                if offset + 4 <= composite_rank {
+                    inherited.push(ax_ir::TensorProperty::TableauSymmetry {
+                        shape: vec![2, 2],
+                        indices: vec![offset, offset + 1, offset + 2, offset + 3],
+                    });
+                    inherited.push(ax_ir::TensorProperty::SatisfiesBianchi {
+                        slots: [offset, offset + 1, offset + 2, offset + 3],
+                    });
+                }
+            }
+            ax_ir::TensorProperty::RiemannSymmetry => {
+                if has_bianchi_property(props, follower_rank) && offset + 4 <= composite_rank {
+                    inherited.push(ax_ir::TensorProperty::TableauSymmetry {
+                        shape: vec![2, 2],
+                        indices: vec![offset, offset + 1, offset + 2, offset + 3],
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    inherited
+}
+
+fn inherited_tableau_factor_infos(
+    factor_info: &[TensorFactorInfo],
+    properties: &dyn PropertyLookup,
+) -> Vec<TensorFactorInfo> {
+    factor_info
+        .windows(2)
+        .filter_map(|window| {
+            let leader = &window[0];
+            let follower = &window[1];
+            let leader_inherits = leader
+                .properties
+                .iter()
+                .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauInherit));
+            if !leader_inherits {
+                return None;
+            }
+            let mut composite_indices = leader.indices.clone();
+            composite_indices.extend(follower.indices.iter().cloned());
+            let inherited_props = properties
+                .get_composite_properties_with_indices(
+                    leader.name,
+                    &composite_indices,
+                    follower.name,
+                    &follower.indices,
+                )
+                .into_iter()
+                .filter(|prop| {
+                    matches!(
+                        prop,
+                        ax_ir::TensorProperty::TableauSymmetry { .. }
+                            | ax_ir::TensorProperty::SatisfiesBianchi { .. }
+                            | ax_ir::TensorProperty::DimensionDependentIdentity
+                            | ax_ir::TensorProperty::Traceless
+                    )
+                })
+                .collect::<Vec<_>>();
+            (!inherited_props.is_empty()).then(|| TensorFactorInfo {
+                name: leader.name,
+                indices: composite_indices,
+                n_indices: leader.n_indices + follower.n_indices,
+                start_position: leader.start_position,
+                properties: inherited_props,
+            })
+        })
+        .collect()
+}
+
 fn has_weyl_property(props: &[ax_ir::TensorProperty]) -> bool {
     props
         .iter()
@@ -2183,11 +2323,7 @@ fn expr_has_dimension_dependent_identity(expr: &Expr, properties: &dyn PropertyL
     match expr {
         Expr::Indexed(base, indices) => match base.as_ref() {
             Expr::Sym(name) => has_dimension_dependent_identity_property(
-                &properties
-                    .get_properties_with_indices(*name, indices)
-                    .into_iter()
-                    .cloned()
-                    .collect::<Vec<_>>(),
+                &properties.get_properties_with_indices(*name, indices, None),
             ),
             _ => false,
         },
@@ -2447,7 +2583,7 @@ pub fn symmetry_tableaux_from_properties(
                 ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
                     let mut cursor = 0usize;
                     let mut rows = Vec::new();
-                    for &row_len in shape {
+                    for row_len in shape {
                         let mut row = Vec::new();
                         for _ in 0..row_len {
                             if cursor < indices.len() {
@@ -2525,7 +2661,9 @@ fn projectable_factor_specs(
     interner: &Interner,
 ) -> Vec<YoungProjectTargetSpec> {
     let factor_info = extract_factor_info_from_term(expr, properties, interner);
+    let inherited_factor_info = inherited_tableau_factor_infos(&factor_info, properties);
     let mut direct_counts: HashMap<YoungProjectFactorKey, usize> = HashMap::new();
+    let mut inherited_tableau_counts: HashMap<YoungProjectFactorKey, usize> = HashMap::new();
     let mut inherited_counts: HashMap<InheritedCovariantRiemannKey, usize> = HashMap::new();
     let mut specs = Vec::new();
 
@@ -2539,6 +2677,17 @@ fn projectable_factor_specs(
             occurrence,
         }));
         direct_counts.insert(key, occurrence + 1);
+    }
+
+    for info in &inherited_factor_info {
+        let Some(key) = projectable_factor_key(info) else {
+            continue;
+        };
+        let occurrence = *inherited_tableau_counts.entry(key).or_insert(0);
+        specs.push(YoungProjectTargetSpec::InheritedTableau(
+            YoungProjectFactorSpec { key, occurrence },
+        ));
+        inherited_tableau_counts.insert(key, occurrence + 1);
     }
 
     for info in inherited_covariant_riemann_infos(&factor_info) {
@@ -2563,6 +2712,11 @@ fn projection_ops_for_term(
         .iter()
         .flat_map(meld_projection_ops_for_factor)
         .collect::<Vec<_>>();
+    ops.extend(
+        inherited_tableau_factor_infos(&factor_info, properties)
+            .iter()
+            .flat_map(meld_projection_ops_for_factor),
+    );
     for info in inherited_covariant_riemann_infos(&factor_info) {
         ops.extend(inherited_covariant_riemann_projection_ops(&info));
     }
@@ -2608,11 +2762,27 @@ fn young_project_factor_in_term(
     interner: &Interner,
 ) -> Expr {
     let factor_info = extract_factor_info_from_term(expr, properties, interner);
+    let inherited_factor_info = inherited_tableau_factor_infos(&factor_info, properties);
     let ops = match spec {
         YoungProjectTargetSpec::Direct(spec) => {
             let mut seen = 0usize;
             let mut selected = None;
             for info in factor_info {
+                if projectable_factor_key(&info) != Some(spec.key) {
+                    continue;
+                }
+                if seen == spec.occurrence {
+                    selected = Some(young_project_ops_for_factor(&info));
+                    break;
+                }
+                seen += 1;
+            }
+            selected
+        }
+        YoungProjectTargetSpec::InheritedTableau(spec) => {
+            let mut seen = 0usize;
+            let mut selected = None;
+            for info in inherited_factor_info {
                 if projectable_factor_key(&info) != Some(spec.key) {
                     continue;
                 }
@@ -3189,7 +3359,7 @@ fn evaluate_node(
         Expr::Indexed(base, indices) => {
             if let Expr::Sym(tensor_name) = base.as_ref() {
                 let is_epsilon = properties
-                    .get_properties_with_indices(*tensor_name, indices)
+                    .get_properties_with_indices(*tensor_name, indices, None)
                     .iter()
                     .any(|prop| matches!(prop, ax_ir::TensorProperty::EpsilonTensor));
                 if is_epsilon {
@@ -3308,7 +3478,7 @@ fn lookup_component_rule(
     let index_names: Vec<lasso::Spur> = indices.iter().map(|i| i.name).collect();
     let variances: Vec<ax_ir::Variance> = indices.iter().map(|i| i.variance.clone()).collect();
 
-    for prop in properties.get_properties_with_indices(tensor_name, indices) {
+    for prop in properties.get_properties_with_indices(tensor_name, indices, None) {
         if ax_ir::check_deadline().is_err() {
             return Some(Expr::Call(
                 interner.get_or_intern("__axioma_timeout__"),
@@ -3888,7 +4058,7 @@ fn automatic_kronecker_delta_component(
     properties: &dyn PropertyLookup,
 ) -> Option<Expr> {
     let is_delta = properties
-        .get_properties_with_indices(tensor_name, indices)
+        .get_properties_with_indices(tensor_name, indices, None)
         .iter()
         .any(|p| matches!(p, ax_ir::TensorProperty::KroneckerDelta));
     if is_delta && indices.len() == 2 && indices.iter().all(|idx| env.is_coordinate(idx.name)) {
@@ -3911,7 +4081,7 @@ fn automatic_inverse_metric_component(
     interner: &Interner,
 ) -> Option<Expr> {
     let is_inverse_metric = properties
-        .get_properties_with_indices(tensor_name, indices)
+        .get_properties_with_indices(tensor_name, indices, None)
         .iter()
         .any(|p| matches!(p, ax_ir::TensorProperty::InverseMetric));
     if !is_inverse_metric
@@ -4441,6 +4611,7 @@ fn canonicalize_indexed_slots(
 
     let factor = TensorFactorInfo {
         name: sym,
+        indices: indices.to_vec(),
         n_indices: indices.len(),
         start_position: 0,
         properties,
@@ -4902,7 +5073,7 @@ fn differential_form_degree(expr: &Expr, properties: &dyn PropertyLookup) -> Opt
         .get_properties(sym)
         .into_iter()
         .find_map(|prop| match prop {
-            ax_ir::TensorProperty::DifferentialFormDegree(n) => Some(*n),
+            ax_ir::TensorProperty::DifferentialFormDegree(n) => Some(n),
             _ => None,
         })
 }
@@ -6256,11 +6427,7 @@ pub fn canonicalize_indices(
             let mut indices = indices.clone();
 
             if let Some(sym) = expr_head_symbol(&base_expr) {
-                let props = properties
-                    .get_properties_with_indices(sym, &indices)
-                    .into_iter()
-                    .cloned()
-                    .collect::<Vec<_>>();
+                let props = properties.get_properties_with_indices(sym, &indices, None);
                 if has_riemann_monoterm_property(&props, indices.len()) {
                     if let Some((new_indices, sign)) =
                         canonicalize_riemann_slots(&indices, interner)
@@ -10358,10 +10525,10 @@ fn inferred_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> 
         return None;
     };
 
-    for prop in properties.get_properties_with_indices(*name, indices) {
+    for prop in properties.get_properties_with_indices(*name, indices, None) {
         match prop {
             ax_ir::TensorProperty::TableauSymmetry { shape, .. } => {
-                let shape = normalize_shape(shape);
+                let shape = normalize_shape(&shape);
                 if shape.iter().sum::<usize>() == indices.len() {
                     return Some(shape);
                 }
@@ -10383,11 +10550,7 @@ fn inferred_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> 
         }
     }
 
-    let props = properties
-        .get_properties_with_indices(*name, indices)
-        .into_iter()
-        .cloned()
-        .collect::<Vec<_>>();
+    let props = properties.get_properties_with_indices(*name, indices, None);
     if has_weyl_property(&props)
         || (has_riemann_monoterm_property(&props, indices.len())
             && has_bianchi_property(&props, indices.len()))
@@ -12626,6 +12789,7 @@ mod tests {
 
         let factors = vec![TensorFactorInfo {
             name: g_sym,
+            indices: vec![],
             n_indices: 2,
             start_position: 0,
             properties: vec![ax_ir::TensorProperty::Symmetric(vec![0, 1])],
@@ -13313,25 +13477,23 @@ mod tests {
         }
 
         impl PropertyLookup for TestProps {
-            fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
-                self.props
-                    .get(&name)
-                    .map(|props| props.iter().collect())
-                    .unwrap_or_default()
+            fn get_properties(&self, name: lasso::Spur) -> Vec<ax_ir::TensorProperty> {
+                self.props.get(&name).cloned().unwrap_or_default()
             }
 
             fn get_properties_with_indices(
                 &self,
                 name: lasso::Spur,
                 _indices: &[ax_ir::Index],
-            ) -> Vec<&ax_ir::TensorProperty> {
+                _successor: Option<(lasso::Spur, &[ax_ir::Index])>,
+            ) -> Vec<ax_ir::TensorProperty> {
                 self.get_properties(name)
             }
 
             fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
                 self.get_properties(name)
                     .into_iter()
-                    .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+                    .any(|prop| std::mem::discriminant(&prop) == std::mem::discriminant(kind))
             }
 
             fn declared_index_slot_families(
@@ -13488,6 +13650,7 @@ mod tests {
 
         let factors = vec![TensorFactorInfo {
             name: f_sym,
+            indices: vec![],
             n_indices: 2,
             start_position: 0,
             properties: vec![ax_ir::TensorProperty::AntiSymmetric(vec![0, 1])],
@@ -13646,6 +13809,7 @@ mod tests {
 
         let factors = vec![TensorFactorInfo {
             name: r_sym,
+            indices: vec![],
             n_indices: 4,
             start_position: 0,
             properties: vec![ax_ir::TensorProperty::RiemannSymmetry],
@@ -13663,12 +13827,14 @@ mod tests {
         let factors = vec![
             TensorFactorInfo {
                 name: a_sym,
+                indices: vec![],
                 n_indices: 1,
                 start_position: 0,
                 properties: vec![],
             },
             TensorFactorInfo {
                 name: a_sym,
+                indices: vec![],
                 n_indices: 1,
                 start_position: 1,
                 properties: vec![],
@@ -14371,6 +14537,231 @@ mod tests {
             Expr::zero(),
             "got {:?}",
             expr
+        );
+    }
+
+    #[test]
+    fn tableau_inherit_shifts_declared_tableau_slots_on_derivative_composite() {
+        let interner = ax_ir::Interner::new();
+        let nabla = interner.get_or_intern("nabla");
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(nabla)),
+                vec![Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: c,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+        ]);
+
+        let mut props = HashMap::new();
+        props.insert(
+            nabla,
+            vec![
+                ax_ir::TensorProperty::CovariantDerivative,
+                ax_ir::TensorProperty::TableauInherit,
+            ],
+        );
+        props.insert(
+            t,
+            vec![ax_ir::TensorProperty::TableauSymmetry {
+                shape: vec![2],
+                indices: vec![0, 1],
+            }],
+        );
+
+        let direct = extract_factor_info_from_term(&expr, &props, &interner);
+        let inherited = inherited_tableau_factor_infos(&direct, &props);
+        assert!(
+            inherited
+                .iter()
+                .any(|info| info.properties.iter().any(|prop| matches!(
+                    prop,
+                    ax_ir::TensorProperty::TableauSymmetry { shape, indices }
+                        if shape == &vec![2] && indices == &vec![1, 2]
+                ))),
+            "expected shifted inherited tableau info, got {:?}",
+            inherited
+        );
+    }
+
+    #[test]
+    fn tableau_inherit_shifts_bianchi_slots_on_derivative_composite() {
+        let interner = ax_ir::Interner::new();
+        let nabla = interner.get_or_intern("nabla");
+        let r = interner.get_or_intern("R");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let e = interner.get_or_intern("e");
+
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(nabla)),
+                vec![Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: c,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: d,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: e,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+        ]);
+
+        let mut props = HashMap::new();
+        props.insert(
+            nabla,
+            vec![
+                ax_ir::TensorProperty::CovariantDerivative,
+                ax_ir::TensorProperty::TableauInherit,
+            ],
+        );
+        props.insert(
+            r,
+            vec![ax_ir::TensorProperty::SatisfiesBianchi {
+                slots: [0, 1, 2, 3],
+            }],
+        );
+
+        let direct = extract_factor_info_from_term(&expr, &props, &interner);
+        let inherited = inherited_tableau_factor_infos(&direct, &props);
+        assert!(
+            inherited
+                .iter()
+                .any(|info| info.properties.iter().any(|prop| matches!(
+                    prop,
+                    ax_ir::TensorProperty::SatisfiesBianchi { slots } if slots == &[1, 2, 3, 4]
+                ))),
+            "expected shifted inherited bianchi slots, got {:?}",
+            inherited
+        );
+    }
+
+    #[test]
+    fn tableau_inherit_property_lookup_shifts_composite_slots() {
+        let interner = ax_ir::Interner::new();
+        let nabla = interner.get_or_intern("nabla");
+        let r = interner.get_or_intern("R");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let e = interner.get_or_intern("e");
+
+        let nabla_indices = vec![Index {
+            name: a,
+            variance: Variance::Down,
+            index_type: None,
+        }];
+        let riemann_indices = vec![
+            Index {
+                name: b,
+                variance: Variance::Down,
+                index_type: None,
+            },
+            Index {
+                name: c,
+                variance: Variance::Down,
+                index_type: None,
+            },
+            Index {
+                name: d,
+                variance: Variance::Down,
+                index_type: None,
+            },
+            Index {
+                name: e,
+                variance: Variance::Down,
+                index_type: None,
+            },
+        ];
+        let mut composite = nabla_indices.clone();
+        composite.extend(riemann_indices.iter().cloned());
+
+        let mut props = HashMap::new();
+        props.insert(
+            nabla,
+            vec![
+                ax_ir::TensorProperty::CovariantDerivative,
+                ax_ir::TensorProperty::TableauInherit,
+            ],
+        );
+        props.insert(
+            r,
+            vec![
+                ax_ir::TensorProperty::TableauSymmetry {
+                    shape: vec![2, 2],
+                    indices: vec![0, 1, 2, 3],
+                },
+                ax_ir::TensorProperty::SatisfiesBianchi {
+                    slots: [0, 1, 2, 3],
+                },
+            ],
+        );
+
+        let inherited =
+            props.get_properties_with_indices(nabla, &composite, Some((r, &riemann_indices)));
+        assert!(
+            inherited.iter().any(|prop| matches!(
+                prop,
+                ax_ir::TensorProperty::TableauSymmetry { shape, indices }
+                    if shape == &vec![2, 2] && indices == &vec![1, 2, 3, 4]
+            )),
+            "expected shifted inherited tableau symmetry, got {:?}",
+            inherited
+        );
+        assert!(
+            inherited.iter().any(|prop| matches!(
+                prop,
+                ax_ir::TensorProperty::SatisfiesBianchi { slots } if slots == &[1, 2, 3, 4]
+            )),
+            "expected shifted inherited bianchi slots, got {:?}",
+            inherited
         );
     }
 
@@ -16369,7 +16760,7 @@ mod tests {
         }
 
         impl PropertyLookup for TestProps {
-            fn get_properties(&self, _name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
+            fn get_properties(&self, _name: lasso::Spur) -> Vec<ax_ir::TensorProperty> {
                 Vec::new()
             }
 
@@ -16377,7 +16768,8 @@ mod tests {
                 &self,
                 _name: lasso::Spur,
                 _indices: &[ax_ir::Index],
-            ) -> Vec<&ax_ir::TensorProperty> {
+                _successor: Option<(lasso::Spur, &[ax_ir::Index])>,
+            ) -> Vec<ax_ir::TensorProperty> {
                 Vec::new()
             }
 
@@ -16444,25 +16836,23 @@ mod tests {
         }
 
         impl PropertyLookup for TestProps {
-            fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
-                self.props
-                    .get(&name)
-                    .map(|props| props.iter().collect())
-                    .unwrap_or_default()
+            fn get_properties(&self, name: lasso::Spur) -> Vec<ax_ir::TensorProperty> {
+                self.props.get(&name).cloned().unwrap_or_default()
             }
 
             fn get_properties_with_indices(
                 &self,
                 name: lasso::Spur,
                 _indices: &[ax_ir::Index],
-            ) -> Vec<&ax_ir::TensorProperty> {
+                _successor: Option<(lasso::Spur, &[ax_ir::Index])>,
+            ) -> Vec<ax_ir::TensorProperty> {
                 self.get_properties(name)
             }
 
             fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
                 self.get_properties(name)
                     .into_iter()
-                    .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+                    .any(|prop| std::mem::discriminant(&prop) == std::mem::discriminant(kind))
             }
 
             fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
@@ -16534,25 +16924,23 @@ mod tests {
         }
 
         impl PropertyLookup for TestProps {
-            fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
-                self.props
-                    .get(&name)
-                    .map(|props| props.iter().collect())
-                    .unwrap_or_default()
+            fn get_properties(&self, name: lasso::Spur) -> Vec<ax_ir::TensorProperty> {
+                self.props.get(&name).cloned().unwrap_or_default()
             }
 
             fn get_properties_with_indices(
                 &self,
                 name: lasso::Spur,
                 _indices: &[ax_ir::Index],
-            ) -> Vec<&ax_ir::TensorProperty> {
+                _successor: Option<(lasso::Spur, &[ax_ir::Index])>,
+            ) -> Vec<ax_ir::TensorProperty> {
                 self.get_properties(name)
             }
 
             fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
                 self.get_properties(name)
                     .into_iter()
-                    .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+                    .any(|prop| std::mem::discriminant(&prop) == std::mem::discriminant(kind))
             }
 
             fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {

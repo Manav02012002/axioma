@@ -1662,6 +1662,7 @@ pub fn apply_property_declaration(
         "derivative" if args.len() == 1 => (&args[0], "derivative", &[][..]),
         "partial_derivative" if args.len() == 1 => (&args[0], "partial_derivative", &[][..]),
         "covariant_derivative" if args.len() == 1 => (&args[0], "covariant_derivative", &[][..]),
+        "tableau_inherit" if args.len() == 1 => (&args[0], "tableau_inherit", &[][..]),
         _ => return None,
     };
     let (tensor, pattern_slots) = match parse_property_target(target, env) {
@@ -1872,6 +1873,13 @@ pub fn apply_property_declaration(
             add_property(ax_ir::TensorProperty::DimensionDependentIdentity);
             Some(format!(
                 "attached property dimension_dependent_identity to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "tableau_inherit" => {
+            add_property(ax_ir::TensorProperty::TableauInherit);
+            Some(format!(
+                "attached property tableau_inherit to {}",
                 interner.resolve(tensor)
             ))
         }
@@ -9593,6 +9601,25 @@ mod tests {
              meld(R[a-,b-,c-,d-] + R[a-,c-,d-,b-] + R[a-,d-,b-,c-]);",
         );
         assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn tableau_inherit_property_declaration_is_recorded() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("tableau_inherit(nabla);", &interner)
+            .expr
+            .expect("declaration");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(message.is_some());
+        let nabla = interner.get_or_intern("nabla");
+        assert!(
+            env.property_store
+                .get_all(nabla)
+                .into_iter()
+                .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauInherit)),
+            "expected TableauInherit on nabla"
+        );
     }
 
     #[test]

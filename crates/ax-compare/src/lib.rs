@@ -296,7 +296,7 @@ impl<'a> ExprComparator<'a> {
         let b_props = factor_symbol(b)
             .map(|sym| self.properties.get_properties(sym))
             .unwrap_or_default();
-        let noncommuting = |props: &[&TensorProperty]| {
+        let noncommuting = |props: &[TensorProperty]| {
             props.iter().any(|prop| {
                 matches!(
                     prop,
@@ -1252,8 +1252,11 @@ fn permutation_sign_to_sorted(items: &[Expr]) -> i32 {
     permutation_sign(&order)
 }
 
-fn property_discriminant_set(props: Vec<&TensorProperty>) -> HashSet<Discriminant<TensorProperty>> {
-    props.into_iter().map(std::mem::discriminant).collect()
+fn property_discriminant_set(props: Vec<TensorProperty>) -> HashSet<Discriminant<TensorProperty>> {
+    props
+        .into_iter()
+        .map(|prop| std::mem::discriminant(&prop))
+        .collect()
 }
 
 pub fn pattern_match(
@@ -1315,9 +1318,9 @@ fn expr_contains_wildcards(expr: &Expr, interner: &Interner) -> bool {
                     .iter()
                     .any(|idx| is_any_wildcard(idx.name, interner))
         }
-        Expr::Add(items) | Expr::Mul(items) | Expr::List(items) | Expr::Call(_, items) => {
-            items.iter().any(|item| expr_contains_wildcards(item, interner))
-        }
+        Expr::Add(items) | Expr::Mul(items) | Expr::List(items) | Expr::Call(_, items) => items
+            .iter()
+            .any(|item| expr_contains_wildcards(item, interner)),
         Expr::Pow(base, exp) | Expr::Complex(base, exp) => {
             expr_contains_wildcards(base, interner) || expr_contains_wildcards(exp, interner)
         }
@@ -1354,7 +1357,9 @@ fn pattern_match_local(
             interner,
         };
         let mut map = MatchMap::new();
-        comparator.subtree_compare(pattern, target, &mut map).then_some(map)
+        comparator
+            .subtree_compare(pattern, target, &mut map)
+            .then_some(map)
     } else {
         pattern_match(pattern, target, properties, &index_to_family, interner)
     }
@@ -1489,7 +1494,9 @@ fn match_expr_with_conditions(
 ) -> Option<MatchMap> {
     let map = pattern_match_local(pattern, target, properties, interner)?;
     if let Some(cond) = conditions {
-        satisfies_conditions(cond, &map, interner).ok().filter(|ok| *ok)?;
+        satisfies_conditions(cond, &map, interner)
+            .ok()
+            .filter(|ok| *ok)?;
     }
     Some(map)
 }
@@ -1561,7 +1568,12 @@ fn compute_moving_signs(
             let swap = ax_tensor::can_swap(
                 &factors[loc],
                 &factors[crossed_pos],
-                ax_tensor::subtree_compare(&factors[loc], &factors[crossed_pos], properties, interner),
+                ax_tensor::subtree_compare(
+                    &factors[loc],
+                    &factors[crossed_pos],
+                    properties,
+                    interner,
+                ),
                 properties,
                 interner,
                 false,
@@ -1720,7 +1732,10 @@ fn match_subsum_inner(
             continue;
         }
         let local_ratio = target_coeff / pattern_coeff;
-        if ratio.as_ref().is_some_and(|existing| existing != &local_ratio) {
+        if ratio
+            .as_ref()
+            .is_some_and(|existing| existing != &local_ratio)
+        {
             continue;
         }
         let mut candidate = map.clone();
@@ -1833,14 +1848,10 @@ pub fn satisfies_conditions(
                     };
                     Ok(lhs < rhs)
                 }
-                ("and", [lhs, rhs]) => Ok(
-                    satisfies_conditions(lhs, match_map, interner)?
-                        && satisfies_conditions(rhs, match_map, interner)?,
-                ),
-                ("or", [lhs, rhs]) => Ok(
-                    satisfies_conditions(lhs, match_map, interner)?
-                        || satisfies_conditions(rhs, match_map, interner)?,
-                ),
+                ("and", [lhs, rhs]) => Ok(satisfies_conditions(lhs, match_map, interner)?
+                    && satisfies_conditions(rhs, match_map, interner)?),
+                ("or", [lhs, rhs]) => Ok(satisfies_conditions(lhs, match_map, interner)?
+                    || satisfies_conditions(rhs, match_map, interner)?),
                 ("not", [inner]) => Ok(!satisfies_conditions(inner, match_map, interner)?),
                 _ => Err(format!("unsupported condition: {name}")),
             }
@@ -1903,7 +1914,9 @@ fn replacement_dummy_info(
     occurrences
         .into_iter()
         .filter_map(|(name, entries): (Sym, Vec<Index>)| {
-            let has_up = entries.iter().any(|idx| matches!(idx.variance, Variance::Up));
+            let has_up = entries
+                .iter()
+                .any(|idx| matches!(idx.variance, Variance::Up));
             let has_down = entries
                 .iter()
                 .any(|idx| matches!(idx.variance, Variance::Down));
@@ -1990,14 +2003,29 @@ fn rename_index_everywhere(expr: &Expr, from: Sym, to: Sym) -> Expr {
                 })
                 .collect(),
         ),
-        Expr::Add(items) => Expr::add(items.iter().map(|e| rename_index_everywhere(e, from, to)).collect()),
-        Expr::Mul(items) => Expr::mul(items.iter().map(|e| rename_index_everywhere(e, from, to)).collect()),
+        Expr::Add(items) => Expr::add(
+            items
+                .iter()
+                .map(|e| rename_index_everywhere(e, from, to))
+                .collect(),
+        ),
+        Expr::Mul(items) => Expr::mul(
+            items
+                .iter()
+                .map(|e| rename_index_everywhere(e, from, to))
+                .collect(),
+        ),
         Expr::Pow(base, exp) => Expr::pow(
             rename_index_everywhere(base, from, to),
             rename_index_everywhere(exp, from, to),
         ),
         Expr::Neg(inner) => Expr::neg(rename_index_everywhere(inner, from, to)),
-        Expr::Call(f, args) => Expr::Call(*f, args.iter().map(|e| rename_index_everywhere(e, from, to)).collect()),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|e| rename_index_everywhere(e, from, to))
+                .collect(),
+        ),
         Expr::Complex(re, im) => Expr::Complex(
             Box::new(rename_index_everywhere(re, from, to)),
             Box::new(rename_index_everywhere(im, from, to)),
@@ -2018,25 +2046,33 @@ fn rename_index_everywhere(expr: &Expr, from: Sym, to: Sym) -> Expr {
             Box::new(rename_index_everywhere(value, from, to)),
             Box::new(rename_index_everywhere(body, from, to)),
         ),
-        Expr::List(items) => Expr::List(items.iter().map(|e| rename_index_everywhere(e, from, to)).collect()),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|e| rename_index_everywhere(e, from, to))
+                .collect(),
+        ),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
-                .map(|row| row.iter().map(|e| rename_index_everywhere(e, from, to)).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|e| rename_index_everywhere(e, from, to))
+                        .collect()
+                })
                 .collect(),
         ),
         _ => expr.clone(),
     }
 }
 
-pub fn fresh_dummy(
-    index_set: &IndexSetInfo,
-    avoid: &[&HashSet<Sym>],
-    interner: &Interner,
-) -> Sym {
+pub fn fresh_dummy(index_set: &IndexSetInfo, avoid: &[&HashSet<Sym>], interner: &Interner) -> Sym {
     let prefix = interner.resolve(index_set.name);
     for i in 0..4096 {
         let candidate = interner.get_or_intern(&format!("{prefix}_rw{i}"));
-        if avoid.iter().all(|set: &&HashSet<Sym>| !set.contains(&candidate)) {
+        if avoid
+            .iter()
+            .all(|set: &&HashSet<Sym>| !set.contains(&candidate))
+        {
             return candidate;
         }
     }
@@ -2094,7 +2130,13 @@ fn insert_product_replacement(
     if !partial && target_factors.len() != lhs_factors.len() {
         return None;
     }
-    let matched = match_subproduct(lhs_factors, target, properties, interner, rule.conditions.as_ref())?;
+    let matched = match_subproduct(
+        lhs_factors,
+        target,
+        properties,
+        interner,
+        rule.conditions.as_ref(),
+    )?;
     if !partial && matched.factor_locations.len() != target_factors.len() {
         return None;
     }
@@ -2142,7 +2184,13 @@ fn insert_sum_replacement(
     if !partial && target_terms.len() != lhs_terms.len() {
         return None;
     }
-    let matched = match_subsum(lhs_terms, target, properties, interner, rule.conditions.as_ref())?;
+    let matched = match_subsum(
+        lhs_terms,
+        target,
+        properties,
+        interner,
+        rule.conditions.as_ref(),
+    )?;
     if !partial && matched.term_locations.len() != target_terms.len() {
         return None;
     }
@@ -2155,7 +2203,10 @@ fn insert_sum_replacement(
         rule.rhs_contains_dummies,
     )?;
     if matched.term_ratio != BigRational::one() {
-        replacement = Expr::mul(vec![Expr::Rational(matched.term_ratio.clone()), replacement]);
+        replacement = Expr::mul(vec![
+            Expr::Rational(matched.term_ratio.clone()),
+            replacement,
+        ]);
     }
     let anchor = *matched.term_locations.iter().min()?;
     let matched_set: HashSet<usize> = matched.term_locations.iter().copied().collect();
@@ -2186,9 +2237,15 @@ fn substitute_full_in_context(
 ) -> Option<Expr> {
     match (&rule.lhs, expr) {
         (Expr::Mul(lhs_factors), Expr::Mul(_)) => {
-            if let Some(done) =
-                insert_product_replacement(expr, lhs_factors, rule, properties, interner, partial, forced)
-            {
+            if let Some(done) = insert_product_replacement(
+                expr,
+                lhs_factors,
+                rule,
+                properties,
+                interner,
+                partial,
+                forced,
+            ) {
                 return Some(done);
             }
         }
@@ -2202,9 +2259,13 @@ fn substitute_full_in_context(
         _ => {}
     }
 
-    if let Some(map) =
-        match_expr_with_conditions(&rule.lhs, expr, properties, interner, rule.conditions.as_ref())
-    {
+    if let Some(map) = match_expr_with_conditions(
+        &rule.lhs,
+        expr,
+        properties,
+        interner,
+        rule.conditions.as_ref(),
+    ) {
         return instantiate_replacement(
             &rule.rhs,
             &map,
@@ -2217,39 +2278,68 @@ fn substitute_full_in_context(
 
     let recursed = match expr {
         Expr::Add(terms) => Expr::add(
-            terms.iter()
-                .map(|term| substitute_full_in_context(term, rule, properties, interner, partial, forced).unwrap_or_else(|| term.clone()))
+            terms
+                .iter()
+                .map(|term| {
+                    substitute_full_in_context(term, rule, properties, interner, partial, forced)
+                        .unwrap_or_else(|| term.clone())
+                })
                 .collect(),
         ),
         Expr::Mul(factors) => Expr::mul(
-            factors.iter()
-                .map(|factor| substitute_full_in_context(factor, rule, properties, interner, partial, forced).unwrap_or_else(|| factor.clone()))
+            factors
+                .iter()
+                .map(|factor| {
+                    substitute_full_in_context(factor, rule, properties, interner, partial, forced)
+                        .unwrap_or_else(|| factor.clone())
+                })
                 .collect(),
         ),
         Expr::Pow(base, exp) => Expr::pow(
-            substitute_full_in_context(base, rule, properties, interner, partial, forced).unwrap_or_else(|| base.as_ref().clone()),
-            substitute_full_in_context(exp, rule, properties, interner, partial, forced).unwrap_or_else(|| exp.as_ref().clone()),
+            substitute_full_in_context(base, rule, properties, interner, partial, forced)
+                .unwrap_or_else(|| base.as_ref().clone()),
+            substitute_full_in_context(exp, rule, properties, interner, partial, forced)
+                .unwrap_or_else(|| exp.as_ref().clone()),
         ),
         Expr::Neg(inner) => Expr::neg(
-            substitute_full_in_context(inner, rule, properties, interner, partial, forced).unwrap_or_else(|| inner.as_ref().clone()),
+            substitute_full_in_context(inner, rule, properties, interner, partial, forced)
+                .unwrap_or_else(|| inner.as_ref().clone()),
         ),
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()
-                .map(|arg| substitute_full_in_context(arg, rule, properties, interner, partial, forced).unwrap_or_else(|| arg.clone()))
+                .map(|arg| {
+                    substitute_full_in_context(arg, rule, properties, interner, partial, forced)
+                        .unwrap_or_else(|| arg.clone())
+                })
                 .collect(),
         ),
         Expr::Indexed(base, indices) => Expr::Indexed(
-            Box::new(substitute_full_in_context(base, rule, properties, interner, partial, forced).unwrap_or_else(|| base.as_ref().clone())),
+            Box::new(
+                substitute_full_in_context(base, rule, properties, interner, partial, forced)
+                    .unwrap_or_else(|| base.as_ref().clone()),
+            ),
             indices.clone(),
         ),
         Expr::Complex(re, im) => Expr::Complex(
-            Box::new(substitute_full_in_context(re, rule, properties, interner, partial, forced).unwrap_or_else(|| re.as_ref().clone())),
-            Box::new(substitute_full_in_context(im, rule, properties, interner, partial, forced).unwrap_or_else(|| im.as_ref().clone())),
+            Box::new(
+                substitute_full_in_context(re, rule, properties, interner, partial, forced)
+                    .unwrap_or_else(|| re.as_ref().clone()),
+            ),
+            Box::new(
+                substitute_full_in_context(im, rule, properties, interner, partial, forced)
+                    .unwrap_or_else(|| im.as_ref().clone()),
+            ),
         ),
         Expr::Rule(lhs, rhs, trust) => Expr::Rule(
-            Box::new(substitute_full_in_context(lhs, rule, properties, interner, partial, forced).unwrap_or_else(|| lhs.as_ref().clone())),
-            Box::new(substitute_full_in_context(rhs, rule, properties, interner, partial, forced).unwrap_or_else(|| rhs.as_ref().clone())),
+            Box::new(
+                substitute_full_in_context(lhs, rule, properties, interner, partial, forced)
+                    .unwrap_or_else(|| lhs.as_ref().clone()),
+            ),
+            Box::new(
+                substitute_full_in_context(rhs, rule, properties, interner, partial, forced)
+                    .unwrap_or_else(|| rhs.as_ref().clone()),
+            ),
             *trust,
         ),
         Expr::Piecewise(branches) => Expr::Piecewise(
@@ -2257,8 +2347,10 @@ fn substitute_full_in_context(
                 .iter()
                 .map(|(value, condition)| {
                     (
-                        substitute_full_in_context(value, rule, properties, interner, partial, forced)
-                            .unwrap_or_else(|| value.clone()),
+                        substitute_full_in_context(
+                            value, rule, properties, interner, partial, forced,
+                        )
+                        .unwrap_or_else(|| value.clone()),
                         condition.clone(),
                     )
                 })
@@ -2266,19 +2358,34 @@ fn substitute_full_in_context(
         ),
         Expr::Let(name, value, body) => Expr::Let(
             *name,
-            Box::new(substitute_full_in_context(value, rule, properties, interner, partial, forced).unwrap_or_else(|| value.as_ref().clone())),
-            Box::new(substitute_full_in_context(body, rule, properties, interner, partial, forced).unwrap_or_else(|| body.as_ref().clone())),
+            Box::new(
+                substitute_full_in_context(value, rule, properties, interner, partial, forced)
+                    .unwrap_or_else(|| value.as_ref().clone()),
+            ),
+            Box::new(
+                substitute_full_in_context(body, rule, properties, interner, partial, forced)
+                    .unwrap_or_else(|| body.as_ref().clone()),
+            ),
         ),
         Expr::List(items) => Expr::List(
-            items.iter()
-                .map(|item| substitute_full_in_context(item, rule, properties, interner, partial, forced).unwrap_or_else(|| item.clone()))
+            items
+                .iter()
+                .map(|item| {
+                    substitute_full_in_context(item, rule, properties, interner, partial, forced)
+                        .unwrap_or_else(|| item.clone())
+                })
                 .collect(),
         ),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
                 .map(|row| {
                     row.iter()
-                        .map(|cell| substitute_full_in_context(cell, rule, properties, interner, partial, forced).unwrap_or_else(|| cell.clone()))
+                        .map(|cell| {
+                            substitute_full_in_context(
+                                cell, rule, properties, interner, partial, forced,
+                            )
+                            .unwrap_or_else(|| cell.clone())
+                        })
                         .collect()
                 })
                 .collect(),
@@ -2537,25 +2644,23 @@ mod tests {
     }
 
     impl PropertyLookup for TestProps {
-        fn get_properties(&self, name: Sym) -> Vec<&TensorProperty> {
-            self.props
-                .get(&name)
-                .map(|items| items.iter().collect())
-                .unwrap_or_default()
+        fn get_properties(&self, name: Sym) -> Vec<TensorProperty> {
+            self.props.get(&name).cloned().unwrap_or_default()
         }
 
         fn get_properties_with_indices(
             &self,
             name: Sym,
             _indices: &[Index],
-        ) -> Vec<&TensorProperty> {
+            _successor: Option<(Sym, &[Index])>,
+        ) -> Vec<TensorProperty> {
             self.get_properties(name)
         }
 
         fn has_property_kind(&self, name: Sym, kind: &TensorProperty) -> bool {
             self.get_properties(name)
                 .into_iter()
-                .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+                .any(|prop| std::mem::discriminant(&prop) == std::mem::discriminant(kind))
         }
 
         fn index_families(&self) -> Option<&HashMap<Sym, IndexFamily>> {
@@ -2597,20 +2702,35 @@ mod tests {
 
         let rule = SubstitutionRule::new(
             Expr::mul(vec![
-                Expr::Indexed(Box::new(Expr::Sym(a)), vec![idx(ia, Variance::Down, Some(fam_sym))]),
-                Expr::Indexed(Box::new(Expr::Sym(b)), vec![idx(ia, Variance::Up, Some(fam_sym))]),
+                Expr::Indexed(
+                    Box::new(Expr::Sym(a)),
+                    vec![idx(ia, Variance::Down, Some(fam_sym))],
+                ),
+                Expr::Indexed(
+                    Box::new(Expr::Sym(b)),
+                    vec![idx(ia, Variance::Up, Some(fam_sym))],
+                ),
             ]),
             Expr::Sym(c),
             None,
         );
         let expr = Expr::mul(vec![
             Expr::Sym(d),
-            Expr::Indexed(Box::new(Expr::Sym(a)), vec![idx(ia, Variance::Down, Some(fam_sym))]),
-            Expr::Indexed(Box::new(Expr::Sym(b)), vec![idx(ia, Variance::Up, Some(fam_sym))]),
+            Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![idx(ia, Variance::Down, Some(fam_sym))],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(b)),
+                vec![idx(ia, Variance::Up, Some(fam_sym))],
+            ),
             Expr::Sym(e),
         ]);
         let result = substitute_full(&expr, &rule, &props, &interner, true).unwrap();
-        assert_eq!(result, Expr::mul(vec![Expr::Sym(d), Expr::Sym(c), Expr::Sym(e)]));
+        assert_eq!(
+            result,
+            Expr::mul(vec![Expr::Sym(d), Expr::Sym(c), Expr::Sym(e)])
+        );
     }
 
     #[test]
@@ -2631,7 +2751,10 @@ mod tests {
         );
         let expr = Expr::mul(vec![Expr::Sym(chi), Expr::Sym(psi)]);
         let result = substitute_full(&expr, &rule, &props, &interner, true).unwrap();
-        assert_eq!(result, Expr::mul(vec![Expr::Int((-1).into()), Expr::Sym(phi)]));
+        assert_eq!(
+            result,
+            Expr::mul(vec![Expr::Int((-1).into()), Expr::Sym(phi)])
+        );
     }
 
     #[test]
@@ -2642,8 +2765,11 @@ mod tests {
         let c = interner.get_or_intern("c");
         let d = interner.get_or_intern("d");
 
-        let rule =
-            SubstitutionRule::new(Expr::add(vec![Expr::Sym(a), Expr::Sym(b)]), Expr::Sym(c), None);
+        let rule = SubstitutionRule::new(
+            Expr::add(vec![Expr::Sym(a), Expr::Sym(b)]),
+            Expr::Sym(c),
+            None,
+        );
         let expr = Expr::add(vec![
             Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(a)]),
             Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(b)]),
@@ -2691,7 +2817,9 @@ mod tests {
             Box::new(Expr::Sym(delta)),
             vec![idx(mu, Variance::Up, None), idx(mu, Variance::Down, None)],
         );
-        assert!(substitute_full(&expr, &neq_rule, &TestProps::default(), &interner, false).is_none());
+        assert!(
+            substitute_full(&expr, &neq_rule, &TestProps::default(), &interner, false).is_none()
+        );
         assert_eq!(
             substitute_full(&expr, &eq_rule, &TestProps::default(), &interner, false).unwrap(),
             Expr::Sym(d)
@@ -2713,7 +2841,10 @@ mod tests {
         props.families.insert(fam_sym, fam(fam_sym, vec![ia, ib]));
 
         let rule = SubstitutionRule::new(
-            Expr::Indexed(Box::new(Expr::Sym(a)), vec![idx(ia, Variance::Down, Some(fam_sym))]),
+            Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![idx(ia, Variance::Down, Some(fam_sym))],
+            ),
             Expr::mul(vec![
                 Expr::Indexed(
                     Box::new(Expr::Sym(b)),
@@ -2722,13 +2853,22 @@ mod tests {
                         idx(ib, Variance::Down, Some(fam_sym)),
                     ],
                 ),
-                Expr::Indexed(Box::new(Expr::Sym(c)), vec![idx(ib, Variance::Up, Some(fam_sym))]),
+                Expr::Indexed(
+                    Box::new(Expr::Sym(c)),
+                    vec![idx(ib, Variance::Up, Some(fam_sym))],
+                ),
             ]),
             None,
         );
         let expr = Expr::mul(vec![
-            Expr::Indexed(Box::new(Expr::Sym(d)), vec![idx(ib, Variance::Up, Some(fam_sym))]),
-            Expr::Indexed(Box::new(Expr::Sym(a)), vec![idx(ia, Variance::Down, Some(fam_sym))]),
+            Expr::Indexed(
+                Box::new(Expr::Sym(d)),
+                vec![idx(ib, Variance::Up, Some(fam_sym))],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(a)),
+                vec![idx(ia, Variance::Down, Some(fam_sym))],
+            ),
         ]);
         let result = substitute_full(&expr, &rule, &props, &interner, true).unwrap();
         match result {
@@ -2736,8 +2876,12 @@ mod tests {
                 assert_eq!(factors.len(), 3);
                 assert!(matches!(&factors[1], Expr::Indexed(base, _) if **base == Expr::Sym(b)));
                 assert!(matches!(&factors[2], Expr::Indexed(base, _) if **base == Expr::Sym(c)));
-                let Expr::Indexed(_, b_indices) = &factors[1] else { panic!("expected B factor") };
-                let Expr::Indexed(_, c_indices) = &factors[2] else { panic!("expected C factor") };
+                let Expr::Indexed(_, b_indices) = &factors[1] else {
+                    panic!("expected B factor")
+                };
+                let Expr::Indexed(_, c_indices) = &factors[2] else {
+                    panic!("expected C factor")
+                };
                 assert_ne!(b_indices[1].name, ib);
                 assert_eq!(b_indices[1].name, c_indices[0].name);
             }
@@ -2773,7 +2917,8 @@ mod tests {
             Expr::Call(_, args) => args[0].clone(),
             _ => unreachable!(),
         };
-        let result = substitute_full(&expr, &rule, &TestProps::default(), &interner, false).unwrap();
+        let result =
+            substitute_full(&expr, &rule, &TestProps::default(), &interner, false).unwrap();
         match result {
             Expr::Add(terms) => {
                 assert_eq!(terms.len(), 2);
