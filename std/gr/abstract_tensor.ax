@@ -1,0 +1,5 @@
+// Abstract GR tensor algebra with declared index families and tensor properties.
+indices spacetime [mu, nu, rho, sigma, lambda] dim=11
+riemann_tensor(R)
+covariant_derivative(nabla)
+abstract_tensor_reduce(R[mu-,nu-,rho-,sigma-] + R[mu-,rho-,sigma-,nu-] + R[mu-,sigma-,nu-,rho-])

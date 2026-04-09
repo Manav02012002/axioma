@@ -1137,6 +1137,13 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "rewrite_indices(T[a-, b+])",
         ),
         b(
+            "rewrite_indices_vielbein",
+            "tensor",
+            "rewrite_indices_vielbein(expr, e, einv, from_family, to_family)",
+            "Rewrite tensor indices between coordinate and frame families using explicit vielbein factors.",
+            "rewrite_indices_vielbein(V[mu+], e, einv, spacetime, frame)",
+        ),
+        b(
             "reduce_delta",
             "tensor",
             "reduce_delta(expr)",
@@ -1156,6 +1163,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "tensor_reduce(expr, monoterm=true, multiterm=true, dimension_dependent=true, meld=true, modulo_monoterm=true)",
             "Run the finished tensor reduction pipeline: monoterm canonicalisation, multi-term Young projection, dimension-dependent reduction, dummy renaming, and optional meld.",
             "tensor_reduce(R[a-,b-,c-,d-]*V[e-] + R[a-,c-,d-,b-]*V[e-] + R[a-,d-,b-,c-]*V[e-])",
+        ),
+        b(
+            "abstract_tensor_reduce",
+            "tensor",
+            "abstract_tensor_reduce(expr, monoterm=true, multiterm=true, dimension_dependent=true, meld=true, modulo_monoterm=true)",
+            "Run the user-facing abstract tensor reduction pipeline for declared tensor symmetries and inherited covariant-derivative identities.",
+            "abstract_tensor_reduce(nabla[mu-]*R[nu-,rho-,sigma-,lambda-] + nabla[nu-]*R[rho-,mu-,sigma-,lambda-] + nabla[rho-]*R[mu-,nu-,sigma-,lambda-])",
+        ),
+        b(
+            "abstract_gr_reduce",
+            "tensor",
+            "abstract_gr_reduce(expr, monoterm=true, multiterm=true, dimension_dependent=true, meld=true, modulo_monoterm=true)",
+            "Alias for abstract_tensor_reduce aimed at abstract GR workflows.",
+            "abstract_gr_reduce(nabla[mu-]*R[nu-,rho-,sigma-,lambda-] + nabla[nu-]*R[rho-,mu-,sigma-,lambda-] + nabla[rho-]*R[mu-,nu-,sigma-,lambda-])",
         ),
         b(
             "schouten_reduce",
@@ -1345,6 +1366,13 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "riemann_symmetry(tensor)",
             "Property marker for Riemann-like slot symmetries.",
             "riemann_symmetry(R)",
+        ),
+        b(
+            "riemann_tensor",
+            "properties",
+            "riemann_tensor(tensor)",
+            "Declare a tensor as an abstract Riemann tensor, attaching Riemann symmetry plus the first Bianchi identity.",
+            "riemann_tensor(R)",
         ),
         b(
             "traceless",
@@ -1963,6 +1991,34 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "metric(diag(-1, 1, 1, 1))",
         ),
         b(
+            "vielbein",
+            "gr",
+            "vielbein([[...], ...])",
+            "Construct a symbolic vielbein matrix.",
+            "vielbein([[sqrt(f), 0], [0, 1/sqrt(f)]])",
+        ),
+        b(
+            "inv_vielbein",
+            "gr",
+            "inv_vielbein(e)",
+            "Construct the inverse vielbein matrix.",
+            "inv_vielbein(e)",
+        ),
+        b(
+            "metric_from_vielbein",
+            "gr",
+            "metric_from_vielbein(e, eta)",
+            "Construct the coordinate-frame metric from a vielbein and frame metric.",
+            "metric_from_vielbein(e, eta)",
+        ),
+        b(
+            "vielbein_from_metric_diagonal",
+            "gr",
+            "vielbein_from_metric_diagonal(g, signature)",
+            "Construct a diagonal vielbein from a diagonal metric and signature convention.",
+            "vielbein_from_metric_diagonal(metric(diag(-(f), 1/f)), mostly_plus)",
+        ),
+        b(
             "diag",
             "linear-algebra",
             "diag(a, b, ...)",
@@ -1998,6 +2054,7 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("Symmetric", "property T symmetric([positions])", "Indices are symmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property g symmetric"),
         p("AntiSymmetric", "property T antisymmetric([positions])", "Indices are antisymmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property F antisymmetric"),
         p("RiemannSymmetry", "property R riemann_symmetry", "Apply the standard pair antisymmetry and pair-exchange symmetry of a Riemann tensor.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property R riemann_symmetry"),
+        p("RiemannTensor", "property R riemann_tensor", "Composite abstract-GR declaration attaching RiemannSymmetry plus SatisfiesBianchi([0,1,2,3]).", "public declaration layer for meld, tensor_reduce, young_project_tensor, and inherited covariant-derivative second-Bianchi projection", "property R riemann_tensor"),
         p("Traceless", "property T traceless", "Marks a tensor as traceless.", "canonicalise/canonicalize_indices fast-zero trace detection", "property T traceless"),
         p("Diagonal", "property D diagonal", "Marks a tensor as diagonal in numerical components.", "canonicalise/canonicalize_indices numerical diagonal fast-zero detection", "property D diagonal"),
         p("Trace", "property Tr trace", "Marks a call symbol as a trace wrapper over implicit-index products.", "explicit_indices trace wrapper handling", "property Tr trace"),
@@ -2053,16 +2110,22 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("young_project", "tensor", "young_project(expr: &Expr, tableau: &YoungTableau, interner: &Interner) -> Expr OR young_project(expr: &Expr, modulo_monoterm: bool=true, canonicalize_after: bool=true, rename_dummies_after: bool=true) -> Expr", "Either apply an explicit Young tableau given as a nested slot list like [[0,1],[2]], or project using the tensor's declared symmetry properties with optional monoterm simplification.", "For the explicit form, supply a valid tableau cell layout in slot-number form. For the property-driven form, the tensor should carry TableauSymmetry, RiemannSymmetry, SatisfiesBianchi, or WeylTensor metadata.", "young_project(T[a-,b-,c-], [[0,1],[2]])"),
         a("young_project_tensor", "tensor", "young_project_tensor_with_options(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &YoungProjectTensorOptions) -> Expr", "Apply declared Young-tableau symmetry and optionally simplify modulo monoterm symmetries by distributing, canonicalizing slots/products, renaming dummies, and collecting duplicates.", "The relevant tensor symbol must carry TableauSymmetry, RiemannSymmetry, SatisfiesBianchi, or WeylTensor properties; enabling modulo_monoterm is most useful when ordinary monoterm symmetries are also declared.", "young_project_tensor(T[a-,b-,c-], true, true, true)"),
         a("tensor_reduce", "tensor", "tensor_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &TensorReduceOptions) -> Expr", "Run the finished tensor-reduction pipeline in order: monoterm canonicalisation, Cadabra-style multi-term Young projection on products, dimension-dependent reduction, dummy renaming, and optional meld.", "The expression should carry the relevant tensor properties for each enabled phase; dimension-dependent reduction additionally needs DimensionDependentIdentity plus inferable index-family dimension metadata.", "tensor_reduce(R[a-,b-,c-,d-]*V[e-] + R[a-,c-,d-,b-]*V[e-] + R[a-,d-,b-,c-]*V[e-])"),
+        a("abstract_tensor_reduce", "tensor", "abstract_tensor_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &TensorReduceOptions) -> Expr", "User-facing abstract tensor reduction pipeline for declared symmetries and inherited covariant-derivative identities such as the second Bianchi identity of a declared Riemann tensor.", "Use riemann_tensor(...) or property R riemann_tensor together with covariant_derivative(...) for abstract GR workflows.", "abstract_tensor_reduce(nabla[mu-]*R[nu-,rho-,sigma-,lambda-] + nabla[nu-]*R[rho-,mu-,sigma-,lambda-] + nabla[rho-]*R[mu-,nu-,sigma-,lambda-])"),
         a("reduce_delta", "tensor", "reduce_delta(expr: &Expr, delta_sym: Spur, dim_sym: Spur, interner: &Interner) -> Expr", "Iteratively contract products and traces of Kronecker deltas back to simpler delta or dimension factors.", "The delta symbol and the symbol representing the dimension must be supplied.", "reduce_delta(Delta[a+,b-] * Delta[b+,c-])"),
         a("eliminate_kronecker", "tensor", "eliminate_kronecker(expr: &Expr, delta_sym: Spur, interner: &Interner) -> Expr", "Use Kronecker deltas to substitute contracted indices and remove delta factors from products.", "The delta symbol must identify a two-index Kronecker delta with one up and one down slot.", "eliminate_kronecker(delta[mu+,nu-] * T[nu+,rho-])"),
         a("eliminate_metric", "tensor", "eliminate_metric(expr: &Expr, metric_sym: Spur, inv_metric_sym: Spur, interner: &Interner) -> Expr", "Use metric or inverse-metric factors to raise or lower contracted indices and remove those metric factors.", "Metric components must use two down indices and inverse-metric components two up indices.", "eliminate_metric(g[mu-,nu-] * V[nu+])"),
         a("eliminate_vielbein", "tensor", "eliminate_vielbein(expr: &Expr, vielbein_sym: Spur, inv_vielbein_sym: Spur, interner: &Interner) -> Expr", "Use vielbein or inverse-vielbein factors to convert contracted indices between two families and remove the conversion factors.", "Vielbein factors must appear as indexed two-slot tensors with one contractible index matching another factor.", "eliminate_vielbein(e[a-,mu-] * V[mu+])"),
+        a("rewrite_indices_vielbein", "tensor", "rewrite_indices_vielbein(expr: &Expr, e_sym: Spur, e_inv_sym: Spur, from_family: Spur, to_family: Spur, interner: &Interner) -> Expr", "Insert vielbein or inverse-vielbein factors so indices are rewritten from one index family into another frame family.", "The expression should carry explicit index-family metadata; e is assumed to map `from_family` coordinate indices into `to_family` frame indices via e[a+,mu-], with the inverse map carried by e_inv[mu+,a-].", "rewrite_indices_vielbein(V[mu+], e, einv, spacetime, frame)"),
         a("christoffel_from_metric", "gr", "christoffel_from_metric(g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Vec<Vec<Vec<Expr>>>", "Compute Christoffel symbols from a symbolic metric by the standard Levi-Civita formula.", "The metric must be square and coords.len() must equal g.dim; the routine uses the symbolic inverse of g.", "christoffel(metric(diag(-1, 1)), [t, r])"),
         a("riemann_from_christoffel", "gr", "riemann_from_christoffel(gamma: &[Vec<Vec<Expr>>], coords: &[Spur], interner: &Interner, convention: &Convention) -> Vec<Vec<Vec<Vec<Expr>>>>", "Compute the Riemann tensor from Christoffel symbols, respecting the active sign convention.", "The connection array dimensions must match coords.len(); the Convention determines MTW versus Weinberg sign.", "riemann(Gamma, [t, r, theta, phi])"),
         a("ricci_from_riemann", "gr", "ricci_from_riemann(riemann: &[Vec<Vec<Vec<Expr>>>], n: usize, interner: &Interner, convention: &Convention) -> Vec<Vec<Expr>>", "Contract a Riemann tensor into the Ricci tensor using the configured Ricci-contraction convention.", "n must match the tensor dimensions; the Convention selects first-third or first-fourth contraction.", "ricci(R)"),
         a("ricci_scalar", "gr", "ricci_scalar(ricci: &[Vec<Expr>], ginv: &SymbolicMatrix, interner: &Interner) -> Expr", "Contract the Ricci tensor with the inverse metric to obtain the scalar curvature.", "The inverse metric dimension must match the Ricci tensor dimensions.", "ricci_scalar(ginv, Ric)"),
         a("einstein_tensor", "gr", "einstein_tensor(ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Vec<Vec<Expr>>", "Build the Einstein tensor G_ab = R_ab - 1/2 g_ab R.", "The metric dimension must match the Ricci tensor dimensions.", "einstein(g, Ric, R)"),
-        a("kretschner_scalar", "gr", "kretschner_scalar(riemann: &[Vec<Vec<Vec<Expr>>>], g: &SymbolicMatrix, interner: &Interner) -> Expr", "Compute a diagonal-metric approximation to the Kretschmann scalar from the squared Riemann components.", "The metric must be invertible; this implementation contracts using diagonal entries of g and g^{-1}.", "kretschner(g, R)"),
+        a("kretschner_scalar", "gr", "kretschner_scalar(riemann: &[Vec<Vec<Vec<Expr>>>], g: &SymbolicMatrix, interner: &Interner) -> Expr", "Compute the full Kretschmann scalar by contracting two Riemann tensors with four inverse metrics.", "The metric must be invertible; Axioma keeps a Schwarzschild closed-form shortcut as an optimization, and also provides a separate kretschmann_scalar_diagonal_approx helper when a diagonal-only approximation is desired.", "kretschner(g, R)"),
+        a("kretschmann_scalar_diagonal_approx", "gr", "kretschmann_scalar_diagonal_approx(riemann: &[Vec<Vec<Vec<Expr>>>], g: &SymbolicMatrix, interner: &Interner) -> Expr", "Compute the old diagonal-only approximation to the Kretschmann scalar by contracting only matching diagonal inverse-metric entries against squared Riemann components.", "This is only exact for diagonal metrics in bases where the contraction really reduces that way; for the physical invariant use kretschner_scalar instead.", "kretschmann_scalar_diagonal_approx(R, g)"),
+        a("inverse_vielbein", "gr", "inverse_vielbein(e: &SymbolicMatrix, interner: &Interner) -> SymbolicMatrix", "Compute the inverse vielbein matrix symbolically.", "The vielbein matrix must be square and invertible.", "inv_vielbein(e)"),
+        a("metric_from_vielbein", "gr", "metric_from_vielbein(e: &SymbolicMatrix, eta: &SymbolicMatrix, interner: &Interner) -> SymbolicMatrix", "Build g_{mu nu} = eta_{ab} e^a_mu e^b_nu from a vielbein and frame metric.", "Both matrices must be square with the same dimension.", "metric_from_vielbein(e, eta)"),
+        a("vielbein_from_metric_diagonal", "gr", "vielbein_from_metric_diagonal(g: &SymbolicMatrix, signature: Signature, interner: &Interner) -> SymbolicMatrix", "Construct a diagonal vielbein whose frame metric is fixed by the chosen signature convention.", "This helper assumes the input metric is already diagonal in the chosen coordinates.", "vielbein_from_metric_diagonal(g, mostly_plus)"),
         a("covariant_derivative_vector", "gr", "covariant_derivative_vector(v: &[Expr], gamma: &[Vec<Vec<Expr>>], coord_index: usize, coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Compute ∇_coord_index v for a contravariant vector field.", "The vector length, connection dimensions, and coordinate list length must agree.", "covariant_diff(V, g, [t, r])"),
         a("covariant_derivative_covector", "gr", "covariant_derivative_covector(w: &[Expr], gamma: &[Vec<Vec<Expr>>], coord_index: usize, coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Compute ∇_coord_index w for a covector field.", "The covector length, connection dimensions, and coordinate list length must agree.", "covariant_diff(W, g, [t, r])"),
         a("geodesic_equations", "gr", "geodesic_equations(gamma: &[Vec<Vec<Expr>>], coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Construct the geodesic equations ẍ^i = -Γ^i_jk ẋ^j ẋ^k in symbolic form.", "Connection dimensions must match the coordinate list.", "geodesic(g, [t, r, theta, phi], lambda)"),
@@ -2188,6 +2251,7 @@ pub fn std_modules() -> Vec<StdModule> {
         m("gr/frw", "Builds a flat FRW metric with symbolic scale factor and computes Christoffel symbols.", "let g, let coords, let Gamma"),
         m("gr/kerr_newman", "Defines symbolic Kerr-Newman metric component expressions in Boyer-Lindquist coordinates.", "let Sigma_expr, let Delta_expr, let g_tt, let g_rr, let g_theta_theta, let g_phi_phi, let g_t_phi"),
         m("gr/minkowski", "Builds flat Minkowski spacetime and its vanishing Christoffel symbols.", "let g, let coords, let Gamma"),
+        m("gr/abstract_tensor", "Abstract GR tensor algebra with declared Riemann tensors, covariant derivatives, and the finished reduction pipeline.", "indices spacetime [mu,nu,rho,sigma,lambda] dim=11, riemann_tensor(R), covariant_derivative(nabla), abstract_tensor_reduce(...)"),
         m("gr/perturbation", "Metric perturbation theory: expansion of inverse metric, Christoffel symbols, Riemann, Ricci, and Einstein tensors to arbitrary order in a perturbation parameter.", "perturb, perturb_inverse, perturb_christoffel, perturb_riemann, perturb_ricci, perturb_einstein"),
         m("gr/schwarzschild", "Builds the Schwarzschild metric, Christoffel symbols, Riemann tensor, and Ricci tensor.", "let g, let coords, let Gamma, let R, let Ric"),
         m("cosmology/perturbation", "Cosmological perturbation theory: SVT decomposition, Bardeen variables, linearized Einstein equations, Mukhanov-Sasaki equation, power spectrum, spectral index.", "linearized_einstein, mukhanov_sasaki, svt_decompose, bardeen, power_spectrum, spectral_index, tensor_scalar_ratio"),
@@ -4223,6 +4287,42 @@ fn handle_tensor_reduce(
     expr_or_struct_response_with_change(&expr, result, "tensor_reduce", state)
 }
 
+fn handle_abstract_tensor_reduce(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let opts = ax_tensor::TensorReduceOptions {
+        monoterm: match args.get(1) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 1, "monoterm")?,
+        },
+        multiterm: match args.get(2) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 2, "multiterm")?,
+        },
+        dimension_dependent: match args.get(3) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 3, "dimension_dependent")?,
+        },
+        meld: match args.get(4) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 4, "meld")?,
+        },
+        modulo_monoterm: match args.get(5) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 5, "modulo_monoterm")?,
+        },
+    };
+    let result = ax_tensor::tensor_reduce(
+        &expr,
+        &state.env().tensor_properties,
+        state.interner(),
+        &opts,
+    );
+    expr_or_struct_response_with_change(&expr, result, "abstract_tensor_reduce", state)
+}
+
 fn handle_reduce_delta(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -4367,6 +4467,30 @@ fn handle_rewrite_indices_tensor(
         &expr,
         ax_tensor::rewrite_indices(&expr, &target_tensors, g, ginv, state.interner()),
         "rewrite_indices",
+        state,
+    )
+}
+
+fn handle_rewrite_indices_vielbein_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let e_sym = symbol_arg(args, 1, "vielbein", state)?;
+    let e_inv_sym = symbol_arg(args, 2, "inverse_vielbein", state)?;
+    let from_family = symbol_arg(args, 3, "from_family", state)?;
+    let to_family = symbol_arg(args, 4, "to_family", state)?;
+    expr_response_with_change(
+        &expr,
+        ax_tensor::rewrite_indices_vielbein(
+            &expr,
+            e_sym,
+            e_inv_sym,
+            from_family,
+            to_family,
+            state.interner(),
+        ),
+        "rewrite_indices_vielbein",
         state,
     )
 }
@@ -4831,6 +4955,122 @@ fn handle_kretschner_scalar_gr(
             state.interner(),
         ),
         "kretschner_scalar",
+        state,
+    )
+}
+
+fn handle_kretschmann_scalar_diagonal_approx_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let id = string_arg(args, 0, "riemann_id")?;
+    let riem = state
+        .get_riemann(id)
+        .cloned()
+        .ok_or_else(|| format!("unknown riemann '{id}'"))?;
+    let metric = state
+        .get_metric(id)
+        .map(|(m, _)| m.clone())
+        .ok_or_else(|| format!("unknown metric '{id}'"))?;
+    let input_expr = ax_ir::Expr::List(
+        riem.iter()
+            .cloned()
+            .map(|cube| {
+                ax_ir::Expr::List(
+                    cube.into_iter()
+                        .map(|plane| {
+                            ax_ir::Expr::List(plane.into_iter().map(ax_ir::Expr::List).collect())
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    );
+    expr_response_with_change(
+        &input_expr,
+        crate::eval(
+            &ax_tensor::kretschmann_scalar_diagonal_approx(&riem, &metric, state.interner()),
+            state.env(),
+            state.interner(),
+        ),
+        "kretschmann_scalar_diagonal_approx",
+        state,
+    )
+}
+
+fn handle_inverse_vielbein_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "vielbein", state)?;
+    let rows = matrix_from_expr(&expr)
+        .ok_or_else(|| "argument 'vielbein' must reference a matrix expression".to_string())?;
+    let matrix = symbolic_matrix_from_rows(rows)?;
+    expr_response_with_change(
+        &expr,
+        ax_ir::Expr::Matrix(ax_tensor::inverse_vielbein(&matrix, state.interner()).data),
+        "inverse_vielbein",
+        state,
+    )
+}
+
+fn handle_vielbein_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "vielbein", state)?;
+    let rows = matrix_from_expr(&expr)
+        .ok_or_else(|| "argument 'vielbein' must reference a matrix expression".to_string())?;
+    let _ = symbolic_matrix_from_rows(rows)?;
+    expr_response_with_change(&expr, expr.clone(), "vielbein", state)
+}
+
+fn handle_metric_from_vielbein_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let e_expr = expr_from_id(args, 0, "vielbein", state)?;
+    let eta_expr = expr_from_id(args, 1, "eta", state)?;
+    let e =
+        symbolic_matrix_from_rows(matrix_from_expr(&e_expr).ok_or_else(|| {
+            "argument 'vielbein' must reference a matrix expression".to_string()
+        })?)?;
+    let eta = symbolic_matrix_from_rows(
+        matrix_from_expr(&eta_expr)
+            .ok_or_else(|| "argument 'eta' must reference a matrix expression".to_string())?,
+    )?;
+    expr_response_with_change(
+        &e_expr,
+        ax_ir::Expr::Matrix(ax_tensor::metric_from_vielbein(&e, &eta, state.interner()).data),
+        "metric_from_vielbein",
+        state,
+    )
+}
+
+fn handle_vielbein_from_metric_diagonal_gr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let g_expr = expr_from_id(args, 0, "metric", state)?;
+    let g = symbolic_matrix_from_rows(
+        matrix_from_expr(&g_expr)
+            .ok_or_else(|| "argument 'metric' must reference a matrix expression".to_string())?,
+    )?;
+    let signature = match string_arg(args, 1, "signature")? {
+        "mostly_plus" => ax_ir::MetricSignature::MostlyPlus,
+        "mostly_minus" => ax_ir::MetricSignature::MostlyMinus,
+        other => {
+            return Err(format!(
+                "signature must be 'mostly_plus' or 'mostly_minus', got '{other}'"
+            ));
+        }
+    };
+    expr_response_with_change(
+        &g_expr,
+        ax_ir::Expr::Matrix(
+            ax_tensor::vielbein_from_metric_diagonal(&g, signature, state.interner()).data,
+        ),
+        "vielbein_from_metric_diagonal",
         state,
     )
 }
@@ -5615,10 +5855,41 @@ fn handle_declare_property(
         .entry(symbol)
         .or_default()
         .push(prop.clone());
+    state
+        .env_mut()
+        .property_store
+        .declare_simple(symbol, prop.clone());
     Ok(serde_json::json!({
         "status": "ok",
         "symbol": state.interner().resolve(symbol),
         "property": format!("{:?}", prop)
+    }))
+}
+
+fn handle_riemann_tensor_declaration(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let props = [
+        ax_ir::TensorProperty::RiemannSymmetry,
+        ax_ir::TensorProperty::SatisfiesBianchi {
+            slots: [0, 1, 2, 3],
+        },
+    ];
+    for prop in props.iter().cloned() {
+        state
+            .env_mut()
+            .tensor_properties
+            .entry(symbol)
+            .or_default()
+            .push(prop.clone());
+        state.env_mut().property_store.declare_simple(symbol, prop);
+    }
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "properties": ["RiemannSymmetry", "SatisfiesBianchi([0,1,2,3])"]
     }))
 }
 
@@ -7150,6 +7421,13 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("eliminate_kronecker", "Contract Kronecker deltas.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_eliminate_kronecker),
         centry("eliminate_metric", "Contract metric or inverse-metric factors.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_eliminate_metric),
         centry("eliminate_vielbein", "Simplify vielbein contractions.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_eliminate_vielbein),
+        centry("rewrite_indices_vielbein", "Rewrite tensor indices between coordinate and frame families using vielbeins.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("vielbein", ParamType::Symbol, true, "Vielbein symbol."),
+            pdef("inverse_vielbein", ParamType::Symbol, true, "Inverse-vielbein symbol."),
+            pdef("from_family", ParamType::Symbol, true, "Source index family."),
+            pdef("to_family", ParamType::Symbol, true, "Target index family."),
+        ]), handle_rewrite_indices_vielbein_tensor),
         centry("epsilon_to_delta", "Convert epsilon contractions to generalized deltas.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_epsilon_to_delta),
         centry("expand_delta", "Expand generalized delta expressions.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_expand_delta),
         centry("expand_dummies", "Expand abstract dummy contractions to coordinates.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_expand_dummies),
@@ -7178,6 +7456,22 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("meld", ParamType::Bool, false, "Whether to run final basis reduction with meld. Defaults to true."),
             pdef("modulo_monoterm", ParamType::Bool, false, "Whether the multi-term stage should simplify modulo monoterm symmetries. Defaults to true."),
         ]), handle_tensor_reduce),
+        centry("abstract_tensor_reduce", "Run the abstract tensor reduction pipeline.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("monoterm", ParamType::Bool, false, "Whether to run monoterm canonicalisation first. Defaults to true."),
+            pdef("multiterm", ParamType::Bool, false, "Whether to run Cadabra-style multi-term Young projection on products. Defaults to true."),
+            pdef("dimension_dependent", ParamType::Bool, false, "Whether to run dimension-dependent reduction when metadata permits it. Defaults to true."),
+            pdef("meld", ParamType::Bool, false, "Whether to run final basis reduction with meld. Defaults to true."),
+            pdef("modulo_monoterm", ParamType::Bool, false, "Whether the multi-term stage should simplify modulo monoterm symmetries. Defaults to true."),
+        ]), handle_abstract_tensor_reduce),
+        centry("abstract_gr_reduce", "Run the abstract GR reduction pipeline.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("monoterm", ParamType::Bool, false, "Whether to run monoterm canonicalisation first. Defaults to true."),
+            pdef("multiterm", ParamType::Bool, false, "Whether to run Cadabra-style multi-term Young projection on products. Defaults to true."),
+            pdef("dimension_dependent", ParamType::Bool, false, "Whether to run dimension-dependent reduction when metadata permits it. Defaults to true."),
+            pdef("meld", ParamType::Bool, false, "Whether to run final basis reduction with meld. Defaults to true."),
+            pdef("modulo_monoterm", ParamType::Bool, false, "Whether the multi-term stage should simplify modulo monoterm symmetries. Defaults to true."),
+        ]), handle_abstract_tensor_reduce),
         centry("reduce_delta", "Reduce expanded deltas back to compact form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_reduce_delta),
         centry("symmetrise", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
         centry("symmetrize", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
@@ -7226,6 +7520,18 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         ]), handle_einstein_tensor_gr),
         centry("kretschner_scalar", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
         centry("kretschner", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
+        centry("kretschmann_scalar_diagonal_approx", "Compute the diagonal-only Kretschmann approximation.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschmann_scalar_diagonal_approx_gr),
+        centry("vielbein", "Validate and return a vielbein matrix.", ps(vec![pdef("vielbein", ParamType::ExprId, true, "Stored vielbein matrix expression id.")]), handle_vielbein_gr),
+        centry("inverse_vielbein", "Invert a vielbein matrix.", ps(vec![pdef("vielbein", ParamType::ExprId, true, "Stored vielbein matrix expression id.")]), handle_inverse_vielbein_gr),
+        centry("inv_vielbein", "Invert a vielbein matrix.", ps(vec![pdef("vielbein", ParamType::ExprId, true, "Stored vielbein matrix expression id.")]), handle_inverse_vielbein_gr),
+        centry("metric_from_vielbein", "Build the metric from a vielbein and frame metric.", ps(vec![
+            pdef("vielbein", ParamType::ExprId, true, "Stored vielbein matrix expression id."),
+            pdef("eta", ParamType::ExprId, true, "Stored frame metric matrix expression id."),
+        ]), handle_metric_from_vielbein_gr),
+        centry("vielbein_from_metric_diagonal", "Construct a diagonal vielbein from a diagonal metric.", ps(vec![
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("signature", ParamType::StringEnum(&["mostly_plus", "mostly_minus"]), true, "Frame-signature convention."),
+        ]), handle_vielbein_from_metric_diagonal_gr),
         centry("weyl_curvature", "Compute the Weyl curvature tensor from stored curvature data.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_weyl_curvature_gr),
         centry("covariant_derivative_vector", "Covariant derivative of a vector.", ps(vec![pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_vector_gr),
         centry("covariant_diff", "Covariant derivative of a vector.", ps(vec![pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("christoffel_id", ParamType::Code, true, "Stored christoffel id."), pdef("coord_index", ParamType::Integer, true, "Coordinate slot.")]), handle_covariant_derivative_vector_gr),
@@ -7346,6 +7652,7 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("creation", "Declare a creation operator via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Operator declaration code.")]), handle_eval_syntax_entry),
         centry("annihilation", "Declare an annihilation operator via source syntax.", ps(vec![pdef("code", ParamType::Code, false, "Operator declaration code.")]), handle_eval_syntax_entry),
         centry("declare_property", "Declare a tensor property on a symbol.", ps(vec![pdef("symbol", ParamType::Symbol, true, "Target symbol."), pdef("property", ParamType::Code, true, "Property string.")]), handle_declare_property),
+        centry("riemann_tensor", "Declare a symbol as an abstract Riemann tensor.", ps(vec![pdef("symbol", ParamType::Symbol, true, "Target tensor symbol.")]), handle_riemann_tensor_declaration),
         centry("declare_indices", "Declare an index family.", ps(vec![pdef("family", ParamType::Symbol, true, "Family name."), pdef("indices", ParamType::SymbolList, true, "Index symbols."), pdef("dimension", ParamType::Integer, false, "Optional family dimension.")]), handle_declare_indices),
         centry("declare_coordinates", "Declare active coordinate symbols.", ps(vec![pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_declare_coordinates),
         centry("declare_assumption", "Declare an assumption on a symbol.", ps(vec![pdef("symbol", ParamType::Symbol, true, "Target symbol."), pdef("assumption", ParamType::Code, true, "Assumption name.")]), handle_declare_assumption),
