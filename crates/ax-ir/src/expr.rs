@@ -88,7 +88,7 @@ pub enum TensorProperty {
         indices: Vec<usize>,
     },
     SatisfiesBianchi {
-        slots: [usize; 4],
+        slots: Vec<usize>,
     },
     DimensionDependentIdentity,
     WeylTensor,

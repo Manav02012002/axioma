@@ -71,9 +71,7 @@ pub trait PropertyLookup: Send + Sync {
             leader_indices,
             Some((follower_name, follower_indices)),
         );
-        let leader_inherits = inherited
-            .iter()
-            .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauInherit));
+        let leader_inherits = tableau_inherit_enabled(&inherited);
         if !leader_inherits {
             return inherited;
         }
@@ -117,14 +115,13 @@ impl PropertyLookup for HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> {
         successor: Option<(lasso::Spur, &[ax_ir::Index])>,
     ) -> Vec<ax_ir::TensorProperty> {
         let mut properties = self.get_properties(name);
-        let leader_inherits = properties
-            .iter()
-            .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauInherit));
+        let leader_inherits = tableau_inherit_enabled(&properties);
         if leader_inherits {
             if let Some((follower_name, follower_indices)) = successor {
                 let follower =
                     self.get_properties_with_indices(follower_name, follower_indices, None);
                 properties.extend(shifted_tableau_inherited_properties(
+                    &properties,
                     &follower,
                     indices.len().saturating_sub(follower_indices.len()),
                     follower_indices.len(),
@@ -266,25 +263,9 @@ struct YoungProjectFactorSpec {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct InheritedCovariantRiemannKey {
-    derivative_name: lasso::Spur,
-    tensor_name: lasso::Spur,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum YoungProjectTargetSpec {
     Direct(YoungProjectFactorSpec),
     InheritedTableau(YoungProjectFactorSpec),
-    InheritedCovariantRiemann {
-        key: InheritedCovariantRiemannKey,
-        occurrence: usize,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct InheritedCovariantRiemannInfo {
-    key: InheritedCovariantRiemannKey,
-    derivative_start: usize,
 }
 
 fn tableau_groups_from_shape(
@@ -2142,19 +2123,38 @@ fn default_riemann_slots(n_indices: usize) -> Option<[usize; 4]> {
     (n_indices >= 4).then_some([0, 1, 2, 3])
 }
 
+fn tableau_inherit_enabled(props: &[ax_ir::TensorProperty]) -> bool {
+    props.iter().any(|prop| {
+        matches!(
+            prop,
+            ax_ir::TensorProperty::TableauInherit | ax_ir::TensorProperty::CovariantDerivative
+        )
+    })
+}
+
+fn normalised_bianchi_slots(slots: &[usize], n_indices: usize) -> Option<Vec<usize>> {
+    if !(slots.len() == 3 || slots.len() == 4) {
+        return None;
+    }
+    let mut uniq = HashSet::new();
+    let valid = slots
+        .iter()
+        .copied()
+        .all(|slot| slot < n_indices && uniq.insert(slot));
+    valid.then(|| slots.to_vec())
+}
+
 fn bianchi_slots_for_property(
     prop: &ax_ir::TensorProperty,
     n_indices: usize,
-) -> Option<[usize; 4]> {
+) -> Option<Vec<usize>> {
     match prop {
         ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
-            let valid = slots.iter().copied().all(|slot| slot < n_indices) && {
-                let mut uniq = HashSet::new();
-                slots.iter().copied().all(|slot| uniq.insert(slot))
-            };
-            valid.then_some(*slots)
+            normalised_bianchi_slots(slots, n_indices)
         }
-        ax_ir::TensorProperty::WeylTensor => default_riemann_slots(n_indices),
+        ax_ir::TensorProperty::WeylTensor => {
+            default_riemann_slots(n_indices).map(|slots| slots.into_iter().collect())
+        }
         _ => None,
     }
 }
@@ -2188,7 +2188,27 @@ fn has_explicit_riemann_tensor_properties(
             .any(|prop| matches!(prop, ax_ir::TensorProperty::SatisfiesBianchi { .. }))
 }
 
+fn differential_bianchi_inherited_properties(
+    leader_props: &[ax_ir::TensorProperty],
+    follower_props: &[ax_ir::TensorProperty],
+    composite_rank: usize,
+) -> Vec<ax_ir::TensorProperty> {
+    let leader_is_covariant = leader_props
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::CovariantDerivative));
+    if !leader_is_covariant || composite_rank < 3 {
+        return Vec::new();
+    }
+    if !has_explicit_riemann_tensor_properties(follower_props, composite_rank.saturating_sub(1)) {
+        return Vec::new();
+    }
+    vec![ax_ir::TensorProperty::SatisfiesBianchi {
+        slots: vec![0, 1, 2],
+    }]
+}
+
 fn shifted_tableau_inherited_properties(
+    leader_props: &[ax_ir::TensorProperty],
     props: &[ax_ir::TensorProperty],
     offset: usize,
     follower_rank: usize,
@@ -2208,12 +2228,7 @@ fn shifted_tableau_inherited_properties(
                 }
             }
             ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
-                let shifted = [
-                    slots[0] + offset,
-                    slots[1] + offset,
-                    slots[2] + offset,
-                    slots[3] + offset,
-                ];
+                let shifted = slots.iter().map(|slot| slot + offset).collect::<Vec<_>>();
                 if shifted.iter().all(|slot| *slot < composite_rank) {
                     inherited.push(ax_ir::TensorProperty::SatisfiesBianchi { slots: shifted });
                 }
@@ -2232,7 +2247,7 @@ fn shifted_tableau_inherited_properties(
                         indices: vec![offset, offset + 1, offset + 2, offset + 3],
                     });
                     inherited.push(ax_ir::TensorProperty::SatisfiesBianchi {
-                        slots: [offset, offset + 1, offset + 2, offset + 3],
+                        slots: vec![offset, offset + 1, offset + 2, offset + 3],
                     });
                 }
             }
@@ -2248,6 +2263,11 @@ fn shifted_tableau_inherited_properties(
         }
     }
 
+    inherited.extend(differential_bianchi_inherited_properties(
+        leader_props,
+        props,
+        composite_rank,
+    ));
     inherited
 }
 
@@ -2260,11 +2280,7 @@ fn inherited_tableau_factor_infos(
         .filter_map(|window| {
             let leader = &window[0];
             let follower = &window[1];
-            let leader_inherits = leader
-                .properties
-                .iter()
-                .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauInherit));
-            if !leader_inherits {
+            if !tableau_inherit_enabled(&leader.properties) {
                 return None;
             }
             let mut composite_indices = leader.indices.clone();
@@ -2352,17 +2368,6 @@ fn riemann_monoterm_projector(start: usize) -> TensorProjectionOp {
     }
 }
 
-fn bianchi_projector(positions: [usize; 4]) -> TensorProjectionOp {
-    TensorProjectionOp::PermutationProjector {
-        positions: positions.into_iter().collect(),
-        permutations: vec![
-            (vec![0, 1, 2, 3], BigRational::new(2.into(), 3.into())),
-            (vec![0, 2, 3, 1], BigRational::new((-1).into(), 3.into())),
-            (vec![0, 3, 1, 2], BigRational::new((-1).into(), 3.into())),
-        ],
-    }
-}
-
 fn cyclic_projector3(positions: [usize; 3]) -> TensorProjectionOp {
     TensorProjectionOp::PermutationProjector {
         positions: positions.into_iter().collect(),
@@ -2374,42 +2379,27 @@ fn cyclic_projector3(positions: [usize; 3]) -> TensorProjectionOp {
     }
 }
 
-fn inherited_covariant_riemann_infos(
-    factor_info: &[TensorFactorInfo],
-) -> Vec<InheritedCovariantRiemannInfo> {
-    factor_info
-        .windows(2)
-        .filter_map(|window| {
-            let derivative = &window[0];
-            let tensor = &window[1];
-            let derivative_is_covariant = derivative
-                .properties
-                .iter()
-                .any(|prop| matches!(prop, ax_ir::TensorProperty::CovariantDerivative));
-            if !derivative_is_covariant
-                || !has_explicit_riemann_tensor_properties(&tensor.properties, tensor.n_indices)
-            {
-                return None;
-            }
-            Some(InheritedCovariantRiemannInfo {
-                key: InheritedCovariantRiemannKey {
-                    derivative_name: derivative.name,
-                    tensor_name: tensor.name,
-                },
-                derivative_start: derivative.start_position,
-            })
-        })
-        .collect()
+fn bianchi_projection_op(slots: &[usize]) -> Option<TensorProjectionOp> {
+    match slots {
+        [a, b, c] => Some(cyclic_projector3([*a, *b, *c])),
+        [a, b, c, d] => Some(TensorProjectionOp::PermutationProjector {
+            positions: vec![*a, *b, *c, *d],
+            permutations: vec![
+                (vec![0, 1, 2, 3], BigRational::new(2.into(), 3.into())),
+                (vec![0, 2, 3, 1], BigRational::new((-1).into(), 3.into())),
+                (vec![0, 3, 1, 2], BigRational::new((-1).into(), 3.into())),
+            ],
+        }),
+        _ => None,
+    }
 }
 
-fn inherited_covariant_riemann_projection_ops(
-    info: &InheritedCovariantRiemannInfo,
-) -> Vec<TensorProjectionOp> {
-    vec![cyclic_projector3([
-        info.derivative_start,
-        info.derivative_start + 1,
-        info.derivative_start + 2,
-    ])]
+fn bianchi_cycle_permutations(slots_len: usize) -> Option<[Vec<usize>; 2]> {
+    match slots_len {
+        3 => Some([vec![1, 2, 0], vec![2, 0, 1]]),
+        4 => Some([vec![0, 2, 3, 1], vec![0, 3, 1, 2]]),
+        _ => None,
+    }
 }
 
 fn tableau_info_from_declared_symmetry(
@@ -2458,10 +2448,15 @@ fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjecti
             }
             ax_ir::TensorProperty::SatisfiesBianchi { .. } => {
                 if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
-                    let abs = slots.map(|slot| info.start_position + slot);
+                    let abs = slots
+                        .iter()
+                        .map(|slot| info.start_position + slot)
+                        .collect::<Vec<_>>();
                     let key = format!("bianchi:{abs:?}");
                     if seen_projectors.insert(key) {
-                        result.push(bianchi_projector(abs));
+                        if let Some(op) = bianchi_projection_op(&abs) {
+                            result.push(op);
+                        }
                     }
                 }
             }
@@ -2473,10 +2468,15 @@ fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjecti
                     }
                 }
                 if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
-                    let abs = slots.map(|slot| info.start_position + slot);
+                    let abs = slots
+                        .iter()
+                        .map(|slot| info.start_position + slot)
+                        .collect::<Vec<_>>();
                     let key = format!("weyl-bianchi:{abs:?}");
                     if seen_projectors.insert(key) {
-                        result.push(bianchi_projector(abs));
+                        if let Some(op) = bianchi_projection_op(&abs) {
+                            result.push(op);
+                        }
                     }
                 }
             }
@@ -2507,6 +2507,20 @@ fn young_project_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjection
                     let key = format!("expr-riemann:{:?}", info.start_position);
                     if seen_projectors.insert(key) {
                         result.push(riemann_monoterm_projector(info.start_position));
+                    }
+                }
+            }
+            ax_ir::TensorProperty::SatisfiesBianchi { .. } => {
+                if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
+                    let abs = slots
+                        .iter()
+                        .map(|slot| info.start_position + slot)
+                        .collect::<Vec<_>>();
+                    let key = format!("expr-bianchi:{abs:?}");
+                    if seen_projectors.insert(key) {
+                        if let Some(op) = bianchi_projection_op(&abs) {
+                            result.push(op);
+                        }
                     }
                 }
             }
@@ -2664,7 +2678,6 @@ fn projectable_factor_specs(
     let inherited_factor_info = inherited_tableau_factor_infos(&factor_info, properties);
     let mut direct_counts: HashMap<YoungProjectFactorKey, usize> = HashMap::new();
     let mut inherited_tableau_counts: HashMap<YoungProjectFactorKey, usize> = HashMap::new();
-    let mut inherited_counts: HashMap<InheritedCovariantRiemannKey, usize> = HashMap::new();
     let mut specs = Vec::new();
 
     for info in &factor_info {
@@ -2690,15 +2703,6 @@ fn projectable_factor_specs(
         inherited_tableau_counts.insert(key, occurrence + 1);
     }
 
-    for info in inherited_covariant_riemann_infos(&factor_info) {
-        let occurrence = *inherited_counts.entry(info.key).or_insert(0);
-        specs.push(YoungProjectTargetSpec::InheritedCovariantRiemann {
-            key: info.key,
-            occurrence,
-        });
-        inherited_counts.insert(info.key, occurrence + 1);
-    }
-
     specs
 }
 
@@ -2717,9 +2721,6 @@ fn projection_ops_for_term(
             .iter()
             .flat_map(meld_projection_ops_for_factor),
     );
-    for info in inherited_covariant_riemann_infos(&factor_info) {
-        ops.extend(inherited_covariant_riemann_projection_ops(&info));
-    }
     ops
 }
 
@@ -2788,21 +2789,6 @@ fn young_project_factor_in_term(
                 }
                 if seen == spec.occurrence {
                     selected = Some(young_project_ops_for_factor(&info));
-                    break;
-                }
-                seen += 1;
-            }
-            selected
-        }
-        YoungProjectTargetSpec::InheritedCovariantRiemann { key, occurrence } => {
-            let mut seen = 0usize;
-            let mut selected = None;
-            for info in inherited_covariant_riemann_infos(&factor_info) {
-                if info.key != key {
-                    continue;
-                }
-                if seen == occurrence {
-                    selected = Some(inherited_covariant_riemann_projection_ops(&info));
                     break;
                 }
                 seen += 1;
@@ -2930,7 +2916,12 @@ fn cancel_explicit_bianchi_terms(
         }
 
         let (_, core) = &cores[i];
-        let factor_info = extract_factor_info_from_term(core, properties, interner);
+        let direct_factor_info = extract_factor_info_from_term(core, properties, interner);
+        let mut factor_info = direct_factor_info.clone();
+        factor_info.extend(inherited_tableau_factor_infos(
+            &direct_factor_info,
+            properties,
+        ));
         let mut cancelled = false;
 
         'ops: for info in &factor_info {
@@ -2938,10 +2929,16 @@ fn cancel_explicit_bianchi_terms(
                 let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) else {
                     continue;
                 };
-                let abs = slots.map(|slot| info.start_position + slot);
+                let Some(perms) = bianchi_cycle_permutations(slots.len()) else {
+                    continue;
+                };
+                let abs = slots
+                    .iter()
+                    .map(|slot| info.start_position + slot)
+                    .collect::<Vec<_>>();
                 let cyc1 = simplify_expr(
                     canonicalise(
-                        &permute_indices_at_positions(core, &abs, &[0, 2, 3, 1]),
+                        &permute_indices_at_positions(core, &abs, &perms[0]),
                         properties,
                         interner,
                     ),
@@ -2949,7 +2946,7 @@ fn cancel_explicit_bianchi_terms(
                 );
                 let cyc2 = simplify_expr(
                     canonicalise(
-                        &permute_indices_at_positions(core, &abs, &[0, 3, 1, 2]),
+                        &permute_indices_at_positions(core, &abs, &perms[1]),
                         properties,
                         interner,
                     ),
@@ -2977,19 +2974,9 @@ fn cancel_explicit_bianchi_terms(
                     cancelled = true;
                     break 'ops;
                 }
-            }
-        }
-
-        if !cancelled {
-            'second_bianchi: for info in inherited_covariant_riemann_infos(&factor_info) {
-                let cyc_positions = [
-                    info.derivative_start,
-                    info.derivative_start + 1,
-                    info.derivative_start + 2,
-                ];
                 let (raw_coeff, raw_core) = &raw_cores[i];
-                let raw_cyc1 = permute_indices_at_positions(raw_core, &cyc_positions, &[1, 2, 0]);
-                let raw_cyc2 = permute_indices_at_positions(raw_core, &cyc_positions, &[2, 0, 1]);
+                let raw_cyc1 = permute_indices_at_positions(raw_core, &abs, &perms[0]);
+                let raw_cyc2 = permute_indices_at_positions(raw_core, &abs, &perms[1]);
 
                 let mut raw_found1 = None;
                 let mut raw_found2 = None;
@@ -3016,46 +3003,7 @@ fn cancel_explicit_bianchi_terms(
                     used[j] = true;
                     used[k] = true;
                     cancelled = true;
-                    break 'second_bianchi;
-                }
-
-                let cyc1 = simplify_expr(
-                    canonicalise(
-                        &permute_indices_at_positions(core, &cyc_positions, &[1, 2, 0]),
-                        properties,
-                        interner,
-                    ),
-                    interner,
-                );
-                let cyc2 = simplify_expr(
-                    canonicalise(
-                        &permute_indices_at_positions(core, &cyc_positions, &[2, 0, 1]),
-                        properties,
-                        interner,
-                    ),
-                    interner,
-                );
-
-                let mut found1 = None;
-                let mut found2 = None;
-                for j in (i + 1)..terms.len() {
-                    if used[j] {
-                        continue;
-                    }
-                    if found1.is_none() && canonical_terms[j] == cyc1 {
-                        found1 = Some(j);
-                        continue;
-                    }
-                    if found2.is_none() && canonical_terms[j] == cyc2 {
-                        found2 = Some(j);
-                    }
-                }
-                if let (Some(j), Some(k)) = (found1, found2) {
-                    used[i] = true;
-                    used[j] = true;
-                    used[k] = true;
-                    cancelled = true;
-                    break 'second_bianchi;
+                    break 'ops;
                 }
             }
         }
@@ -13558,7 +13506,7 @@ mod tests {
         props.insert(
             r,
             vec![ax_ir::TensorProperty::SatisfiesBianchi {
-                slots: [0, 1, 2, 3],
+                slots: vec![0, 1, 2, 3],
             }],
         );
         props.insert(c_sym, vec![ax_ir::TensorProperty::WeylTensor]);
@@ -14320,7 +14268,7 @@ mod tests {
         props.insert(
             r,
             vec![ax_ir::TensorProperty::SatisfiesBianchi {
-                slots: [0, 1, 2, 3],
+                slots: vec![0, 1, 2, 3],
             }],
         );
 
@@ -14379,7 +14327,7 @@ mod tests {
         props.insert(
             r,
             vec![ax_ir::TensorProperty::SatisfiesBianchi {
-                slots: [0, 1, 2, 3],
+                slots: vec![0, 1, 2, 3],
             }],
         );
 
@@ -14405,7 +14353,7 @@ mod tests {
             vec![
                 ax_ir::TensorProperty::RiemannSymmetry,
                 ax_ir::TensorProperty::SatisfiesBianchi {
-                    slots: [0, 1, 2, 3],
+                    slots: vec![0, 1, 2, 3],
                 },
             ],
         );
@@ -14481,7 +14429,7 @@ mod tests {
             vec![
                 ax_ir::TensorProperty::RiemannSymmetry,
                 ax_ir::TensorProperty::SatisfiesBianchi {
-                    slots: [0, 1, 2, 3],
+                    slots: vec![0, 1, 2, 3],
                 },
             ],
         );
@@ -14664,7 +14612,7 @@ mod tests {
         props.insert(
             r,
             vec![ax_ir::TensorProperty::SatisfiesBianchi {
-                slots: [0, 1, 2, 3],
+                slots: vec![0, 1, 2, 3],
             }],
         );
 
@@ -14675,7 +14623,7 @@ mod tests {
                 .iter()
                 .any(|info| info.properties.iter().any(|prop| matches!(
                     prop,
-                    ax_ir::TensorProperty::SatisfiesBianchi { slots } if slots == &[1, 2, 3, 4]
+                    ax_ir::TensorProperty::SatisfiesBianchi { slots } if slots == &vec![1, 2, 3, 4]
                 ))),
             "expected shifted inherited bianchi slots, got {:?}",
             inherited
@@ -14739,7 +14687,7 @@ mod tests {
                     indices: vec![0, 1, 2, 3],
                 },
                 ax_ir::TensorProperty::SatisfiesBianchi {
-                    slots: [0, 1, 2, 3],
+                    slots: vec![0, 1, 2, 3],
                 },
             ],
         );
@@ -14758,10 +14706,111 @@ mod tests {
         assert!(
             inherited.iter().any(|prop| matches!(
                 prop,
-                ax_ir::TensorProperty::SatisfiesBianchi { slots } if slots == &[1, 2, 3, 4]
+                ax_ir::TensorProperty::SatisfiesBianchi { slots } if slots == &vec![1, 2, 3, 4]
             )),
             "expected shifted inherited bianchi slots, got {:?}",
             inherited
+        );
+    }
+
+    #[test]
+    fn tableau_inherit_synthesizes_differential_bianchi_on_covariant_riemann_composite() {
+        let interner = ax_ir::Interner::new();
+        let nabla = interner.get_or_intern("nabla");
+        let r = interner.get_or_intern("R");
+        let mu = interner.get_or_intern("mu");
+        let alpha = interner.get_or_intern("alpha");
+        let beta = interner.get_or_intern("beta");
+        let gamma = interner.get_or_intern("gamma");
+        let delta = interner.get_or_intern("delta");
+
+        let cov = |idx| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(nabla)),
+                vec![Index {
+                    name: idx,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            )
+        };
+        let riem = |i0, i1, i2, i3| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    Index {
+                        name: i0,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i1,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i2,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i3,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            )
+        };
+
+        let composite = Expr::mul(vec![cov(mu), riem(alpha, beta, gamma, delta)]);
+        let identity = Expr::add(vec![
+            composite.clone(),
+            Expr::mul(vec![cov(alpha), riem(beta, mu, gamma, delta)]),
+            Expr::mul(vec![cov(beta), riem(mu, alpha, gamma, delta)]),
+        ]);
+
+        let mut props = HashMap::new();
+        props.insert(
+            nabla,
+            vec![
+                ax_ir::TensorProperty::CovariantDerivative,
+                ax_ir::TensorProperty::TableauInherit,
+            ],
+        );
+        props.insert(
+            r,
+            vec![
+                ax_ir::TensorProperty::RiemannSymmetry,
+                ax_ir::TensorProperty::SatisfiesBianchi {
+                    slots: vec![0, 1, 2, 3],
+                },
+            ],
+        );
+
+        let direct = extract_factor_info_from_term(&composite, &props, &interner);
+        let inherited = inherited_tableau_factor_infos(&direct, &props);
+        assert!(
+            inherited.iter().any(|info| info.properties.iter().any(|prop| matches!(
+                prop,
+                ax_ir::TensorProperty::SatisfiesBianchi { slots } if slots == &vec![0, 1, 2]
+            ))),
+            "expected synthesized differential bianchi slots on covariant derivative composite, got {:?}",
+            inherited
+        );
+        assert_eq!(
+            meld(&identity, &props, &interner),
+            Expr::zero(),
+            "meld should cancel the differential Bianchi cyclic sum through inherited composite properties"
+        );
+        assert_eq!(
+            young_project_product(
+                &identity,
+                &props,
+                &interner,
+                &YoungProjectProductOptions::default(),
+            ),
+            Expr::zero(),
+            "young_project_product should use the same inherited composite Bianchi metadata"
         );
     }
 

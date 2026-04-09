@@ -1762,7 +1762,7 @@ pub fn apply_property_declaration(
         "riemann_tensor" => {
             add_property(ax_ir::TensorProperty::RiemannSymmetry);
             add_property(ax_ir::TensorProperty::SatisfiesBianchi {
-                slots: [0, 1, 2, 3],
+                slots: vec![0, 1, 2, 3],
             });
             Some(format!(
                 "attached composite property riemann_tensor to {}",
@@ -1811,6 +1811,7 @@ pub fn apply_property_declaration(
         }
         "covariant_derivative" => {
             add_property(ax_ir::TensorProperty::CovariantDerivative);
+            add_property(ax_ir::TensorProperty::TableauInherit);
             Some(format!(
                 "attached property {} to {}",
                 prop_name,
@@ -1861,8 +1862,8 @@ pub fn apply_property_declaration(
         }
         "bianchi" | "satisfies_bianchi" => {
             let slots = parse_positions(prop_args)
-                .and_then(|positions| <[usize; 4]>::try_from(positions).ok())
-                .unwrap_or([0, 1, 2, 3]);
+                .filter(|positions| positions.len() == 3 || positions.len() == 4)
+                .unwrap_or_else(|| vec![0, 1, 2, 3]);
             add_property(ax_ir::TensorProperty::SatisfiesBianchi { slots });
             Some(format!(
                 "attached property satisfies_bianchi to {}",
@@ -9623,6 +9624,31 @@ mod tests {
     }
 
     #[test]
+    fn covariant_derivative_declaration_also_enables_tableau_inherit() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("property nabla covariant_derivative", &interner)
+            .expr
+            .expect("declaration");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(message.is_some());
+        let nabla = interner.get_or_intern("nabla");
+        let props = env.property_store.get_all(nabla);
+        assert!(
+            props
+                .iter()
+                .any(|prop| matches!(prop, ax_ir::TensorProperty::CovariantDerivative)),
+            "expected CovariantDerivative on nabla"
+        );
+        assert!(
+            props
+                .iter()
+                .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauInherit)),
+            "expected TableauInherit on nabla"
+        );
+    }
+
+    #[test]
     fn abstract_tensor_reduce_reveals_bianchi_identity_publicly() {
         let (result, _interner) = eval_src(
             "riemann_tensor(R);
@@ -9711,7 +9737,7 @@ mod tests {
             vec![
                 ax_ir::TensorProperty::RiemannSymmetry,
                 ax_ir::TensorProperty::SatisfiesBianchi {
-                    slots: [0, 1, 2, 3],
+                    slots: vec![0, 1, 2, 3],
                 },
             ],
         );
@@ -9727,6 +9753,13 @@ mod tests {
             "explicit props got {:?}",
             explicit_result
         );
+        let explicit_meld = ax_tensor::meld(&expr, &explicit_props, &interner);
+        assert_eq!(
+            explicit_meld,
+            Expr::zero(),
+            "explicit meld got {:?}",
+            explicit_meld
+        );
 
         let result = ax_tensor::tensor_reduce(
             &expr,
@@ -9735,6 +9768,8 @@ mod tests {
             &ax_tensor::TensorReduceOptions::default(),
         );
         assert_eq!(result, Expr::zero(), "got {:?}", result);
+        let meld_result = ax_tensor::meld(&expr, &env.tensor_properties, &interner);
+        assert_eq!(meld_result, Expr::zero(), "meld got {:?}", meld_result);
     }
 
     #[test]

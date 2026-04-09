@@ -2054,7 +2054,7 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("Symmetric", "property T symmetric([positions])", "Indices are symmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property g symmetric"),
         p("AntiSymmetric", "property T antisymmetric([positions])", "Indices are antisymmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property F antisymmetric"),
         p("RiemannSymmetry", "property R riemann_symmetry", "Apply the standard pair antisymmetry and pair-exchange symmetry of a Riemann tensor.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property R riemann_symmetry"),
-        p("RiemannTensor", "property R riemann_tensor", "Composite abstract-GR declaration attaching RiemannSymmetry plus SatisfiesBianchi([0,1,2,3]).", "public declaration layer for meld, tensor_reduce, young_project_tensor, and inherited covariant-derivative second-Bianchi projection", "property R riemann_tensor"),
+        p("RiemannTensor", "property R riemann_tensor", "Composite abstract-GR declaration attaching RiemannSymmetry plus SatisfiesBianchi([0,1,2,3]).", "public declaration layer for meld, tensor_reduce, young_project_tensor, and inherited covariant-derivative differential-Bianchi projection", "property R riemann_tensor"),
         p("Traceless", "property T traceless", "Marks a tensor as traceless.", "canonicalise/canonicalize_indices fast-zero trace detection", "property T traceless"),
         p("Diagonal", "property D diagonal", "Marks a tensor as diagonal in numerical components.", "canonicalise/canonicalize_indices numerical diagonal fast-zero detection", "property D diagonal"),
         p("Trace", "property Tr trace", "Marks a call symbol as a trace wrapper over implicit-index products.", "explicit_indices trace wrapper handling", "property Tr trace"),
@@ -2086,7 +2086,7 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("ImplicitIndex", "property T implicit_index", "Marks an object as carrying implicit indices.", "sort_product implicit-index commutativity barrier lookup", "property T implicit_index"),
         p("SortOrder", "property T sort_order([...])", "Declares an explicit preferred order of symbols.", "stored by ax-tensor metadata; no direct ax-tensor algorithm currently consults it", "property T sort_order([A, B, C])"),
         p("TableauSymmetry", "property T tableau_symmetry([shape], [indices])", "Declares a Young-tableau symmetry shape and slot assignment.", "canonicalise slot/sign handling, meld symmetry_tableaux_from_properties, young_project_tensor", "property T tableau_symmetry([2,1], [0,1,2])"),
-        p("SatisfiesBianchi", "property R satisfies_bianchi([0,1,2,3])", "Marks a tensor as satisfying a cyclic Bianchi identity on the specified four slots.", "young_project_tensor, meld, and symmetry projector lookup", "property R satisfies_bianchi([0,1,2,3])"),
+        p("SatisfiesBianchi", "property R satisfies_bianchi([0,1,2,3])", "Marks a tensor as satisfying a cyclic Bianchi identity on the specified three or four slots.", "young_project_tensor, meld, and symmetry projector lookup", "property R satisfies_bianchi([0,1,2,3])"),
         p("DimensionDependentIdentity", "property T dimension_dependent_identity", "Marks a tensor as carrying dimension-dependent identities relevant to Schouten-style reductions.", "dimension-reduction metadata and public property inspection", "property T dimension_dependent_identity"),
         p("WeylTensor", "property C weyl_tensor", "Marks a tensor as a Weyl tensor, i.e. RiemannSymmetry plus SatisfiesBianchi plus tracelessness.", "canonicalise Riemann-like slot symmetries, traceless fast-zero handling, and meld/young-project Bianchi hooks", "property C weyl_tensor"),
         p("DifferentialFormDegree", "property F differential_form_degree(n)", "Declares the degree of a differential form.", "stored by ax-tensor metadata; differential-form algorithms live outside ax-tensor", "property F differential_form_degree(2)"),
@@ -2977,7 +2977,7 @@ fn parse_property_string(
     }
     if lower == "satisfiesbianchi" || lower == "satisfies_bianchi" || lower == "bianchi" {
         return Ok(ax_ir::TensorProperty::SatisfiesBianchi {
-            slots: [0, 1, 2, 3],
+            slots: vec![0, 1, 2, 3],
         });
     }
     if lower == "weyltensor" || lower == "weyl_tensor" || lower == "weyl" {
@@ -3042,9 +3042,11 @@ fn parse_property_string(
         .and_then(|s| s.strip_suffix(')'))
     {
         let slots = parse_usize_list(body)?;
-        let slots: [usize; 4] = slots
-            .try_into()
-            .map_err(|_| format!("SatisfiesBianchi requires exactly four slots in '{trimmed}'"))?;
+        if slots.len() != 3 && slots.len() != 4 {
+            return Err(format!(
+                "SatisfiesBianchi requires exactly three or four slots in '{trimmed}'"
+            ));
+        }
         return Ok(ax_ir::TensorProperty::SatisfiesBianchi { slots });
     }
     match lower.as_str() {
@@ -5879,7 +5881,7 @@ fn handle_riemann_tensor_declaration(
     let props = [
         ax_ir::TensorProperty::RiemannSymmetry,
         ax_ir::TensorProperty::SatisfiesBianchi {
-            slots: [0, 1, 2, 3],
+            slots: vec![0, 1, 2, 3],
         },
     ];
     for prop in props.iter().cloned() {

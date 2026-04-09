@@ -353,7 +353,46 @@ pub fn property_discriminant_matches(a: &TensorProperty, b: &TensorProperty) -> 
     std::mem::discriminant(a) == std::mem::discriminant(b)
 }
 
+fn tableau_inherit_enabled(props: &[TensorProperty]) -> bool {
+    props.iter().any(|prop| {
+        matches!(
+            prop,
+            TensorProperty::TableauInherit | TensorProperty::CovariantDerivative
+        )
+    })
+}
+
+fn has_explicit_riemann_tensor_properties(props: &[TensorProperty], n_indices: usize) -> bool {
+    n_indices >= 4
+        && props
+            .iter()
+            .any(|prop| matches!(prop, TensorProperty::RiemannSymmetry))
+        && props
+            .iter()
+            .any(|prop| matches!(prop, TensorProperty::SatisfiesBianchi { .. }))
+}
+
+fn differential_bianchi_inherited_properties(
+    leader_props: &[TensorProperty],
+    follower_props: &[TensorProperty],
+    composite_rank: usize,
+) -> Vec<TensorProperty> {
+    let leader_is_covariant = leader_props
+        .iter()
+        .any(|prop| matches!(prop, TensorProperty::CovariantDerivative));
+    if !leader_is_covariant || composite_rank < 3 {
+        return Vec::new();
+    }
+    if !has_explicit_riemann_tensor_properties(follower_props, composite_rank.saturating_sub(1)) {
+        return Vec::new();
+    }
+    vec![TensorProperty::SatisfiesBianchi {
+        slots: vec![0, 1, 2],
+    }]
+}
+
 fn shifted_tableau_inherited_properties(
+    leader_props: &[TensorProperty],
     props: &[TensorProperty],
     offset: usize,
     follower_rank: usize,
@@ -377,12 +416,7 @@ fn shifted_tableau_inherited_properties(
                 }
             }
             TensorProperty::SatisfiesBianchi { slots } => {
-                let shifted = [
-                    slots[0] + offset,
-                    slots[1] + offset,
-                    slots[2] + offset,
-                    slots[3] + offset,
-                ];
+                let shifted = slots.iter().map(|slot| slot + offset).collect::<Vec<_>>();
                 if shifted.iter().all(|slot| *slot < composite_rank) {
                     inherited.push(TensorProperty::SatisfiesBianchi { slots: shifted });
                 }
@@ -401,7 +435,7 @@ fn shifted_tableau_inherited_properties(
                         indices: vec![offset, offset + 1, offset + 2, offset + 3],
                     });
                     inherited.push(TensorProperty::SatisfiesBianchi {
-                        slots: [offset, offset + 1, offset + 2, offset + 3],
+                        slots: vec![offset, offset + 1, offset + 2, offset + 3],
                     });
                 }
             }
@@ -417,6 +451,11 @@ fn shifted_tableau_inherited_properties(
         }
     }
 
+    inherited.extend(differential_bianchi_inherited_properties(
+        leader_props,
+        props,
+        composite_rank,
+    ));
     inherited
 }
 
@@ -436,14 +475,13 @@ impl ax_tensor::PropertyLookup for PropertyStore {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        let leader_inherits = properties
-            .iter()
-            .any(|prop| matches!(prop, TensorProperty::TableauInherit));
+        let leader_inherits = tableau_inherit_enabled(&properties);
         if leader_inherits {
             if let Some((follower_name, follower_indices)) = successor {
                 let follower =
                     self.get_properties_with_indices(follower_name, follower_indices, None);
                 properties.extend(shifted_tableau_inherited_properties(
+                    &properties,
                     &follower,
                     indices.len().saturating_sub(follower_indices.len()),
                     follower_indices.len(),
