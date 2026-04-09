@@ -263,6 +263,7 @@ dependencies = [
  "ax-tensor",
  "ax-units",
  "ax-variational",
+ "ax-young",
  "lasso",
  "num-bigint",
  "num-integer",

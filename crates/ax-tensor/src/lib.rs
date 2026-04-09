@@ -195,6 +195,27 @@ impl Default for YoungProjectTensorOptions {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct TensorReduceOptions {
+    pub monoterm: bool,
+    pub multiterm: bool,
+    pub dimension_dependent: bool,
+    pub meld: bool,
+    pub modulo_monoterm: bool,
+}
+
+impl Default for TensorReduceOptions {
+    fn default() -> Self {
+        Self {
+            monoterm: true,
+            multiterm: true,
+            dimension_dependent: true,
+            meld: true,
+            modulo_monoterm: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct YoungProjectFactorKey {
     name: lasso::Spur,
@@ -1568,7 +1589,7 @@ pub fn meld(
                     extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
                 let projection_ops = factor_info
                     .iter()
-                    .flat_map(projection_ops_for_factor)
+                    .flat_map(meld_projection_ops_for_factor)
                     .collect::<Vec<_>>();
 
                 let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
@@ -1801,7 +1822,7 @@ pub fn meld_parallel(
                     extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
                 let projection_ops = factor_info
                     .iter()
-                    .flat_map(projection_ops_for_factor)
+                    .flat_map(meld_projection_ops_for_factor)
                     .collect::<Vec<_>>();
 
                 let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
@@ -2084,14 +2105,10 @@ fn bianchi_slots_for_property(
 ) -> Option<[usize; 4]> {
     match prop {
         ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
-            let valid = slots
-                .iter()
-                .copied()
-                .all(|slot| slot < n_indices)
-                && {
-                    let mut uniq = HashSet::new();
-                    slots.iter().copied().all(|slot| uniq.insert(slot))
-                };
+            let valid = slots.iter().copied().all(|slot| slot < n_indices) && {
+                let mut uniq = HashSet::new();
+                slots.iter().copied().all(|slot| uniq.insert(slot))
+            };
             valid.then_some(*slots)
         }
         ax_ir::TensorProperty::WeylTensor => default_riemann_slots(n_indices),
@@ -2110,12 +2127,14 @@ fn has_riemann_monoterm_property(props: &[ax_ir::TensorProperty], n_indices: usi
 }
 
 fn has_bianchi_property(props: &[ax_ir::TensorProperty], n_indices: usize) -> bool {
-    props.iter()
+    props
+        .iter()
         .any(|prop| bianchi_slots_for_property(prop, n_indices).is_some())
 }
 
 fn has_weyl_property(props: &[ax_ir::TensorProperty]) -> bool {
-    props.iter()
+    props
+        .iter()
         .any(|prop| matches!(prop, ax_ir::TensorProperty::WeylTensor))
 }
 
@@ -2129,18 +2148,12 @@ fn has_traceless_property(props: &[ax_ir::TensorProperty]) -> bool {
 }
 
 fn has_dimension_dependent_identity_property(props: &[ax_ir::TensorProperty]) -> bool {
-    props.iter().any(|prop| {
-        matches!(
-            prop,
-            ax_ir::TensorProperty::DimensionDependentIdentity
-        )
-    })
+    props
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::DimensionDependentIdentity))
 }
 
-fn expr_has_dimension_dependent_identity(
-    expr: &Expr,
-    properties: &dyn PropertyLookup,
-) -> bool {
+fn expr_has_dimension_dependent_identity(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
     match expr {
         Expr::Indexed(base, indices) => match base.as_ref() {
             Expr::Sym(name) => has_dimension_dependent_identity_property(
@@ -2188,7 +2201,7 @@ fn bianchi_projector(positions: [usize; 4]) -> TensorProjectionOp {
     }
 }
 
-fn tableau_from_property(
+fn tableau_info_from_declared_symmetry(
     info: &TensorFactorInfo,
     shape: &[usize],
     indices: &[usize],
@@ -2217,7 +2230,7 @@ fn tableau_from_property(
     Some(adjform::TableauInfo { rows, columns })
 }
 
-fn projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
+fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
     let mut result = Vec::new();
     let mut seen_tableaux: HashSet<(Vec<Vec<usize>>, Vec<Vec<usize>>)> = HashSet::new();
     let mut seen_projectors: HashSet<String> = HashSet::new();
@@ -2257,7 +2270,7 @@ fn projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp>
                 }
             }
             ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-                if let Some(tableau) = tableau_from_property(info, shape, indices) {
+                if let Some(tableau) = tableau_info_from_declared_symmetry(info, shape, indices) {
                     let key = (tableau.rows.clone(), tableau.columns.clone());
                     if seen_tableaux.insert(key) {
                         result.push(TensorProjectionOp::Tableau(tableau));
@@ -2271,7 +2284,7 @@ fn projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp>
     result
 }
 
-fn expression_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
+fn young_project_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
     let mut result = Vec::new();
     let mut seen_tableaux: HashSet<(Vec<Vec<usize>>, Vec<Vec<usize>>)> = HashSet::new();
     let mut seen_projectors: HashSet<String> = HashSet::new();
@@ -2287,7 +2300,7 @@ fn expression_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorPr
                 }
             }
             ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-                if let Some(tableau) = tableau_from_property(info, shape, indices) {
+                if let Some(tableau) = tableau_info_from_declared_symmetry(info, shape, indices) {
                     let key = (tableau.rows.clone(), tableau.columns.clone());
                     if seen_tableaux.insert(key) {
                         result.push(TensorProjectionOp::Tableau(tableau));
@@ -2301,7 +2314,7 @@ fn expression_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorPr
     result
 }
 
-pub fn tableaux_from_properties(
+pub fn symmetry_tableaux_from_properties(
     factor_info: &[TensorFactorInfo],
     properties: &dyn PropertyLookup,
 ) -> Vec<adjform::TableauInfo> {
@@ -2408,7 +2421,7 @@ pub fn tableaux_from_properties(
     result
 }
 
-fn young_project_factor_key(info: &TensorFactorInfo) -> Option<YoungProjectFactorKey> {
+fn projectable_factor_key(info: &TensorFactorInfo) -> Option<YoungProjectFactorKey> {
     let mut projector_mask = 0u8;
     for prop in &info.properties {
         match prop {
@@ -2431,7 +2444,7 @@ fn young_project_factor_key(info: &TensorFactorInfo) -> Option<YoungProjectFacto
     })
 }
 
-fn young_project_factor_specs(
+fn projectable_factor_specs(
     expr: &Expr,
     properties: &dyn PropertyLookup,
     interner: &Interner,
@@ -2441,7 +2454,7 @@ fn young_project_factor_specs(
     let mut specs = Vec::new();
 
     for info in factor_info {
-        let Some(key) = young_project_factor_key(&info) else {
+        let Some(key) = projectable_factor_key(&info) else {
             continue;
         };
         let occurrence = *counts.entry(key).or_insert(0);
@@ -2494,7 +2507,7 @@ fn young_project_factor_in_term(
     let mut seen = 0usize;
 
     for info in factor_info {
-        if young_project_factor_key(&info) != Some(spec.key) {
+        if projectable_factor_key(&info) != Some(spec.key) {
             continue;
         }
         if seen != spec.occurrence {
@@ -2503,7 +2516,7 @@ fn young_project_factor_in_term(
         }
 
         let mut projected = expr.clone();
-        for op in expression_projection_ops_for_factor(&info) {
+        for op in young_project_ops_for_factor(&info) {
             projected = match op {
                 TensorProjectionOp::Tableau(tableau_info) => {
                     let mut current = projected;
@@ -2528,7 +2541,8 @@ fn young_project_factor_in_term(
                     permutations
                         .into_iter()
                         .map(|(perm, coeff)| {
-                            let permuted = permute_indices_at_positions(&projected, &positions, &perm);
+                            let permuted =
+                                permute_indices_at_positions(&projected, &positions, &perm);
                             multiply_expr_by_rational(permuted, coeff)
                         })
                         .collect(),
@@ -6418,7 +6432,7 @@ pub fn young_project_product(
 
     match expr {
         Expr::Mul(_) => {
-            let specs = young_project_factor_specs(expr, properties, interner);
+            let specs = projectable_factor_specs(expr, properties, interner);
             if specs.is_empty() {
                 return expr.clone();
             }
@@ -6500,7 +6514,7 @@ pub fn young_project_tensor_with_options(
             let factor_info = extract_factor_info_from_term(expr, properties, interner);
             let projection_ops = factor_info
                 .iter()
-                .flat_map(expression_projection_ops_for_factor)
+                .flat_map(young_project_ops_for_factor)
                 .collect::<Vec<_>>();
             if projection_ops.is_empty() {
                 return expr.clone();
@@ -6539,7 +6553,8 @@ pub fn young_project_tensor_with_options(
                 .iter()
                 .map(|t| young_project_tensor_with_options(t, properties, interner, opts))
                 .collect::<Vec<_>>();
-            let cancelled = cancel_explicit_bianchi_terms(projected_terms.clone(), properties, interner);
+            let cancelled =
+                cancel_explicit_bianchi_terms(projected_terms.clone(), properties, interner);
             if cancelled.is_empty() {
                 Expr::zero()
             } else {
@@ -9813,7 +9828,7 @@ pub fn tab_dimension(shape: &[usize], dim: usize) -> usize {
     }
 }
 
-fn tableau_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> Option<Vec<usize>> {
+fn inferred_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> Option<Vec<usize>> {
     let Expr::Indexed(base, indices) = factor else {
         return None;
     };
@@ -9876,7 +9891,7 @@ fn factor_vanishes_in_dimension(
     dim: usize,
     properties: &dyn PropertyLookup,
 ) -> bool {
-    tableau_shape_for_factor(factor, properties)
+    inferred_shape_for_factor(factor, properties)
         .map(|shape| !shape_fits_dim(&shape, dim))
         .unwrap_or(false)
 }
@@ -9956,7 +9971,7 @@ pub fn decompose_product(
         if let Some(timeout) = deadline_timeout_expr(interner) {
             return timeout;
         }
-        let Some(shape) = tableau_shape_for_factor(factor, properties) else {
+        let Some(shape) = inferred_shape_for_factor(factor, properties) else {
             return decompose_product_failure("unsupported_shape", expr, interner);
         };
         shapes.push(shape);
@@ -10005,7 +10020,12 @@ pub fn decompose_product(
     }
 }
 
-pub fn schouten_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner) -> Expr {
+fn schouten_reduce_impl(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    meld_final: bool,
+) -> Expr {
     if let Some(timeout) = deadline_timeout_expr(interner) {
         return timeout;
     }
@@ -10015,15 +10035,21 @@ pub fn schouten_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &
             let reduced = Expr::add(
                 terms
                     .iter()
-                    .map(|term| schouten_reduce(term, properties, interner))
+                    .map(|term| schouten_reduce_impl(term, properties, interner, meld_final))
                     .collect(),
             );
             let canonical = canonicalise(&reduced, properties, interner);
-            let melded = meld(&canonical, properties, interner);
-            return simplify_expr(melded, interner);
+            let reduced = if meld_final {
+                meld(&canonical, properties, interner)
+            } else {
+                canonical
+            };
+            return simplify_expr(reduced, interner);
         }
         Expr::Neg(inner) => {
-            return Expr::neg(schouten_reduce(inner, properties, interner));
+            return Expr::neg(schouten_reduce_impl(
+                inner, properties, interner, meld_final,
+            ));
         }
         _ => {}
     }
@@ -10074,8 +10100,70 @@ pub fn schouten_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &
     }
 
     let canonical = canonicalise(&reduced, properties, interner);
-    let melded = meld(&canonical, properties, interner);
-    simplify_expr(melded, interner)
+    let reduced = if meld_final {
+        meld(&canonical, properties, interner)
+    } else {
+        canonical
+    };
+    simplify_expr(reduced, interner)
+}
+
+pub fn schouten_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner) -> Expr {
+    schouten_reduce_impl(expr, properties, interner, true)
+}
+
+pub fn tensor_reduce(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    opts: &TensorReduceOptions,
+) -> Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
+
+    let mut current = expr.clone();
+
+    if opts.monoterm {
+        current = canonicalise(&current, properties, interner);
+        if is_timeout_expr(&current, interner) {
+            return current;
+        }
+    }
+
+    if opts.multiterm {
+        current = young_project_product(
+            &current,
+            properties,
+            interner,
+            &YoungProjectProductOptions {
+                modulo_monoterm: opts.modulo_monoterm,
+                distribute_each_step: true,
+                rename_dummies_each_step: true,
+                meld_final: false,
+                max_terms: YoungProjectProductOptions::default().max_terms,
+            },
+        );
+        if is_timeout_expr(&current, interner) {
+            return current;
+        }
+    }
+
+    if opts.dimension_dependent {
+        current = schouten_reduce_impl(&current, properties, interner, false);
+        if is_timeout_expr(&current, interner) {
+            return current;
+        }
+    }
+
+    let dummy_env = PropertyDummyEnv::from_properties(properties);
+    current = rename_dummies(&current, &dummy_env, interner);
+
+    if opts.meld {
+        current = meld(&current, properties, interner);
+    }
+
+    simplify_expr(current, interner)
 }
 
 // ─── expand_implicit ─────────────────────────────────────────────────────────
@@ -13453,6 +13541,52 @@ mod tests {
     }
 
     #[test]
+    fn tensor_reduce_pipeline_reveals_bianchi_identity_in_product() {
+        let interner = ax_ir::Interner::new();
+        let r = interner.get_or_intern("R");
+        let v = interner.get_or_intern("V");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let e = interner.get_or_intern("e");
+
+        let idx = |name, variance| Index {
+            name,
+            variance,
+            index_type: None,
+        };
+        let rterm = |i0, i1, i2, i3| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    idx(i0, Variance::Down),
+                    idx(i1, Variance::Down),
+                    idx(i2, Variance::Down),
+                    idx(i3, Variance::Down),
+                ],
+            )
+        };
+        let spectator = Expr::Indexed(Box::new(Expr::Sym(v)), vec![idx(e, Variance::Down)]);
+        let expr = Expr::add(vec![
+            Expr::mul(vec![rterm(a, b, c, d), spectator.clone()]),
+            Expr::mul(vec![rterm(a, c, d, b), spectator.clone()]),
+            Expr::mul(vec![rterm(a, d, b, c), spectator]),
+        ]);
+
+        let mut props = HashMap::new();
+        props.insert(
+            r,
+            vec![ax_ir::TensorProperty::SatisfiesBianchi {
+                slots: [0, 1, 2, 3],
+            }],
+        );
+
+        let result = tensor_reduce(&expr, &props, &interner, &TensorReduceOptions::default());
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
     fn young_project_tensor_modulo_monoterm_collects_duplicates() {
         let interner = ax_ir::Interner::new();
         let t = interner.get_or_intern("T");
@@ -15314,7 +15448,7 @@ mod tests {
             }],
         );
         assert_eq!(
-            tableau_shape_for_factor(&t_expr, &props),
+            inferred_shape_for_factor(&t_expr, &props),
             Some(vec![2]),
             "TableauSymmetry should drive shape inference"
         );
@@ -15532,6 +15666,114 @@ mod tests {
         };
 
         assert_eq!(schouten_reduce(&expr, &props, &interner), Expr::zero());
+    }
+
+    #[test]
+    fn tensor_reduce_dimension_toggle_controls_schouten_step() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let t = interner.get_or_intern("T");
+        let family = interner.get_or_intern("V");
+        let asym = |name, variance| Index {
+            name,
+            variance,
+            index_type: Some(family),
+        };
+        let mk = |slots: [lasso::Spur; 3]| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![
+                    asym(slots[0], Variance::Down),
+                    asym(slots[1], Variance::Down),
+                    asym(slots[2], Variance::Down),
+                ],
+            )
+        };
+        let expr = Expr::add(vec![
+            mk([a, b, c]),
+            Expr::neg(mk([a, c, b])),
+            Expr::neg(mk([b, a, c])),
+            mk([b, c, a]),
+            mk([c, a, b]),
+            Expr::neg(mk([c, b, a])),
+        ]);
+
+        struct TestProps {
+            props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+            families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
+        }
+
+        impl PropertyLookup for TestProps {
+            fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
+                self.props
+                    .get(&name)
+                    .map(|props| props.iter().collect())
+                    .unwrap_or_default()
+            }
+
+            fn get_properties_with_indices(
+                &self,
+                name: lasso::Spur,
+                _indices: &[ax_ir::Index],
+            ) -> Vec<&ax_ir::TensorProperty> {
+                self.get_properties(name)
+            }
+
+            fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
+                self.get_properties(name)
+                    .into_iter()
+                    .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+            }
+
+            fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
+                Some(&self.families)
+            }
+        }
+
+        let props = TestProps {
+            props: HashMap::from([(
+                t,
+                vec![
+                    ax_ir::TensorProperty::TableauSymmetry {
+                        shape: vec![1, 1, 1],
+                        indices: vec![0, 1, 2],
+                    },
+                    ax_ir::TensorProperty::DimensionDependentIdentity,
+                ],
+            )]),
+            families: HashMap::from([(
+                family,
+                ax_ir::IndexFamily {
+                    name: family,
+                    values: vec![a, b, c],
+                    position: ax_ir::IndexPosition::Free,
+                    dimension: Some(2),
+                    parent: None,
+                },
+            )]),
+        };
+
+        let without_dimension = tensor_reduce(
+            &expr,
+            &props,
+            &interner,
+            &TensorReduceOptions {
+                dimension_dependent: false,
+                ..TensorReduceOptions::default()
+            },
+        );
+        assert_ne!(
+            without_dimension,
+            Expr::zero(),
+            "got {:?}",
+            without_dimension
+        );
+
+        let with_dimension =
+            tensor_reduce(&expr, &props, &interner, &TensorReduceOptions::default());
+        assert_eq!(with_dimension, Expr::zero(), "got {:?}", with_dimension);
     }
 
     #[test]

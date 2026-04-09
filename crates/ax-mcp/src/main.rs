@@ -256,6 +256,7 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> Value {
         ParamType::SymbolList => {
             json!({"type": "array", "items": {"type": "string"}, "description": description})
         }
+        ParamType::Bool => json!({"type": "boolean", "description": description}),
         ParamType::Integer => json!({"type": "integer", "description": description}),
         ParamType::Float => json!({"type": "number", "description": description}),
         ParamType::StringEnum(opts) => {
@@ -467,18 +468,16 @@ fn handle_tools_call_safe(
                 seconds: timeout_secs,
             });
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            match worker.take().unwrap().join() {
-                Ok(()) => error_value(ToolError::Failed {
-                    tool: tool_name.to_string(),
-                    message: "tool worker exited without returning a result".to_string(),
-                }),
-                Err(payload) => error_value(ToolError::Panic {
-                    tool: tool_name.to_string(),
-                    message: panic_message(payload),
-                }),
-            }
-        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => match worker.take().unwrap().join() {
+            Ok(()) => error_value(ToolError::Failed {
+                tool: tool_name.to_string(),
+                message: "tool worker exited without returning a result".to_string(),
+            }),
+            Err(payload) => error_value(ToolError::Panic {
+                tool: tool_name.to_string(),
+                message: panic_message(payload),
+            }),
+        },
     };
 
     if let Some(worker) = worker.take() {
@@ -513,7 +512,10 @@ fn handle_request(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            make_result_response(id, handle_tools_call_safe(state, name, &arguments, timeout_secs))
+            make_result_response(
+                id,
+                handle_tools_call_safe(state, name, &arguments, timeout_secs),
+            )
         }
         _ => make_error_response(id, -32601, "method not found"),
     }
@@ -546,11 +548,7 @@ fn run_stdio(timeout_secs: u64) -> Result<(), Box<dyn std::error::Error>> {
 type HttpSharedState = std::sync::Arc<tokio::sync::Mutex<McpState>>;
 
 #[cfg(feature = "http")]
-fn build_http_app(
-    state: HttpSharedState,
-    timeout_secs: u64,
-    port: u16,
-) -> axum::Router {
+fn build_http_app(state: HttpSharedState, timeout_secs: u64, port: u16) -> axum::Router {
     use axum::{routing::post, Router};
     use tower_http::cors::{Any, CorsLayer};
 
@@ -579,9 +577,17 @@ async fn run_http(port: u16, timeout_secs: u64) -> Result<(), Box<dyn std::error
 
 #[cfg(feature = "http")]
 async fn handle_http_request(
-    axum::extract::State((state, timeout_secs, port)): axum::extract::State<(HttpSharedState, u64, u16)>,
+    axum::extract::State((state, timeout_secs, port)): axum::extract::State<(
+        HttpSharedState,
+        u64,
+        u16,
+    )>,
     axum::Json(request): axum::Json<Value>,
-) -> axum::response::sse::Sse<std::pin::Pin<Box<dyn Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> + Send>>> {
+) -> axum::response::sse::Sse<
+    std::pin::Pin<
+        Box<dyn Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> + Send>,
+    >,
+> {
     use axum::response::sse::{Event, Sse};
 
     let mut state = state.lock().await;
@@ -602,7 +608,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|i| args.get(i + 1))
         .map(|s| s.as_str())
         .unwrap_or("stdio");
-    let port: u16 = args
+    let _port: u16 = args
         .iter()
         .position(|a| a == "--port")
         .and_then(|i| args.get(i + 1))
@@ -658,7 +664,10 @@ mod tests {
 
     fn expect_ok(result: Value, tool: &str) -> Value {
         assert!(
-            matches!(result.get("status").and_then(Value::as_str), Some("ok" | "unchanged")),
+            matches!(
+                result.get("status").and_then(Value::as_str),
+                Some("ok" | "unchanged")
+            ),
             "{tool} failed: {result:?}"
         );
         result
@@ -731,30 +740,15 @@ mod tests {
             "axioma_define_metric",
         );
         let christoffel = expect_ok(
-            handle_tools_call_safe(
-                state,
-                "axioma_christoffel",
-                &json!({"metric_id": "g"}),
-                5,
-            ),
+            handle_tools_call_safe(state, "axioma_christoffel", &json!({"metric_id": "g"}), 5),
             "axioma_christoffel",
         );
         let riemann = expect_ok(
-            handle_tools_call_safe(
-                state,
-                "axioma_riemann",
-                &json!({"christoffel_id": "g"}),
-                5,
-            ),
+            handle_tools_call_safe(state, "axioma_riemann", &json!({"christoffel_id": "g"}), 5),
             "axioma_riemann",
         );
         let ricci = expect_ok(
-            handle_tools_call_safe(
-                state,
-                "axioma_ricci",
-                &json!({"riemann_id": "g"}),
-                5,
-            ),
+            handle_tools_call_safe(state, "axioma_ricci", &json!({"riemann_id": "g"}), 5),
             "axioma_ricci",
         );
         expect_ok(
@@ -797,13 +791,21 @@ mod tests {
     fn expr_id_for(entry_name: &str, param_name: &str, fx: &TestFixtures) -> Value {
         if matches!(
             entry_name,
-            "integrate" | "double_integral" | "dblint" | "triple_integral" | "tplint" | "definite_integral" | "defint"
+            "integrate"
+                | "double_integral"
+                | "dblint"
+                | "triple_integral"
+                | "tplint"
+                | "definite_integral"
+                | "defint"
         ) && param_name == "expr"
         {
             return fx.multivar_expr_id.clone();
         }
         match param_name {
-            "basis" | "bra" | "ket" | "left" | "right" | "functions" | "state" => fx.list_id.clone(),
+            "basis" | "bra" | "ket" | "left" | "right" | "functions" | "state" => {
+                fx.list_id.clone()
+            }
             "tensor" | "metric" | "metric_inverse" => fx.matrix_id.clone(),
             "ricci" => fx.matrix_id.clone(),
             "vector" | "covector" => fx.list_id.clone(),
@@ -881,6 +883,7 @@ mod tests {
                 "field_derivatives" | "variation_derivatives" => json!(["phi_t", "phi_x"]),
                 _ => json!(["x", "y"]),
             },
+            ParamType::Bool => json!(true),
             ParamType::Integer => match param_name {
                 "N" => json!(1),
                 "coord_index" => json!(0),
@@ -941,12 +944,8 @@ mod tests {
         let result = handle_tools_call_safe(&mut state, "axioma_test_panic", &json!({}), 5);
         assert_eq!(result["status"], "error");
 
-        let result2 = handle_tools_call_safe(
-            &mut state,
-            "axioma_eval",
-            &json!({"code": "1 + 1"}),
-            5,
-        );
+        let result2 =
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "1 + 1"}), 5);
         assert!(result2.get("expr_id").is_some());
     }
 
@@ -955,7 +954,10 @@ mod tests {
         let mut state = McpState::new();
         let result = handle_tools_call_safe(&mut state, "axioma_test_timeout", &json!({}), 0);
         assert_eq!(result["status"], "error");
-        assert!(result["message"].as_str().unwrap_or("").contains("timed out"));
+        assert!(result["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("timed out"));
     }
 
     #[test]
@@ -984,20 +986,25 @@ mod tests {
             0,
         );
         assert_eq!(result["status"], "error");
-        assert!(result["message"].as_str().unwrap_or("").contains("timed out"));
+        assert!(result["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("timed out"));
     }
 
     #[test]
     fn expr_response_includes_status() {
         let mut state = McpState::new();
-        let result = handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "1 + 1"}), 5);
+        let result =
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "1 + 1"}), 5);
         assert_eq!(result["status"], "ok");
     }
 
     #[test]
     fn algorithm_response_shows_changed_true() {
         let mut state = McpState::new();
-        let expr = handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "(a+b)*c"}), 5);
+        let expr =
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "(a+b)*c"}), 5);
         let result = handle_tools_call_safe(
             &mut state,
             "axioma_expand",
@@ -1170,7 +1177,10 @@ mod tests {
         );
         assert_eq!(result["status"], "ok");
         let details = result["details"].as_array().unwrap();
-        assert!(details.iter().any(|d| d == "coefficient_differs"), "{result:?}");
+        assert!(
+            details.iter().any(|d| d == "coefficient_differs"),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -1198,7 +1208,10 @@ mod tests {
         );
         assert_eq!(result["status"], "ok");
         let details = result["details"].as_array().unwrap();
-        assert!(details.iter().any(|d| d == "index_names_differ"), "{result:?}");
+        assert!(
+            details.iter().any(|d| d == "index_names_differ"),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -1222,11 +1235,17 @@ mod tests {
         );
         assert_eq!(result["status"], "ok");
         assert_eq!(result["ready"], false, "{result:?}");
-        assert!(result["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| issue.as_str().unwrap_or("").contains("no symmetry properties")), "{result:?}");
+        assert!(
+            result["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("no symmetry properties")),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -1314,11 +1333,17 @@ mod tests {
         );
         assert_eq!(before["status"], "ok");
         assert_eq!(before["ready"], false, "{before:?}");
-        assert!(before["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|issue| issue.as_str().unwrap_or("").contains("No component rules are known for symbol T")), "{before:?}");
+        assert!(
+            before["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|issue| issue
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("No component rules are known for symbol T")),
+            "{before:?}"
+        );
 
         handle_tools_call_safe(
             &mut state,
@@ -1379,7 +1404,10 @@ mod tests {
             5,
         );
         assert_eq!(result["status"], "ok");
-        assert!(result["suggestions"].as_array().unwrap().len() >= 2, "{result:?}");
+        assert!(
+            result["suggestions"].as_array().unwrap().len() >= 2,
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -1398,12 +1426,7 @@ mod tests {
             5,
         );
         let expr = expect_ok(
-            handle_tools_call_safe(
-                &mut state,
-                "axioma_eval",
-                &json!({"code": "T[a-, b+]"}),
-                5,
-            ),
+            handle_tools_call_safe(&mut state, "axioma_eval", &json!({"code": "T[a-, b+]"}), 5),
             "axioma_eval",
         );
         let result = handle_tools_call_safe(
@@ -1413,7 +1436,10 @@ mod tests {
             5,
         );
         assert_eq!(result["status"], "ok");
-        assert_eq!(result["suggestions"][0]["algorithm"], "canonicalise", "{result:?}");
+        assert_eq!(
+            result["suggestions"][0]["algorithm"], "canonicalise",
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -1520,8 +1546,17 @@ mod tests {
         );
         assert_eq!(result["status"], "ok");
         assert_eq!(result["goal"], "quantum gravity loop corrections");
-        assert!(result["note"].as_str().unwrap_or("").contains("No goal-specific priority profile matched"), "{result:?}");
-        assert!(!result["suggestions"].as_array().unwrap().is_empty(), "{result:?}");
+        assert!(
+            result["note"]
+                .as_str()
+                .unwrap_or("")
+                .contains("No goal-specific priority profile matched"),
+            "{result:?}"
+        );
+        assert!(
+            !result["suggestions"].as_array().unwrap().is_empty(),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -1586,9 +1621,8 @@ mod tests {
             })
         };
         let body = body.unwrap_or("");
-        let mut request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n"
-        );
+        let mut request =
+            format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
         for (name, value) in extra_headers {
             request.push_str(&format!("{name}: {value}\r\n"));
         }
@@ -1657,7 +1691,9 @@ mod tests {
         .await;
         handle.abort();
         assert!(
-            response.to_lowercase().contains("access-control-allow-origin"),
+            response
+                .to_lowercase()
+                .contains("access-control-allow-origin"),
             "{response}"
         );
     }

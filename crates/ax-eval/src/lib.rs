@@ -4941,6 +4941,36 @@ fn builtin_call(
         }
         "young_project" => {
             if !args.is_empty() {
+                if let Some(tableau) = args.get(1).and_then(parse_young_tableau_expr) {
+                    ax_tensor::young_project(&args[0], &tableau, interner)
+                } else {
+                    let opts = ax_tensor::YoungProjectTensorOptions {
+                        modulo_monoterm: args
+                            .get(1)
+                            .and_then(|arg| parse_bool_like_expr(arg, interner))
+                            .unwrap_or(true),
+                        canonicalize_after: args
+                            .get(2)
+                            .and_then(|arg| parse_bool_like_expr(arg, interner))
+                            .unwrap_or(true),
+                        rename_dummies_after: args
+                            .get(3)
+                            .and_then(|arg| parse_bool_like_expr(arg, interner))
+                            .unwrap_or(true),
+                    };
+                    ax_tensor::young_project_tensor_with_options(
+                        &args[0],
+                        &env.property_store,
+                        interner,
+                        &opts,
+                    )
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "young_project_tensor" => {
+            if !args.is_empty() {
                 let opts = ax_tensor::YoungProjectTensorOptions {
                     modulo_monoterm: args
                         .get(1)
@@ -4961,6 +4991,35 @@ fn builtin_call(
                     interner,
                     &opts,
                 )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "tensor_reduce" => {
+            if !args.is_empty() {
+                let opts = ax_tensor::TensorReduceOptions {
+                    monoterm: args
+                        .get(1)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    multiterm: args
+                        .get(2)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    dimension_dependent: args
+                        .get(3)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    meld: args
+                        .get(4)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    modulo_monoterm: args
+                        .get(5)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                };
+                ax_tensor::tensor_reduce(&args[0], &env.property_store, interner, &opts)
             } else {
                 Expr::Call(f, args)
             }
@@ -7005,6 +7064,40 @@ fn parse_bool_like_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<bool>
         }
         _ => None,
     }
+}
+
+fn parse_young_tableau_expr(expr: &Expr) -> Option<ax_young::YoungTableau> {
+    let rows = match expr {
+        Expr::List(rows) => rows.clone(),
+        Expr::Matrix(rows) => rows.iter().cloned().map(Expr::List).collect(),
+        _ => return None,
+    };
+
+    let mut parsed_rows = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let Expr::List(cells) = row else {
+            return None;
+        };
+        let mut parsed_cells = Vec::with_capacity(cells.len());
+        for cell in cells {
+            let Expr::Int(value) = cell else {
+                return None;
+            };
+            parsed_cells.push(value.to_usize()?);
+        }
+        parsed_rows.push(parsed_cells);
+    }
+
+    let shape: Vec<usize> = parsed_rows.iter().map(Vec::len).collect();
+    if shape.windows(2).any(|window| window[0] < window[1]) {
+        return None;
+    }
+
+    Some(ax_young::YoungTableau {
+        rows: parsed_rows,
+        multiplicity: num_rational::BigRational::one(),
+        selfdual_column: 0,
+    })
 }
 
 pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
@@ -9169,6 +9262,46 @@ mod tests {
     }
 
     #[test]
+    fn young_project_accepts_explicit_tableau_argument() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let expr = ax_core_ir::lower("young_project(T[a-,b-], [[0], [1]]);", &interner)
+            .expr
+            .expect("young project expr");
+        let result = eval(&expr, &env, &interner);
+        let base_expr = ax_core_ir::lower("T[a-,b-];", &interner)
+            .expr
+            .expect("base expr");
+        let tableau = ax_young::YoungTableau {
+            rows: vec![vec![0], vec![1]],
+            multiplicity: BigRational::one(),
+            selfdual_column: 0,
+        };
+        let expected = ax_tensor::young_project(&base_expr, &tableau, &interner);
+        assert_eq!(result, expected, "got {:?}", result);
+    }
+
+    #[test]
+    fn young_project_tensor_alias_is_property_driven() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("property T tableau_symmetry([1, 1], [0, 1])", &interner)
+            .expr
+            .expect("tableau property decl");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(message.is_some(), "expected tableau_symmetry declaration");
+
+        let expr = ax_core_ir::lower("young_project_tensor(T[a-,b-]);", &interner)
+            .expr
+            .expect("young project tensor expr");
+        let result = eval(&expr, &env, &interner);
+        let expected = ax_core_ir::lower("2*T[a-,b-];", &interner)
+            .expr
+            .expect("expected expr");
+        assert_eq!(result, expected, "got {:?}", result);
+    }
+
+    #[test]
     fn young_project_product_identity_via_eval() {
         let interner = ax_ir::Interner::new();
         let mut env = Env::new();
@@ -9189,6 +9322,26 @@ mod tests {
     }
 
     #[test]
+    fn tensor_reduce_pipeline_identity_via_eval() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("property R satisfies_bianchi", &interner)
+            .expr
+            .expect("bianchi property decl");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(message.is_some(), "expected satisfies_bianchi declaration");
+
+        let expr = ax_core_ir::lower(
+            "tensor_reduce(R[a-,b-,c-,d-]*V[e-] + R[a-,c-,d-,b-]*V[e-] + R[a-,d-,b-,c-]*V[e-]);",
+            &interner,
+        )
+        .expr
+        .expect("tensor reduce expr");
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
     fn schouten_reduce_uses_declared_index_family_dimension() {
         let (result, _interner) = eval_src(
             "indices V [a, b, c] dim=2;
@@ -9197,6 +9350,17 @@ mod tests {
              schouten_reduce(T[a-,b-,c-] - T[a-,c-,b-] - T[b-,a-,c-] + T[b-,c-,a-] + T[c-,a-,b-] - T[c-,b-,a-]);",
         );
         assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn tensor_reduce_dimension_toggle_is_public() {
+        let (result, _interner) = eval_src(
+            "indices V [a, b, c] dim=2;
+             property T tableau_symmetry([1,1,1], [0,1,2]);
+             property T dimension_dependent_identity;
+             tensor_reduce(T[a-,b-,c-] - T[a-,c-,b-] - T[b-,a-,c-] + T[b-,c-,a-] + T[c-,a-,b-] - T[c-,b-,a-], true, true, false, true, true);",
+        );
+        assert_ne!(result, Expr::zero(), "got {:?}", result);
     }
 
     #[test]

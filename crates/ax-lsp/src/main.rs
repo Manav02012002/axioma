@@ -18,9 +18,7 @@ use std::ops::Range;
 
 #[derive(Debug, Clone)]
 struct DocumentAnalysis {
-    exprs: Vec<ax_ir::Expr>,
     symbols: Vec<(String, Range<usize>, SymbolKind)>,
-    functions_used: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -763,6 +761,7 @@ fn format_param_type(param_type: &ParamType) -> String {
         ParamType::Code => "code".to_string(),
         ParamType::Symbol => "symbol".to_string(),
         ParamType::SymbolList => "symbol[]".to_string(),
+        ParamType::Bool => "bool".to_string(),
         ParamType::Integer => "integer".to_string(),
         ParamType::Float => "float".to_string(),
         ParamType::StringEnum(options) => format!("enum({})", options.join(" | ")),
@@ -1009,17 +1008,10 @@ fn apply_weight_declaration(args: &[Expr], env: &mut Env, interner: &Interner) {
 
 fn analyse_document(
     text: &str,
-    exprs: &[Expr],
+    _exprs: &[Expr],
     env: &Env,
     interner: &Interner,
 ) -> DocumentAnalysis {
-    let mut functions_used = Vec::new();
-    for expr in exprs {
-        collect_functions(expr, interner, &mut functions_used);
-    }
-    functions_used.sort();
-    functions_used.dedup();
-
     let property_names: HashSet<&str> = PROPERTY_NAMES.iter().copied().collect();
     let callable_names: HashSet<&str> = callable_entries()
         .into_iter()
@@ -1066,65 +1058,7 @@ fn analyse_document(
         symbols.push((name, start..end, kind));
     }
 
-    DocumentAnalysis {
-        exprs: exprs.to_vec(),
-        symbols,
-        functions_used,
-    }
-}
-
-fn collect_functions(expr: &Expr, interner: &Interner, out: &mut Vec<String>) {
-    match expr {
-        Expr::Call(f, args) => {
-            out.push(interner.resolve(*f).to_string());
-            for arg in args {
-                collect_functions(arg, interner, out);
-            }
-        }
-        Expr::Add(items) | Expr::Mul(items) | Expr::List(items) => {
-            for item in items {
-                collect_functions(item, interner, out);
-            }
-        }
-        Expr::Pow(base, exp) => {
-            collect_functions(base, interner, out);
-            collect_functions(exp, interner, out);
-        }
-        Expr::Neg(inner) | Expr::Group(inner, _) => collect_functions(inner, interner, out),
-        Expr::Complex(re, im) => {
-            collect_functions(re, interner, out);
-            collect_functions(im, interner, out);
-        }
-        Expr::FnDef(_, _, body) => collect_functions(body, interner, out),
-        Expr::Rule(lhs, rhs, _) => {
-            collect_functions(lhs, interner, out);
-            collect_functions(rhs, interner, out);
-        }
-        Expr::Piecewise(cases) => {
-            for (value, _) in cases {
-                collect_functions(value, interner, out);
-            }
-        }
-        Expr::Indexed(base, _) => collect_functions(base, interner, out),
-        Expr::Let(_, value, body) => {
-            collect_functions(value, interner, out);
-            collect_functions(body, interner, out);
-        }
-        Expr::Matrix(rows) => {
-            for row in rows {
-                for cell in row {
-                    collect_functions(cell, interner, out);
-                }
-            }
-        }
-        Expr::Int(_)
-        | Expr::Rational(_)
-        | Expr::Float(_)
-        | Expr::Sym(_)
-        | Expr::Import(_)
-        | Expr::Assume(_, _)
-        | Expr::SetConvention(_, _) => {}
-    }
+    DocumentAnalysis { symbols }
 }
 
 fn detect_property_symbols(text: &str) -> HashSet<String> {

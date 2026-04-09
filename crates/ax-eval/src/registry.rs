@@ -1,3 +1,5 @@
+use num_traits::{One, ToPrimitive};
+
 pub struct BuiltinEntry {
     pub name: &'static str,
     pub category: &'static str,
@@ -1144,9 +1146,16 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
         b(
             "young_project",
             "tensor",
-            "young_project(expr, modulo_monoterm=true, canonicalize_after=true, rename_dummies_after=true)",
-            "Project a tensor onto a declared Young-tableau symmetry, with optional post-projection monoterm canonicalisation and dummy renaming.",
+            "young_project(expr, tableau) or young_project(expr, modulo_monoterm=true, canonicalize_after=true, rename_dummies_after=true)",
+            "Either project with an explicit tableau `[[...], ...]` or use the tensor's declared symmetry properties with optional post-projection monoterm canonicalisation and dummy renaming.",
             "young_project(T[a-,b-,c-])",
+        ),
+        b(
+            "tensor_reduce",
+            "tensor",
+            "tensor_reduce(expr, monoterm=true, multiterm=true, dimension_dependent=true, meld=true, modulo_monoterm=true)",
+            "Run the finished tensor reduction pipeline: monoterm canonicalisation, multi-term Young projection, dimension-dependent reduction, dummy renaming, and optional meld.",
+            "tensor_reduce(R[a-,b-,c-,d-]*V[e-] + R[a-,c-,d-,b-]*V[e-] + R[a-,d-,b-,c-]*V[e-])",
         ),
         b(
             "schouten_reduce",
@@ -1986,9 +1995,9 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
 
 pub fn property_entries() -> Vec<PropertyEntry> {
     vec![
-        p("Symmetric", "property T symmetric([positions])", "Indices are symmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, tableaux_from_properties, handle_factor symmetry lookup", "property g symmetric"),
-        p("AntiSymmetric", "property T antisymmetric([positions])", "Indices are antisymmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, tableaux_from_properties, handle_factor symmetry lookup", "property F antisymmetric"),
-        p("RiemannSymmetry", "property R riemann_symmetry", "Apply the standard pair antisymmetry and pair-exchange symmetry of a Riemann tensor.", "build_generating_set, canonicalize_indices, tableaux_from_properties, handle_factor symmetry lookup", "property R riemann_symmetry"),
+        p("Symmetric", "property T symmetric([positions])", "Indices are symmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property g symmetric"),
+        p("AntiSymmetric", "property T antisymmetric([positions])", "Indices are antisymmetric under exchange of the listed slots.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property F antisymmetric"),
+        p("RiemannSymmetry", "property R riemann_symmetry", "Apply the standard pair antisymmetry and pair-exchange symmetry of a Riemann tensor.", "build_generating_set, canonicalize_indices, symmetry_tableaux_from_properties, handle_factor symmetry lookup", "property R riemann_symmetry"),
         p("Traceless", "property T traceless", "Marks a tensor as traceless.", "canonicalise/canonicalize_indices fast-zero trace detection", "property T traceless"),
         p("Diagonal", "property D diagonal", "Marks a tensor as diagonal in numerical components.", "canonicalise/canonicalize_indices numerical diagonal fast-zero detection", "property D diagonal"),
         p("Trace", "property Tr trace", "Marks a call symbol as a trace wrapper over implicit-index products.", "explicit_indices trace wrapper handling", "property Tr trace"),
@@ -2018,7 +2027,7 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("WeylSpinor", "property psi weyl_spinor", "Marks a spinor as Weyl.", "stored by ax-tensor metadata", "property psi weyl_spinor"),
         p("ImplicitIndex", "property T implicit_index", "Marks an object as carrying implicit indices.", "sort_product implicit-index commutativity barrier lookup", "property T implicit_index"),
         p("SortOrder", "property T sort_order([...])", "Declares an explicit preferred order of symbols.", "stored by ax-tensor metadata; no direct ax-tensor algorithm currently consults it", "property T sort_order([A, B, C])"),
-        p("TableauSymmetry", "property T tableau_symmetry([shape], [indices])", "Declares a Young-tableau symmetry shape and slot assignment.", "canonicalise slot/sign handling, meld tableaux_from_properties, young_project_tensor", "property T tableau_symmetry([2,1], [0,1,2])"),
+        p("TableauSymmetry", "property T tableau_symmetry([shape], [indices])", "Declares a Young-tableau symmetry shape and slot assignment.", "canonicalise slot/sign handling, meld symmetry_tableaux_from_properties, young_project_tensor", "property T tableau_symmetry([2,1], [0,1,2])"),
         p("SatisfiesBianchi", "property R satisfies_bianchi([0,1,2,3])", "Marks a tensor as satisfying a cyclic Bianchi identity on the specified four slots.", "young_project_tensor, meld, and symmetry projector lookup", "property R satisfies_bianchi([0,1,2,3])"),
         p("DimensionDependentIdentity", "property T dimension_dependent_identity", "Marks a tensor as carrying dimension-dependent identities relevant to Schouten-style reductions.", "dimension-reduction metadata and public property inspection", "property T dimension_dependent_identity"),
         p("WeylTensor", "property C weyl_tensor", "Marks a tensor as a Weyl tensor, i.e. RiemannSymmetry plus SatisfiesBianchi plus tracelessness.", "canonicalise Riemann-like slot symmetries, traceless fast-zero handling, and meld/young-project Bianchi hooks", "property C weyl_tensor"),
@@ -2041,8 +2050,9 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("symmetrise", "tensor", "symmetrise(expr: &Expr, positions: &[usize], antisymmetric: bool, interner: &Interner) -> Expr", "Symmetrize or antisymmetrize an expression over specific index slots by averaging over permutations.", "The listed positions must refer to valid index slots in the target indexed factor or flattened product ordering.", "symmetrize(T[a-,b-], [0,1])"),
         a("canonicalize_indices", "tensor", "canonicalize_indices(expr: &Expr, properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Apply local index-slot canonicalization from declared tensor properties before product-level canonicalization.", "Useful properties such as Symmetric, AntiSymmetric, RiemannSymmetry, WeylTensor, Metric, InverseMetric, KroneckerDelta, EpsilonTensor, GammaMatrixProp, DiracBar, or TableauSymmetry must be declared on tensor symbols.", "canonicalize_indices(F[b-,a-])"),
         a("rename_dummies", "tensor", "rename_dummies<E: DummyRenameEnv>(expr: &Expr, env: &E, interner: &Interner) -> Expr", "Rename dummy indices to deterministic family-aware placeholders so alpha-equivalent contractions compare equal.", "Index-family data improves the generated names; without it, generic _dN names are used.", "rename_dummies(T[a-,a+] + T[b-,b+])"),
-        a("young_project", "tensor", "young_project(expr: &Expr, tableau: &YoungTableau, interner: &Interner) -> Expr", "Project an expression with a specific Young tableau by antisymmetrizing columns and symmetrizing rows.", "A valid tableau cell layout must be supplied in slot-number form.", "young_project(T[a-,b-,c-])"),
-        a("young_project_tensor", "tensor", "young_project_tensor_with_options(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &YoungProjectTensorOptions) -> Expr", "Apply declared Young-tableau symmetry and optionally simplify modulo monoterm symmetries by distributing, canonicalizing slots/products, renaming dummies, and collecting duplicates.", "The relevant tensor symbol must carry TableauSymmetry, RiemannSymmetry, SatisfiesBianchi, or WeylTensor properties; enabling modulo_monoterm is most useful when ordinary monoterm symmetries are also declared.", "young_project(T[a-,b-,c-], true, true, true)"),
+        a("young_project", "tensor", "young_project(expr: &Expr, tableau: &YoungTableau, interner: &Interner) -> Expr OR young_project(expr: &Expr, modulo_monoterm: bool=true, canonicalize_after: bool=true, rename_dummies_after: bool=true) -> Expr", "Either apply an explicit Young tableau given as a nested slot list like [[0,1],[2]], or project using the tensor's declared symmetry properties with optional monoterm simplification.", "For the explicit form, supply a valid tableau cell layout in slot-number form. For the property-driven form, the tensor should carry TableauSymmetry, RiemannSymmetry, SatisfiesBianchi, or WeylTensor metadata.", "young_project(T[a-,b-,c-], [[0,1],[2]])"),
+        a("young_project_tensor", "tensor", "young_project_tensor_with_options(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &YoungProjectTensorOptions) -> Expr", "Apply declared Young-tableau symmetry and optionally simplify modulo monoterm symmetries by distributing, canonicalizing slots/products, renaming dummies, and collecting duplicates.", "The relevant tensor symbol must carry TableauSymmetry, RiemannSymmetry, SatisfiesBianchi, or WeylTensor properties; enabling modulo_monoterm is most useful when ordinary monoterm symmetries are also declared.", "young_project_tensor(T[a-,b-,c-], true, true, true)"),
+        a("tensor_reduce", "tensor", "tensor_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &TensorReduceOptions) -> Expr", "Run the finished tensor-reduction pipeline in order: monoterm canonicalisation, Cadabra-style multi-term Young projection on products, dimension-dependent reduction, dummy renaming, and optional meld.", "The expression should carry the relevant tensor properties for each enabled phase; dimension-dependent reduction additionally needs DimensionDependentIdentity plus inferable index-family dimension metadata.", "tensor_reduce(R[a-,b-,c-,d-]*V[e-] + R[a-,c-,d-,b-]*V[e-] + R[a-,d-,b-,c-]*V[e-])"),
         a("reduce_delta", "tensor", "reduce_delta(expr: &Expr, delta_sym: Spur, dim_sym: Spur, interner: &Interner) -> Expr", "Iteratively contract products and traces of Kronecker deltas back to simpler delta or dimension factors.", "The delta symbol and the symbol representing the dimension must be supplied.", "reduce_delta(Delta[a+,b-] * Delta[b+,c-])"),
         a("eliminate_kronecker", "tensor", "eliminate_kronecker(expr: &Expr, delta_sym: Spur, interner: &Interner) -> Expr", "Use Kronecker deltas to substitute contracted indices and remove delta factors from products.", "The delta symbol must identify a two-index Kronecker delta with one up and one down slot.", "eliminate_kronecker(delta[mu+,nu-] * T[nu+,rho-])"),
         a("eliminate_metric", "tensor", "eliminate_metric(expr: &Expr, metric_sym: Spur, inv_metric_sym: Spur, interner: &Interner) -> Expr", "Use metric or inverse-metric factors to raise or lower contracted indices and remove those metric factors.", "Metric components must use two down indices and inverse-metric components two up indices.", "eliminate_metric(g[mu-,nu-] * V[nu+])"),
@@ -2336,6 +2346,43 @@ fn code_expr(
         .as_str()
         .ok_or_else(|| format!("argument '{name}' must be a code string"))?;
     state.parse_code(code)
+}
+
+fn tableau_from_expr(expr: &ax_ir::Expr) -> Result<ax_young::YoungTableau, String> {
+    let rows = match expr {
+        ax_ir::Expr::List(rows) => rows.clone(),
+        ax_ir::Expr::Matrix(rows) => rows.iter().cloned().map(ax_ir::Expr::List).collect(),
+        _ => return Err("tableau must be a nested list such as [[0,1],[2]]".to_string()),
+    };
+
+    let mut parsed_rows = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let ax_ir::Expr::List(cells) = row else {
+            return Err("each tableau row must be a list of slot numbers".to_string());
+        };
+        let mut parsed_cells = Vec::with_capacity(cells.len());
+        for cell in cells {
+            let ax_ir::Expr::Int(value) = cell else {
+                return Err("tableau cells must be non-negative integers".to_string());
+            };
+            let as_usize = value
+                .to_usize()
+                .ok_or_else(|| "tableau cells must be non-negative integers".to_string())?;
+            parsed_cells.push(as_usize);
+        }
+        parsed_rows.push(parsed_cells);
+    }
+
+    let shape: Vec<usize> = parsed_rows.iter().map(Vec::len).collect();
+    if shape.windows(2).any(|window| window[0] < window[1]) {
+        return Err("tableau row lengths must be weakly decreasing".to_string());
+    }
+
+    Ok(ax_young::YoungTableau {
+        rows: parsed_rows,
+        multiplicity: num_rational::BigRational::one(),
+        selfdual_column: 0,
+    })
 }
 
 fn symbol_arg(
@@ -4085,6 +4132,14 @@ fn handle_young_project(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
+    if let Some(tableau_arg) = args.get(1) {
+        if !tableau_arg.is_null() && !tableau_arg.is_boolean() {
+            let tableau_expr = code_expr(args, 1, "tableau", state)?;
+            let tableau = tableau_from_expr(&tableau_expr)?;
+            let result = ax_tensor::young_project(&expr, &tableau, state.interner());
+            return expr_or_struct_response_with_change(&expr, result, "young_project", state);
+        }
+    }
     let opts = ax_tensor::YoungProjectTensorOptions {
         modulo_monoterm: match args.get(1) {
             Some(serde_json::Value::Null) | None => true,
@@ -4107,6 +4162,67 @@ fn handle_young_project(
     );
     expr_or_struct_response_with_change(&expr, result, "young_project", state)
 }
+
+fn handle_young_project_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let opts = ax_tensor::YoungProjectTensorOptions {
+        modulo_monoterm: match args.get(1) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 1, "modulo_monoterm")?,
+        },
+        canonicalize_after: match args.get(2) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 2, "canonicalize_after")?,
+        },
+        rename_dummies_after: match args.get(3) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 3, "rename_dummies_after")?,
+        },
+    };
+    let result = ax_tensor::young_project_tensor_with_options(
+        &expr,
+        &state.env().property_store,
+        state.interner(),
+        &opts,
+    );
+    expr_or_struct_response_with_change(&expr, result, "young_project_tensor", state)
+}
+
+fn handle_tensor_reduce(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let opts = ax_tensor::TensorReduceOptions {
+        monoterm: match args.get(1) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 1, "monoterm")?,
+        },
+        multiterm: match args.get(2) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 2, "multiterm")?,
+        },
+        dimension_dependent: match args.get(3) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 3, "dimension_dependent")?,
+        },
+        meld: match args.get(4) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 4, "meld")?,
+        },
+        modulo_monoterm: match args.get(5) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 5, "modulo_monoterm")?,
+        },
+    };
+    let result =
+        ax_tensor::tensor_reduce(&expr, &state.env().property_store, state.interner(), &opts);
+    expr_or_struct_response_with_change(&expr, result, "tensor_reduce", state)
+}
+
 fn handle_reduce_delta(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -7042,9 +7158,9 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("einsteinify", "Repair Einstein contractions by fixing dummy variances.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_einsteinify),
         centry("split_index", "Split one index family into two subfamilies.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("parent_indices", ParamType::SymbolList, true, "Parent-family indices."), pdef("subfamily_one", ParamType::SymbolList, true, "First subfamily symbols."), pdef("subfamily_two", ParamType::SymbolList, true, "Second subfamily symbols.")]), handle_split_index_tensor),
         centry("rename_dummies", "Rename dummy indices canonically.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_rename_dummies),
-        centry("young_project", "Project onto Young-tableau symmetry with optional monoterm simplification.", ps(vec![
+        centry("young_project", "Project with an explicit tableau or with declared Young-tableau symmetry plus optional monoterm simplification.", ps(vec![
             pdef("expr", ParamType::ExprId, true, "Stored expression id."),
-            pdef("modulo_monoterm", ParamType::Bool, false, "Whether to simplify modulo declared monoterm symmetries after projection. Defaults to true."),
+            pdef("tableau_or_modulo_monoterm", ParamType::Optional(Box::new(ParamType::Code)), false, "Either a tableau code string like [[0,1],[2]] or the modulo_monoterm boolean."),
             pdef("canonicalize_after", ParamType::Bool, false, "Whether to canonicalize indices after projection. Defaults to true."),
             pdef("rename_dummies_after", ParamType::Bool, false, "Whether to rename dummy indices after projection. Defaults to true."),
         ]), handle_young_project),
@@ -7053,7 +7169,15 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("modulo_monoterm", ParamType::Bool, false, "Whether to simplify modulo declared monoterm symmetries after projection. Defaults to true."),
             pdef("canonicalize_after", ParamType::Bool, false, "Whether to canonicalize indices after projection. Defaults to true."),
             pdef("rename_dummies_after", ParamType::Bool, false, "Whether to rename dummy indices after projection. Defaults to true."),
-        ]), handle_young_project),
+        ]), handle_young_project_tensor),
+        centry("tensor_reduce", "Run the finished tensor reduction pipeline.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("monoterm", ParamType::Bool, false, "Whether to run monoterm canonicalisation first. Defaults to true."),
+            pdef("multiterm", ParamType::Bool, false, "Whether to run Cadabra-style multi-term Young projection on products. Defaults to true."),
+            pdef("dimension_dependent", ParamType::Bool, false, "Whether to run dimension-dependent reduction when metadata permits it. Defaults to true."),
+            pdef("meld", ParamType::Bool, false, "Whether to run final basis reduction with meld. Defaults to true."),
+            pdef("modulo_monoterm", ParamType::Bool, false, "Whether the multi-term stage should simplify modulo monoterm symmetries. Defaults to true."),
+        ]), handle_tensor_reduce),
         centry("reduce_delta", "Reduce expanded deltas back to compact form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_reduce_delta),
         centry("symmetrise", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
         centry("symmetrize", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
