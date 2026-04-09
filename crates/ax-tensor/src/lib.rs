@@ -854,15 +854,86 @@ fn is_metric_delta_factor(expr: &Expr, properties: &dyn PropertyLookup) -> bool 
     })
 }
 
+fn compatible_contracted_pair(lhs: &Index, rhs: &Index) -> bool {
+    lhs.name == rhs.name
+        && lhs.variance != rhs.variance
+        && (lhs.index_type == rhs.index_type || lhs.index_type.is_none() || rhs.index_type.is_none())
+}
+
+fn riemann_to_ricci_contraction(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+) -> Option<Expr> {
+    let Expr::Indexed(base, indices) = expr else {
+        return None;
+    };
+    let Some(sym) = expr_head_symbol(base) else {
+        return None;
+    };
+    if indices.len() != 4 {
+        return None;
+    }
+    let factor_props = properties.get_properties_with_indices(sym, indices, None);
+    if !factor_props
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::RiemannSymmetry))
+    {
+        return None;
+    }
+
+    let contracted_pairs = (0..indices.len())
+        .flat_map(|i| ((i + 1)..indices.len()).map(move |j| (i, j)))
+        .filter(|(i, j)| compatible_contracted_pair(&indices[*i], &indices[*j]))
+        .collect::<Vec<_>>();
+    if contracted_pairs.is_empty() {
+        return None;
+    }
+
+    if contracted_pairs
+        .iter()
+        .any(|(i, j)| matches!((*i, *j), (0, 1) | (2, 3)))
+    {
+        return Some(Expr::zero());
+    }
+
+    if contracted_pairs.len() != 1 {
+        return None;
+    }
+
+    let (sign, keep_slots): (i32, [usize; 2]) = match contracted_pairs[0] {
+        (0, 2) => (1, [1, 3]),
+        (0, 3) => (-1, [1, 2]),
+        (1, 2) => (-1, [0, 3]),
+        (1, 3) => (1, [0, 2]),
+        _ => return None,
+    };
+
+    let ricci = Expr::Indexed(
+        base.clone(),
+        vec![
+            indices[keep_slots[0]].clone(),
+            indices[keep_slots[1]].clone(),
+        ],
+    );
+    Some(if sign < 0 { Expr::neg(ricci) } else { ricci })
+}
+
 fn simplify_property_contractions_once(
     expr: &Expr,
     properties: &dyn PropertyLookup,
     interner: &Interner,
 ) -> Expr {
     match expr {
+        Expr::Indexed(_, _) => riemann_to_ricci_contraction(expr, properties).unwrap_or_else(|| {
+            expr.clone()
+        }),
         Expr::Mul(factors) => {
             let mut remaining = factors.clone();
             for i in 0..remaining.len() {
+                if let Some(simplified) = riemann_to_ricci_contraction(&remaining[i], properties) {
+                    remaining[i] = simplified;
+                    return Expr::mul(remaining);
+                }
                 let Some((_, factor_indices)) = indexed_symbol_and_indices(&remaining[i]) else {
                     continue;
                 };
@@ -16572,6 +16643,98 @@ mod tests {
                 );
             }
             _ => panic!("expected Mul, got: {:?}", result),
+        }
+    }
+
+    #[test]
+    fn riemann_contractions_reduce_to_ricci_for_all_ordered_pairs() {
+        let interner = ax_ir::Interner::new();
+        let r = interner.get_or_intern("R");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+
+        let mut props = HashMap::new();
+        props.insert(r, vec![ax_ir::TensorProperty::RiemannSymmetry]);
+
+        let make_riemann = |slots: [Index; 4]| Expr::Indexed(Box::new(Expr::Sym(r)), slots.to_vec());
+        let make_ricci = |i0: Index, i1: Index| Expr::Indexed(Box::new(Expr::Sym(r)), vec![i0, i1]);
+        let slot_index = |name: lasso::Spur, variance: Variance| Index {
+            name,
+            variance,
+            index_type: None,
+        };
+
+        let cases: Vec<((usize, usize), Expr)> = vec![
+            ((0, 1), Expr::zero()),
+            ((1, 0), Expr::zero()),
+            ((2, 3), Expr::zero()),
+            ((3, 2), Expr::zero()),
+            (
+                (0, 2),
+                make_ricci(slot_index(b, Variance::Down), slot_index(d, Variance::Down)),
+            ),
+            (
+                (2, 0),
+                make_ricci(slot_index(b, Variance::Down), slot_index(d, Variance::Down)),
+            ),
+            (
+                (0, 3),
+                Expr::neg(make_ricci(
+                    slot_index(b, Variance::Down),
+                    slot_index(c, Variance::Down),
+                )),
+            ),
+            (
+                (3, 0),
+                Expr::neg(make_ricci(
+                    slot_index(b, Variance::Down),
+                    slot_index(c, Variance::Down),
+                )),
+            ),
+            (
+                (1, 2),
+                Expr::neg(make_ricci(
+                    slot_index(a, Variance::Down),
+                    slot_index(d, Variance::Down),
+                )),
+            ),
+            (
+                (2, 1),
+                Expr::neg(make_ricci(
+                    slot_index(a, Variance::Down),
+                    slot_index(d, Variance::Down),
+                )),
+            ),
+            (
+                (1, 3),
+                make_ricci(slot_index(a, Variance::Down), slot_index(c, Variance::Down)),
+            ),
+            (
+                (3, 1),
+                make_ricci(slot_index(a, Variance::Down), slot_index(c, Variance::Down)),
+            ),
+        ];
+
+        for ((up_slot, down_slot), expected) in cases {
+            let mut slots = [
+                slot_index(a, Variance::Down),
+                slot_index(b, Variance::Down),
+                slot_index(c, Variance::Down),
+                slot_index(d, Variance::Down),
+            ];
+            slots[up_slot] = slot_index(interner.get_or_intern("mu"), Variance::Up);
+            slots[down_slot] = slot_index(interner.get_or_intern("mu"), Variance::Down);
+
+            let expr = make_riemann(slots);
+            let reduced = canonicalise(&expr, &props, &interner);
+            let expected = canonicalise(&expected, &props, &interner);
+            assert_eq!(
+                reduced, expected,
+                "unexpected contraction result for repeated pair ({up_slot}, {down_slot}): got {:?}, expected {:?}",
+                reduced, expected
+            );
         }
     }
 
