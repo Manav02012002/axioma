@@ -1,6 +1,7 @@
 use ax_ir::{Expr, Interner};
 use ax_tensor::{
-    christoffel_from_metric, ricci_from_riemann, riemann_from_christoffel, SymbolicMatrix,
+    christoffel_from_metric, ricci_from_riemann, ricci_scalar, riemann_from_christoffel,
+    weyl_tensor, SymbolicMatrix,
 };
 
 fn simplify(expr: &Expr, interner: &Interner) -> Expr {
@@ -149,6 +150,50 @@ fn schwarzschild_ricci_zero_both_conventions() {
             nonzero.join("\n")
         );
     }
+}
+
+#[test]
+fn schwarzschild_weyl_is_nonzero_and_equals_riemann_in_vacuum() {
+    let interner = Interner::new();
+    let (g, coords) = build_schwarzschild(&interner);
+
+    let gamma = christoffel_from_metric(&g, &coords, &interner);
+    let riemann =
+        riemann_from_christoffel(&gamma, &coords, &interner, &ax_ir::Convention::default());
+    let ricci = ricci_from_riemann(&riemann, 4, &interner, &ax_ir::Convention::default());
+
+    for row in &ricci {
+        for entry in row {
+            let simplified = aggressive_simplify(&simplify(entry, &interner), &interner);
+            assert_eq!(
+                simplified,
+                Expr::zero(),
+                "Schwarzschild should be Ricci flat"
+            );
+        }
+    }
+    let scalar = aggressive_simplify(
+        &simplify(
+            &ricci_scalar(&ricci, &g.symbolic_inverse(&interner), &interner),
+            &interner,
+        ),
+        &interner,
+    );
+    assert_eq!(scalar, Expr::zero(), "Schwarzschild scalar should vanish");
+
+    let zero_ricci = vec![vec![Expr::zero(); 4]; 4];
+    let weyl = weyl_tensor(&riemann, &zero_ricci, &Expr::zero(), &g, &interner);
+    let weyl_probe = aggressive_simplify(&simplify(&weyl[0][1][0][1], &interner), &interner);
+    let riemann_probe = aggressive_simplify(&simplify(&riemann[0][1][0][1], &interner), &interner);
+    assert_ne!(
+        weyl_probe,
+        Expr::zero(),
+        "Schwarzschild Weyl should be non-zero"
+    );
+    assert_eq!(
+        weyl_probe, riemann_probe,
+        "Ricci-flat Schwarzschild should satisfy Weyl = Riemann on non-zero components"
+    );
 }
 
 #[test]

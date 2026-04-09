@@ -15,6 +15,7 @@ num-bigint = { workspace = true }
 num-rational = { workspace = true }
 num-traits = { workspace = true }
 rayon = "1"
+thiserror = { workspace = true }
 
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }

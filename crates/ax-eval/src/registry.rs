@@ -1,3 +1,4 @@
+use crate::{expr_3d_to_list, expr_4d_to_list, expr_to_3d, expr_to_4d, matrix_to_symbolic};
 use num_traits::{One, ToPrimitive};
 
 pub struct BuiltinEntry {
@@ -1956,6 +1957,34 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "einstein(Ric, R, g)",
         ),
         b(
+            "weyl_from_curvature",
+            "gr",
+            "weyl_from_curvature(riemann, ricci, scalar, metric)",
+            "Component Weyl tensor from curvature inputs, distinct from the abstract property declaration `weyl_tensor(C)`.",
+            "weyl_from_curvature(R, Ric, Scal, g)",
+        ),
+        b(
+            "weyl_from_riemann",
+            "gr",
+            "weyl_from_riemann(riemann, ricci, scalar, metric)",
+            "Alias for weyl_from_curvature(riemann, ricci, scalar, metric).",
+            "weyl_from_riemann(R, Ric, Scal, g)",
+        ),
+        b(
+            "cotton_from_curvature",
+            "gr",
+            "cotton_from_curvature(ricci, scalar, gamma, metric, [coords...])",
+            "Component Cotton tensor from Ricci, scalar curvature, Levi-Civita connection, metric, and coordinates.",
+            "cotton_from_curvature(Ric, R, Gamma, g, [t, x, y])",
+        ),
+        b(
+            "bach_from_curvature",
+            "gr",
+            "bach_from_curvature(weyl, ricci, gamma, metric, [coords...])",
+            "Component Bach tensor from Weyl, Ricci, Levi-Civita connection, metric, and coordinates.",
+            "bach_from_curvature(C, Ric, Gamma, g, [t, r, theta, phi])",
+        ),
+        b(
             "kretschner",
             "gr",
             "kretschner(riemann, metric)",
@@ -2112,6 +2141,7 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("young_project_tensor", "tensor", "young_project_tensor_with_options(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &YoungProjectTensorOptions) -> Expr", "Apply declared Young-tableau symmetry and optionally simplify modulo monoterm symmetries by distributing, canonicalizing slots/products, renaming dummies, and collecting duplicates.", "The relevant tensor symbol must carry TableauSymmetry, RiemannSymmetry, SatisfiesBianchi, or WeylTensor properties; enabling modulo_monoterm is most useful when ordinary monoterm symmetries are also declared.", "young_project_tensor(T[a-,b-,c-], true, true, true)"),
         a("tensor_reduce", "tensor", "tensor_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &TensorReduceOptions) -> Expr", "Run the finished tensor-reduction pipeline in order: monoterm canonicalisation, Cadabra-style multi-term Young projection on products, dimension-dependent reduction, dummy renaming, and optional meld.", "The expression should carry the relevant tensor properties for each enabled phase; dimension-dependent reduction additionally needs DimensionDependentIdentity plus inferable index-family dimension metadata.", "tensor_reduce(R[a-,b-,c-,d-]*V[e-] + R[a-,c-,d-,b-]*V[e-] + R[a-,d-,b-,c-]*V[e-])"),
         a("abstract_tensor_reduce", "tensor", "abstract_tensor_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &TensorReduceOptions) -> Expr", "User-facing abstract tensor reduction pipeline for declared symmetries and inherited covariant-derivative identities such as the second Bianchi identity of a declared Riemann tensor.", "Use riemann_tensor(...) or property R riemann_tensor together with covariant_derivative(...) for abstract GR workflows.", "abstract_tensor_reduce(nabla[mu-]*R[nu-,rho-,sigma-,lambda-] + nabla[nu-]*R[rho-,mu-,sigma-,lambda-] + nabla[rho-]*R[mu-,nu-,sigma-,lambda-])"),
+        a("riemann_to_ricci", "tensor", "riemann_to_ricci(expr: &Expr, ricci_sym: Spur, scalar_sym: Option<Spur>, properties: &dyn PropertyLookup, interner: &Interner) -> Result<Expr, AbstractCurvatureReduceError>", "Rewrite internal abstract Riemann contractions inside a single factor into Ricci or scalar-curvature factors. This is abstract/internal contraction only, performs no component computation, and does not contract indices across distinct factors in a product. Typical uses are riemann_to_ricci(R[a-,b-,a+,d-], Ric) and riemann_to_ricci(R[a-,b-,a+,b+], Ric, Scal).", "The target indexed factor must be Riemann-like under the current property lookup; cross-factor contractions remain the responsibility of canonicalise/tensor_reduce.", "riemann_to_ricci(R[a-,b-,a+,d-], Ric)"),
         a("reduce_delta", "tensor", "reduce_delta(expr: &Expr, delta_sym: Spur, dim_sym: Spur, interner: &Interner) -> Expr", "Iteratively contract products and traces of Kronecker deltas back to simpler delta or dimension factors.", "The delta symbol and the symbol representing the dimension must be supplied.", "reduce_delta(Delta[a+,b-] * Delta[b+,c-])"),
         a("eliminate_kronecker", "tensor", "eliminate_kronecker(expr: &Expr, delta_sym: Spur, interner: &Interner) -> Expr", "Use Kronecker deltas to substitute contracted indices and remove delta factors from products.", "The delta symbol must identify a two-index Kronecker delta with one up and one down slot.", "eliminate_kronecker(delta[mu+,nu-] * T[nu+,rho-])"),
         a("eliminate_metric", "tensor", "eliminate_metric(expr: &Expr, metric_sym: Spur, inv_metric_sym: Spur, interner: &Interner) -> Expr", "Use metric or inverse-metric factors to raise or lower contracted indices and remove those metric factors.", "Metric components must use two down indices and inverse-metric components two up indices.", "eliminate_metric(g[mu-,nu-] * V[nu+])"),
@@ -2122,6 +2152,10 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("ricci_from_riemann", "gr", "ricci_from_riemann(riemann: &[Vec<Vec<Vec<Expr>>>], n: usize, interner: &Interner, convention: &Convention) -> Vec<Vec<Expr>>", "Contract a Riemann tensor into the Ricci tensor using the configured Ricci-contraction convention.", "n must match the tensor dimensions; the Convention selects first-third or first-fourth contraction.", "ricci(R)"),
         a("ricci_scalar", "gr", "ricci_scalar(ricci: &[Vec<Expr>], ginv: &SymbolicMatrix, interner: &Interner) -> Expr", "Contract the Ricci tensor with the inverse metric to obtain the scalar curvature.", "The inverse metric dimension must match the Ricci tensor dimensions.", "ricci_scalar(ginv, Ric)"),
         a("einstein_tensor", "gr", "einstein_tensor(ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Vec<Vec<Expr>>", "Build the Einstein tensor G_ab = R_ab - 1/2 g_ab R.", "The metric dimension must match the Ricci tensor dimensions.", "einstein(g, Ric, R)"),
+        a("weyl_from_curvature", "gr", "weyl_from_curvature(riemann: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Result<Vec<Vec<Vec<Vec<Expr>>>>, WeylError>", "Compute the Weyl tensor as a component-computation algorithm from already-computed Riemann, Ricci, scalar curvature, and metric data. This is distinct from the abstract property declaration `weyl_tensor(C)`.", "The inputs must already be concrete component tensors with consistent dimensions; this algorithm computes components rather than declaring abstract symmetries.", "weyl_from_curvature(R, Ric, Scal, g)"),
+        a("weyl_from_riemann", "gr", "weyl_from_curvature(riemann: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Result<Vec<Vec<Vec<Vec<Expr>>>>, WeylError>", "Alias for the component-computation algorithm `weyl_from_curvature(...)`, distinct from the abstract property declaration `weyl_tensor(C)`.", "Use this alias when you want the same component Weyl computation under a name that emphasizes the Riemann-curvature input.", "weyl_from_riemann(R, Ric, Scal, g)"),
+        a("cotton_from_curvature", "gr", "cotton_from_curvature(ricci: &[Vec<Expr>], scalar: &Expr, gamma: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Vec<Expr>>>, ConformalCurvatureError>", "Compute the Cotton tensor as a component algorithm from Ricci, scalar curvature, Christoffel symbols, metric, and coordinates.", "The Ricci tensor, connection, metric, and coordinate list must have consistent dimensions; this is a component-computation routine rather than an abstract property declaration.", "cotton_from_curvature(Ric, R, Gamma, g, [t, x, y])"),
+        a("bach_from_curvature", "gr", "bach_from_curvature(weyl: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], gamma: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Expr>>, ConformalCurvatureError>", "Compute the Bach tensor as a component algorithm from Weyl, Ricci, Christoffel symbols, metric, and coordinates.", "The Weyl tensor, Ricci tensor, connection, metric, and coordinate list must have consistent dimensions; this is a component-computation routine rather than an abstract property declaration.", "bach_from_curvature(C, Ric, Gamma, g, [t, r, theta, phi])"),
         a("kretschner_scalar", "gr", "kretschner_scalar(riemann: &[Vec<Vec<Vec<Expr>>>], g: &SymbolicMatrix, interner: &Interner) -> Expr", "Compute the full Kretschmann scalar by contracting two Riemann tensors with four inverse metrics.", "The metric must be invertible; Axioma keeps a Schwarzschild closed-form shortcut as an optimization, and also provides a separate kretschmann_scalar_diagonal_approx helper when a diagonal-only approximation is desired.", "kretschner(g, R)"),
         a("kretschmann_scalar_diagonal_approx", "gr", "kretschmann_scalar_diagonal_approx(riemann: &[Vec<Vec<Vec<Expr>>>], g: &SymbolicMatrix, interner: &Interner) -> Expr", "Compute the old diagonal-only approximation to the Kretschmann scalar by contracting only matching diagonal inverse-metric entries against squared Riemann components.", "This is only exact for diagonal metrics in bases where the contraction really reduces that way; for the physical invariant use kretschner_scalar instead.", "kretschmann_scalar_diagonal_approx(R, g)"),
         a("inverse_vielbein", "gr", "inverse_vielbein(e: &SymbolicMatrix, interner: &Interner) -> SymbolicMatrix", "Compute the inverse vielbein matrix symbolically.", "The vielbein matrix must be square and invertible.", "inv_vielbein(e)"),
@@ -4330,6 +4364,21 @@ fn handle_abstract_tensor_reduce(
     expr_or_struct_response_with_change(&expr, result, "abstract_tensor_reduce", state)
 }
 
+fn handle_riemann_to_ricci_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let ricci_sym = symbol_arg(args, 1, "ricci_sym", state)?;
+    let mut call_args = vec![expr.clone(), ax_ir::Expr::Sym(ricci_sym)];
+    if !matches!(args.get(2), None | Some(serde_json::Value::Null)) {
+        let scalar_sym = symbol_arg(args, 2, "scalar_sym", state)?;
+        call_args.push(ax_ir::Expr::Sym(scalar_sym));
+    }
+    let result = call_named("riemann_to_ricci", call_args, state);
+    expr_or_struct_response_with_change(&expr, result, "riemann_to_ricci", state)
+}
+
 fn handle_reduce_delta(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -4830,6 +4879,109 @@ fn handle_einstein_tensor_gr(
     )
 }
 
+fn handle_weyl_from_curvature_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let riemann_expr = expr_from_id(args, 0, "riemann", state)?;
+    let riemann = expr_to_4d(&riemann_expr)
+        .ok_or_else(|| "argument 'riemann' must be a rank-4 list tensor".to_string())?;
+    let ricci_expr = expr_from_id(args, 1, "ricci", state)?;
+    let ricci = match &ricci_expr {
+        ax_ir::Expr::Matrix(rows) => rows.clone(),
+        _ => return Err("argument 'ricci' must be a matrix expression".to_string()),
+    };
+    let scalar = expr_from_id(args, 2, "scalar", state)?;
+    let metric_expr = expr_from_id(args, 3, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+
+    match ax_tensor::weyl_from_curvature(&riemann, &ricci, &scalar, &metric, state.interner()) {
+        Ok(weyl) => expr_response(expr_4d_to_list(weyl), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_cotton_from_curvature_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let ricci_expr = expr_from_id(args, 0, "ricci", state)?;
+    let ricci = match &ricci_expr {
+        ax_ir::Expr::Matrix(rows) => rows.clone(),
+        _ => return Err("argument 'ricci' must be a matrix expression".to_string()),
+    };
+    let scalar = expr_from_id(args, 1, "scalar", state)?;
+    let gamma_expr = expr_from_id(args, 2, "gamma", state)?;
+    let gamma = expr_to_3d(&gamma_expr)
+        .ok_or_else(|| "argument 'gamma' must be a rank-3 list tensor".to_string())?;
+    let metric_expr = expr_from_id(args, 3, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let coords_expr = expr_from_id(args, 4, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+
+    match ax_tensor::cotton_from_curvature(
+        &ricci,
+        &scalar,
+        &gamma,
+        &metric,
+        &coords,
+        state.interner(),
+    ) {
+        Ok(cotton) => expr_response(expr_3d_to_list(cotton), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_bach_from_curvature_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let weyl_expr = expr_from_id(args, 0, "weyl", state)?;
+    let weyl = expr_to_4d(&weyl_expr)
+        .ok_or_else(|| "argument 'weyl' must be a rank-4 list tensor".to_string())?;
+    let ricci_expr = expr_from_id(args, 1, "ricci", state)?;
+    let ricci = match &ricci_expr {
+        ax_ir::Expr::Matrix(rows) => rows.clone(),
+        _ => return Err("argument 'ricci' must be a matrix expression".to_string()),
+    };
+    let gamma_expr = expr_from_id(args, 2, "gamma", state)?;
+    let gamma = expr_to_3d(&gamma_expr)
+        .ok_or_else(|| "argument 'gamma' must be a rank-3 list tensor".to_string())?;
+    let metric_expr = expr_from_id(args, 3, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let coords_expr = expr_from_id(args, 4, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+
+    match ax_tensor::bach_from_curvature(&weyl, &ricci, &gamma, &metric, &coords, state.interner())
+    {
+        Ok(bach) => expr_response(ax_ir::Expr::Matrix(bach), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 fn handle_weyl_curvature_gr(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -4847,10 +4999,6 @@ fn handle_weyl_curvature_gr(
         .get_metric(riemann_id)
         .map(|(m, _)| m.clone())
         .ok_or_else(|| format!("unknown metric '{riemann_id}'"))?;
-    let dim = metric.dim;
-    if dim < 3 {
-        return Err("weyl curvature is only defined for dimension >= 3".to_string());
-    }
     let scalar = crate::eval(
         &ax_tensor::ricci_scalar(
             &ricci,
@@ -4860,57 +5008,8 @@ fn handle_weyl_curvature_gr(
         state.env(),
         state.interner(),
     );
-    let denom1 = ax_ir::Expr::Rational(num_rational::BigRational::new(
-        1.into(),
-        (dim as i64 - 2).into(),
-    ));
-    let denom2 = ax_ir::Expr::Rational(num_rational::BigRational::new(
-        1.into(),
-        (((dim - 1) * (dim - 2)) as i64).into(),
-    ));
-    let mut out = vec![vec![vec![vec![ax_ir::Expr::zero(); dim]; dim]; dim]; dim];
-    for a in 0..dim {
-        for b in 0..dim {
-            for c in 0..dim {
-                for d in 0..dim {
-                    let r = riem[a][b][c][d].clone();
-                    let rab = &ricci;
-                    let gac = metric.data[a][c].clone();
-                    let gad = metric.data[a][d].clone();
-                    let gbc = metric.data[b][c].clone();
-                    let gbd = metric.data[b][d].clone();
-                    let term1 = ax_ir::Expr::mul(vec![
-                        denom1.clone(),
-                        ax_ir::Expr::add(vec![
-                            ax_ir::Expr::mul(vec![gac, rab[d][b].clone()]),
-                            ax_ir::Expr::neg(ax_ir::Expr::mul(vec![gad, rab[c][b].clone()])),
-                            ax_ir::Expr::neg(ax_ir::Expr::mul(vec![gbc, rab[d][a].clone()])),
-                            ax_ir::Expr::mul(vec![gbd, rab[c][a].clone()]),
-                        ]),
-                    ]);
-                    let term2 = ax_ir::Expr::mul(vec![
-                        denom2.clone(),
-                        scalar.clone(),
-                        ax_ir::Expr::add(vec![
-                            ax_ir::Expr::mul(vec![
-                                metric.data[a][c].clone(),
-                                metric.data[d][b].clone(),
-                            ]),
-                            ax_ir::Expr::neg(ax_ir::Expr::mul(vec![
-                                metric.data[a][d].clone(),
-                                metric.data[c][b].clone(),
-                            ])),
-                        ]),
-                    ]);
-                    out[a][b][c][d] = crate::eval(
-                        &ax_ir::Expr::add(vec![r, ax_ir::Expr::neg(term1), term2]),
-                        state.env(),
-                        state.interner(),
-                    );
-                }
-            }
-        }
-    }
+    let out = ax_tensor::weyl_from_curvature(&riem, &ricci, &scalar, &metric, state.interner())
+        .map_err(|err| err.to_string())?;
     let expr = ax_ir::Expr::List(
         out.into_iter()
             .map(|cube| {
@@ -7479,6 +7578,11 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("meld", ParamType::Bool, false, "Whether to run final basis reduction with meld. Defaults to true."),
             pdef("modulo_monoterm", ParamType::Bool, false, "Whether the multi-term stage should simplify modulo monoterm symmetries. Defaults to true."),
         ]), handle_abstract_tensor_reduce),
+        centry("riemann_to_ricci", "Rewrite internal abstract Riemann contractions into Ricci or scalar-curvature factors.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("ricci_sym", ParamType::Symbol, true, "Ricci tensor symbol."),
+            pdef("scalar_sym", ParamType::Optional(Box::new(ParamType::Symbol)), false, "Optional scalar-curvature symbol for traced Ricci collapse."),
+        ]), handle_riemann_to_ricci_tensor),
         centry("reduce_delta", "Reduce expanded deltas back to compact form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_reduce_delta),
         centry("symmetrise", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
         centry("symmetrize", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
@@ -7525,6 +7629,32 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("scalar", ParamType::Optional(Box::new(ParamType::ExprId)), false, "Stored scalar expression id."),
             pdef("metric", ParamType::Optional(Box::new(ParamType::ExprId)), false, "Stored metric matrix expression id."),
         ]), handle_einstein_tensor_gr),
+        centry("weyl_from_curvature", "Compute the component Weyl tensor from Riemann, Ricci, scalar curvature, and metric inputs.", ps(vec![
+            pdef("riemann", ParamType::ExprId, true, "Stored rank-4 Riemann tensor list expression id."),
+            pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."),
+            pdef("scalar", ParamType::ExprId, true, "Stored scalar-curvature expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+        ]), handle_weyl_from_curvature_expr),
+        centry("weyl_from_riemann", "Alias for the component Weyl-tensor computation from curvature inputs.", ps(vec![
+            pdef("riemann", ParamType::ExprId, true, "Stored rank-4 Riemann tensor list expression id."),
+            pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."),
+            pdef("scalar", ParamType::ExprId, true, "Stored scalar-curvature expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+        ]), handle_weyl_from_curvature_expr),
+        centry("cotton_from_curvature", "Compute the component Cotton tensor from Ricci, scalar curvature, Christoffel symbols, metric, and coordinates.", ps(vec![
+            pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."),
+            pdef("scalar", ParamType::ExprId, true, "Stored scalar-curvature expression id."),
+            pdef("gamma", ParamType::ExprId, true, "Stored rank-3 Christoffel tensor list expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_cotton_from_curvature_expr),
+        centry("bach_from_curvature", "Compute the component Bach tensor from Weyl, Ricci, Christoffel symbols, metric, and coordinates.", ps(vec![
+            pdef("weyl", ParamType::ExprId, true, "Stored rank-4 Weyl tensor list expression id."),
+            pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."),
+            pdef("gamma", ParamType::ExprId, true, "Stored rank-3 Christoffel tensor list expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_bach_from_curvature_expr),
         centry("kretschner_scalar", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
         centry("kretschner", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
         centry("kretschmann_scalar_diagonal_approx", "Compute the diagonal-only Kretschmann approximation.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschmann_scalar_diagonal_approx_gr),

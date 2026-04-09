@@ -5076,6 +5076,7 @@ fn builtin_call(
         }
         "tensor_reduce" => {
             if !args.is_empty() {
+                let target = eval(&args[0], env, interner);
                 let opts = ax_tensor::TensorReduceOptions {
                     monoterm: args
                         .get(1)
@@ -5098,13 +5099,14 @@ fn builtin_call(
                         .and_then(|arg| parse_bool_like_expr(arg, interner))
                         .unwrap_or(true),
                 };
-                ax_tensor::tensor_reduce(&args[0], &env.property_store, interner, &opts)
+                ax_tensor::tensor_reduce(&target, &env.property_store, interner, &opts)
             } else {
                 Expr::Call(f, args)
             }
         }
         "abstract_tensor_reduce" | "abstract_gr_reduce" => {
             if !args.is_empty() {
+                let target = eval(&args[0], env, interner);
                 let opts = ax_tensor::TensorReduceOptions {
                     monoterm: args
                         .get(1)
@@ -5127,7 +5129,39 @@ fn builtin_call(
                         .and_then(|arg| parse_bool_like_expr(arg, interner))
                         .unwrap_or(true),
                 };
-                ax_tensor::tensor_reduce(&args[0], &env.tensor_properties, interner, &opts)
+                ax_tensor::tensor_reduce(&target, &env.tensor_properties, interner, &opts)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "riemann_to_ricci" => {
+            if args.len() == 2 || args.len() == 3 {
+                let ricci_sym = match args.get(1) {
+                    Some(Expr::Sym(sym)) => *sym,
+                    _ => {
+                        return Expr::Sym(
+                            interner.get_or_intern(
+                                &ax_tensor::AbstractCurvatureReduceError::MissingRicciSymbol
+                                    .to_string(),
+                            ),
+                        )
+                    }
+                };
+                let scalar_sym = match args.get(2) {
+                    Some(Expr::Sym(sym)) => Some(*sym),
+                    Some(_) => return Expr::Call(f, args),
+                    None => None,
+                };
+                match ax_tensor::riemann_to_ricci(
+                    &args[0],
+                    ricci_sym,
+                    scalar_sym,
+                    &env.property_store,
+                    interner,
+                ) {
+                    Ok(result) => result,
+                    Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                }
             } else {
                 Expr::Call(f, args)
             }
@@ -6787,6 +6821,106 @@ fn builtin_call(
                             ))
                         } else {
                             Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "weyl_from_curvature" | "weyl_from_riemann" => {
+            if args.len() == 4 {
+                match (
+                    expr_to_4d(&args[0]),
+                    &args[1],
+                    &args[2],
+                    matrix_to_symbolic(&args[3]),
+                ) {
+                    (Some(riemann), Expr::Matrix(ricci), scalar, Some(metric)) => {
+                        match ax_tensor::weyl_from_curvature(
+                            &riemann, ricci, scalar, &metric, interner,
+                        ) {
+                            Ok(weyl) => expr_4d_to_list(weyl),
+                            Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cotton_from_curvature" => {
+            if args.len() == 5 {
+                match (
+                    &args[0],
+                    &args[1],
+                    expr_to_3d(&args[2]),
+                    matrix_to_symbolic(&args[3]),
+                    &args[4],
+                ) {
+                    (
+                        Expr::Matrix(ricci),
+                        scalar,
+                        Some(gamma),
+                        Some(metric),
+                        Expr::List(coords_exprs),
+                    ) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => match ax_tensor::cotton_from_curvature(
+                                ricci, scalar, &gamma, &metric, &coords, interner,
+                            ) {
+                                Ok(cotton) => expr_3d_to_list(cotton),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bach_from_curvature" => {
+            if args.len() == 5 {
+                match (
+                    expr_to_4d(&args[0]),
+                    &args[1],
+                    expr_to_3d(&args[2]),
+                    matrix_to_symbolic(&args[3]),
+                    &args[4],
+                ) {
+                    (
+                        Some(weyl),
+                        Expr::Matrix(ricci),
+                        Some(gamma),
+                        Some(metric),
+                        Expr::List(coords_exprs),
+                    ) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => match ax_tensor::bach_from_curvature(
+                                &weyl, ricci, &gamma, &metric, &coords, interner,
+                            ) {
+                                Ok(bach) => Expr::Matrix(bach),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
                         }
                     }
                     _ => Expr::Call(f, args),
@@ -9369,6 +9503,92 @@ mod tests {
     }
 
     #[test]
+    fn minkowski_weyl_from_curvature_eval_is_zero_rank4_tensor() {
+        let (result, _interner) = eval_src(
+            "weyl_from_curvature(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z]), ricci(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])), ricci_scalar(ricci(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])), inv(metric(diag(-1, 1, 1, 1)))), metric(diag(-1, 1, 1, 1)));",
+        );
+        let weyl = expr_to_4d(&result).expect("weyl rank-4 list");
+        assert_eq!(weyl.len(), 4);
+        assert!(
+            weyl.iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .all(|entry| *entry == Expr::zero()),
+            "expected zero Weyl tensor, got {:?}",
+            weyl
+        );
+    }
+
+    #[test]
+    fn schwarzschild_weyl_from_riemann_eval_matches_riemann_in_vacuum_componentwise() {
+        let weyl_src = "weyl_from_riemann(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi]), ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), ricci_scalar(ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), inv(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)))), metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)));";
+        let riemann_src =
+            "riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi]);";
+        let interner = ax_ir::Interner::new();
+        let env = Env::new();
+        let weyl_expr = eval(
+            &ax_core_ir::lower(weyl_src, &interner)
+                .expr
+                .expect("weyl expr"),
+            &env,
+            &interner,
+        );
+        let riemann_expr = eval(
+            &ax_core_ir::lower(riemann_src, &interner)
+                .expr
+                .expect("riemann expr"),
+            &env,
+            &interner,
+        );
+        let weyl = expr_to_4d(&weyl_expr).expect("weyl rank-4 list");
+        let riemann = expr_to_4d(&riemann_expr).expect("riemann rank-4 list");
+
+        assert_ne!(
+            weyl[0][1][0][1],
+            Expr::zero(),
+            "expected a nonzero Schwarzschild Weyl component"
+        );
+        assert_eq!(weyl[0][1][0][1], riemann[0][1][0][1]);
+        assert_eq!(weyl[2][3][2][3], riemann[2][3][2][3]);
+    }
+
+    #[test]
+    fn schwarzschild_cotton_from_curvature_eval_is_zero_rank3_tensor() {
+        let (result, _interner) = eval_src(
+            "cotton_from_curvature(ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), ricci_scalar(ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), inv(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)))), christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]);",
+        );
+        let cotton = expr_to_3d(&result).expect("cotton rank-3 list");
+        assert_eq!(cotton.len(), 4);
+        assert!(
+            cotton
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|entry| *entry == Expr::zero()),
+            "expected zero Cotton tensor, got {:?}",
+            cotton
+        );
+    }
+
+    #[test]
+    fn minkowski_bach_from_curvature_eval_is_zero_matrix() {
+        let (result, _interner) = eval_src(
+            "bach_from_curvature(weyl_from_curvature(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z]), ricci(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])), ricci_scalar(ricci(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])), inv(metric(diag(-1, 1, 1, 1)))), metric(diag(-1, 1, 1, 1))), ricci(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])), christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), metric(diag(-1, 1, 1, 1)), [t, x, y, z]);",
+        );
+        match result {
+            Expr::Matrix(rows) => {
+                assert!(
+                    rows.iter().flatten().all(|entry| *entry == Expr::zero()),
+                    "expected zero Bach tensor, got {:?}",
+                    rows
+                );
+            }
+            other => panic!("expected Bach tensor matrix, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn covariant_diff_in_flat_space_reduces_to_partial_derivative() {
         let (result, interner) = eval_src(
             "covariant_diff([f(t, x, y, z), 0, 0, 0], christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), 0, [t, x, y, z]);",
@@ -9577,21 +9797,10 @@ mod tests {
 
     #[test]
     fn weyl_tensor_property_declaration_melds_to_zero() {
-        let interner = ax_ir::Interner::new();
-        let mut env = Env::new();
-        let decl = ax_core_ir::lower("property C weyl_tensor", &interner)
-            .expr
-            .expect("weyl property decl");
-        let message = apply_property_declaration(&decl, &mut env, &interner);
-        assert!(message.is_some(), "expected weyl_tensor declaration");
-
-        let expr = ax_core_ir::lower(
-            "meld(C[a-,b-,c-,d-] + C[a-,c-,d-,b-] + C[a-,d-,b-,c-]);",
-            &interner,
-        )
-        .expr
-        .expect("meld expr");
-        let result = eval(&expr, &env, &interner);
+        let (result, _interner) = eval_src(
+            "property C weyl_tensor;
+             meld(C[a-,b-,c-,d-] + C[a-,c-,d-,b-] + C[a-,d-,b-,c-]);",
+        );
         assert_eq!(result, Expr::zero());
     }
 
@@ -9655,6 +9864,38 @@ mod tests {
              abstract_tensor_reduce(R[a-,b-,c-,d-] + R[a-,c-,d-,b-] + R[a-,d-,b-,c-]);",
         );
         assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn riemann_to_ricci_evaluates_single_contraction_publicly() {
+        let (result, interner) =
+            eval_src("riemann_tensor(R); riemann_to_ricci(R[a-,b-,a+,d-], Ric);");
+        let expected = ax_core_ir::lower("Ric[b-,d-];", &interner)
+            .expr
+            .expect("expected expr");
+        assert_eq!(result, expected, "got {:?}", result);
+    }
+
+    #[test]
+    fn riemann_to_ricci_evaluates_double_contraction_to_scalar_publicly() {
+        let (result, interner) =
+            eval_src("riemann_tensor(R); riemann_to_ricci(R[a-,b-,a+,b+], Ric, Scal);");
+        let expected = ax_core_ir::lower("Scal;", &interner)
+            .expr
+            .expect("expected expr");
+        assert_eq!(result, expected, "got {:?}", result);
+    }
+
+    #[test]
+    fn riemann_to_ricci_mixed_with_abstract_gr_reduce_keeps_ricci_unsymmetrised() {
+        let (result, interner) = eval_src(
+            "riemann_tensor(R);
+             abstract_gr_reduce(riemann_to_ricci(R[a-,b-,a+,d-] + R[a-,d-,a+,b-], Ric), true, true, true, true, true);",
+        );
+        let expected = ax_core_ir::lower("Ric[b-,d-] + Ric[d-,b-];", &interner)
+            .expr
+            .expect("expected expr");
+        assert_eq!(result, expected, "got {:?}", result);
     }
 
     #[test]

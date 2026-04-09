@@ -10,10 +10,13 @@
     clippy::useless_vec
 )]
 
+mod abstract_curvature;
 pub mod adjform;
 pub mod index_classifier;
 pub mod pooled_canon;
+mod weyl;
 
+pub use abstract_curvature::{riemann_to_ricci, AbstractCurvatureReduceError};
 use ax_ir::{Expr, Index, Interner};
 use ax_perm::{Perm, SGS};
 use index_classifier::{classify_indices, IndexClassification};
@@ -23,6 +26,10 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
+pub use weyl::{
+    bach_from_curvature, cotton_from_curvature, weyl_from_curvature, ConformalCurvatureError,
+    WeylError,
+};
 
 fn deadline_timeout_expr(interner: &Interner) -> Option<Expr> {
     ax_ir::check_deadline()
@@ -857,13 +864,12 @@ fn is_metric_delta_factor(expr: &Expr, properties: &dyn PropertyLookup) -> bool 
 fn compatible_contracted_pair(lhs: &Index, rhs: &Index) -> bool {
     lhs.name == rhs.name
         && lhs.variance != rhs.variance
-        && (lhs.index_type == rhs.index_type || lhs.index_type.is_none() || rhs.index_type.is_none())
+        && (lhs.index_type == rhs.index_type
+            || lhs.index_type.is_none()
+            || rhs.index_type.is_none())
 }
 
-fn riemann_to_ricci_contraction(
-    expr: &Expr,
-    properties: &dyn PropertyLookup,
-) -> Option<Expr> {
+fn riemann_to_ricci_contraction(expr: &Expr, properties: &dyn PropertyLookup) -> Option<Expr> {
     let Expr::Indexed(base, indices) = expr else {
         return None;
     };
@@ -924,9 +930,9 @@ fn simplify_property_contractions_once(
     interner: &Interner,
 ) -> Expr {
     match expr {
-        Expr::Indexed(_, _) => riemann_to_ricci_contraction(expr, properties).unwrap_or_else(|| {
-            expr.clone()
-        }),
+        Expr::Indexed(_, _) => {
+            riemann_to_ricci_contraction(expr, properties).unwrap_or_else(|| expr.clone())
+        }
         Expr::Mul(factors) => {
             let mut remaining = factors.clone();
             for i in 0..remaining.len() {
@@ -8411,6 +8417,19 @@ pub fn einstein_tensor(
     }
 
     einstein
+}
+
+pub fn weyl_tensor(
+    riemann: &[Vec<Vec<Vec<Expr>>>],
+    ricci: &[Vec<Expr>],
+    scalar: &Expr,
+    g: &SymbolicMatrix,
+    interner: &Interner,
+) -> Vec<Vec<Vec<Vec<Expr>>>> {
+    match weyl_from_curvature(riemann, ricci, scalar, g, interner) {
+        Ok(weyl) => weyl,
+        Err(err) => panic!("{err}"),
+    }
 }
 
 pub fn kretschmann_scalar_diagonal_approx(
@@ -16658,7 +16677,8 @@ mod tests {
         let mut props = HashMap::new();
         props.insert(r, vec![ax_ir::TensorProperty::RiemannSymmetry]);
 
-        let make_riemann = |slots: [Index; 4]| Expr::Indexed(Box::new(Expr::Sym(r)), slots.to_vec());
+        let make_riemann =
+            |slots: [Index; 4]| Expr::Indexed(Box::new(Expr::Sym(r)), slots.to_vec());
         let make_ricci = |i0: Index, i1: Index| Expr::Indexed(Box::new(Expr::Sym(r)), vec![i0, i1]);
         let slot_index = |name: lasso::Spur, variance: Variance| Index {
             name,
