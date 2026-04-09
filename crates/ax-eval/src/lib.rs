@@ -1594,31 +1594,81 @@ pub fn apply_property_declaration(
     let Expr::Call(f, args) = expr else {
         return None;
     };
-    if interner.resolve(*f) != "__declare_property" || args.len() != 2 {
-        return None;
-    }
-    let (tensor, pattern_slots) = match &args[0] {
-        Expr::Sym(tensor) => (*tensor, None),
-        Expr::Indexed(base, indices) => {
-            let Expr::Sym(tensor) = base.as_ref() else {
-                return None;
-            };
-            let slots: Vec<SlotSpec> = indices
-                .iter()
-                .map(|idx| SlotSpec {
-                    variance: idx.variance.clone(),
-                    family: env.index_to_family.get(&idx.name).copied(),
-                })
-                .collect();
-            (*tensor, Some(slots))
+    fn parse_property_target(
+        target: &Expr,
+        env: &Env,
+    ) -> Option<(lasso::Spur, Option<Vec<SlotSpec>>)> {
+        match target {
+            Expr::Sym(tensor) => Some((*tensor, None)),
+            Expr::Indexed(base, indices) => {
+                let Expr::Sym(tensor) = base.as_ref() else {
+                    return None;
+                };
+                let slots: Vec<SlotSpec> = indices
+                    .iter()
+                    .map(|idx| SlotSpec {
+                        variance: idx.variance.clone(),
+                        family: env.index_to_family.get(&idx.name).copied(),
+                    })
+                    .collect();
+                Some((*tensor, Some(slots)))
+            }
+            _ => None,
         }
+    }
+
+    fn attach_property(
+        env: &mut Env,
+        tensor: lasso::Spur,
+        pattern_slots: &Option<Vec<SlotSpec>>,
+        property: ax_ir::TensorProperty,
+    ) {
+        env.tensor_properties
+            .entry(tensor)
+            .or_default()
+            .push(property.clone());
+        if let Some(index_slots) = pattern_slots {
+            env.property_store.declare(
+                PropertyPattern {
+                    base_name: tensor,
+                    index_slots: index_slots.clone(),
+                },
+                property,
+            );
+        } else {
+            env.property_store.declare_simple(tensor, property);
+        }
+    }
+
+    let (target, prop_name, prop_args): (&Expr, &str, &[Expr]) = match interner.resolve(*f) {
+        "__declare_property" if args.len() == 2 => {
+            let (prop_name, prop_args) = match &args[1] {
+                Expr::Sym(prop) => (interner.resolve(*prop), &[][..]),
+                Expr::Call(prop, prop_args) => (interner.resolve(*prop), prop_args.as_slice()),
+                _ => return None,
+            };
+            (&args[0], prop_name, prop_args)
+        }
+        "riemann_tensor" if args.len() == 1 => (&args[0], "riemann_tensor", &[][..]),
+        "riemann_symmetry" if args.len() == 1 => (&args[0], "riemann_symmetry", &[][..]),
+        "bianchi" | "satisfies_bianchi" if !args.is_empty() => {
+            (&args[0], "satisfies_bianchi", &args[1..])
+        }
+        "weyl" | "weyl_tensor" if args.len() == 1 => (&args[0], "weyl_tensor", &[][..]),
+        "dimension_dependent_identity" if args.len() == 1 => {
+            (&args[0], "dimension_dependent_identity", &[][..])
+        }
+        "tableau_symmetry" if args.len() == 3 => (&args[0], "tableau_symmetry", &args[1..]),
+        "derivative" if args.len() == 1 => (&args[0], "derivative", &[][..]),
+        "partial_derivative" if args.len() == 1 => (&args[0], "partial_derivative", &[][..]),
+        "covariant_derivative" if args.len() == 1 => (&args[0], "covariant_derivative", &[][..]),
         _ => return None,
     };
-    let (prop_name, prop_args) = match &args[1] {
-        Expr::Sym(prop) => (interner.resolve(*prop), &[][..]),
-        Expr::Call(prop, prop_args) => (interner.resolve(*prop), prop_args.as_slice()),
-        _ => return None,
+    let (tensor, pattern_slots) = match parse_property_target(target, env) {
+        Some(parsed) => parsed,
+        None => return None,
     };
+    let (tensor, pattern_slots) = (tensor, pattern_slots);
     let default_positions = vec![0, 1];
     let parse_positions = |items: &[Expr]| -> Option<Vec<usize>> {
         match items.first() {
@@ -1645,21 +1695,7 @@ pub fn apply_property_declaration(
         }
     };
     let mut add_property = |property: ax_ir::TensorProperty| {
-        env.tensor_properties
-            .entry(tensor)
-            .or_default()
-            .push(property.clone());
-        if let Some(index_slots) = &pattern_slots {
-            env.property_store.declare(
-                PropertyPattern {
-                    base_name: tensor,
-                    index_slots: index_slots.clone(),
-                },
-                property,
-            );
-        } else {
-            env.property_store.declare_simple(tensor, property);
-        }
+        attach_property(env, tensor, &pattern_slots, property);
     };
     match prop_name {
         "metric" => {
@@ -1719,6 +1755,16 @@ pub fn apply_property_declaration(
             Some(format!(
                 "attached property {} to {}",
                 prop_name,
+                interner.resolve(tensor)
+            ))
+        }
+        "riemann_tensor" => {
+            add_property(ax_ir::TensorProperty::RiemannSymmetry);
+            add_property(ax_ir::TensorProperty::SatisfiesBianchi {
+                slots: [0, 1, 2, 3],
+            });
+            Some(format!(
+                "attached composite property riemann_tensor to {}",
                 interner.resolve(tensor)
             ))
         }
@@ -4930,6 +4976,30 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "rewrite_indices_vielbein" => {
+            if args.len() == 5 {
+                if let (
+                    Expr::Sym(e_sym),
+                    Expr::Sym(e_inv_sym),
+                    Expr::Sym(from_family),
+                    Expr::Sym(to_family),
+                ) = (&args[1], &args[2], &args[3], &args[4])
+                {
+                    ax_tensor::rewrite_indices_vielbein(
+                        &args[0],
+                        *e_sym,
+                        *e_inv_sym,
+                        *from_family,
+                        *to_family,
+                        interner,
+                    )
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "reduce_delta" => {
             if !args.is_empty() {
                 let delta = interner.get_or_intern("delta");
@@ -5020,6 +5090,35 @@ fn builtin_call(
                         .unwrap_or(true),
                 };
                 ax_tensor::tensor_reduce(&args[0], &env.property_store, interner, &opts)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "abstract_tensor_reduce" | "abstract_gr_reduce" => {
+            if !args.is_empty() {
+                let opts = ax_tensor::TensorReduceOptions {
+                    monoterm: args
+                        .get(1)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    multiterm: args
+                        .get(2)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    dimension_dependent: args
+                        .get(3)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    meld: args
+                        .get(4)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    modulo_monoterm: args
+                        .get(5)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                };
+                ax_tensor::tensor_reduce(&args[0], &env.tensor_properties, interner, &opts)
             } else {
                 Expr::Call(f, args)
             }
@@ -6703,6 +6802,24 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "kretschmann_scalar_diagonal_approx" => {
+            if args.len() == 2 {
+                match (expr_to_4d(&args[0]), &args[1]) {
+                    (Some(riemann), metric_expr) => {
+                        if let Some(metric) = matrix_to_symbolic(metric_expr) {
+                            ax_tensor::kretschmann_scalar_diagonal_approx(
+                                &riemann, &metric, interner,
+                            )
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "covariant_diff" => {
             if args.len() == 4 {
                 match (&args[0], expr_to_3d(&args[1]), &args[2], &args[3]) {
@@ -6834,6 +6951,68 @@ fn builtin_call(
                         }
                     }
                     _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "vielbein" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Matrix(rows) => {
+                        let dim = rows.len();
+                        if rows.iter().all(|row| row.len() == dim) {
+                            Expr::Matrix(rows.clone())
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "inv_vielbein" | "inverse_vielbein" => {
+            if args.len() == 1 {
+                if let Some(e) = matrix_to_symbolic(&args[0]) {
+                    symbolic_to_matrix(&ax_tensor::inverse_vielbein(&e, interner))
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "metric_from_vielbein" => {
+            if args.len() == 2 {
+                if let (Some(e), Some(eta)) =
+                    (matrix_to_symbolic(&args[0]), matrix_to_symbolic(&args[1]))
+                {
+                    symbolic_to_matrix(&ax_tensor::metric_from_vielbein(&e, &eta, interner))
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "vielbein_from_metric_diagonal" => {
+            if args.len() == 2 {
+                if let Some(g) = matrix_to_symbolic(&args[0]) {
+                    if let Expr::Sym(sig) = &args[1] {
+                        if let Some(signature) = parse_metric_signature(interner.resolve(*sig)) {
+                            symbolic_to_matrix(&ax_tensor::vielbein_from_metric_diagonal(
+                                &g, signature, interner,
+                            ))
+                        } else {
+                            Expr::Call(f, args)
+                        }
+                    } else {
+                        Expr::Call(f, args)
+                    }
+                } else {
+                    Expr::Call(f, args)
                 }
             } else {
                 Expr::Call(f, args)
@@ -7194,6 +7373,9 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
                             );
                         }
                     }
+                }
+                "abstract_tensor_reduce" | "abstract_gr_reduce" => {
+                    return builtin_call(name, *f, args.clone(), interner, env);
                 }
                 _ => {}
             }
@@ -7822,6 +8004,7 @@ pub fn substitute_with_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_ir::{Index, Variance};
 
     fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
@@ -9404,6 +9587,130 @@ mod tests {
     }
 
     #[test]
+    fn riemann_tensor_direct_declaration_melds_to_zero() {
+        let (result, _interner) = eval_src(
+            "riemann_tensor(R);
+             meld(R[a-,b-,c-,d-] + R[a-,c-,d-,b-] + R[a-,d-,b-,c-]);",
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn abstract_tensor_reduce_reveals_bianchi_identity_publicly() {
+        let (result, _interner) = eval_src(
+            "riemann_tensor(R);
+             abstract_tensor_reduce(R[a-,b-,c-,d-] + R[a-,c-,d-,b-] + R[a-,d-,b-,c-]);",
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn tensor_reduce_direct_from_eval_env_handles_second_bianchi_identity() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        for decl_src in ["riemann_tensor(R);", "property nabla covariant_derivative;"] {
+            let decl = ax_core_ir::lower(decl_src, &interner)
+                .expr
+                .expect("declaration");
+            let message = apply_property_declaration(&decl, &mut env, &interner);
+            assert!(
+                message.is_some(),
+                "expected declaration to apply for {decl_src}"
+            );
+        }
+
+        let expr = ax_core_ir::lower(
+            "nabla[mu-] * R[nu-,rho-,sigma-,lambda-] + nabla[nu-] * R[rho-,mu-,sigma-,lambda-] + nabla[rho-] * R[mu-,nu-,sigma-,lambda-];",
+            &interner,
+        )
+        .expr
+        .expect("expr");
+
+        let nabla = interner.get_or_intern("nabla");
+        let r = interner.get_or_intern("R");
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+        let rho = interner.get_or_intern("rho");
+        let sigma = interner.get_or_intern("sigma");
+        let lambda = interner.get_or_intern("lambda");
+        let cov = |idx| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(nabla)),
+                vec![Index {
+                    name: idx,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            )
+        };
+        let riem = |i0, i1, i2, i3| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    Index {
+                        name: i0,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i1,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i2,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i3,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            )
+        };
+        let manual = Expr::add(vec![
+            Expr::mul(vec![cov(mu), riem(nu, rho, sigma, lambda)]),
+            Expr::mul(vec![cov(nu), riem(rho, mu, sigma, lambda)]),
+            Expr::mul(vec![cov(rho), riem(mu, nu, sigma, lambda)]),
+        ]);
+        assert_eq!(expr, manual, "lowered expr mismatch: got {:?}", expr);
+
+        let mut explicit_props = std::collections::HashMap::new();
+        explicit_props.insert(nabla, vec![ax_ir::TensorProperty::CovariantDerivative]);
+        explicit_props.insert(
+            r,
+            vec![
+                ax_ir::TensorProperty::RiemannSymmetry,
+                ax_ir::TensorProperty::SatisfiesBianchi {
+                    slots: [0, 1, 2, 3],
+                },
+            ],
+        );
+        let explicit_result = ax_tensor::tensor_reduce(
+            &expr,
+            &explicit_props,
+            &interner,
+            &ax_tensor::TensorReduceOptions::default(),
+        );
+        assert_eq!(
+            explicit_result,
+            Expr::zero(),
+            "explicit props got {:?}",
+            explicit_result
+        );
+
+        let result = ax_tensor::tensor_reduce(
+            &expr,
+            &env.tensor_properties,
+            &interner,
+            &ax_tensor::TensorReduceOptions::default(),
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
     fn brst_demo_nilpotency_evaluates_to_zero() {
         let interner = ax_ir::Interner::new();
         let mut env = Env::new();
@@ -9716,5 +10023,39 @@ mod tests {
             ),
         ]);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn metric_from_vielbein_eval_reconstructs_metric() {
+        let (result, interner) = eval_src(
+            "metric_from_vielbein(vielbein([[sqrt(f), 0], [0, sqrt(f^(-2))]]), metric(diag(-1, 1)));",
+        );
+        let expected = Expr::Matrix(vec![
+            vec![
+                Expr::neg(Expr::Sym(interner.get_or_intern("f"))),
+                Expr::zero(),
+            ],
+            vec![
+                Expr::zero(),
+                Expr::pow(
+                    Expr::Sym(interner.get_or_intern("f")),
+                    Expr::Int((-2).into()),
+                ),
+            ],
+        ]);
+        assert_eq!(result, expected, "got {:?}", result);
+    }
+
+    #[test]
+    fn rewrite_indices_vielbein_eval_inserts_frame_factors() {
+        let (result, interner) = eval_src(
+            "indices spacetime [mu] dim=1;
+             indices frame [a] dim=1;
+             rewrite_indices_vielbein(V[mu+], E, EInv, spacetime, frame);",
+        );
+        assert!(matches!(result, Expr::Mul(_)), "got {:?}", result);
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("E["), "got {rendered}");
+        assert!(rendered.contains("V["), "got {rendered}");
     }
 }

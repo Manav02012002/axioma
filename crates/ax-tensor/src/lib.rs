@@ -229,6 +229,27 @@ struct YoungProjectFactorSpec {
     occurrence: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct InheritedCovariantRiemannKey {
+    derivative_name: lasso::Spur,
+    tensor_name: lasso::Spur,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum YoungProjectTargetSpec {
+    Direct(YoungProjectFactorSpec),
+    InheritedCovariantRiemann {
+        key: InheritedCovariantRiemannKey,
+        occurrence: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InheritedCovariantRiemannInfo {
+    key: InheritedCovariantRiemannKey,
+    derivative_start: usize,
+}
+
 fn tableau_groups_from_shape(
     shape: &[usize],
     indices: &[usize],
@@ -1585,12 +1606,8 @@ pub fn meld(
                     .map(|(t, _)| canonicalise(t, tensor_properties, interner))
                     .collect();
 
-                let factor_info =
-                    extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
-                let projection_ops = factor_info
-                    .iter()
-                    .flat_map(meld_projection_ops_for_factor)
-                    .collect::<Vec<_>>();
+                let projection_ops =
+                    projection_ops_for_term(&canonical[0], tensor_properties, interner);
 
                 let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
                 for (term, _) in group.iter() {
@@ -1818,12 +1835,8 @@ pub fn meld_parallel(
                         .collect()
                 };
 
-                let factor_info =
-                    extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
-                let projection_ops = factor_info
-                    .iter()
-                    .flat_map(meld_projection_ops_for_factor)
-                    .collect::<Vec<_>>();
+                let projection_ops =
+                    projection_ops_for_term(&canonical[0], tensor_properties, interner);
 
                 let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
                 for (term, _) in group.iter() {
@@ -2132,6 +2145,19 @@ fn has_bianchi_property(props: &[ax_ir::TensorProperty], n_indices: usize) -> bo
         .any(|prop| bianchi_slots_for_property(prop, n_indices).is_some())
 }
 
+fn has_explicit_riemann_tensor_properties(
+    props: &[ax_ir::TensorProperty],
+    n_indices: usize,
+) -> bool {
+    default_riemann_slots(n_indices).is_some()
+        && props
+            .iter()
+            .any(|prop| matches!(prop, ax_ir::TensorProperty::RiemannSymmetry))
+        && props
+            .iter()
+            .any(|prop| matches!(prop, ax_ir::TensorProperty::SatisfiesBianchi { .. }))
+}
+
 fn has_weyl_property(props: &[ax_ir::TensorProperty]) -> bool {
     props
         .iter()
@@ -2199,6 +2225,55 @@ fn bianchi_projector(positions: [usize; 4]) -> TensorProjectionOp {
             (vec![0, 3, 1, 2], BigRational::new((-1).into(), 3.into())),
         ],
     }
+}
+
+fn cyclic_projector3(positions: [usize; 3]) -> TensorProjectionOp {
+    TensorProjectionOp::PermutationProjector {
+        positions: positions.into_iter().collect(),
+        permutations: vec![
+            (vec![0, 1, 2], BigRational::new(2.into(), 3.into())),
+            (vec![1, 2, 0], BigRational::new((-1).into(), 3.into())),
+            (vec![2, 0, 1], BigRational::new((-1).into(), 3.into())),
+        ],
+    }
+}
+
+fn inherited_covariant_riemann_infos(
+    factor_info: &[TensorFactorInfo],
+) -> Vec<InheritedCovariantRiemannInfo> {
+    factor_info
+        .windows(2)
+        .filter_map(|window| {
+            let derivative = &window[0];
+            let tensor = &window[1];
+            let derivative_is_covariant = derivative
+                .properties
+                .iter()
+                .any(|prop| matches!(prop, ax_ir::TensorProperty::CovariantDerivative));
+            if !derivative_is_covariant
+                || !has_explicit_riemann_tensor_properties(&tensor.properties, tensor.n_indices)
+            {
+                return None;
+            }
+            Some(InheritedCovariantRiemannInfo {
+                key: InheritedCovariantRiemannKey {
+                    derivative_name: derivative.name,
+                    tensor_name: tensor.name,
+                },
+                derivative_start: derivative.start_position,
+            })
+        })
+        .collect()
+}
+
+fn inherited_covariant_riemann_projection_ops(
+    info: &InheritedCovariantRiemannInfo,
+) -> Vec<TensorProjectionOp> {
+    vec![cyclic_projector3([
+        info.derivative_start,
+        info.derivative_start + 1,
+        info.derivative_start + 2,
+    ])]
 }
 
 fn tableau_info_from_declared_symmetry(
@@ -2448,21 +2523,50 @@ fn projectable_factor_specs(
     expr: &Expr,
     properties: &dyn PropertyLookup,
     interner: &Interner,
-) -> Vec<YoungProjectFactorSpec> {
+) -> Vec<YoungProjectTargetSpec> {
     let factor_info = extract_factor_info_from_term(expr, properties, interner);
-    let mut counts: HashMap<YoungProjectFactorKey, usize> = HashMap::new();
+    let mut direct_counts: HashMap<YoungProjectFactorKey, usize> = HashMap::new();
+    let mut inherited_counts: HashMap<InheritedCovariantRiemannKey, usize> = HashMap::new();
     let mut specs = Vec::new();
 
-    for info in factor_info {
+    for info in &factor_info {
         let Some(key) = projectable_factor_key(&info) else {
             continue;
         };
-        let occurrence = *counts.entry(key).or_insert(0);
-        specs.push(YoungProjectFactorSpec { key, occurrence });
-        counts.insert(key, occurrence + 1);
+        let occurrence = *direct_counts.entry(key).or_insert(0);
+        specs.push(YoungProjectTargetSpec::Direct(YoungProjectFactorSpec {
+            key,
+            occurrence,
+        }));
+        direct_counts.insert(key, occurrence + 1);
+    }
+
+    for info in inherited_covariant_riemann_infos(&factor_info) {
+        let occurrence = *inherited_counts.entry(info.key).or_insert(0);
+        specs.push(YoungProjectTargetSpec::InheritedCovariantRiemann {
+            key: info.key,
+            occurrence,
+        });
+        inherited_counts.insert(info.key, occurrence + 1);
     }
 
     specs
+}
+
+fn projection_ops_for_term(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Vec<TensorProjectionOp> {
+    let factor_info = extract_factor_info_from_term(expr, properties, interner);
+    let mut ops = factor_info
+        .iter()
+        .flat_map(meld_projection_ops_for_factor)
+        .collect::<Vec<_>>();
+    for info in inherited_covariant_riemann_infos(&factor_info) {
+        ops.extend(inherited_covariant_riemann_projection_ops(&info));
+    }
+    ops
 }
 
 struct PropertyDummyEnv {
@@ -2499,66 +2603,88 @@ impl DummyRenameEnv for PropertyDummyEnv {
 
 fn young_project_factor_in_term(
     expr: &Expr,
-    spec: YoungProjectFactorSpec,
+    spec: YoungProjectTargetSpec,
     properties: &dyn PropertyLookup,
     interner: &Interner,
 ) -> Expr {
     let factor_info = extract_factor_info_from_term(expr, properties, interner);
-    let mut seen = 0usize;
-
-    for info in factor_info {
-        if projectable_factor_key(&info) != Some(spec.key) {
-            continue;
-        }
-        if seen != spec.occurrence {
-            seen += 1;
-            continue;
-        }
-
-        let mut projected = expr.clone();
-        for op in young_project_ops_for_factor(&info) {
-            projected = match op {
-                TensorProjectionOp::Tableau(tableau_info) => {
-                    let mut current = projected;
-                    for column in &tableau_info.columns {
-                        if column.len() > 1 {
-                            current = symmetrise(&current, column, true, interner);
-                            current = simplify_expr(current, interner);
-                        }
-                    }
-                    for row in &tableau_info.rows {
-                        if row.len() > 1 {
-                            current = symmetrise(&current, row, false, interner);
-                            current = simplify_expr(current, interner);
-                        }
-                    }
-                    current
+    let ops = match spec {
+        YoungProjectTargetSpec::Direct(spec) => {
+            let mut seen = 0usize;
+            let mut selected = None;
+            for info in factor_info {
+                if projectable_factor_key(&info) != Some(spec.key) {
+                    continue;
                 }
-                TensorProjectionOp::PermutationProjector {
-                    positions,
-                    permutations,
-                } => Expr::add(
-                    permutations
-                        .into_iter()
-                        .map(|(perm, coeff)| {
-                            let permuted =
-                                permute_indices_at_positions(&projected, &positions, &perm);
-                            multiply_expr_by_rational(permuted, coeff)
-                        })
-                        .collect(),
-                ),
-            };
-            projected = simplify_expr(projected, interner);
+                if seen == spec.occurrence {
+                    selected = Some(young_project_ops_for_factor(&info));
+                    break;
+                }
+                seen += 1;
+            }
+            selected
         }
-        return projected;
-    }
+        YoungProjectTargetSpec::InheritedCovariantRiemann { key, occurrence } => {
+            let mut seen = 0usize;
+            let mut selected = None;
+            for info in inherited_covariant_riemann_infos(&factor_info) {
+                if info.key != key {
+                    continue;
+                }
+                if seen == occurrence {
+                    selected = Some(inherited_covariant_riemann_projection_ops(&info));
+                    break;
+                }
+                seen += 1;
+            }
+            selected
+        }
+    };
 
-    expr.clone()
+    let Some(ops) = ops else {
+        return expr.clone();
+    };
+
+    let mut projected = expr.clone();
+    for op in ops {
+        projected = match op {
+            TensorProjectionOp::Tableau(tableau_info) => {
+                let mut current = projected;
+                for column in &tableau_info.columns {
+                    if column.len() > 1 {
+                        current = symmetrise(&current, column, true, interner);
+                        current = simplify_expr(current, interner);
+                    }
+                }
+                for row in &tableau_info.rows {
+                    if row.len() > 1 {
+                        current = symmetrise(&current, row, false, interner);
+                        current = simplify_expr(current, interner);
+                    }
+                }
+                current
+            }
+            TensorProjectionOp::PermutationProjector {
+                positions,
+                permutations,
+            } => Expr::add(
+                permutations
+                    .into_iter()
+                    .map(|(perm, coeff)| {
+                        let permuted = permute_indices_at_positions(&projected, &positions, &perm);
+                        multiply_expr_by_rational(permuted, coeff)
+                    })
+                    .collect(),
+            ),
+        };
+        projected = simplify_expr(projected, interner);
+    }
+    projected
 }
 
 fn young_project_factor_in_expr(
     expr: &Expr,
-    spec: YoungProjectFactorSpec,
+    spec: YoungProjectTargetSpec,
     properties: &dyn PropertyLookup,
     interner: &Interner,
 ) -> Expr {
@@ -2614,7 +2740,15 @@ fn cancel_explicit_bianchi_terms(
     interner: &Interner,
 ) -> Vec<Expr> {
     let mut used = vec![false; terms.len()];
-    let cores = terms
+    let raw_cores = terms
+        .iter()
+        .map(split_numeric_coeff)
+        .collect::<Vec<(BigRational, Expr)>>();
+    let canonical_terms = terms
+        .iter()
+        .map(|term| simplify_expr(canonicalise(term, properties, interner), interner))
+        .collect::<Vec<_>>();
+    let cores = canonical_terms
         .iter()
         .map(split_numeric_coeff)
         .collect::<Vec<(BigRational, Expr)>>();
@@ -2625,30 +2759,44 @@ fn cancel_explicit_bianchi_terms(
             continue;
         }
 
-        let (coeff, core) = &cores[i];
+        let (_, core) = &cores[i];
         let factor_info = extract_factor_info_from_term(core, properties, interner);
         let mut cancelled = false;
 
-        'ops: for info in factor_info {
+        'ops: for info in &factor_info {
             for prop in &info.properties {
                 let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) else {
                     continue;
                 };
                 let abs = slots.map(|slot| info.start_position + slot);
-                let cyc1 = permute_indices_at_positions(core, &abs, &[0, 2, 3, 1]);
-                let cyc2 = permute_indices_at_positions(core, &abs, &[0, 3, 1, 2]);
+                let cyc1 = simplify_expr(
+                    canonicalise(
+                        &permute_indices_at_positions(core, &abs, &[0, 2, 3, 1]),
+                        properties,
+                        interner,
+                    ),
+                    interner,
+                );
+                let cyc2 = simplify_expr(
+                    canonicalise(
+                        &permute_indices_at_positions(core, &abs, &[0, 3, 1, 2]),
+                        properties,
+                        interner,
+                    ),
+                    interner,
+                );
 
                 let mut found1 = None;
                 let mut found2 = None;
                 for j in (i + 1)..terms.len() {
-                    if used[j] || cores[j].0 != *coeff {
+                    if used[j] {
                         continue;
                     }
-                    if found1.is_none() && cores[j].1 == cyc1 {
+                    if found1.is_none() && canonical_terms[j] == cyc1 {
                         found1 = Some(j);
                         continue;
                     }
-                    if found2.is_none() && cores[j].1 == cyc2 {
+                    if found2.is_none() && canonical_terms[j] == cyc2 {
                         found2 = Some(j);
                     }
                 }
@@ -2658,6 +2806,86 @@ fn cancel_explicit_bianchi_terms(
                     used[k] = true;
                     cancelled = true;
                     break 'ops;
+                }
+            }
+        }
+
+        if !cancelled {
+            'second_bianchi: for info in inherited_covariant_riemann_infos(&factor_info) {
+                let cyc_positions = [
+                    info.derivative_start,
+                    info.derivative_start + 1,
+                    info.derivative_start + 2,
+                ];
+                let (raw_coeff, raw_core) = &raw_cores[i];
+                let raw_cyc1 = permute_indices_at_positions(raw_core, &cyc_positions, &[1, 2, 0]);
+                let raw_cyc2 = permute_indices_at_positions(raw_core, &cyc_positions, &[2, 0, 1]);
+
+                let mut raw_found1 = None;
+                let mut raw_found2 = None;
+                for j in (i + 1)..terms.len() {
+                    if used[j] {
+                        continue;
+                    }
+                    if raw_found1.is_none()
+                        && raw_cores[j].0 == *raw_coeff
+                        && raw_cores[j].1 == raw_cyc1
+                    {
+                        raw_found1 = Some(j);
+                        continue;
+                    }
+                    if raw_found2.is_none()
+                        && raw_cores[j].0 == *raw_coeff
+                        && raw_cores[j].1 == raw_cyc2
+                    {
+                        raw_found2 = Some(j);
+                    }
+                }
+                if let (Some(j), Some(k)) = (raw_found1, raw_found2) {
+                    used[i] = true;
+                    used[j] = true;
+                    used[k] = true;
+                    cancelled = true;
+                    break 'second_bianchi;
+                }
+
+                let cyc1 = simplify_expr(
+                    canonicalise(
+                        &permute_indices_at_positions(core, &cyc_positions, &[1, 2, 0]),
+                        properties,
+                        interner,
+                    ),
+                    interner,
+                );
+                let cyc2 = simplify_expr(
+                    canonicalise(
+                        &permute_indices_at_positions(core, &cyc_positions, &[2, 0, 1]),
+                        properties,
+                        interner,
+                    ),
+                    interner,
+                );
+
+                let mut found1 = None;
+                let mut found2 = None;
+                for j in (i + 1)..terms.len() {
+                    if used[j] {
+                        continue;
+                    }
+                    if found1.is_none() && canonical_terms[j] == cyc1 {
+                        found1 = Some(j);
+                        continue;
+                    }
+                    if found2.is_none() && canonical_terms[j] == cyc2 {
+                        found2 = Some(j);
+                    }
+                }
+                if let (Some(j), Some(k)) = (found1, found2) {
+                    used[i] = true;
+                    used[j] = true;
+                    used[k] = true;
+                    cancelled = true;
+                    break 'second_bianchi;
                 }
             }
         }
@@ -3903,6 +4131,8 @@ pub struct SymbolicMatrix {
     pub data: Vec<Vec<ax_ir::Expr>>,
 }
 
+pub type Signature = ax_ir::MetricSignature;
+
 impl SymbolicMatrix {
     pub fn new(dim: usize) -> Self {
         Self {
@@ -3956,6 +4186,91 @@ impl SymbolicMatrix {
             None => panic!("metric tensor is singular (determinant is zero)"),
         }
     }
+}
+
+pub fn inverse_vielbein(e: &SymbolicMatrix, interner: &Interner) -> SymbolicMatrix {
+    e.symbolic_inverse(interner)
+}
+
+fn frame_metric_from_signature(dim: usize, signature: Signature) -> SymbolicMatrix {
+    let diag = (0..dim)
+        .map(|i| match signature {
+            Signature::MostlyPlus => {
+                if i == 0 {
+                    Expr::Int((-1).into())
+                } else {
+                    Expr::one()
+                }
+            }
+            Signature::MostlyMinus => {
+                if i == 0 {
+                    Expr::one()
+                } else {
+                    Expr::Int((-1).into())
+                }
+            }
+        })
+        .collect();
+    SymbolicMatrix::from_diagonal(diag)
+}
+
+pub fn metric_from_vielbein(
+    e: &SymbolicMatrix,
+    eta: &SymbolicMatrix,
+    interner: &Interner,
+) -> SymbolicMatrix {
+    let dim = e.dim;
+    let mut g = SymbolicMatrix::new(dim);
+
+    for mu in 0..dim {
+        for nu in 0..dim {
+            let mut terms = Vec::new();
+            for a in 0..dim {
+                for b in 0..dim {
+                    let eta_ab = eta.get(a, b).clone();
+                    if eta_ab == Expr::zero() {
+                        continue;
+                    }
+                    let e_a_mu = e.get(a, mu).clone();
+                    let e_b_nu = e.get(b, nu).clone();
+                    if e_a_mu == Expr::zero() || e_b_nu == Expr::zero() {
+                        continue;
+                    }
+                    terms.push(Expr::mul(vec![eta_ab, e_a_mu, e_b_nu]));
+                }
+            }
+            g.set(mu, nu, simplify_expr(Expr::add(terms), interner));
+        }
+    }
+
+    g
+}
+
+pub fn vielbein_from_metric_diagonal(
+    g: &SymbolicMatrix,
+    signature: Signature,
+    interner: &Interner,
+) -> SymbolicMatrix {
+    let dim = g.dim;
+    let eta = frame_metric_from_signature(dim, signature);
+    let mut e = SymbolicMatrix::new(dim);
+
+    for i in 0..dim {
+        let signed_entry = match eta.get(i, i) {
+            Expr::Int(value) if *value == (-1).into() => Expr::neg(g.get(i, i).clone()),
+            _ => g.get(i, i).clone(),
+        };
+        e.set(
+            i,
+            i,
+            simplify_expr(
+                Expr::Call(interner.get_or_intern("sqrt"), vec![signed_entry]),
+                interner,
+            ),
+        );
+    }
+
+    e
 }
 
 pub fn detect_contractions(indices: &[ax_ir::Index]) -> Vec<(usize, usize)> {
@@ -5858,21 +6173,40 @@ fn permute_indices_at_positions(expr: &Expr, positions: &[usize], perm: &[usize]
         }
         Expr::Mul(factors) => {
             let mut result = factors.clone();
-            let mut idx_offset = 0usize;
+            let original = factors.clone();
+            let mut slot_map = Vec::new();
 
-            for factor in &mut result {
+            for (factor_idx, factor) in result.iter().enumerate() {
                 if let Expr::Indexed(_, indices) = factor {
-                    let n_idx = indices.len();
-                    let local_positions: Vec<usize> = positions
-                        .iter()
-                        .copied()
-                        .filter(|pos| *pos >= idx_offset && *pos < idx_offset + n_idx)
-                        .map(|pos| pos - idx_offset)
-                        .collect();
-                    if !local_positions.is_empty() {
-                        *factor = permute_indices_at_positions(factor, &local_positions, perm);
+                    for local_idx in 0..indices.len() {
+                        slot_map.push((factor_idx, local_idx));
                     }
-                    idx_offset += n_idx;
+                }
+            }
+
+            for (i, &target_pos) in positions.iter().enumerate() {
+                if target_pos >= slot_map.len() || perm[i] >= positions.len() {
+                    continue;
+                }
+                let source_pos = positions[perm[i]];
+                if source_pos >= slot_map.len() {
+                    continue;
+                }
+
+                let (target_factor_idx, target_local_idx) = slot_map[target_pos];
+                let (source_factor_idx, source_local_idx) = slot_map[source_pos];
+
+                let source_index = match &original[source_factor_idx] {
+                    Expr::Indexed(_, indices) => indices[source_local_idx].clone(),
+                    _ => continue,
+                };
+
+                if let Expr::Indexed(_, target_indices) = &mut result[target_factor_idx] {
+                    target_indices[target_local_idx] = ax_ir::Index {
+                        name: source_index.name,
+                        variance: target_indices[target_local_idx].variance.clone(),
+                        index_type: target_indices[target_local_idx].index_type,
+                    };
                 }
             }
 
@@ -7893,15 +8227,11 @@ pub fn einstein_tensor(
     einstein
 }
 
-pub fn kretschner_scalar(
+pub fn kretschmann_scalar_diagonal_approx(
     riemann: &[Vec<Vec<Vec<ax_ir::Expr>>>],
     g: &SymbolicMatrix,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
-    if let Some(expr) = try_schwarzschild_kretschner(g, interner) {
-        return expr;
-    }
-
     let n = g.dim;
     let ginv = g.symbolic_inverse(interner);
     let mut terms = Vec::new();
@@ -7928,6 +8258,79 @@ pub fn kretschner_scalar(
     }
 
     simplify_invariant_expr(Expr::add(terms), interner)
+}
+
+pub fn kretschmann_scalar_full(
+    riemann: &[Vec<Vec<Vec<ax_ir::Expr>>>],
+    ginv: &SymbolicMatrix,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let n = ginv.dim;
+    let mut terms = Vec::new();
+
+    for a in 0..n {
+        for b in 0..n {
+            for c in 0..n {
+                for d in 0..n {
+                    let left = &riemann[a][b][c][d];
+                    if *left == Expr::zero() {
+                        continue;
+                    }
+                    for ap in 0..n {
+                        let gaa = ginv.get(a, ap).clone();
+                        if gaa == Expr::zero() {
+                            continue;
+                        }
+                        for bp in 0..n {
+                            let gbb = ginv.get(b, bp).clone();
+                            if gbb == Expr::zero() {
+                                continue;
+                            }
+                            for cp in 0..n {
+                                let gcc = ginv.get(c, cp).clone();
+                                if gcc == Expr::zero() {
+                                    continue;
+                                }
+                                for dp in 0..n {
+                                    let gdd = ginv.get(d, dp).clone();
+                                    if gdd == Expr::zero() {
+                                        continue;
+                                    }
+                                    let right = &riemann[ap][bp][cp][dp];
+                                    if *right == Expr::zero() {
+                                        continue;
+                                    }
+                                    terms.push(Expr::mul(vec![
+                                        gaa.clone(),
+                                        gbb.clone(),
+                                        gcc.clone(),
+                                        gdd,
+                                        left.clone(),
+                                        right.clone(),
+                                    ]));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    simplify_invariant_expr(Expr::add(terms), interner)
+}
+
+pub fn kretschner_scalar(
+    riemann: &[Vec<Vec<Vec<ax_ir::Expr>>>],
+    g: &SymbolicMatrix,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    if let Some(expr) = try_schwarzschild_kretschner(g, interner) {
+        return expr;
+    }
+
+    let ginv = g.symbolic_inverse(interner);
+    kretschmann_scalar_full(riemann, &ginv, interner)
 }
 
 fn try_schwarzschild_kretschner(
@@ -9454,6 +9857,125 @@ pub fn rewrite_indices(
     }
 }
 
+pub fn rewrite_indices_vielbein(
+    expr: &Expr,
+    e_sym: lasso::Spur,
+    e_inv_sym: lasso::Spur,
+    from_family: lasso::Spur,
+    to_family: lasso::Spur,
+    interner: &Interner,
+) -> Expr {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            let mut inserted = Vec::new();
+            let mut rewritten = indices.clone();
+            let mut counter = 0usize;
+
+            for (slot, index) in indices.iter().enumerate() {
+                if index.index_type != Some(from_family) {
+                    continue;
+                }
+
+                let dummy = interner.get_or_intern(&format!("_vb{}", counter));
+                counter += 1;
+
+                match index.variance {
+                    ax_ir::Variance::Up => {
+                        inserted.push(Expr::Indexed(
+                            Box::new(Expr::Sym(e_sym)),
+                            vec![
+                                ax_ir::Index {
+                                    name: dummy,
+                                    variance: ax_ir::Variance::Up,
+                                    index_type: Some(to_family),
+                                },
+                                ax_ir::Index {
+                                    name: index.name,
+                                    variance: ax_ir::Variance::Down,
+                                    index_type: Some(from_family),
+                                },
+                            ],
+                        ));
+                        rewritten[slot] = ax_ir::Index {
+                            name: dummy,
+                            variance: ax_ir::Variance::Up,
+                            index_type: Some(to_family),
+                        };
+                    }
+                    ax_ir::Variance::Down => {
+                        inserted.push(Expr::Indexed(
+                            Box::new(Expr::Sym(e_inv_sym)),
+                            vec![
+                                ax_ir::Index {
+                                    name: index.name,
+                                    variance: ax_ir::Variance::Up,
+                                    index_type: Some(from_family),
+                                },
+                                ax_ir::Index {
+                                    name: dummy,
+                                    variance: ax_ir::Variance::Down,
+                                    index_type: Some(to_family),
+                                },
+                            ],
+                        ));
+                        rewritten[slot] = ax_ir::Index {
+                            name: dummy,
+                            variance: ax_ir::Variance::Down,
+                            index_type: Some(to_family),
+                        };
+                    }
+                }
+            }
+
+            if inserted.is_empty() {
+                expr.clone()
+            } else {
+                inserted.push(Expr::Indexed(base.clone(), rewritten));
+                Expr::mul(inserted)
+            }
+        }
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| {
+                    rewrite_indices_vielbein(
+                        factor,
+                        e_sym,
+                        e_inv_sym,
+                        from_family,
+                        to_family,
+                        interner,
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| {
+                    rewrite_indices_vielbein(
+                        term,
+                        e_sym,
+                        e_inv_sym,
+                        from_family,
+                        to_family,
+                        interner,
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(rewrite_indices_vielbein(
+            inner,
+            e_sym,
+            e_inv_sym,
+            from_family,
+            to_family,
+            interner,
+        )),
+        _ => expr.clone(),
+    }
+}
+
 // ─── decompose ───────────────────────────────────────────────────────────────
 //
 // Express `expr` as a linear combination of the provided `basis` monomials.
@@ -10124,6 +10646,18 @@ pub fn tensor_reduce(
 
     let mut current = expr.clone();
 
+    if opts.multiterm {
+        if let Expr::Add(terms) = &current {
+            let cancelled = cancel_explicit_bianchi_terms(terms.clone(), properties, interner);
+            if cancelled.is_empty() {
+                return Expr::zero();
+            }
+            if cancelled.len() != terms.len() {
+                current = Expr::add(cancelled);
+            }
+        }
+    }
+
     if opts.monoterm {
         current = canonicalise(&current, properties, interner);
         if is_timeout_expr(&current, interner) {
@@ -10406,6 +10940,77 @@ mod tests {
     }
 
     #[test]
+    fn inverse_vielbein_matches_symbolic_inverse() {
+        let interner = ax_ir::Interner::new();
+        let mut e = SymbolicMatrix::new(2);
+        e.set(0, 0, Expr::Int(2.into()));
+        e.set(1, 1, Expr::Int(3.into()));
+
+        assert_eq!(
+            inverse_vielbein(&e, &interner).data,
+            e.symbolic_inverse(&interner).data
+        );
+    }
+
+    #[test]
+    fn metric_from_vielbein_reconstructs_diagonal_metric() {
+        let interner = ax_ir::Interner::new();
+        let f = interner.get_or_intern("f");
+        let e = SymbolicMatrix::from_diagonal(vec![
+            Expr::Call(interner.get_or_intern("sqrt"), vec![Expr::Sym(f)]),
+            Expr::Call(
+                interner.get_or_intern("sqrt"),
+                vec![Expr::pow(Expr::Sym(f), Expr::Int((-2).into()))],
+            ),
+        ]);
+        let eta = SymbolicMatrix::from_diagonal(vec![Expr::Int((-1).into()), Expr::one()]);
+
+        let g = metric_from_vielbein(&e, &eta, &interner);
+        assert_eq!(
+            g.get(0, 0),
+            &Expr::neg(Expr::pow(
+                Expr::Call(interner.get_or_intern("sqrt"), vec![Expr::Sym(f)]),
+                Expr::Int(2.into())
+            ))
+        );
+        assert_eq!(g.get(0, 1), &Expr::zero());
+        assert_eq!(g.get(1, 0), &Expr::zero());
+        assert_eq!(
+            g.get(1, 1),
+            &Expr::pow(
+                Expr::Call(
+                    interner.get_or_intern("sqrt"),
+                    vec![Expr::pow(Expr::Sym(f), Expr::Int((-2).into()))]
+                ),
+                Expr::Int(2.into())
+            )
+        );
+    }
+
+    #[test]
+    fn vielbein_from_metric_diagonal_matches_signature_convention() {
+        let interner = ax_ir::Interner::new();
+        let f = interner.get_or_intern("f");
+        let g = SymbolicMatrix::from_diagonal(vec![
+            Expr::neg(Expr::Sym(f)),
+            Expr::pow(Expr::Sym(f), Expr::Int((-2).into())),
+        ]);
+
+        let e = vielbein_from_metric_diagonal(&g, Signature::MostlyPlus, &interner);
+        assert_eq!(
+            e.get(0, 0),
+            &Expr::Call(interner.get_or_intern("sqrt"), vec![Expr::Sym(f)])
+        );
+        assert_eq!(
+            e.get(1, 1),
+            &Expr::Call(
+                interner.get_or_intern("sqrt"),
+                vec![Expr::pow(Expr::Sym(f), Expr::Int((-2).into()))]
+            )
+        );
+    }
+
+    #[test]
     fn detect_contraction_pair() {
         let interner = ax_ir::Interner::new();
         let mu = interner.get_or_intern("mu");
@@ -10481,6 +11086,36 @@ mod tests {
             riemann_from_christoffel(&gamma, &coords, &interner, &ax_ir::Convention::default());
         let k = kretschner_scalar(&riemann, &g, &interner);
         assert_eq!(k, Expr::zero());
+    }
+
+    #[test]
+    fn kretschmann_full_contraction_uses_off_diagonal_inverse_metric_terms() {
+        let interner = Interner::new();
+
+        let mut g = SymbolicMatrix::new(2);
+        g.set(0, 0, Expr::Int(2.into()));
+        g.set(0, 1, Expr::Int(1.into()));
+        g.set(1, 0, Expr::Int(1.into()));
+        g.set(1, 1, Expr::Int(3.into()));
+        let ginv = g.symbolic_inverse(&interner);
+
+        let mut riemann = vec![vec![vec![vec![Expr::zero(); 2]; 2]; 2]; 2];
+        riemann[0][0][0][0] = Expr::Int(2.into());
+        riemann[1][1][1][1] = Expr::Int(3.into());
+
+        let diagonal = kretschmann_scalar_diagonal_approx(&riemann, &g, &interner);
+        let full = kretschmann_scalar_full(&riemann, &ginv, &interner);
+
+        assert_eq!(
+            diagonal,
+            Expr::Rational(BigRational::new(468.into(), 625.into()))
+        );
+        assert_eq!(
+            full,
+            Expr::Rational(BigRational::new(96.into(), 125.into()))
+        );
+        assert_ne!(full, diagonal);
+        assert_eq!(kretschner_scalar(&riemann, &g, &interner), full);
     }
 
     #[test]
@@ -13587,6 +14222,159 @@ mod tests {
     }
 
     #[test]
+    fn young_project_product_reveals_second_bianchi_for_covariant_riemann() {
+        let interner = ax_ir::Interner::new();
+        let nabla = interner.get_or_intern("nabla");
+        let r = interner.get_or_intern("R");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let e = interner.get_or_intern("e");
+
+        let mut props = HashMap::new();
+        props.insert(nabla, vec![ax_ir::TensorProperty::CovariantDerivative]);
+        props.insert(
+            r,
+            vec![
+                ax_ir::TensorProperty::RiemannSymmetry,
+                ax_ir::TensorProperty::SatisfiesBianchi {
+                    slots: [0, 1, 2, 3],
+                },
+            ],
+        );
+
+        let cov = |idx| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(nabla)),
+                vec![Index {
+                    name: idx,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            )
+        };
+        let riem = |i0, i1, i2, i3| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    Index {
+                        name: i0,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i1,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i2,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i3,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            )
+        };
+
+        let expr = Expr::add(vec![
+            Expr::mul(vec![cov(a), riem(b, c, d, e)]),
+            Expr::mul(vec![cov(b), riem(c, a, d, e)]),
+            Expr::mul(vec![cov(c), riem(a, b, d, e)]),
+        ]);
+
+        let result = young_project_product(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectProductOptions::default(),
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn tensor_reduce_reveals_second_bianchi_for_covariant_riemann() {
+        let interner = ax_ir::Interner::new();
+        let nabla = interner.get_or_intern("nabla");
+        let r = interner.get_or_intern("R");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let e = interner.get_or_intern("e");
+
+        let mut props = HashMap::new();
+        props.insert(nabla, vec![ax_ir::TensorProperty::CovariantDerivative]);
+        props.insert(
+            r,
+            vec![
+                ax_ir::TensorProperty::RiemannSymmetry,
+                ax_ir::TensorProperty::SatisfiesBianchi {
+                    slots: [0, 1, 2, 3],
+                },
+            ],
+        );
+
+        let cov = |idx| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(nabla)),
+                vec![Index {
+                    name: idx,
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            )
+        };
+        let riem = |i0, i1, i2, i3| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    Index {
+                        name: i0,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i1,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i2,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: i3,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            )
+        };
+
+        let expr = Expr::add(vec![
+            Expr::mul(vec![cov(a), riem(b, c, d, e)]),
+            Expr::mul(vec![cov(b), riem(c, a, d, e)]),
+            Expr::mul(vec![cov(c), riem(a, b, d, e)]),
+        ]);
+
+        let result = tensor_reduce(&expr, &props, &interner, &TensorReduceOptions::default());
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+        assert_eq!(
+            meld(&expr, &props, &interner),
+            Expr::zero(),
+            "got {:?}",
+            expr
+        );
+    }
+
+    #[test]
     fn young_project_tensor_modulo_monoterm_collects_duplicates() {
         let interner = ax_ir::Interner::new();
         let t = interner.get_or_intern("T");
@@ -15000,6 +15788,46 @@ mod tests {
             }
         } else {
             panic!("expected Add, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn rewrite_indices_vielbein_converts_family_and_inserts_frame_factor() {
+        let interner = ax_ir::Interner::new();
+        let e = interner.get_or_intern("e");
+        let einv = interner.get_or_intern("einv");
+        let t = interner.get_or_intern("T");
+        let mu = interner.get_or_intern("mu");
+        let spacetime = interner.get_or_intern("spacetime");
+        let frame = interner.get_or_intern("frame");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![Index {
+                name: mu,
+                variance: Variance::Up,
+                index_type: Some(spacetime),
+            }],
+        );
+
+        let rewritten = rewrite_indices_vielbein(&expr, e, einv, spacetime, frame, &interner);
+        if let Expr::Mul(factors) = &rewritten {
+            assert_eq!(factors.len(), 2);
+            match (&factors[0], &factors[1]) {
+                (Expr::Indexed(e_base, e_indices), Expr::Indexed(t_base, t_indices)) => {
+                    assert_eq!(**e_base, Expr::Sym(e));
+                    assert_eq!(**t_base, Expr::Sym(t));
+                    assert_eq!(e_indices[0].variance, Variance::Up);
+                    assert_eq!(e_indices[0].index_type, Some(frame));
+                    assert_eq!(e_indices[1].name, mu);
+                    assert_eq!(e_indices[1].index_type, Some(spacetime));
+                    assert_eq!(t_indices[0].variance, Variance::Up);
+                    assert_eq!(t_indices[0].index_type, Some(frame));
+                }
+                other => panic!("expected vielbein * tensor, got {:?}", other),
+            }
+        } else {
+            panic!("expected rewritten product, got {:?}", rewritten);
         }
     }
 
