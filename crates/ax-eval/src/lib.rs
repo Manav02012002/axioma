@@ -262,10 +262,7 @@ fn labels_from_list_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<
     labels_from_exprs(items, interner)
 }
 
-fn spinor_multi_mandelstam_expr(
-    labels: Vec<ax_spinor::Label>,
-    interner: &ax_ir::Interner,
-) -> Expr {
+fn spinor_multi_mandelstam_expr(labels: Vec<ax_spinor::Label>, interner: &ax_ir::Interner) -> Expr {
     match labels.as_slice() {
         [i, j] => spinor_to_expr(&ax_spinor::SpinorExpr::Mandelstam(*i, *j), interner),
         [i, j, k] => spinor_to_expr(&ax_spinor::SpinorExpr::Mandelstam3(*i, *j, *k), interner),
@@ -379,7 +376,8 @@ fn apply_abstract_qm_operator(
 ) -> Option<Expr> {
     if let Expr::Add(terms) = state {
         return Some(Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .filter_map(|term| apply_abstract_qm_operator(operator, term, interner))
                 .collect(),
         ));
@@ -418,16 +416,15 @@ fn apply_abstract_qm_operator(
                 ])
             }
         }
-        Expr::Add(terms) => {
-            Expr::add(
-                terms.iter()
-                    .map(|term| {
-                        apply_abstract_qm_operator(term, &basis_state, interner)
-                            .unwrap_or_else(|| Expr::mul(vec![term.clone(), basis_state.clone()]))
-                    })
-                    .collect(),
-            )
-        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| {
+                    apply_abstract_qm_operator(term, &basis_state, interner)
+                        .unwrap_or_else(|| Expr::mul(vec![term.clone(), basis_state.clone()]))
+                })
+                .collect(),
+        ),
         Expr::Mul(factors) => {
             let mut scalar_factors = Vec::new();
             let mut current = basis_state.clone();
@@ -442,7 +439,10 @@ fn apply_abstract_qm_operator(
             }
 
             if !applied_any {
-                return Some(Expr::mul(vec![Expr::mul(factors.clone()), basis_state.clone()]));
+                return Some(Expr::mul(vec![
+                    Expr::mul(factors.clone()),
+                    basis_state.clone(),
+                ]));
             }
 
             scalar_factors.reverse();
@@ -818,10 +818,12 @@ fn expr_to_spinor(e: &Expr, interner: &ax_ir::Interner) -> Option<ax_spinor::Spi
         }
         Expr::Call(f, args) if interner.resolve(*f) == "__mandelstam_multi" && args.len() >= 2 => {
             let labels = labels_from_exprs(args, interner)?;
-            Some(ax_spinor::SpinorExpr::Product(vec![ax_spinor::SpinorTerm::new(
-                BigRational::from_integer(1.into()),
-                vec![ax_spinor::SpinorFactor::Mandelstam(labels)],
-            )]))
+            Some(ax_spinor::SpinorExpr::Product(vec![
+                ax_spinor::SpinorTerm::new(
+                    BigRational::from_integer(1.into()),
+                    vec![ax_spinor::SpinorFactor::Mandelstam(labels)],
+                ),
+            ]))
         }
         Expr::Call(f, args) if interner.resolve(*f) == "__angle_chain" && args.len() >= 2 => {
             let labels = args
@@ -914,7 +916,9 @@ fn expr_to_spinor(e: &Expr, interner: &ax_ir::Interner) -> Option<ax_spinor::Spi
                             label_from_expr(&args[1], interner)?,
                         ));
                     }
-                    Expr::Call(f, args) if interner.resolve(*f) == "__mandelstam" && args.len() == 2 => {
+                    Expr::Call(f, args)
+                        if interner.resolve(*f) == "__mandelstam" && args.len() == 2 =>
+                    {
                         spinor_factors.push(ax_spinor::SpinorFactor::Mandelstam(vec![
                             label_from_expr(&args[0], interner)?,
                             label_from_expr(&args[1], interner)?,
@@ -1809,9 +1813,19 @@ pub fn apply_property_declaration(
             ))
         }
         "bianchi" | "satisfies_bianchi" => {
-            add_property(ax_ir::TensorProperty::SatisfiesBianchi);
+            let slots = parse_positions(prop_args)
+                .and_then(|positions| <[usize; 4]>::try_from(positions).ok())
+                .unwrap_or([0, 1, 2, 3]);
+            add_property(ax_ir::TensorProperty::SatisfiesBianchi { slots });
             Some(format!(
                 "attached property satisfies_bianchi to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "dimension_dependent_identity" => {
+            add_property(ax_ir::TensorProperty::DimensionDependentIdentity);
+            Some(format!(
+                "attached property dimension_dependent_identity to {}",
                 interner.resolve(tensor)
             ))
         }
@@ -3129,9 +3143,7 @@ pub fn differentiate(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) 
                 .collect(),
         ),
         Expr::Neg(e) => Expr::neg(differentiate(e, var, interner)),
-        Expr::Group(inner, rel) => {
-            Expr::Group(Box::new(differentiate(inner, var, interner)), *rel)
-        }
+        Expr::Group(inner, rel) => Expr::Group(Box::new(differentiate(inner, var, interner)), *rel),
         Expr::Mul(factors) => {
             let terms = factors
                 .iter()
@@ -4929,7 +4941,26 @@ fn builtin_call(
         }
         "young_project" => {
             if !args.is_empty() {
-                ax_tensor::young_project_tensor(&args[0], &env.property_store, interner)
+                let opts = ax_tensor::YoungProjectTensorOptions {
+                    modulo_monoterm: args
+                        .get(1)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    canonicalize_after: args
+                        .get(2)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                    rename_dummies_after: args
+                        .get(3)
+                        .and_then(|arg| parse_bool_like_expr(arg, interner))
+                        .unwrap_or(true),
+                };
+                ax_tensor::young_project_tensor_with_options(
+                    &args[0],
+                    &env.property_store,
+                    interner,
+                    &opts,
+                )
             } else {
                 Expr::Call(f, args)
             }
@@ -5016,8 +5047,20 @@ fn builtin_call(
                             None
                         }
                     })
-                    .unwrap_or(4);
-                ax_tensor::decompose_product(&args[0], dim, &env.property_store, interner)
+                    .or_else(|| ax_tensor::infer_tensor_dimension(&args[0], &env.property_store));
+                match dim {
+                    Some(dim) => {
+                        ax_tensor::decompose_product(&args[0], dim, &env.property_store, interner)
+                    }
+                    None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "schouten_reduce" => {
+            if !args.is_empty() {
+                ax_tensor::schouten_reduce(&args[0], &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -5775,15 +5818,13 @@ fn builtin_call(
             }
         }
         "hamiltonian_ho" => match args.as_slice() {
-            [mode] => Expr::mul(vec![
-                Expr::add(vec![
-                    Expr::mul(vec![
-                        creation_expr(mode.clone(), interner),
-                        annihilation_expr(mode.clone(), interner),
-                    ]),
-                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+            [mode] => Expr::mul(vec![Expr::add(vec![
+                Expr::mul(vec![
+                    creation_expr(mode.clone(), interner),
+                    annihilation_expr(mode.clone(), interner),
                 ]),
-            ]),
+                Expr::Rational(BigRational::new(1.into(), 2.into())),
+            ])]),
             [mode, omega] => Expr::mul(vec![
                 omega.clone(),
                 Expr::add(vec![
@@ -5833,7 +5874,12 @@ fn builtin_call(
         }
         "fierz" => {
             if args.len() == 1 {
-                match ax_qm::try_fierz_auto_with_properties(&args[0], 4, &env.property_store, interner) {
+                match ax_qm::try_fierz_auto_with_properties(
+                    &args[0],
+                    4,
+                    &env.property_store,
+                    interner,
+                ) {
                     Ok(result) => result,
                     Err(_) => ax_qm::fierz_auto(&args[0], 4, interner),
                 }
@@ -5857,13 +5903,7 @@ fn builtin_call(
                     .unwrap_or_else(|| interner.get_or_intern("gamma"));
                     let metric_sym =
                         find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
-                    ax_qm::expand_diracbar(
-                        &args[0],
-                        diracbar_sym,
-                        gamma_sym,
-                        metric_sym,
-                        interner,
-                    )
+                    ax_qm::expand_diracbar(&args[0], diracbar_sym, gamma_sym, metric_sym, interner)
                 }
             } else {
                 Expr::Call(f, args)
@@ -5878,7 +5918,8 @@ fn builtin_call(
         }
         "join_gamma" | "join_gammas_in_expr" => {
             if args.len() == 1 {
-                let metric_sym = find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
+                let metric_sym =
+                    find_metric_sym(env).unwrap_or_else(|| interner.get_or_intern("g"));
                 let metric = Expr::Sym(metric_sym);
                 match &args[0] {
                     Expr::Mul(factors) if factors.len() == 2 => ax_qm::join_gamma_full(
@@ -5915,7 +5956,8 @@ fn builtin_call(
                         }
                     })
                     .unwrap_or(true);
-                let full = ax_qm::split_gamma_full(&args[0], on_back, &env.property_store, interner);
+                let full =
+                    ax_qm::split_gamma_full(&args[0], on_back, &env.property_store, interner);
                 if full != args[0] {
                     full
                 } else {
@@ -6019,10 +6061,9 @@ fn builtin_call(
                     (lagrangian, fields_expr, Expr::List(coords)) => {
                         let field_rows: Vec<Expr> = match fields_expr {
                             Expr::List(fields) => fields.clone(),
-                            Expr::Matrix(rows) => rows
-                                .iter()
-                                .map(|row| Expr::List(row.clone()))
-                                .collect(),
+                            Expr::Matrix(rows) => {
+                                rows.iter().map(|row| Expr::List(row.clone())).collect()
+                            }
                             _ => return Expr::Call(f, args),
                         };
                         let fields = field_rows
@@ -6309,7 +6350,10 @@ fn builtin_call(
         }
         "wedge" => {
             if args.len() == 2 {
-                match (ax_forms::form_from_expr(&args[0]), ax_forms::form_from_expr(&args[1])) {
+                match (
+                    ax_forms::form_from_expr(&args[0]),
+                    ax_forms::form_from_expr(&args[1]),
+                ) {
                     (Some(a), Some(b)) => {
                         let dim = a.dim.max(b.dim);
                         let a = ax_forms::resize_form(&a, dim);
@@ -6405,9 +6449,8 @@ fn builtin_call(
             if args.len() == 2 {
                 match (&args[0], &args[1]) {
                     (Expr::List(vector), field) => {
-                        let form = ax_forms::form_from_expr(field).map(|form| {
-                            ax_forms::resize_form(&form, vector.len())
-                        });
+                        let form = ax_forms::form_from_expr(field)
+                            .map(|form| ax_forms::resize_form(&form, vector.len()));
                         if let Some(form) = form {
                             ax_forms::form_to_expr(&ax_forms::interior_product(
                                 vector, &form, interner,
@@ -6433,9 +6476,8 @@ fn builtin_call(
                                 _ => None,
                             })
                             .collect::<Option<Vec<_>>>();
-                        let form = ax_forms::form_from_expr(field).map(|form| {
-                            ax_forms::resize_form(&form, vector.len())
-                        });
+                        let form = ax_forms::form_from_expr(field)
+                            .map(|form| ax_forms::resize_form(&form, vector.len()));
                         if let (Some(coords), Some(form)) = (coords, form) {
                             ax_forms::form_to_expr(&ax_forms::lie_derivative_form(
                                 vector, &form, &coords, interner,
@@ -6945,6 +6987,26 @@ fn structurally_matches(expr: &Expr, pattern: &Expr) -> bool {
     }
 }
 
+fn parse_bool_like_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<bool> {
+    match expr {
+        Expr::Sym(sym) => match interner.resolve(*sym) {
+            "true" | "on" => Some(true),
+            "false" | "off" => Some(false),
+            _ => None,
+        },
+        Expr::Int(n) => {
+            if n == &0.into() {
+                Some(false)
+            } else if n == &1.into() {
+                Some(true)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
     ax_ir::abort_if_cancelled();
     match expr {
@@ -7030,8 +7092,7 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
                 "first_order_form" => {
                     if args.len() >= 3 {
                         if let (Expr::Sym(dep), Expr::Sym(indep)) = (&args[1], &args[2]) {
-                            let system =
-                                ax_ode::first_order_form(&args[0], *dep, *indep, interner);
+                            let system = ax_ode::first_order_form(&args[0], *dep, *indep, interner);
                             return Expr::List(
                                 system
                                     .into_iter()
@@ -7242,7 +7303,13 @@ fn simplifier_node_count(expr: &Expr) -> usize {
         Expr::Indexed(base, _) => 1 + simplifier_node_count(base),
         Expr::Group(inner, _) => 1 + simplifier_node_count(inner),
         Expr::Let(_, val, body) => 1 + simplifier_node_count(val) + simplifier_node_count(body),
-        Expr::Matrix(rows) => 1 + rows.iter().flatten().map(simplifier_node_count).sum::<usize>(),
+        Expr::Matrix(rows) => {
+            1 + rows
+                .iter()
+                .flatten()
+                .map(simplifier_node_count)
+                .sum::<usize>()
+        }
         _ => 1,
     }
 }
@@ -8118,7 +8185,8 @@ mod tests {
             ricci
         );
 
-        let (geodesic, _) = eval_src("geodesic(christoffel(metric(diag(1, x^2)), [x, y]), [x, y]);");
+        let (geodesic, _) =
+            eval_src("geodesic(christoffel(metric(diag(1, x^2)), [x, y]), [x, y]);");
         assert!(
             matches!(geodesic, Expr::List(_)),
             "expected geodesic equations, got {:?}",
@@ -8780,7 +8848,10 @@ mod tests {
         let (result, interner) = eval_src("dsolve(diff(y, x) - x, y, x);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert!(!rendered.contains("solve_ode"), "got {rendered}");
-        assert!(rendered.contains("x²") || rendered.contains("x^2"), "got {rendered}");
+        assert!(
+            rendered.contains("x²") || rendered.contains("x^2"),
+            "got {rendered}"
+        );
     }
 
     #[test]
@@ -8797,9 +8868,15 @@ mod tests {
         let (result, interner) =
             eval_src("functional_derivative(1/2 * m * x_dot^2 - 1/2 * k * x^2, x, [x_dot], [t]);");
         let rendered = ax_ir::pretty_print(&result, &interner);
-        assert!(!rendered.contains("functional_derivative"), "got {rendered}");
+        assert!(
+            !rendered.contains("functional_derivative"),
+            "got {rendered}"
+        );
         assert!(rendered.contains("d2x_dtdt"), "got {rendered}");
-        assert!(rendered.contains("k*x") || rendered.contains("kx"), "got {rendered}");
+        assert!(
+            rendered.contains("k*x") || rendered.contains("kx"),
+            "got {rendered}"
+        );
     }
 
     #[test]
@@ -8819,11 +8896,20 @@ mod tests {
             "euler_lagrange_system(1/2 * phi_t^2 + 1/2 * chi_t^2 - g * phi * chi, [[phi, [phi_t]], [chi, [chi_t]]], [t]);",
         );
         let rendered = ax_ir::pretty_print(&result, &interner);
-        assert!(!rendered.contains("euler_lagrange_system"), "got {rendered}");
+        assert!(
+            !rendered.contains("euler_lagrange_system"),
+            "got {rendered}"
+        );
         assert!(rendered.contains("d2phi_dtdt"), "got {rendered}");
         assert!(rendered.contains("d2chi_dtdt"), "got {rendered}");
-        assert!(rendered.contains("χ") || rendered.contains("chi"), "got {rendered}");
-        assert!(rendered.contains("φ") || rendered.contains("phi"), "got {rendered}");
+        assert!(
+            rendered.contains("χ") || rendered.contains("chi"),
+            "got {rendered}"
+        );
+        assert!(
+            rendered.contains("φ") || rendered.contains("phi"),
+            "got {rendered}"
+        );
     }
 
     #[test]
@@ -8831,7 +8917,10 @@ mod tests {
         let (result, interner) = eval_src("wedge([P, Q], [R, S]);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert!(!rendered.contains("wedge("), "got {rendered}");
-        assert!(rendered.contains("PS") || rendered.contains("P*S"), "got {rendered}");
+        assert!(
+            rendered.contains("PS") || rendered.contains("P*S"),
+            "got {rendered}"
+        );
     }
 
     #[test]
@@ -8855,8 +8944,7 @@ mod tests {
 
     #[test]
     fn lie_derivative_form_reduces() {
-        let (result, interner) =
-            eval_src("lie_derivative_form([x, 0], [1, 0], [x, y]);");
+        let (result, interner) = eval_src("lie_derivative_form([x, 0], [1, 0], [x, y]);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert!(!rendered.contains("lie_derivative_form"), "got {rendered}");
         assert!(rendered.contains("[1, 0]"), "got {rendered}");
@@ -8874,7 +8962,11 @@ mod tests {
         env.bindings.insert(riem_sym, riem_value.clone());
 
         let ricci_sym = interner.get_or_intern("ricci");
-        let result = eval(&Expr::Call(ricci_sym, vec![Expr::Sym(riem_sym)]), &env, &interner);
+        let result = eval(
+            &Expr::Call(ricci_sym, vec![Expr::Sym(riem_sym)]),
+            &env,
+            &interner,
+        );
         assert!(
             matches!(result, Expr::Matrix(_)),
             "expected matrix from bound riemann tensor, got {:?}",
@@ -8997,12 +9089,15 @@ mod tests {
             "covariant_diff([f(t, x, y, z), 0, 0, 0], christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), 0, [t, x, y, z]);",
         );
         let rendered = ax_ir::pretty_print(&result, &interner);
-        assert!(rendered.contains("diff(f(t, x, y, z), t)"), "got {rendered}");
+        assert!(
+            rendered.contains("diff(f(t, x, y, z), t)"),
+            "got {rendered}"
+        );
         assert!(!rendered.contains("christoffel("), "got {rendered}");
     }
 
     #[test]
-    fn young_project_respects_symmetric_property() {
+    fn young_project_ignores_pure_symmetric_property_without_tableau_projector() {
         let interner = ax_ir::Interner::new();
         let mut env = Env::new();
         let t = interner.get_or_intern("T");
@@ -9011,9 +9106,10 @@ mod tests {
         let lowered = ax_core_ir::lower("young_project(T[a-,b-]);", &interner);
         let expr = lowered.expr.expect("young_project expr");
         let result = eval(&expr, &env, &interner);
-        let rendered = ax_ir::pretty_print(&result, &interner);
-        assert!(rendered.contains("T[a-, b-]"), "got {rendered}");
-        assert!(rendered.contains("T[b-, a-]"), "got {rendered}");
+        let expected = ax_core_ir::lower("T[a-,b-];", &interner)
+            .expr
+            .expect("expected expr");
+        assert_eq!(result, expected, "got {:?}", result);
     }
 
     #[test]
@@ -9033,9 +9129,74 @@ mod tests {
             .expr
             .expect("young project expr");
         let result = eval(&expr, &env, &interner);
-        let rendered = ax_ir::pretty_print(&result, &interner);
-        assert!(rendered.contains("T[a-, b-]"), "got {rendered}");
+        let expected = ax_core_ir::lower("2*T[a-,b-];", &interner)
+            .expr
+            .expect("expected expr");
+        assert_eq!(result, expected, "got {:?}", result);
+    }
+
+    #[test]
+    fn young_project_accepts_tensor_options() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("property T tableau_symmetry([2], [0, 1])", &interner)
+            .expr
+            .expect("tableau property decl");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(
+            message.is_some(),
+            "expected tableau_symmetry declaration to be applied"
+        );
+
+        let reduced_expr =
+            ax_core_ir::lower("young_project(T[b-,a-], true, true, true);", &interner)
+                .expr
+                .expect("young project expr");
+        let reduced = eval(&reduced_expr, &env, &interner);
+        let expected = ax_core_ir::lower("2*T[a-,b-];", &interner)
+            .expr
+            .expect("expected expr");
+        assert_eq!(reduced, expected, "got {:?}", reduced);
+
+        let expanded_expr =
+            ax_core_ir::lower("young_project(T[b-,a-], false, false, false);", &interner)
+                .expr
+                .expect("young project expr");
+        let expanded = eval(&expanded_expr, &env, &interner);
+        let rendered = ax_ir::pretty_print(&expanded, &interner);
         assert!(rendered.contains("T[b-, a-]"), "got {rendered}");
+        assert!(rendered.contains("T[a-, b-]"), "got {rendered}");
+    }
+
+    #[test]
+    fn young_project_product_identity_via_eval() {
+        let interner = ax_ir::Interner::new();
+        let mut env = Env::new();
+        let decl = ax_core_ir::lower("property R satisfies_bianchi", &interner)
+            .expr
+            .expect("bianchi property decl");
+        let message = apply_property_declaration(&decl, &mut env, &interner);
+        assert!(message.is_some(), "expected satisfies_bianchi declaration");
+
+        let expr = ax_core_ir::lower(
+            "young_project(R[a-,b-,c-,d-]*V[e-] + R[a-,c-,d-,b-]*V[e-] + R[a-,d-,b-,c-]*V[e-]);",
+            &interner,
+        )
+        .expr
+        .expect("young project expr");
+        let result = eval(&expr, &env, &interner);
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn schouten_reduce_uses_declared_index_family_dimension() {
+        let (result, _interner) = eval_src(
+            "indices V [a, b, c] dim=2;
+             property T tableau_symmetry([1,1,1], [0,1,2]);
+             property T dimension_dependent_identity;
+             schouten_reduce(T[a-,b-,c-] - T[a-,c-,b-] - T[b-,a-,c-] + T[b-,c-,a-] + T[c-,a-,b-] - T[c-,b-,a-]);",
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
     }
 
     #[test]
@@ -9126,7 +9287,10 @@ mod tests {
             eval_src("fierz(bar(psi1) * gamma(mu) * psi2 * bar(psi3) * psi4);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert!(!rendered.contains("fierz("), "got {rendered}");
-        assert!(matches!(result, Expr::Add(_)), "expected Fierz sum, got {rendered}");
+        assert!(
+            matches!(result, Expr::Add(_)),
+            "expected Fierz sum, got {rendered}"
+        );
     }
 
     #[test]
@@ -9147,9 +9311,13 @@ mod tests {
         let multi_rendered = ax_render::to_unicode(&multi, &interner);
         assert_eq!(multi_rendered, "s_{123}");
 
-        let (expanded_multi, interner) = eval_src("expand_mandelstam(mandelstam_multi([1, 2, 3]));");
+        let (expanded_multi, interner) =
+            eval_src("expand_mandelstam(mandelstam_multi([1, 2, 3]));");
         let expanded_rendered = ax_render::to_unicode(&expanded_multi, &interner);
-        assert!(expanded_rendered.contains("⟨12⟩[21]"), "got {expanded_rendered}");
+        assert!(
+            expanded_rendered.contains("⟨12⟩[21]"),
+            "got {expanded_rendered}"
+        );
         assert!(!expanded_rendered.contains("__"), "got {expanded_rendered}");
     }
 
@@ -9157,8 +9325,14 @@ mod tests {
     fn qft_gamma_source_ops_reduce_cleanly() {
         let (split, interner) = eval_src("split_gamma(gamma(mu, nu));");
         let split_rendered = ax_ir::pretty_print(&split, &interner);
-        assert!(!split_rendered.contains("split_gamma"), "got {split_rendered}");
-        assert!(split_rendered.contains("gamma(mu)") && split_rendered.contains("gamma(nu)"), "got {split_rendered}");
+        assert!(
+            !split_rendered.contains("split_gamma"),
+            "got {split_rendered}"
+        );
+        assert!(
+            split_rendered.contains("gamma(mu)") && split_rendered.contains("gamma(nu)"),
+            "got {split_rendered}"
+        );
 
         let (trace5, interner) = eval_src("gamma5_trace([mu, nu, rho, sigma]);");
         let trace5_rendered = ax_render::to_unicode(&trace5, &interner);
@@ -9173,7 +9347,10 @@ mod tests {
             .expr
             .expect("setup superspace expr");
         let setup_msg = apply_superspace_setup(&setup, &mut env, &interner);
-        assert!(setup_msg.is_some(), "expected superspace setup to initialize env");
+        assert!(
+            setup_msg.is_some(),
+            "expected superspace setup to initialize env"
+        );
 
         let d_squared = ax_core_ir::lower("d_squared(chiral_superfield(Phi));", &interner)
             .expr
@@ -9182,16 +9359,20 @@ mod tests {
         let d_squared_rendered = ax_ir::pretty_print(&d_squared_result, &interner);
         assert_eq!(d_squared_rendered, "-2*F_Phi(x0, x1, x2, x3)");
 
-        let d_bar_squared = ax_core_ir::lower("d_bar_squared(antichiral_superfield(Phi_bar));", &interner)
-            .expr
-            .expect("d_bar_squared expr");
+        let d_bar_squared =
+            ax_core_ir::lower("d_bar_squared(antichiral_superfield(Phi_bar));", &interner)
+                .expr
+                .expect("d_bar_squared expr");
         let d_bar_squared_result = eval(&d_bar_squared, &env, &interner);
         let d_bar_squared_rendered = ax_ir::pretty_print(&d_bar_squared_result, &interner);
         assert_eq!(d_bar_squared_rendered, "2*F_bar_Phi_bar(x0, x1, x2, x3)");
 
-        let extract = ax_core_ir::lower("extract_component(vector_superfield_wz(V), [1,1]);", &interner)
-            .expr
-            .expect("extract component expr");
+        let extract = ax_core_ir::lower(
+            "extract_component(vector_superfield_wz(V), [1,1]);",
+            &interner,
+        )
+        .expr
+        .expect("extract component expr");
         let extract_result = eval(&extract, &env, &interner);
         assert_eq!(extract_result, Expr::zero());
     }
@@ -9223,8 +9404,14 @@ mod tests {
     fn cosmology_linearized_einstein_second_order_exposes_expected_labels() {
         let (result, interner) = eval_src("linearized_einstein(2);");
         let rendered = ax_ir::pretty_print(&result, &interner);
-        assert!(rendered.contains("second_order_00_constraint"), "got {rendered}");
-        assert!(rendered.contains("second_order_ij_traceless"), "got {rendered}");
+        assert!(
+            rendered.contains("second_order_00_constraint"),
+            "got {rendered}"
+        );
+        assert!(
+            rendered.contains("second_order_ij_traceless"),
+            "got {rendered}"
+        );
     }
 
     #[test]
@@ -9278,9 +9465,8 @@ mod tests {
 
     #[test]
     fn qm_bell_partial_trace_is_maximally_mixed() {
-        let (result, interner) = eval_src(
-            "partial_trace(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2, A);",
-        );
+        let (result, interner) =
+            eval_src("partial_trace(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2, A);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert_eq!(rendered, "[[1/2, 0], [0, 1/2]]");
     }
@@ -9302,9 +9488,8 @@ mod tests {
 
     #[test]
     fn qm_abstract_harmonic_oscillator_hamiltonian_has_correct_energy() {
-        let (result, interner) = eval_src(
-            "apply_operator(hamiltonian_ho(a, hbar, omega), number_state(a, 1));",
-        );
+        let (result, interner) =
+            eval_src("apply_operator(hamiltonian_ho(a, hbar, omega), number_state(a, 1));");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert_eq!(rendered, "3/2*hbar*omega*number_state(a, 1)");
     }
@@ -9338,9 +9523,7 @@ mod tests {
         match result {
             Expr::Matrix(rows) => {
                 assert!(
-                    rows.iter()
-                        .flatten()
-                        .all(|entry| *entry == Expr::zero()),
+                    rows.iter().flatten().all(|entry| *entry == Expr::zero()),
                     "expected zero Ricci matrix, got {:?}",
                     rows
                 );
@@ -9363,7 +9546,10 @@ mod tests {
         let expected = Expr::mul(vec![
             Expr::Int(48.into()),
             Expr::pow(Expr::Sym(interner.get_or_intern("M")), Expr::Int(2.into())),
-            Expr::pow(Expr::Sym(interner.get_or_intern("r")), Expr::Int((-6).into())),
+            Expr::pow(
+                Expr::Sym(interner.get_or_intern("r")),
+                Expr::Int((-6).into()),
+            ),
         ]);
         assert_eq!(result, expected);
     }

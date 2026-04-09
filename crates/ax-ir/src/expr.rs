@@ -86,7 +86,10 @@ pub enum TensorProperty {
         shape: Vec<usize>,
         indices: Vec<usize>,
     },
-    SatisfiesBianchi,
+    SatisfiesBianchi {
+        slots: [usize; 4],
+    },
+    DimensionDependentIdentity,
     WeylTensor,
     DifferentialFormDegree(usize),
 }

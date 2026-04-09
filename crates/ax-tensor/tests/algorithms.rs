@@ -79,8 +79,8 @@ fn canon_antisymmetric_sign() {
 }
 
 #[test]
-fn canon_riemann_first_bianchi() {
-    // R_{abcd} + R_{acdb} + R_{adbc} = 0 (first Bianchi identity)
+fn riemann_symmetry_does_not_imply_first_bianchi() {
+    // RiemannSymmetry now means only pair antisymmetry plus pair exchange.
     let int = interner();
     let r = int.get_or_intern("R");
     let mut props = HashMap::new();
@@ -117,11 +117,10 @@ fn canon_riemann_first_bianchi() {
     );
     let sum = Expr::Add(vec![t1, t2, t3]);
     let result = meld(&sum, &props, &int);
-    assert_eq!(
+    assert_ne!(
         result,
         Expr::zero(),
-        "first Bianchi identity should give 0, got {:?}",
-        result
+        "RiemannSymmetry alone should not imply the first Bianchi identity"
     );
 }
 

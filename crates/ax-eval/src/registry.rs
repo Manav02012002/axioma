@@ -70,6 +70,7 @@ pub enum ParamType {
     Code,
     Symbol,
     SymbolList,
+    Bool,
     Integer,
     Float,
     StringEnum(&'static [&'static str]),
@@ -1143,9 +1144,16 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
         b(
             "young_project",
             "tensor",
-            "young_project(expr)",
-            "Project a tensor onto a declared Young-tableau symmetry.",
+            "young_project(expr, modulo_monoterm=true, canonicalize_after=true, rename_dummies_after=true)",
+            "Project a tensor onto a declared Young-tableau symmetry, with optional post-projection monoterm canonicalisation and dummy renaming.",
             "young_project(T[a-,b-,c-])",
+        ),
+        b(
+            "schouten_reduce",
+            "tensor",
+            "schouten_reduce(expr)",
+            "Apply dimension-dependent tensor reduction using inferred index-family dimension metadata.",
+            "schouten_reduce(A[a-]*B[b-]*C[c-] - A[a-]*B[c-]*C[b-] + A[b-]*B[c-]*C[a-] - A[b-]*B[a-]*C[c-] + A[c-]*B[a-]*C[b-] - A[c-]*B[b-]*C[a-])",
         ),
         b(
             "symmetrise",
@@ -2011,8 +2019,9 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("ImplicitIndex", "property T implicit_index", "Marks an object as carrying implicit indices.", "sort_product implicit-index commutativity barrier lookup", "property T implicit_index"),
         p("SortOrder", "property T sort_order([...])", "Declares an explicit preferred order of symbols.", "stored by ax-tensor metadata; no direct ax-tensor algorithm currently consults it", "property T sort_order([A, B, C])"),
         p("TableauSymmetry", "property T tableau_symmetry([shape], [indices])", "Declares a Young-tableau symmetry shape and slot assignment.", "canonicalise slot/sign handling, meld tableaux_from_properties, young_project_tensor", "property T tableau_symmetry([2,1], [0,1,2])"),
-        p("SatisfiesBianchi", "property R satisfies_bianchi", "Marks a tensor as satisfying a Bianchi identity.", "meld tableaux_from_properties Bianchi cancellation hook", "property R satisfies_bianchi"),
-        p("WeylTensor", "property C weyl_tensor", "Marks a tensor as a Weyl tensor.", "canonicalise Riemann-like slot symmetries, traceless fast-zero handling, and meld Bianchi-style tableau hooks", "property C weyl_tensor"),
+        p("SatisfiesBianchi", "property R satisfies_bianchi([0,1,2,3])", "Marks a tensor as satisfying a cyclic Bianchi identity on the specified four slots.", "young_project_tensor, meld, and symmetry projector lookup", "property R satisfies_bianchi([0,1,2,3])"),
+        p("DimensionDependentIdentity", "property T dimension_dependent_identity", "Marks a tensor as carrying dimension-dependent identities relevant to Schouten-style reductions.", "dimension-reduction metadata and public property inspection", "property T dimension_dependent_identity"),
+        p("WeylTensor", "property C weyl_tensor", "Marks a tensor as a Weyl tensor, i.e. RiemannSymmetry plus SatisfiesBianchi plus tracelessness.", "canonicalise Riemann-like slot symmetries, traceless fast-zero handling, and meld/young-project Bianchi hooks", "property C weyl_tensor"),
         p("DifferentialFormDegree", "property F differential_form_degree(n)", "Declares the degree of a differential form.", "stored by ax-tensor metadata; differential-form algorithms live outside ax-tensor", "property F differential_form_degree(2)"),
     ]
 }
@@ -2033,7 +2042,7 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("canonicalize_indices", "tensor", "canonicalize_indices(expr: &Expr, properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Apply local index-slot canonicalization from declared tensor properties before product-level canonicalization.", "Useful properties such as Symmetric, AntiSymmetric, RiemannSymmetry, WeylTensor, Metric, InverseMetric, KroneckerDelta, EpsilonTensor, GammaMatrixProp, DiracBar, or TableauSymmetry must be declared on tensor symbols.", "canonicalize_indices(F[b-,a-])"),
         a("rename_dummies", "tensor", "rename_dummies<E: DummyRenameEnv>(expr: &Expr, env: &E, interner: &Interner) -> Expr", "Rename dummy indices to deterministic family-aware placeholders so alpha-equivalent contractions compare equal.", "Index-family data improves the generated names; without it, generic _dN names are used.", "rename_dummies(T[a-,a+] + T[b-,b+])"),
         a("young_project", "tensor", "young_project(expr: &Expr, tableau: &YoungTableau, interner: &Interner) -> Expr", "Project an expression with a specific Young tableau by antisymmetrizing columns and symmetrizing rows.", "A valid tableau cell layout must be supplied in slot-number form.", "young_project(T[a-,b-,c-])"),
-        a("young_project_tensor", "tensor", "young_project_tensor(expr: &Expr, tensor_properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Apply a declared TableauSymmetry property directly to a tensor expression.", "The relevant tensor symbol must carry a TableauSymmetry property in tensor_properties.", "young_project(T[a-,b-,c-])"),
+        a("young_project_tensor", "tensor", "young_project_tensor_with_options(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &YoungProjectTensorOptions) -> Expr", "Apply declared Young-tableau symmetry and optionally simplify modulo monoterm symmetries by distributing, canonicalizing slots/products, renaming dummies, and collecting duplicates.", "The relevant tensor symbol must carry TableauSymmetry, RiemannSymmetry, SatisfiesBianchi, or WeylTensor properties; enabling modulo_monoterm is most useful when ordinary monoterm symmetries are also declared.", "young_project(T[a-,b-,c-], true, true, true)"),
         a("reduce_delta", "tensor", "reduce_delta(expr: &Expr, delta_sym: Spur, dim_sym: Spur, interner: &Interner) -> Expr", "Iteratively contract products and traces of Kronecker deltas back to simpler delta or dimension factors.", "The delta symbol and the symbol representing the dimension must be supplied.", "reduce_delta(Delta[a+,b-] * Delta[b+,c-])"),
         a("eliminate_kronecker", "tensor", "eliminate_kronecker(expr: &Expr, delta_sym: Spur, interner: &Interner) -> Expr", "Use Kronecker deltas to substitute contracted indices and remove delta factors from products.", "The delta symbol must identify a two-index Kronecker delta with one up and one down slot.", "eliminate_kronecker(delta[mu+,nu-] * T[nu+,rho-])"),
         a("eliminate_metric", "tensor", "eliminate_metric(expr: &Expr, metric_sym: Spur, inv_metric_sym: Spur, interner: &Interner) -> Expr", "Use metric or inverse-metric factors to raise or lower contracted indices and remove those metric factors.", "Metric components must use two down indices and inverse-metric components two up indices.", "eliminate_metric(g[mu-,nu-] * V[nu+])"),
@@ -2060,7 +2069,8 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("explicit_indices", "tensor", "explicit_indices(expr: &Expr, implicit_index_tensors: &HashSet<Spur>, available_indices: &[Spur], n_indices_per_tensor: &HashMap<Spur, usize>, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Insert explicit indices for implicit-index tensors by building deterministic contraction graph components inside products.", "Tensor ranks are read from n_indices_per_tensor or tensor properties; explicit slots are preserved, scalar barriers split disconnected graph components, and trace wrappers close graph edges.", "explicit_indices(A * B)"),
         a("rewrite_indices", "tensor", "rewrite_indices(expr: &Expr, target_tensors: &HashMap<Spur, Vec<Variance>>, metric_sym: Spur, inv_metric_sym: Spur, interner: &Interner) -> Expr", "Insert metric or inverse-metric factors so selected tensors end up with requested slot variances.", "Each target tensor must have a full desired-variance specification per slot, and metric symbols must be provided.", "rewrite_indices(T[a+], targets)"),
         a("decompose", "tensor", "decompose(expr: &Expr, basis: &[Expr], tensor_properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Express a tensor expression as a rational linear combination of a supplied canonical basis plus any residual unmatched terms.", "The basis should span the intended subspace, and tensor_properties should contain the symmetries needed for canonical matching.", "decompose(expr, [basis1, basis2])"),
-        a("decompose_product", "tensor", "decompose_product(expr: &Expr, dim: usize, tensor_properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Decompose indexed tensor products by associative Littlewood-Richardson tableau composition and Young projection.", "The input should be a product containing at least two indexed tensors with inferable shapes; TableauSymmetry, Symmetric, AntiSymmetric, RiemannSymmetry, and generic indexed slots drive shape inference, multiplicities are preserved, and unsupported or inconsistent shapes return a diagnostic expression.", "decompose_product(T[a-,b-] * S[c-,d-] * V[e-], 4)"),
+        a("decompose_product", "tensor", "decompose_product(expr: &Expr, dim: usize, tensor_properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Decompose indexed tensor products by associative Littlewood-Richardson tableau composition and Young projection.", "The input should be a product containing at least two indexed tensors with inferable shapes; TableauSymmetry, Symmetric, AntiSymmetric, RiemannSymmetry, and generic indexed slots drive shape inference, multiplicities are preserved, and unsupported or inconsistent shapes return a diagnostic expression. When dim is omitted in the public evaluator, Axioma now tries to infer it from index-family metadata.", "decompose_product(T[a-,b-] * S[c-,d-] * V[e-], 4)"),
+        a("schouten_reduce", "tensor", "schouten_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Apply dimension-dependent Schouten-style tensor reduction by inferring a unique index-family dimension, decomposing products into Young irreps, discarding dimensionally forbidden shapes, then canonicalising and melding the result.", "At least one tensor in the expression should carry the DimensionDependentIdentity property, and the expression must carry enough index-family metadata to infer a unique dimension; ambiguous or missing dimensions return a diagnostic expression.", "schouten_reduce(A[a-]*B[b-]*C[c-] - A[a-]*B[c-]*C[b-] + A[b-]*B[c-]*C[a-] - A[b-]*B[a-]*C[c-] + A[c-]*B[a-]*C[b-] - A[c-]*B[b-]*C[a-])"),
         a("expand_implicit", "tensor", "expand_implicit(expr: &Expr, implicit_index_tensors: &HashSet<Spur>, available_indices: &[Spur], n_indices_per_tensor: &HashMap<Spur, usize>, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Recursively make implicit tensor contraction graphs explicit across sums, products, trace wrappers, and call arguments.", "Tensor ranks are read from n_indices_per_tensor or tensor properties; each sum branch receives disjoint fresh graph indices.", "expand_implicit(A * B + C * D)"),
         a("normal_order", "qm", "normal_order(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, interner: &Interner) -> Expr", "Reorder products of operators into normal order using the declared creation/annihilation kinds.", "Operator kinds must be declared for the symbols that should reorder.", "normal_order(a * creation(a))"),
         a("wick_expand", "qm", "wick_expand(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, contractions: &HashMap<(Spur, Spur), Expr>, interner: &Interner) -> Expr", "Expand operator products into normal-ordered terms plus single contractions.", "Operator kinds and any nonzero contraction values must be provided explicitly.", "wick(psi * psibar)"),
@@ -2387,6 +2397,12 @@ fn float_arg(args: &[serde_json::Value], idx: usize, name: &str) -> Result<f64, 
         .ok_or_else(|| format!("argument '{name}' must be a float"))
 }
 
+fn bool_arg(args: &[serde_json::Value], idx: usize, name: &str) -> Result<bool, String> {
+    require_arg(args, idx, name)?
+        .as_bool()
+        .ok_or_else(|| format!("argument '{name}' must be a boolean"))
+}
+
 fn string_arg<'a>(
     args: &'a [serde_json::Value],
     idx: usize,
@@ -2618,9 +2634,15 @@ pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::In
                 .join(", ")
         ),
         TensorProperty::TableauSymmetry { shape, indices } => {
-            format!("TableauSymmetry(shape: {:?}, indices: {:?})", shape, indices)
+            format!(
+                "TableauSymmetry(shape: {:?}, indices: {:?})",
+                shape, indices
+            )
         }
-        TensorProperty::SatisfiesBianchi => "SatisfiesBianchi".to_string(),
+        TensorProperty::SatisfiesBianchi { slots } => {
+            format!("SatisfiesBianchi(slots: {:?})", slots)
+        }
+        TensorProperty::DimensionDependentIdentity => "DimensionDependentIdentity".to_string(),
         TensorProperty::WeylTensor => "WeylTensor".to_string(),
         TensorProperty::DifferentialFormDegree(d) => {
             format!("DifferentialForm(degree: {})", d)
@@ -2654,7 +2676,10 @@ fn annotate_success_response(
     Ok(response)
 }
 
-fn ensure_not_timeout(expr: ax_ir::Expr, interner: &ax_ir::Interner) -> Result<ax_ir::Expr, String> {
+fn ensure_not_timeout(
+    expr: ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> Result<ax_ir::Expr, String> {
     if ax_tensor::is_timeout_expr(&expr, interner) {
         Err("computation timed out".to_string())
     } else {
@@ -2831,8 +2856,13 @@ fn parse_property_string(
     if lower == "implicitindex" || lower == "implicit_index" {
         return Ok(ax_ir::TensorProperty::ImplicitIndex);
     }
+    if lower == "dimensiondependentidentity" || lower == "dimension_dependent_identity" {
+        return Ok(ax_ir::TensorProperty::DimensionDependentIdentity);
+    }
     if lower == "satisfiesbianchi" || lower == "satisfies_bianchi" || lower == "bianchi" {
-        return Ok(ax_ir::TensorProperty::SatisfiesBianchi);
+        return Ok(ax_ir::TensorProperty::SatisfiesBianchi {
+            slots: [0, 1, 2, 3],
+        });
     }
     if lower == "weyltensor" || lower == "weyl_tensor" || lower == "weyl" {
         return Ok(ax_ir::TensorProperty::WeylTensor);
@@ -2890,6 +2920,16 @@ fn parse_property_string(
             }
         }
         return Ok(ax_ir::TensorProperty::TableauSymmetry { shape, indices });
+    }
+    if let Some(body) = trimmed
+        .strip_prefix("SatisfiesBianchi(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        let slots = parse_usize_list(body)?;
+        let slots: [usize; 4] = slots
+            .try_into()
+            .map_err(|_| format!("SatisfiesBianchi requires exactly four slots in '{trimmed}'"))?;
+        return Ok(ax_ir::TensorProperty::SatisfiesBianchi { slots });
     }
     match lower.as_str() {
         "symmetric" => Ok(ax_ir::TensorProperty::Symmetric(vec![0, 1])),
@@ -3202,7 +3242,12 @@ fn handle_expand(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    expr_response_with_change(&expr, crate::simplify::expand(&expr, state.interner()), "expand", state)
+    expr_response_with_change(
+        &expr,
+        crate::simplify::expand(&expr, state.interner()),
+        "expand",
+        state,
+    )
 }
 
 fn handle_collect_terms(
@@ -3237,7 +3282,8 @@ fn handle_partial_fractions(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    let result = crate::simplify::apart_expr(&expr, var, state.interner()).unwrap_or_else(|| expr.clone());
+    let result =
+        crate::simplify::apart_expr(&expr, var, state.interner()).unwrap_or_else(|| expr.clone());
     expr_response_with_change(&expr, result, "partial_fractions", state)
 }
 
@@ -3366,7 +3412,8 @@ fn binary_expr_builtin(
     let lhs = expr_from_id(args, 0, "lhs", state)?;
     let rhs = expr_from_id(args, 1, "rhs", state)?;
     let result = call_named(name, vec![lhs.clone(), rhs.clone()], state);
-    let changed = ax_ir::Expr::Call(state.interner_mut().get_or_intern(name), vec![lhs, rhs]) != result;
+    let changed =
+        ax_ir::Expr::Call(state.interner_mut().get_or_intern(name), vec![lhs, rhs]) != result;
     let mut response = expr_or_struct_response(result, state)?;
     if let Some(obj) = response.as_object_mut() {
         obj.insert(
@@ -3594,7 +3641,11 @@ fn handle_gradient(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    let result = call_named("gradient", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    let result = call_named(
+        "gradient",
+        vec![expr.clone(), ax_ir::Expr::List(vars)],
+        state,
+    );
     expr_response_with_change(&expr, result, "gradient", state)
 }
 
@@ -3620,7 +3671,11 @@ fn handle_divergence(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    let result = call_named("divergence", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    let result = call_named(
+        "divergence",
+        vec![expr.clone(), ax_ir::Expr::List(vars)],
+        state,
+    );
     expr_response_with_change(&expr, result, "divergence", state)
 }
 
@@ -3659,7 +3714,11 @@ fn handle_laplacian(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    let result = call_named("laplacian", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    let result = call_named(
+        "laplacian",
+        vec![expr.clone(), ax_ir::Expr::List(vars)],
+        state,
+    );
     expr_response_with_change(&expr, result, "laplacian", state)
 }
 
@@ -3672,7 +3731,11 @@ fn handle_jacobian(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    let result = call_named("jacobian", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    let result = call_named(
+        "jacobian",
+        vec![expr.clone(), ax_ir::Expr::List(vars)],
+        state,
+    );
     expr_response_with_change(&expr, result, "jacobian", state)
 }
 
@@ -3685,7 +3748,11 @@ fn handle_hessian(
         .into_iter()
         .map(ax_ir::Expr::Sym)
         .collect::<Vec<_>>();
-    let result = call_named("hessian", vec![expr.clone(), ax_ir::Expr::List(vars)], state);
+    let result = call_named(
+        "hessian",
+        vec![expr.clone(), ax_ir::Expr::List(vars)],
+        state,
+    );
     expr_response_with_change(&expr, result, "hessian", state)
 }
 
@@ -3804,7 +3871,11 @@ fn handle_differentiate_eq_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "eq", state)?;
     let var = symbol_arg(args, 1, "var", state)?;
-    let result = call_named("differentiate_eq", vec![expr.clone(), ax_ir::Expr::Sym(var)], state);
+    let result = call_named(
+        "differentiate_eq",
+        vec![expr.clone(), ax_ir::Expr::Sym(var)],
+        state,
+    );
     expr_response_with_change(&expr, result, "differentiate_eq", state)
 }
 
@@ -3814,7 +3885,11 @@ fn handle_integrate_eq_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "eq", state)?;
     let var = symbol_arg(args, 1, "var", state)?;
-    let result = call_named("integrate_eq", vec![expr.clone(), ax_ir::Expr::Sym(var)], state);
+    let result = call_named(
+        "integrate_eq",
+        vec![expr.clone(), ax_ir::Expr::Sym(var)],
+        state,
+    );
     expr_response_with_change(&expr, result, "integrate_eq", state)
 }
 
@@ -3831,7 +3906,11 @@ fn handle_raise_eq_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "eq", state)?;
     let index = symbol_arg(args, 1, "index", state)?;
-    let result = call_named("raise_eq", vec![expr.clone(), ax_ir::Expr::Sym(index)], state);
+    let result = call_named(
+        "raise_eq",
+        vec![expr.clone(), ax_ir::Expr::Sym(index)],
+        state,
+    );
     expr_response_with_change(&expr, result, "raise_eq", state)
 }
 
@@ -3841,7 +3920,11 @@ fn handle_lower_eq_entry(
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "eq", state)?;
     let index = symbol_arg(args, 1, "index", state)?;
-    let result = call_named("lower_eq", vec![expr.clone(), ax_ir::Expr::Sym(index)], state);
+    let result = call_named(
+        "lower_eq",
+        vec![expr.clone(), ax_ir::Expr::Sym(index)],
+        state,
+    );
     expr_response_with_change(&expr, result, "lower_eq", state)
 }
 
@@ -3912,7 +3995,12 @@ fn handle_meld(
         state.env(),
         state.interner(),
     );
-    expr_response_with_change(&expr, ensure_not_timeout(result, state.interner())?, "meld", state)
+    expr_response_with_change(
+        &expr,
+        ensure_not_timeout(result, state.interner())?,
+        "meld",
+        state,
+    )
 }
 fn handle_sort_product(
     args: &[serde_json::Value],
@@ -3996,7 +4084,28 @@ fn handle_young_project(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    unary_named_expr_response("young_project", args, state)
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let opts = ax_tensor::YoungProjectTensorOptions {
+        modulo_monoterm: match args.get(1) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 1, "modulo_monoterm")?,
+        },
+        canonicalize_after: match args.get(2) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 2, "canonicalize_after")?,
+        },
+        rename_dummies_after: match args.get(3) {
+            Some(serde_json::Value::Null) | None => true,
+            Some(_) => bool_arg(args, 3, "rename_dummies_after")?,
+        },
+    };
+    let result = ax_tensor::young_project_tensor_with_options(
+        &expr,
+        &state.env().property_store,
+        state.interner(),
+        &opts,
+    );
+    expr_or_struct_response_with_change(&expr, result, "young_project", state)
 }
 fn handle_reduce_delta(
     args: &[serde_json::Value],
@@ -4249,7 +4358,10 @@ fn handle_decompose_product_tensor(
         .get(1)
         .and_then(|v| v.as_u64())
         .map(|n| n as usize)
-        .unwrap_or(4);
+        .or_else(|| ax_tensor::infer_tensor_dimension(&expr, &state.env().property_store))
+        .ok_or_else(|| {
+            "could not infer a unique dimension from the expression; pass 'dim' explicitly or declare index-family dimensions".to_string()
+        })?;
     expr_response_with_change(
         &expr,
         ensure_not_timeout(
@@ -4257,6 +4369,22 @@ fn handle_decompose_product_tensor(
             state.interner(),
         )?,
         "decompose_product",
+        state,
+    )
+}
+
+fn handle_schouten_reduce_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response_with_change(
+        &expr,
+        ensure_not_timeout(
+            ax_tensor::schouten_reduce(&expr, &state.env().property_store, state.interner()),
+            state.interner(),
+        )?,
+        "schouten_reduce",
         state,
     )
 }
@@ -4399,7 +4527,11 @@ fn handle_scalar_curvature_gr(
     expr_response_with_change(
         &input_expr,
         crate::eval(
-            &ax_tensor::ricci_scalar(&ricci, &metric.symbolic_inverse(state.interner()), state.interner()),
+            &ax_tensor::ricci_scalar(
+                &ricci,
+                &metric.symbolic_inverse(state.interner()),
+                state.interner(),
+            ),
             state.env(),
             state.interner(),
         ),
@@ -4412,15 +4544,9 @@ fn handle_einstein_tensor_gr(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    let has_id_mode = args
-        .get(0)
-        .and_then(serde_json::Value::as_str)
-        .is_some()
+    let has_id_mode = args.get(0).and_then(serde_json::Value::as_str).is_some()
         && args.get(1).and_then(serde_json::Value::as_str).is_some()
-        && args
-            .get(2)
-            .map(|value| value.is_null())
-            .unwrap_or(true);
+        && args.get(2).map(|value| value.is_null()).unwrap_or(true);
     let (ricci, scalar, metric) = if has_id_mode {
         let ricci_id = string_arg(args, 0, "ricci_id")?;
         let metric_id = string_arg(args, 1, "metric_id")?;
@@ -4433,7 +4559,11 @@ fn handle_einstein_tensor_gr(
             .map(|(m, _)| m.clone())
             .ok_or_else(|| format!("unknown metric '{metric_id}'"))?;
         let scalar = crate::eval(
-            &ax_tensor::ricci_scalar(&ricci, &metric.symbolic_inverse(state.interner()), state.interner()),
+            &ax_tensor::ricci_scalar(
+                &ricci,
+                &metric.symbolic_inverse(state.interner()),
+                state.interner(),
+            ),
             state.env(),
             state.interner(),
         );
@@ -4475,12 +4605,22 @@ fn handle_weyl_curvature_gr(
         return Err("weyl curvature is only defined for dimension >= 3".to_string());
     }
     let scalar = crate::eval(
-        &ax_tensor::ricci_scalar(&ricci, &metric.symbolic_inverse(state.interner()), state.interner()),
+        &ax_tensor::ricci_scalar(
+            &ricci,
+            &metric.symbolic_inverse(state.interner()),
+            state.interner(),
+        ),
         state.env(),
         state.interner(),
     );
-    let denom1 = ax_ir::Expr::Rational(num_rational::BigRational::new(1.into(), (dim as i64 - 2).into()));
-    let denom2 = ax_ir::Expr::Rational(num_rational::BigRational::new(1.into(), (((dim - 1) * (dim - 2)) as i64).into()));
+    let denom1 = ax_ir::Expr::Rational(num_rational::BigRational::new(
+        1.into(),
+        (dim as i64 - 2).into(),
+    ));
+    let denom2 = ax_ir::Expr::Rational(num_rational::BigRational::new(
+        1.into(),
+        (((dim - 1) * (dim - 2)) as i64).into(),
+    ));
     let mut out = vec![vec![vec![vec![ax_ir::Expr::zero(); dim]; dim]; dim]; dim];
     for a in 0..dim {
         for b in 0..dim {
@@ -4505,8 +4645,14 @@ fn handle_weyl_curvature_gr(
                         denom2.clone(),
                         scalar.clone(),
                         ax_ir::Expr::add(vec![
-                            ax_ir::Expr::mul(vec![metric.data[a][c].clone(), metric.data[d][b].clone()]),
-                            ax_ir::Expr::neg(ax_ir::Expr::mul(vec![metric.data[a][d].clone(), metric.data[c][b].clone()])),
+                            ax_ir::Expr::mul(vec![
+                                metric.data[a][c].clone(),
+                                metric.data[d][b].clone(),
+                            ]),
+                            ax_ir::Expr::neg(ax_ir::Expr::mul(vec![
+                                metric.data[a][d].clone(),
+                                metric.data[c][b].clone(),
+                            ])),
                         ]),
                     ]);
                     out[a][b][c][d] = crate::eval(
@@ -4815,6 +4961,83 @@ fn handle_grassmann_simplify_qm(
     unary_named_expr_response("grassmann_simplify", args, state)
 }
 
+fn handle_number_state_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mode = symbol_arg(args, 0, "mode", state)?;
+    let n = int_arg(args, 1, "n")?;
+    expr_or_struct_response_named(
+        call_named(
+            "number_state",
+            vec![ax_ir::Expr::Sym(mode), ax_ir::Expr::Int(n.into())],
+            state,
+        ),
+        "number_state",
+        state,
+    )
+}
+
+fn handle_vacuum_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mode = symbol_arg(args, 0, "mode", state)?;
+    expr_or_struct_response_named(
+        call_named("vacuum", vec![ax_ir::Expr::Sym(mode)], state),
+        "vacuum",
+        state,
+    )
+}
+
+fn handle_number_operator_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mode = symbol_arg(args, 0, "mode", state)?;
+    expr_or_struct_response_named(
+        call_named("number_operator", vec![ax_ir::Expr::Sym(mode)], state),
+        "number_operator",
+        state,
+    )
+}
+
+fn handle_hamiltonian_ho_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mode = symbol_arg(args, 0, "mode", state)?;
+    let mut call_args = vec![ax_ir::Expr::Sym(mode)];
+    if let Some(arg) = args.get(1) {
+        if !arg.is_null() {
+            call_args.push(code_expr(args, 1, "hbar", state)?);
+        }
+    }
+    if let Some(arg) = args.get(2) {
+        if !arg.is_null() {
+            call_args.push(code_expr(args, 2, "omega", state)?);
+        }
+    }
+    expr_or_struct_response_named(
+        call_named("hamiltonian_ho", call_args, state),
+        "hamiltonian_ho",
+        state,
+    )
+}
+
+fn handle_apply_operator_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let op = expr_from_id(args, 0, "op", state)?;
+    let state_expr = expr_from_id(args, 1, "state", state)?;
+    expr_or_struct_response_named(
+        call_named("apply_operator", vec![op, state_expr], state),
+        "apply_operator",
+        state,
+    )
+}
+
 fn handle_density_matrix_qm(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -4877,6 +5100,61 @@ fn handle_hodge_dual_forms(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     binary_named_expr_response("hodge_star", args, state)
+}
+
+fn handle_codifferential_forms(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let form = expr_from_id(args, 0, "form", state)?;
+    let metric = expr_from_id(args, 1, "metric", state)?;
+    let coords = symbol_list_arg(args, 2, "coords", state)?
+        .into_iter()
+        .map(ax_ir::Expr::Sym)
+        .collect::<Vec<_>>();
+    expr_or_struct_response_named(
+        call_named(
+            "codifferential",
+            vec![form, metric, ax_ir::Expr::List(coords)],
+            state,
+        ),
+        "codifferential",
+        state,
+    )
+}
+
+fn handle_interior_product_forms(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let vector = expr_from_id(args, 0, "vector", state)?;
+    let form = expr_from_id(args, 1, "form", state)?;
+    expr_or_struct_response_named(
+        call_named("interior_product", vec![vector, form], state),
+        "interior_product",
+        state,
+    )
+}
+
+fn handle_lie_derivative_form_forms(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let form = expr_from_id(args, 0, "form", state)?;
+    let vector = expr_from_id(args, 1, "vector", state)?;
+    let coords = symbol_list_arg(args, 2, "coords", state)?
+        .into_iter()
+        .map(ax_ir::Expr::Sym)
+        .collect::<Vec<_>>();
+    expr_or_struct_response_named(
+        call_named(
+            "lie_derivative_form",
+            vec![form, vector, ax_ir::Expr::List(coords)],
+            state,
+        ),
+        "lie_derivative_form",
+        state,
+    )
 }
 
 fn handle_functional_derivative_variational(
@@ -4971,7 +5249,11 @@ fn handle_solve_general(
 ) -> Result<serde_json::Value, String> {
     let equation = code_expr(args, 0, "equation", state)?;
     let var = symbol_arg(args, 1, "variable", state)?;
-    expr_or_struct_response_named(ax_solve::solve(&equation, var, state.interner()), "solve", state)
+    expr_or_struct_response_named(
+        ax_solve::solve(&equation, var, state.interner()),
+        "solve",
+        state,
+    )
 }
 
 fn handle_solve_linear_system_general(
@@ -5300,7 +5582,9 @@ fn handle_declare_grassmann(
 ) -> Result<serde_json::Value, String> {
     let symbol = symbol_arg(args, 0, "symbol", state)?;
     state.env_mut().gradings.insert(symbol, ax_ir::Grading::Odd);
-    Ok(serde_json::json!({ "status": "ok", "symbol": state.interner().resolve(symbol), "grading": "Odd" }))
+    Ok(
+        serde_json::json!({ "status": "ok", "symbol": state.interner().resolve(symbol), "grading": "Odd" }),
+    )
 }
 
 fn handle_declare_operator(
@@ -5421,7 +5705,9 @@ fn handle_to_python_codegen(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let expr = expr_from_id(args, 0, "expr", state)?;
-    Ok(serde_json::json!({ "status": "ok", "code": ax_codegen::to_python(&expr, state.interner()) }))
+    Ok(
+        serde_json::json!({ "status": "ok", "code": ax_codegen::to_python(&expr, state.interner()) }),
+    )
 }
 
 fn handle_to_rust_codegen(
@@ -5700,19 +5986,23 @@ fn handle_get_state_summary_state(
     let properties = state
         .list_properties()
         .into_iter()
-        .map(|(symbol, properties)| serde_json::json!({
-            "symbol": symbol,
-            "properties": properties,
-        }))
+        .map(|(symbol, properties)| {
+            serde_json::json!({
+                "symbol": symbol,
+                "properties": properties,
+            })
+        })
         .collect::<Vec<_>>();
     let index_families = state
         .list_index_families()
         .into_iter()
-        .map(|(name, indices, dimension)| serde_json::json!({
-            "name": name,
-            "indices": indices,
-            "dimension": dimension,
-        }))
+        .map(|(name, indices, dimension)| {
+            serde_json::json!({
+                "name": name,
+                "indices": indices,
+                "dimension": dimension,
+            })
+        })
         .collect::<Vec<_>>();
     Ok(serde_json::json!({
         "status": "ok",
@@ -6752,8 +7042,18 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("einsteinify", "Repair Einstein contractions by fixing dummy variances.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_einsteinify),
         centry("split_index", "Split one index family into two subfamilies.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("parent_indices", ParamType::SymbolList, true, "Parent-family indices."), pdef("subfamily_one", ParamType::SymbolList, true, "First subfamily symbols."), pdef("subfamily_two", ParamType::SymbolList, true, "Second subfamily symbols.")]), handle_split_index_tensor),
         centry("rename_dummies", "Rename dummy indices canonically.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_rename_dummies),
-        centry("young_project", "Project onto Young-tableau symmetry.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_young_project),
-        centry("young_project_tensor", "Project onto Young-tableau symmetry.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_young_project),
+        centry("young_project", "Project onto Young-tableau symmetry with optional monoterm simplification.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("modulo_monoterm", ParamType::Bool, false, "Whether to simplify modulo declared monoterm symmetries after projection. Defaults to true."),
+            pdef("canonicalize_after", ParamType::Bool, false, "Whether to canonicalize indices after projection. Defaults to true."),
+            pdef("rename_dummies_after", ParamType::Bool, false, "Whether to rename dummy indices after projection. Defaults to true."),
+        ]), handle_young_project),
+        centry("young_project_tensor", "Project onto Young-tableau symmetry with optional monoterm simplification.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("modulo_monoterm", ParamType::Bool, false, "Whether to simplify modulo declared monoterm symmetries after projection. Defaults to true."),
+            pdef("canonicalize_after", ParamType::Bool, false, "Whether to canonicalize indices after projection. Defaults to true."),
+            pdef("rename_dummies_after", ParamType::Bool, false, "Whether to rename dummy indices after projection. Defaults to true."),
+        ]), handle_young_project),
         centry("reduce_delta", "Reduce expanded deltas back to compact form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_reduce_delta),
         centry("symmetrise", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
         centry("symmetrize", "Symmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_symmetrise_tensor),
@@ -6762,7 +7062,8 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("antisymmetrize", "Antisymmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_antisymmetrise_tensor),
         centry("asym", "Antisymmetrise selected tensor slots.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("positions", ParamType::Code, true, "JSON integer array positions.")]), handle_antisymmetrise_tensor),
         centry("decompose", "Decompose an expression in a supplied basis.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("basis", ParamType::ExprId, true, "Stored list of basis expressions.")]), handle_decompose_tensor),
-        centry("decompose_product", "Decompose a tensor product by dimension.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("dim", ParamType::Integer, false, "Optional dimension.")]), handle_decompose_product_tensor),
+        centry("decompose_product", "Decompose a tensor product by dimension.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("dim", ParamType::Integer, false, "Optional dimension; if omitted, infer from index-family metadata.")]), handle_decompose_product_tensor),
+        centry("schouten_reduce", "Apply dimension-dependent Schouten-style tensor reduction.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_schouten_reduce_tensor),
         centry("unwrap_derivatives", "Pull constant factors out of derivative operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_unwrap_derivatives_tensor),
         centry("unwrap", "Pull constant factors out of derivative operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_unwrap_derivatives_tensor),
         centry("drop_weight", "Drop terms with a chosen symbolic weight.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id."), pdef("label", ParamType::Code, true, "Weight label."), pdef("value", ParamType::Integer, true, "Weight value to drop.")]), handle_drop_weight_tensor),
@@ -6832,6 +7133,11 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("anticommutator", "Operator anticommutator.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored expression id."), pdef("rhs", ParamType::ExprId, true, "Stored expression id.")]), handle_anticommutator_qm),
         centry("density_matrix", "Build a density matrix from a state vector.", ps(vec![pdef("state", ParamType::ExprId, true, "Stored state-vector expression id.")]), handle_density_matrix_qm),
         centry("density", "Build a density matrix from a state vector.", ps(vec![pdef("state", ParamType::ExprId, true, "Stored state-vector expression id.")]), handle_density_matrix_qm),
+        centry("number_state", "Construct a bosonic number state.", ps(vec![pdef("mode", ParamType::Symbol, true, "Oscillator mode symbol."), pdef("n", ParamType::Integer, true, "Occupation number.")]), handle_number_state_qm),
+        centry("vacuum", "Construct the oscillator vacuum state.", ps(vec![pdef("mode", ParamType::Symbol, true, "Oscillator mode symbol.")]), handle_vacuum_qm),
+        centry("number_operator", "Construct the oscillator number operator.", ps(vec![pdef("mode", ParamType::Symbol, true, "Oscillator mode symbol.")]), handle_number_operator_qm),
+        centry("hamiltonian_ho", "Construct the harmonic-oscillator Hamiltonian.", ps(vec![pdef("mode", ParamType::Symbol, true, "Oscillator mode symbol."), pdef("hbar", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional Planck constant expression."), pdef("omega", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional angular-frequency expression.")]), handle_hamiltonian_ho_qm),
+        centry("apply_operator", "Apply an abstract operator to a state.", ps(vec![pdef("op", ParamType::ExprId, true, "Stored operator expression id."), pdef("state", ParamType::ExprId, true, "Stored state expression id.")]), handle_apply_operator_qm),
         centry("partial_trace", "Take a subsystem partial trace.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix id."), pdef("dim_a", ParamType::Integer, true, "Subsystem A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem B dimension."), pdef("which", ParamType::StringEnum(&["A", "B"]), true, "Subsystem to trace out.")]), handle_partial_trace_qm),
         centry("braket", "Bra-ket inner product.", ps(vec![pdef("bra", ParamType::ExprId, true, "Stored bra/list expression id."), pdef("ket", ParamType::ExprId, true, "Stored ket/list expression id.")]), handle_braket_qm),
         centry("outer", "Outer-product operator.", ps(vec![pdef("left", ParamType::ExprId, true, "Stored vector id."), pdef("right", ParamType::ExprId, true, "Stored vector id.")]), handle_outer_qm),
@@ -6847,6 +7153,9 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("d", "Exterior derivative of a differential form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored form expression id.")]), handle_exterior_derivative_forms),
         centry("hodge_dual", "Hodge dual with respect to a metric.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored form expression id."), pdef("rhs", ParamType::ExprId, true, "Stored metric expression id.")]), handle_hodge_dual_forms),
         centry("hodge_star", "Hodge dual with respect to a metric.", ps(vec![pdef("lhs", ParamType::ExprId, true, "Stored form expression id."), pdef("rhs", ParamType::ExprId, true, "Stored metric expression id.")]), handle_hodge_dual_forms),
+        centry("codifferential", "Codifferential of a differential form.", ps(vec![pdef("form", ParamType::ExprId, true, "Stored form expression id."), pdef("metric", ParamType::ExprId, true, "Stored metric expression id."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_codifferential_forms),
+        centry("interior_product", "Interior product of a vector with a form.", ps(vec![pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("form", ParamType::ExprId, true, "Stored form expression id.")]), handle_interior_product_forms),
+        centry("lie_derivative_form", "Lie derivative of a differential form.", ps(vec![pdef("form", ParamType::ExprId, true, "Stored form expression id."), pdef("vector", ParamType::ExprId, true, "Stored vector expression id."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_lie_derivative_form_forms),
         centry("functional_derivative", "Functional derivative with respect to a field.", ps(vec![pdef("lagrangian", ParamType::ExprId, true, "Stored Lagrangian id."), pdef("field", ParamType::Symbol, true, "Field symbol."), pdef("field_derivatives", ParamType::SymbolList, true, "Field derivative symbols."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_functional_derivative_variational),
         centry("euler_lagrange", "Functional derivative with respect to a field.", ps(vec![pdef("lagrangian", ParamType::ExprId, true, "Stored Lagrangian id."), pdef("field", ParamType::Symbol, true, "Field symbol."), pdef("field_derivatives", ParamType::SymbolList, true, "Field derivative symbols."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_functional_derivative_variational),
         centry("euler_lagrange_system", "Euler-Lagrange equations for several fields.", ps(vec![pdef("lagrangian", ParamType::ExprId, true, "Stored Lagrangian id."), pdef("fields", ParamType::Code, true, "JSON array of [field, derivs] entries."), pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_euler_lagrange_system_variational),

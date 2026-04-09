@@ -226,7 +226,12 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
         ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
             format!("TableauSymmetry(shape={shape:?}, indices={indices:?})")
         }
-        ax_ir::TensorProperty::SatisfiesBianchi => "SatisfiesBianchi".to_string(),
+        ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
+            format!("SatisfiesBianchi(slots={slots:?})")
+        }
+        ax_ir::TensorProperty::DimensionDependentIdentity => {
+            "DimensionDependentIdentity".to_string()
+        }
         ax_ir::TensorProperty::WeylTensor => "WeylTensor".to_string(),
         ax_ir::TensorProperty::DifferentialFormDegree(n) => {
             format!("DifferentialFormDegree({n})")

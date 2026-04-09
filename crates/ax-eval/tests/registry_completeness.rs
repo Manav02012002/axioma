@@ -100,6 +100,7 @@ fn all_properties_have_entries() {
         "SortOrder",
         "TableauSymmetry",
         "SatisfiesBianchi",
+        "DimensionDependentIdentity",
         "WeylTensor",
         "DifferentialFormDegree",
     ];

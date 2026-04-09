@@ -61,14 +61,18 @@ pub trait PropertyLookup: Send + Sync {
     fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool;
     fn pair_commuting_behaviour(&self, a: lasso::Spur, b: lasso::Spur) -> Option<i32> {
         let explicit = |source: lasso::Spur, target: lasso::Spur| {
-            self.get_properties(source).into_iter().find_map(|prop| match prop {
-                ax_ir::TensorProperty::CommutingWith(syms) if syms.contains(&target) => Some(1),
-                ax_ir::TensorProperty::AntiCommutingWith(syms) if syms.contains(&target) => {
-                    Some(-1)
-                }
-                ax_ir::TensorProperty::NonCommutingWith(syms) if syms.contains(&target) => Some(0),
-                _ => None,
-            })
+            self.get_properties(source)
+                .into_iter()
+                .find_map(|prop| match prop {
+                    ax_ir::TensorProperty::CommutingWith(syms) if syms.contains(&target) => Some(1),
+                    ax_ir::TensorProperty::AntiCommutingWith(syms) if syms.contains(&target) => {
+                        Some(-1)
+                    }
+                    ax_ir::TensorProperty::NonCommutingWith(syms) if syms.contains(&target) => {
+                        Some(0)
+                    }
+                    _ => None,
+                })
         };
         explicit(a, b).or_else(|| explicit(b, a))
     }
@@ -151,6 +155,57 @@ pub struct ComponentRule {
     pub tensor: lasso::Spur,
     pub indices: Vec<(lasso::Spur, ax_ir::Variance)>,
     pub value: ax_ir::Expr,
+}
+
+#[derive(Clone, Debug)]
+pub struct YoungProjectProductOptions {
+    pub modulo_monoterm: bool,
+    pub distribute_each_step: bool,
+    pub rename_dummies_each_step: bool,
+    pub meld_final: bool,
+    pub max_terms: usize,
+}
+
+impl Default for YoungProjectProductOptions {
+    fn default() -> Self {
+        Self {
+            modulo_monoterm: true,
+            distribute_each_step: true,
+            rename_dummies_each_step: true,
+            meld_final: true,
+            max_terms: 256,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct YoungProjectTensorOptions {
+    pub modulo_monoterm: bool,
+    pub canonicalize_after: bool,
+    pub rename_dummies_after: bool,
+}
+
+impl Default for YoungProjectTensorOptions {
+    fn default() -> Self {
+        Self {
+            modulo_monoterm: true,
+            canonicalize_after: true,
+            rename_dummies_after: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct YoungProjectFactorKey {
+    name: lasso::Spur,
+    n_indices: usize,
+    projector_mask: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct YoungProjectFactorSpec {
+    key: YoungProjectFactorKey,
+    occurrence: usize,
 }
 
 fn tableau_groups_from_shape(
@@ -282,7 +337,7 @@ pub fn build_generating_set(
                     );
                 }
                 ax_ir::TensorProperty::RiemannSymmetry => {
-                    if factor.n_indices >= 4 {
+                    if default_riemann_slots(factor.n_indices).is_some() {
                         let s = factor.start_position;
 
                         let mut g1: Perm = (0..degree).collect();
@@ -302,7 +357,7 @@ pub fn build_generating_set(
                     }
                 }
                 ax_ir::TensorProperty::WeylTensor => {
-                    if factor.n_indices >= 4 {
+                    if default_riemann_slots(factor.n_indices).is_some() {
                         let s = factor.start_position;
 
                         let mut g1: Perm = (0..degree).collect();
@@ -635,16 +690,12 @@ fn remove_traceless_traces(
         let Expr::Sym(name) = base.as_ref() else {
             continue;
         };
-        if !properties
+        let factor_props = properties
             .get_properties_with_indices(*name, indices)
-            .iter()
-            .any(|prop| {
-                matches!(
-                    prop,
-                    ax_ir::TensorProperty::Traceless | ax_ir::TensorProperty::WeylTensor
-                )
-            })
-        {
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !has_traceless_property(&factor_props) {
             continue;
         }
 
@@ -1473,8 +1524,8 @@ pub fn meld(
     }
     match expr {
         Expr::Add(terms) => {
-            let mut groups: Vec<(String, Vec<(Expr, usize)>)> = Vec::new();
-            for (idx, term) in terms.iter().enumerate() {
+            let mut simplified_terms = Vec::with_capacity(terms.len());
+            for term in terms.iter() {
                 if let Some(timeout) = deadline_timeout_expr(interner) {
                     return timeout;
                 }
@@ -1482,6 +1533,13 @@ pub fn meld(
                 if is_timeout_expr(&simplified, interner) {
                     return simplified;
                 }
+                simplified_terms.push(simplified);
+            }
+            let simplified_terms =
+                cancel_explicit_bianchi_terms(simplified_terms, tensor_properties, interner);
+
+            let mut groups: Vec<(String, Vec<(Expr, usize)>)> = Vec::new();
+            for (idx, simplified) in simplified_terms.into_iter().enumerate() {
                 let key = tensor_structure_key(&simplified, interner);
                 if let Some((_, bucket)) = groups.iter_mut().find(|(k, _)| *k == key) {
                     bucket.push((simplified, idx));
@@ -1508,7 +1566,10 @@ pub fn meld(
 
                 let factor_info =
                     extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
-                let tableaux = tableaux_from_properties(&factor_info, tensor_properties);
+                let projection_ops = factor_info
+                    .iter()
+                    .flat_map(projection_ops_for_factor)
+                    .collect::<Vec<_>>();
 
                 let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
                 for (term, _) in group.iter() {
@@ -1519,7 +1580,36 @@ pub fn meld(
                     let adj = adjform::Adjform::from_indices(&indices);
                     let coeff = scalar_to_rational(&scalar);
                     let mut proj = adjform::ProjectedAdjform::from_adjform(adj, coeff);
-                    proj.young_project(&tableaux);
+                    for op in &projection_ops {
+                        match op {
+                            TensorProjectionOp::Tableau(tableau) => {
+                                proj.young_project(std::slice::from_ref(tableau));
+                            }
+                            TensorProjectionOp::PermutationProjector {
+                                positions,
+                                permutations,
+                            } => {
+                                let mut next = adjform::ProjectedAdjform::new();
+                                for (adj, adj_coeff) in &proj.terms {
+                                    let n = adj.len();
+                                    for (perm, coeff) in permutations {
+                                        let mut full_perm: ax_perm::Perm = (0..n).collect();
+                                        for (i, &pos) in positions.iter().enumerate() {
+                                            if pos < n && perm[i] < positions.len() {
+                                                let src = positions[perm[i]];
+                                                full_perm[src] = pos;
+                                            }
+                                        }
+                                        next.add(
+                                            adj.permute(&full_perm),
+                                            adj_coeff.clone() * coeff.clone(),
+                                        );
+                                    }
+                                }
+                                proj = next;
+                            }
+                        }
+                    }
                     projections.push(proj);
                 }
 
@@ -1647,19 +1737,17 @@ pub fn meld(
                 Expr::add(result_terms)
             }
         }
-        Expr::Mul(factors) => Expr::mul(
-            {
-                let mut out = Vec::with_capacity(factors.len());
-                for factor in factors {
-                    let simplified = meld(factor, tensor_properties, interner);
-                    if is_timeout_expr(&simplified, interner) {
-                        return simplified;
-                    }
-                    out.push(simplified);
+        Expr::Mul(factors) => Expr::mul({
+            let mut out = Vec::with_capacity(factors.len());
+            for factor in factors {
+                let simplified = meld(factor, tensor_properties, interner);
+                if is_timeout_expr(&simplified, interner) {
+                    return simplified;
                 }
-                out
-            },
-        ),
+                out.push(simplified);
+            }
+            out
+        }),
         Expr::Neg(inner) => Expr::neg(meld(inner, tensor_properties, interner)),
         _ => expr.clone(),
     }
@@ -1672,9 +1760,15 @@ pub fn meld_parallel(
 ) -> ax_ir::Expr {
     match expr {
         Expr::Add(terms) => {
+            let simplified_terms = terms
+                .iter()
+                .map(|term| meld_parallel(term, tensor_properties, interner))
+                .collect::<Vec<_>>();
+            let simplified_terms =
+                cancel_explicit_bianchi_terms(simplified_terms, tensor_properties, interner);
+
             let mut groups: Vec<(String, Vec<(Expr, usize)>)> = Vec::new();
-            for (idx, term) in terms.iter().enumerate() {
-                let simplified = meld_parallel(term, tensor_properties, interner);
+            for (idx, simplified) in simplified_terms.into_iter().enumerate() {
                 let key = tensor_structure_key(&simplified, interner);
                 if let Some((_, bucket)) = groups.iter_mut().find(|(k, _)| *k == key) {
                     bucket.push((simplified, idx));
@@ -1705,7 +1799,10 @@ pub fn meld_parallel(
 
                 let factor_info =
                     extract_factor_info_from_term(&canonical[0], tensor_properties, interner);
-                let tableaux = tableaux_from_properties(&factor_info, tensor_properties);
+                let projection_ops = factor_info
+                    .iter()
+                    .flat_map(projection_ops_for_factor)
+                    .collect::<Vec<_>>();
 
                 let mut projections: Vec<adjform::ProjectedAdjform> = Vec::new();
                 for (term, _) in group.iter() {
@@ -1713,7 +1810,36 @@ pub fn meld_parallel(
                     let adj = adjform::Adjform::from_indices(&indices);
                     let coeff = scalar_to_rational(&scalar);
                     let mut proj = adjform::ProjectedAdjform::from_adjform(adj, coeff);
-                    proj.young_project(&tableaux);
+                    for op in &projection_ops {
+                        match op {
+                            TensorProjectionOp::Tableau(tableau) => {
+                                proj.young_project(std::slice::from_ref(tableau));
+                            }
+                            TensorProjectionOp::PermutationProjector {
+                                positions,
+                                permutations,
+                            } => {
+                                let mut next = adjform::ProjectedAdjform::new();
+                                for (adj, adj_coeff) in &proj.terms {
+                                    let n = adj.len();
+                                    for (perm, coeff) in permutations {
+                                        let mut full_perm: ax_perm::Perm = (0..n).collect();
+                                        for (i, &pos) in positions.iter().enumerate() {
+                                            if pos < n && perm[i] < positions.len() {
+                                                let src = positions[perm[i]];
+                                                full_perm[src] = pos;
+                                            }
+                                        }
+                                        next.add(
+                                            adj.permute(&full_perm),
+                                            adj_coeff.clone() * coeff.clone(),
+                                        );
+                                    }
+                                }
+                                proj = next;
+                            }
+                        }
+                    }
                     projections.push(proj);
                 }
 
@@ -1939,6 +2065,242 @@ fn extract_factor_info_from_term(
     extract_factor_info(&wrapped, tensor_properties, interner)
 }
 
+#[derive(Clone, Debug)]
+enum TensorProjectionOp {
+    Tableau(adjform::TableauInfo),
+    PermutationProjector {
+        positions: Vec<usize>,
+        permutations: Vec<(Vec<usize>, BigRational)>,
+    },
+}
+
+fn default_riemann_slots(n_indices: usize) -> Option<[usize; 4]> {
+    (n_indices >= 4).then_some([0, 1, 2, 3])
+}
+
+fn bianchi_slots_for_property(
+    prop: &ax_ir::TensorProperty,
+    n_indices: usize,
+) -> Option<[usize; 4]> {
+    match prop {
+        ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
+            let valid = slots
+                .iter()
+                .copied()
+                .all(|slot| slot < n_indices)
+                && {
+                    let mut uniq = HashSet::new();
+                    slots.iter().copied().all(|slot| uniq.insert(slot))
+                };
+            valid.then_some(*slots)
+        }
+        ax_ir::TensorProperty::WeylTensor => default_riemann_slots(n_indices),
+        _ => None,
+    }
+}
+
+fn has_riemann_monoterm_property(props: &[ax_ir::TensorProperty], n_indices: usize) -> bool {
+    default_riemann_slots(n_indices).is_some()
+        && props.iter().any(|prop| {
+            matches!(
+                prop,
+                ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor
+            )
+        })
+}
+
+fn has_bianchi_property(props: &[ax_ir::TensorProperty], n_indices: usize) -> bool {
+    props.iter()
+        .any(|prop| bianchi_slots_for_property(prop, n_indices).is_some())
+}
+
+fn has_weyl_property(props: &[ax_ir::TensorProperty]) -> bool {
+    props.iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::WeylTensor))
+}
+
+fn has_traceless_property(props: &[ax_ir::TensorProperty]) -> bool {
+    props.iter().any(|prop| {
+        matches!(
+            prop,
+            ax_ir::TensorProperty::Traceless | ax_ir::TensorProperty::WeylTensor
+        )
+    })
+}
+
+fn has_dimension_dependent_identity_property(props: &[ax_ir::TensorProperty]) -> bool {
+    props.iter().any(|prop| {
+        matches!(
+            prop,
+            ax_ir::TensorProperty::DimensionDependentIdentity
+        )
+    })
+}
+
+fn expr_has_dimension_dependent_identity(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+) -> bool {
+    match expr {
+        Expr::Indexed(base, indices) => match base.as_ref() {
+            Expr::Sym(name) => has_dimension_dependent_identity_property(
+                &properties
+                    .get_properties_with_indices(*name, indices)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
+            _ => false,
+        },
+        Expr::Mul(factors) | Expr::Add(factors) => factors
+            .iter()
+            .any(|factor| expr_has_dimension_dependent_identity(factor, properties)),
+        Expr::Neg(inner) => expr_has_dimension_dependent_identity(inner, properties),
+        _ => false,
+    }
+}
+
+fn riemann_monoterm_projector(start: usize) -> TensorProjectionOp {
+    let one = BigRational::new(1.into(), 8.into());
+    TensorProjectionOp::PermutationProjector {
+        positions: vec![start, start + 1, start + 2, start + 3],
+        permutations: vec![
+            (vec![0, 1, 2, 3], one.clone()),
+            (vec![1, 0, 2, 3], -one.clone()),
+            (vec![0, 1, 3, 2], -one.clone()),
+            (vec![1, 0, 3, 2], one.clone()),
+            (vec![2, 3, 0, 1], one.clone()),
+            (vec![3, 2, 0, 1], -one.clone()),
+            (vec![2, 3, 1, 0], -one.clone()),
+            (vec![3, 2, 1, 0], one),
+        ],
+    }
+}
+
+fn bianchi_projector(positions: [usize; 4]) -> TensorProjectionOp {
+    TensorProjectionOp::PermutationProjector {
+        positions: positions.into_iter().collect(),
+        permutations: vec![
+            (vec![0, 1, 2, 3], BigRational::new(2.into(), 3.into())),
+            (vec![0, 2, 3, 1], BigRational::new((-1).into(), 3.into())),
+            (vec![0, 3, 1, 2], BigRational::new((-1).into(), 3.into())),
+        ],
+    }
+}
+
+fn tableau_from_property(
+    info: &TensorFactorInfo,
+    shape: &[usize],
+    indices: &[usize],
+) -> Option<adjform::TableauInfo> {
+    let (rows, columns) = tableau_groups_from_shape(shape, indices);
+    if rows.is_empty() && columns.is_empty() {
+        return None;
+    }
+    let rows: Vec<Vec<usize>> = rows
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|slot| info.start_position + slot)
+                .collect()
+        })
+        .collect();
+    let columns: Vec<Vec<usize>> = columns
+        .into_iter()
+        .map(|column| {
+            column
+                .into_iter()
+                .map(|slot| info.start_position + slot)
+                .collect()
+        })
+        .collect();
+    Some(adjform::TableauInfo { rows, columns })
+}
+
+fn projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
+    let mut result = Vec::new();
+    let mut seen_tableaux: HashSet<(Vec<Vec<usize>>, Vec<Vec<usize>>)> = HashSet::new();
+    let mut seen_projectors: HashSet<String> = HashSet::new();
+
+    for prop in &info.properties {
+        match prop {
+            ax_ir::TensorProperty::RiemannSymmetry => {
+                if default_riemann_slots(info.n_indices).is_some() {
+                    let key = format!("riemann:{:?}", info.start_position);
+                    if seen_projectors.insert(key) {
+                        result.push(riemann_monoterm_projector(info.start_position));
+                    }
+                }
+            }
+            ax_ir::TensorProperty::SatisfiesBianchi { .. } => {
+                if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
+                    let abs = slots.map(|slot| info.start_position + slot);
+                    let key = format!("bianchi:{abs:?}");
+                    if seen_projectors.insert(key) {
+                        result.push(bianchi_projector(abs));
+                    }
+                }
+            }
+            ax_ir::TensorProperty::WeylTensor => {
+                if default_riemann_slots(info.n_indices).is_some() {
+                    let key = format!("weyl-riemann:{:?}", info.start_position);
+                    if seen_projectors.insert(key) {
+                        result.push(riemann_monoterm_projector(info.start_position));
+                    }
+                }
+                if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
+                    let abs = slots.map(|slot| info.start_position + slot);
+                    let key = format!("weyl-bianchi:{abs:?}");
+                    if seen_projectors.insert(key) {
+                        result.push(bianchi_projector(abs));
+                    }
+                }
+            }
+            ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
+                if let Some(tableau) = tableau_from_property(info, shape, indices) {
+                    let key = (tableau.rows.clone(), tableau.columns.clone());
+                    if seen_tableaux.insert(key) {
+                        result.push(TensorProjectionOp::Tableau(tableau));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    result
+}
+
+fn expression_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
+    let mut result = Vec::new();
+    let mut seen_tableaux: HashSet<(Vec<Vec<usize>>, Vec<Vec<usize>>)> = HashSet::new();
+    let mut seen_projectors: HashSet<String> = HashSet::new();
+
+    for prop in &info.properties {
+        match prop {
+            ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor => {
+                if default_riemann_slots(info.n_indices).is_some() {
+                    let key = format!("expr-riemann:{:?}", info.start_position);
+                    if seen_projectors.insert(key) {
+                        result.push(riemann_monoterm_projector(info.start_position));
+                    }
+                }
+            }
+            ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
+                if let Some(tableau) = tableau_from_property(info, shape, indices) {
+                    let key = (tableau.rows.clone(), tableau.columns.clone());
+                    if seen_tableaux.insert(key) {
+                        result.push(TensorProjectionOp::Tableau(tableau));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    result
+}
+
 pub fn tableaux_from_properties(
     factor_info: &[TensorFactorInfo],
     properties: &dyn PropertyLookup,
@@ -1994,17 +2356,6 @@ pub fn tableaux_from_properties(
                         });
                     }
                 }
-                ax_ir::TensorProperty::RiemannSymmetry
-                | ax_ir::TensorProperty::SatisfiesBianchi
-                | ax_ir::TensorProperty::WeylTensor => {
-                    if info.n_indices >= 4 {
-                        let s = info.start_position;
-                        result.push(adjform::TableauInfo {
-                            rows: vec![vec![s, s + 2], vec![s + 1, s + 3]],
-                            columns: vec![vec![s, s + 1], vec![s + 2, s + 3]],
-                        });
-                    }
-                }
                 ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
                     let mut cursor = 0usize;
                     let mut rows = Vec::new();
@@ -2051,6 +2402,254 @@ pub fn tableaux_from_properties(
                 }
                 _ => {}
             }
+        }
+    }
+
+    result
+}
+
+fn young_project_factor_key(info: &TensorFactorInfo) -> Option<YoungProjectFactorKey> {
+    let mut projector_mask = 0u8;
+    for prop in &info.properties {
+        match prop {
+            ax_ir::TensorProperty::TableauSymmetry { .. } => projector_mask |= 1,
+            ax_ir::TensorProperty::RiemannSymmetry => projector_mask |= 1 << 1,
+            ax_ir::TensorProperty::SatisfiesBianchi { .. } => projector_mask |= 1 << 2,
+            ax_ir::TensorProperty::WeylTensor => projector_mask |= 1 << 3,
+            _ => {}
+        }
+    }
+
+    if projector_mask == 0 {
+        return None;
+    }
+
+    Some(YoungProjectFactorKey {
+        name: info.name,
+        n_indices: info.n_indices,
+        projector_mask,
+    })
+}
+
+fn young_project_factor_specs(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Vec<YoungProjectFactorSpec> {
+    let factor_info = extract_factor_info_from_term(expr, properties, interner);
+    let mut counts: HashMap<YoungProjectFactorKey, usize> = HashMap::new();
+    let mut specs = Vec::new();
+
+    for info in factor_info {
+        let Some(key) = young_project_factor_key(&info) else {
+            continue;
+        };
+        let occurrence = *counts.entry(key).or_insert(0);
+        specs.push(YoungProjectFactorSpec { key, occurrence });
+        counts.insert(key, occurrence + 1);
+    }
+
+    specs
+}
+
+struct PropertyDummyEnv {
+    index_families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
+    index_to_family: HashMap<lasso::Spur, lasso::Spur>,
+}
+
+impl PropertyDummyEnv {
+    fn from_properties(properties: &dyn PropertyLookup) -> Self {
+        let index_families = properties.index_families().cloned().unwrap_or_default();
+        let mut index_to_family = HashMap::new();
+        for family in index_families.values() {
+            index_to_family.insert(family.name, family.name);
+            for value in &family.values {
+                index_to_family.insert(*value, family.name);
+            }
+        }
+        Self {
+            index_families,
+            index_to_family,
+        }
+    }
+}
+
+impl DummyRenameEnv for PropertyDummyEnv {
+    fn index_families(&self) -> &HashMap<lasso::Spur, ax_ir::IndexFamily> {
+        &self.index_families
+    }
+
+    fn index_to_family(&self) -> &HashMap<lasso::Spur, lasso::Spur> {
+        &self.index_to_family
+    }
+}
+
+fn young_project_factor_in_term(
+    expr: &Expr,
+    spec: YoungProjectFactorSpec,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Expr {
+    let factor_info = extract_factor_info_from_term(expr, properties, interner);
+    let mut seen = 0usize;
+
+    for info in factor_info {
+        if young_project_factor_key(&info) != Some(spec.key) {
+            continue;
+        }
+        if seen != spec.occurrence {
+            seen += 1;
+            continue;
+        }
+
+        let mut projected = expr.clone();
+        for op in expression_projection_ops_for_factor(&info) {
+            projected = match op {
+                TensorProjectionOp::Tableau(tableau_info) => {
+                    let mut current = projected;
+                    for column in &tableau_info.columns {
+                        if column.len() > 1 {
+                            current = symmetrise(&current, column, true, interner);
+                            current = simplify_expr(current, interner);
+                        }
+                    }
+                    for row in &tableau_info.rows {
+                        if row.len() > 1 {
+                            current = symmetrise(&current, row, false, interner);
+                            current = simplify_expr(current, interner);
+                        }
+                    }
+                    current
+                }
+                TensorProjectionOp::PermutationProjector {
+                    positions,
+                    permutations,
+                } => Expr::add(
+                    permutations
+                        .into_iter()
+                        .map(|(perm, coeff)| {
+                            let permuted = permute_indices_at_positions(&projected, &positions, &perm);
+                            multiply_expr_by_rational(permuted, coeff)
+                        })
+                        .collect(),
+                ),
+            };
+            projected = simplify_expr(projected, interner);
+        }
+        return projected;
+    }
+
+    expr.clone()
+}
+
+fn young_project_factor_in_expr(
+    expr: &Expr,
+    spec: YoungProjectFactorSpec,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Expr {
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| young_project_factor_in_expr(term, spec, properties, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(young_project_factor_in_expr(
+            inner, spec, properties, interner,
+        )),
+        _ => young_project_factor_in_term(expr, spec, properties, interner),
+    }
+}
+
+fn count_add_terms(expr: &Expr) -> usize {
+    match expr {
+        Expr::Add(terms) => terms.iter().map(count_add_terms).sum(),
+        _ => 1,
+    }
+}
+
+fn normalise_young_projected_tensor(
+    expr: Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    opts: &YoungProjectTensorOptions,
+    in_product: bool,
+) -> Expr {
+    let mut current = tensor_distribute(&expr, interner);
+
+    if opts.canonicalize_after {
+        current = canonicalize_indices(&current, properties, interner);
+        if opts.modulo_monoterm && in_product {
+            current = canonicalise(&current, properties, interner);
+        }
+    }
+
+    if opts.rename_dummies_after {
+        let dummy_env = PropertyDummyEnv::from_properties(properties);
+        current = rename_dummies(&current, &dummy_env, interner);
+    }
+
+    current = collect_terms_expr(&current, interner);
+    simplify_expr(current, interner)
+}
+
+fn cancel_explicit_bianchi_terms(
+    terms: Vec<Expr>,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+) -> Vec<Expr> {
+    let mut used = vec![false; terms.len()];
+    let cores = terms
+        .iter()
+        .map(split_numeric_coeff)
+        .collect::<Vec<(BigRational, Expr)>>();
+    let mut result = Vec::new();
+
+    for i in 0..terms.len() {
+        if used[i] {
+            continue;
+        }
+
+        let (coeff, core) = &cores[i];
+        let factor_info = extract_factor_info_from_term(core, properties, interner);
+        let mut cancelled = false;
+
+        'ops: for info in factor_info {
+            for prop in &info.properties {
+                let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) else {
+                    continue;
+                };
+                let abs = slots.map(|slot| info.start_position + slot);
+                let cyc1 = permute_indices_at_positions(core, &abs, &[0, 2, 3, 1]);
+                let cyc2 = permute_indices_at_positions(core, &abs, &[0, 3, 1, 2]);
+
+                let mut found1 = None;
+                let mut found2 = None;
+                for j in (i + 1)..terms.len() {
+                    if used[j] || cores[j].0 != *coeff {
+                        continue;
+                    }
+                    if found1.is_none() && cores[j].1 == cyc1 {
+                        found1 = Some(j);
+                        continue;
+                    }
+                    if found2.is_none() && cores[j].1 == cyc2 {
+                        found2 = Some(j);
+                    }
+                }
+                if let (Some(j), Some(k)) = (found1, found2) {
+                    used[i] = true;
+                    used[j] = true;
+                    used[k] = true;
+                    cancelled = true;
+                    break 'ops;
+                }
+            }
+        }
+
+        if !cancelled {
+            result.push(terms[i].clone());
         }
     }
 
@@ -2469,7 +3068,10 @@ fn lookup_component_rule(
 
     for prop in properties.get_properties_with_indices(tensor_name, indices) {
         if ax_ir::check_deadline().is_err() {
-            return Some(Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]));
+            return Some(Expr::Call(
+                interner.get_or_intern("__axioma_timeout__"),
+                vec![],
+            ));
         }
         match prop {
             ax_ir::TensorProperty::Symmetric(positions) => {
@@ -2488,7 +3090,10 @@ fn lookup_component_rule(
 
                 loop {
                     if ax_ir::check_deadline().is_err() {
-                        return Some(Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]));
+                        return Some(Expr::Call(
+                            interner.get_or_intern("__axioma_timeout__"),
+                            vec![],
+                        ));
                     }
                     let mut trial = index_names.clone();
                     for (i, &slot) in symmetric_slots.iter().enumerate() {
@@ -2523,7 +3128,10 @@ fn lookup_component_rule(
 
                 loop {
                     if ax_ir::check_deadline().is_err() {
-                        return Some(Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]));
+                        return Some(Expr::Call(
+                            interner.get_or_intern("__axioma_timeout__"),
+                            vec![],
+                        ));
                     }
                     let mut trial = index_names.clone();
                     for (i, &slot) in symmetric_slots.iter().enumerate() {
@@ -2557,7 +3165,10 @@ fn lookup_component_rule(
 
                     for (perm, sign) in riemann_perms {
                         if ax_ir::check_deadline().is_err() {
-                            return Some(Expr::Call(interner.get_or_intern("__axioma_timeout__"), vec![]));
+                            return Some(Expr::Call(
+                                interner.get_or_intern("__axioma_timeout__"),
+                                vec![],
+                            ));
                         }
                         let trial: Vec<lasso::Spur> =
                             perm.iter().map(|&p| index_names[p]).collect();
@@ -3607,9 +4218,10 @@ fn expr_node_name(expr: &Expr, interner: &Interner) -> String {
 
 fn expr_children(expr: &Expr) -> &[Expr] {
     match expr {
-        Expr::Add(children) | Expr::Mul(children) | Expr::List(children) | Expr::Call(_, children) => {
-            children.as_slice()
-        }
+        Expr::Add(children)
+        | Expr::Mul(children)
+        | Expr::List(children)
+        | Expr::Call(_, children) => children.as_slice(),
         _ => &[],
     }
 }
@@ -3715,7 +4327,10 @@ fn subtree_compare_ordering(a: &Expr, b: &Expr, interner: &Interner) -> (Orderin
             }
             return subtree_compare_ordering(lhs_im, rhs_im, interner);
         }
-        (Expr::FnDef(lhs_name, lhs_params, lhs_body), Expr::FnDef(rhs_name, rhs_params, rhs_body)) => {
+        (
+            Expr::FnDef(lhs_name, lhs_params, lhs_body),
+            Expr::FnDef(rhs_name, rhs_params, rhs_body),
+        ) => {
             let name_cmp = interner.resolve(*lhs_name).cmp(interner.resolve(*rhs_name));
             if name_cmp != Ordering::Equal {
                 return (name_cmp, false);
@@ -3969,6 +4584,103 @@ fn index_family_of(idx: &Index, properties: &dyn PropertyLookup) -> Option<lasso
             .index_families()
             .and_then(|families| families.get(&idx.name).map(|family| family.name))
     })
+}
+
+fn collect_declared_slot_families(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    out: &mut Vec<lasso::Spur>,
+) {
+    match expr {
+        Expr::Indexed(base, indices) => {
+            if let Some(sym) = expr_head_symbol(base) {
+                for slots in properties.declared_index_slot_families(sym) {
+                    if slots.len() != indices.len() {
+                        continue;
+                    }
+                    for family in slots.into_iter().flatten() {
+                        out.push(family);
+                    }
+                }
+            }
+            collect_declared_slot_families(base, properties, out);
+        }
+        Expr::Add(terms) | Expr::Mul(terms) | Expr::List(terms) | Expr::Call(_, terms) => {
+            for term in terms {
+                collect_declared_slot_families(term, properties, out);
+            }
+        }
+        Expr::Pow(base, exp) => {
+            collect_declared_slot_families(base, properties, out);
+            collect_declared_slot_families(exp, properties, out);
+        }
+        Expr::Neg(inner) | Expr::Group(inner, _) => {
+            collect_declared_slot_families(inner, properties, out)
+        }
+        Expr::Complex(re, im) => {
+            collect_declared_slot_families(re, properties, out);
+            collect_declared_slot_families(im, properties, out);
+        }
+        Expr::FnDef(_, _, body) => collect_declared_slot_families(body, properties, out),
+        Expr::Rule(lhs, rhs, _) => {
+            collect_declared_slot_families(lhs, properties, out);
+            collect_declared_slot_families(rhs, properties, out);
+        }
+        Expr::Piecewise(cases) => {
+            for (value, _) in cases {
+                collect_declared_slot_families(value, properties, out);
+            }
+        }
+        Expr::Let(_, value, body) => {
+            collect_declared_slot_families(value, properties, out);
+            collect_declared_slot_families(body, properties, out);
+        }
+        Expr::Matrix(rows) => {
+            for row in rows {
+                for cell in row {
+                    collect_declared_slot_families(cell, properties, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn infer_tensor_dimension(expr: &Expr, properties: &dyn PropertyLookup) -> Option<usize> {
+    let mut dimensions: HashSet<usize> = HashSet::new();
+
+    let mut indices = Vec::new();
+    collect_explicit_indices(expr, &mut indices);
+    if let Some(families) = properties.index_families() {
+        for idx in indices {
+            let Some(family_name) = index_family_of(idx, properties) else {
+                continue;
+            };
+            if let Some(dimension) = families
+                .get(&family_name)
+                .and_then(|family| family.dimension)
+            {
+                dimensions.insert(dimension);
+            }
+        }
+
+        let mut declared_families = Vec::new();
+        collect_declared_slot_families(expr, properties, &mut declared_families);
+        for family_name in declared_families {
+            if let Some(dimension) = families
+                .get(&family_name)
+                .and_then(|family| family.dimension)
+            {
+                dimensions.insert(dimension);
+            }
+        }
+    }
+
+    if dimensions.len() == 1 {
+        dimensions.into_iter().next()
+    } else {
+        None
+    }
 }
 
 fn declared_implicit_index_sets(
@@ -4282,20 +4994,10 @@ pub fn can_swap(
         return if (d1 * d2) % 2 == 0 { 1 } else { -1 };
     }
 
-    if share_self_behaviour(
-        a,
-        b,
-        properties,
-        &ax_ir::TensorProperty::SelfNonCommuting,
-    ) {
+    if share_self_behaviour(a, b, properties, &ax_ir::TensorProperty::SelfNonCommuting) {
         return 0;
     }
-    if share_self_behaviour(
-        a,
-        b,
-        properties,
-        &ax_ir::TensorProperty::SelfAntiCommuting,
-    ) {
+    if share_self_behaviour(a, b, properties, &ax_ir::TensorProperty::SelfAntiCommuting) {
         return -1;
     }
     if share_self_behaviour(a, b, properties, &ax_ir::TensorProperty::SelfCommuting) {
@@ -4322,9 +5024,7 @@ pub fn can_swap(
         (_, true, true, _) => {
             can_swap_prod_sum(b, a, properties, interner, ignore_implicit_indices)
         }
-        (_, _, true, true) => {
-            can_swap_sum_sum(a, b, properties, interner, ignore_implicit_indices)
-        }
+        (_, _, true, true) => can_swap_sum_sum(a, b, properties, interner, ignore_implicit_indices),
         (true, false, false, false) => {
             can_swap_prod_obj(a, b, properties, interner, ignore_implicit_indices)
         }
@@ -5213,12 +5913,7 @@ pub fn canonicalize_indices(
                     .into_iter()
                     .cloned()
                     .collect::<Vec<_>>();
-                if props.iter().any(|prop| {
-                    matches!(
-                        prop,
-                        ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor
-                    )
-                }) {
+                if has_riemann_monoterm_property(&props, indices.len()) {
                     if let Some((new_indices, sign)) =
                         canonicalize_riemann_slots(&indices, interner)
                     {
@@ -5244,32 +5939,28 @@ pub fn canonicalize_indices(
 
             Expr::Indexed(Box::new(base_expr), indices)
         }
-        Expr::Add(terms) => Expr::add(
-            {
-                let mut out = Vec::with_capacity(terms.len());
-                for term in terms {
-                    let canonical = canonicalize_indices(term, properties, interner);
-                    if is_timeout_expr(&canonical, interner) {
-                        return canonical;
-                    }
-                    out.push(canonical);
+        Expr::Add(terms) => Expr::add({
+            let mut out = Vec::with_capacity(terms.len());
+            for term in terms {
+                let canonical = canonicalize_indices(term, properties, interner);
+                if is_timeout_expr(&canonical, interner) {
+                    return canonical;
                 }
-                out
-            },
-        ),
-        Expr::Mul(factors) => Expr::mul(
-            {
-                let mut out = Vec::with_capacity(factors.len());
-                for factor in factors {
-                    let canonical = canonicalize_indices(factor, properties, interner);
-                    if is_timeout_expr(&canonical, interner) {
-                        return canonical;
-                    }
-                    out.push(canonical);
+                out.push(canonical);
+            }
+            out
+        }),
+        Expr::Mul(factors) => Expr::mul({
+            let mut out = Vec::with_capacity(factors.len());
+            for factor in factors {
+                let canonical = canonicalize_indices(factor, properties, interner);
+                if is_timeout_expr(&canonical, interner) {
+                    return canonical;
                 }
-                out
-            },
-        ),
+                out.push(canonical);
+            }
+            out
+        }),
         Expr::Pow(base, exp) => Expr::pow(
             canonicalize_indices(base, properties, interner),
             canonicalize_indices(exp, properties, interner),
@@ -5715,48 +6406,182 @@ pub fn young_project(
     Expr::add(terms)
 }
 
+pub fn young_project_product(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &Interner,
+    opts: &YoungProjectProductOptions,
+) -> Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
+
+    match expr {
+        Expr::Mul(_) => {
+            let specs = young_project_factor_specs(expr, properties, interner);
+            if specs.is_empty() {
+                return expr.clone();
+            }
+
+            let mut current = expr.clone();
+            let dummy_env = PropertyDummyEnv::from_properties(properties);
+            for spec in specs {
+                if let Some(timeout) = deadline_timeout_expr(interner) {
+                    return timeout;
+                }
+
+                current = young_project_factor_in_expr(&current, spec, properties, interner);
+                if is_timeout_expr(&current, interner) {
+                    return current;
+                }
+
+                if opts.distribute_each_step {
+                    current = tensor_distribute(&current, interner);
+                }
+                current = if opts.modulo_monoterm {
+                    canonicalise(&current, properties, interner)
+                } else {
+                    canonicalize_indices(&current, properties, interner)
+                };
+                if opts.rename_dummies_each_step {
+                    current = rename_dummies(&current, &dummy_env, interner);
+                }
+                current = simplify_expr(current, interner);
+
+                if opts.max_terms > 0 && count_add_terms(&current) > opts.max_terms {
+                    return current;
+                }
+            }
+
+            if opts.meld_final {
+                current = meld(&current, properties, interner);
+            }
+            current = if opts.modulo_monoterm {
+                canonicalise(&current, properties, interner)
+            } else {
+                canonicalize_indices(&current, properties, interner)
+            };
+            if opts.rename_dummies_each_step {
+                current = rename_dummies(&current, &dummy_env, interner);
+            }
+            simplify_expr(current, interner)
+        }
+        Expr::Add(terms) => {
+            let cancelled = cancel_explicit_bianchi_terms(terms.clone(), properties, interner);
+            if cancelled.is_empty() {
+                return Expr::zero();
+            }
+            let projected = Expr::add(
+                terms
+                    .iter()
+                    .map(|term| young_project_product(term, properties, interner, opts))
+                    .collect(),
+            );
+            let projected = simplify_expr(projected, interner);
+            if opts.meld_final {
+                simplify_expr(meld(&projected, properties, interner), interner)
+            } else {
+                projected
+            }
+        }
+        Expr::Neg(inner) => Expr::neg(young_project_product(inner, properties, interner, opts)),
+        _ => expr.clone(),
+    }
+}
+
+pub fn young_project_tensor_with_options(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+    opts: &YoungProjectTensorOptions,
+) -> Expr {
+    match expr {
+        Expr::Indexed(_, _) => {
+            let factor_info = extract_factor_info_from_term(expr, properties, interner);
+            let projection_ops = factor_info
+                .iter()
+                .flat_map(expression_projection_ops_for_factor)
+                .collect::<Vec<_>>();
+            if projection_ops.is_empty() {
+                return expr.clone();
+            }
+            let mut projected = expr.clone();
+            for op in projection_ops {
+                projected = match op {
+                    TensorProjectionOp::Tableau(tableau_info) => {
+                        let tableau = ax_young::YoungTableau {
+                            rows: tableau_info.rows,
+                            multiplicity: BigRational::one(),
+                            selfdual_column: 0,
+                        };
+                        young_project(&projected, &tableau, interner)
+                    }
+                    TensorProjectionOp::PermutationProjector {
+                        positions,
+                        permutations,
+                    } => Expr::add(
+                        permutations
+                            .into_iter()
+                            .map(|(perm, coeff)| {
+                                let permuted =
+                                    permute_indices_at_positions(&projected, &positions, &perm);
+                                multiply_expr_by_rational(permuted, coeff)
+                            })
+                            .collect(),
+                    ),
+                };
+                projected = simplify_expr(projected, interner);
+            }
+            normalise_young_projected_tensor(projected, properties, interner, opts, false)
+        }
+        Expr::Add(terms) => {
+            let projected_terms = terms
+                .iter()
+                .map(|t| young_project_tensor_with_options(t, properties, interner, opts))
+                .collect::<Vec<_>>();
+            let cancelled = cancel_explicit_bianchi_terms(projected_terms.clone(), properties, interner);
+            if cancelled.is_empty() {
+                Expr::zero()
+            } else {
+                let projected = Expr::add(projected_terms);
+                let projected = meld(&projected, properties, interner);
+                normalise_young_projected_tensor(projected, properties, interner, opts, false)
+            }
+        }
+        Expr::Mul(_) => {
+            let projected = young_project_product(
+                expr,
+                properties,
+                interner,
+                &YoungProjectProductOptions {
+                    modulo_monoterm: opts.modulo_monoterm,
+                    distribute_each_step: true,
+                    rename_dummies_each_step: opts.rename_dummies_after,
+                    meld_final: true,
+                    max_terms: YoungProjectProductOptions::default().max_terms,
+                },
+            );
+            normalise_young_projected_tensor(projected, properties, interner, opts, true)
+        }
+        Expr::Neg(e) => Expr::neg(young_project_tensor_with_options(
+            e, properties, interner, opts,
+        )),
+        _ => expr.clone(),
+    }
+}
+
 /// Apply Young projection to a tensor based on its declared `TableauSymmetry` property.
 pub fn young_project_tensor(
     expr: &Expr,
     tensor_properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
-    match expr {
-        Expr::Indexed(_, _) => {
-            let factor_info = extract_factor_info_from_term(expr, tensor_properties, interner);
-            let tableaux = tableaux_from_properties(&factor_info, tensor_properties);
-            if tableaux.is_empty() {
-                return expr.clone();
-            }
-            let mut projected = expr.clone();
-            for tableau_info in tableaux {
-                if tableau_info.rows.is_empty() {
-                    continue;
-                }
-                let tableau = ax_young::YoungTableau {
-                    rows: tableau_info.rows,
-                    multiplicity: BigRational::one(),
-                    selfdual_column: 0,
-                };
-                projected = young_project(&projected, &tableau, interner);
-            }
-            simplify_expr(projected, interner)
-        }
-        Expr::Add(terms) => Expr::add(
-            terms
-                .iter()
-                .map(|t| young_project_tensor(t, tensor_properties, interner))
-                .collect(),
-        ),
-        Expr::Mul(factors) => Expr::mul(
-            factors
-                .iter()
-                .map(|f| young_project_tensor(f, tensor_properties, interner))
-                .collect(),
-        ),
-        Expr::Neg(e) => Expr::neg(young_project_tensor(e, tensor_properties, interner)),
-        _ => expr.clone(),
-    }
+    young_project_tensor_with_options(
+        expr,
+        tensor_properties,
+        interner,
+        &YoungProjectTensorOptions::default(),
+    )
 }
 
 pub fn reduce_delta(
@@ -6278,9 +7103,10 @@ pub fn diff_component(
                 ),
             },
             Expr::Call(_, _) | Expr::Indexed(_, _) if !contains_var(expr, var) => Expr::zero(),
-            Expr::Call(_, _) | Expr::Indexed(_, _) => {
-                Expr::Call(interner.get_or_intern("diff"), vec![expr.clone(), Expr::Sym(var)])
-            }
+            Expr::Call(_, _) | Expr::Indexed(_, _) => Expr::Call(
+                interner.get_or_intern("diff"),
+                vec![expr.clone(), Expr::Sym(var)],
+            ),
             Expr::Group(inner, rel) => Expr::Group(Box::new(diff(inner, var, interner)), *rel),
             Expr::FnDef(name, params, body) => {
                 Expr::FnDef(*name, params.clone(), Box::new(diff(body, var, interner)))
@@ -6974,19 +7800,15 @@ pub fn riemann_from_christoffel(
                         ]));
                     }
 
+                    let mtw_expr = Expr::add(vec![
+                        term1,
+                        Expr::neg(term2),
+                        Expr::add(pos_terms),
+                        Expr::neg(Expr::add(neg_terms)),
+                    ]);
                     let expr = match convention.riemann_sign {
-                        ax_ir::RiemannSign::MTW => Expr::add(vec![
-                            term1,
-                            Expr::neg(term2),
-                            Expr::add(pos_terms),
-                            Expr::neg(Expr::add(neg_terms)),
-                        ]),
-                        ax_ir::RiemannSign::Weinberg => Expr::add(vec![
-                            term2,
-                            Expr::neg(term1),
-                            Expr::add(neg_terms),
-                            Expr::neg(Expr::add(pos_terms)),
-                        ]),
+                        ax_ir::RiemannSign::MTW => mtw_expr,
+                        ax_ir::RiemannSign::Weinberg => Expr::neg(mtw_expr),
                     };
                     riemann[i][j][k][l] = simplify_expr(expr, interner);
                 }
@@ -7167,7 +7989,10 @@ fn match_schwarzschild_angular_sector(
     Some((*radial, theta))
 }
 
-fn match_schwarzschild_radial_factor(g: &SymbolicMatrix, radial: lasso::Spur) -> Option<lasso::Spur> {
+fn match_schwarzschild_radial_factor(
+    g: &SymbolicMatrix,
+    radial: lasso::Spur,
+) -> Option<lasso::Spur> {
     let g11 = normalized_metric_expr(g.get(1, 1));
     let Expr::Pow(base, inv_exp) = &g11 else {
         return None;
@@ -8031,6 +8856,9 @@ fn inferred_rank_from_properties(
                 .map(|pos| pos + 1)
                 .or(Some(shape.iter().sum())),
             ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor => Some(4),
+            ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
+                Some(slots.iter().max().copied().unwrap_or(3) + 1)
+            }
             ax_ir::TensorProperty::Metric
             | ax_ir::TensorProperty::InverseMetric
             | ax_ir::TensorProperty::KroneckerDelta => Some(2),
@@ -9014,13 +9842,20 @@ fn tableau_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> O
                     return Some(vec![1; rank]);
                 }
             }
-            ax_ir::TensorProperty::RiemannSymmetry => {
-                if indices.len() >= 4 {
-                    return Some(vec![2, 2]);
-                }
-            }
             _ => {}
         }
+    }
+
+    let props = properties
+        .get_properties_with_indices(*name, indices)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    if has_weyl_property(&props)
+        || (has_riemann_monoterm_property(&props, indices.len())
+            && has_bianchi_property(&props, indices.len()))
+    {
+        return Some(vec![2, 2]);
     }
 
     if indices.is_empty() {
@@ -9034,6 +9869,16 @@ fn tableau_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> O
 
 fn standard_tableau_for_shape(shape: &[usize]) -> ax_young::YoungTableau {
     ax_young::YoungTableau::standard(&ax_young::YoungDiagram::new(shape.to_vec()))
+}
+
+fn factor_vanishes_in_dimension(
+    factor: &Expr,
+    dim: usize,
+    properties: &dyn PropertyLookup,
+) -> bool {
+    tableau_shape_for_factor(factor, properties)
+        .map(|shape| !shape_fits_dim(&shape, dim))
+        .unwrap_or(false)
 }
 
 fn lr_product_decomposition(shapes: &[Vec<usize>], dim: usize) -> Vec<(Vec<usize>, usize)> {
@@ -9065,6 +9910,13 @@ fn lr_product_decomposition(shapes: &[Vec<usize>], dim: usize) -> Vec<(Vec<usize
 fn decompose_product_failure(reason: &str, expr: &Expr, interner: &Interner) -> Expr {
     Expr::Call(
         interner.get_or_intern(&format!("decompose_product_{reason}")),
+        vec![expr.clone()],
+    )
+}
+
+fn schouten_reduce_failure(reason: &str, expr: &Expr, interner: &Interner) -> Expr {
+    Expr::Call(
+        interner.get_or_intern(&format!("schouten_reduce_{reason}")),
         vec![expr.clone()],
     )
 }
@@ -9151,6 +10003,79 @@ pub fn decompose_product(
                 .collect(),
         )
     }
+}
+
+pub fn schouten_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner) -> Expr {
+    if let Some(timeout) = deadline_timeout_expr(interner) {
+        return timeout;
+    }
+
+    match expr {
+        Expr::Add(terms) => {
+            let reduced = Expr::add(
+                terms
+                    .iter()
+                    .map(|term| schouten_reduce(term, properties, interner))
+                    .collect(),
+            );
+            let canonical = canonicalise(&reduced, properties, interner);
+            let melded = meld(&canonical, properties, interner);
+            return simplify_expr(melded, interner);
+        }
+        Expr::Neg(inner) => {
+            return Expr::neg(schouten_reduce(inner, properties, interner));
+        }
+        _ => {}
+    }
+
+    if !expr_has_dimension_dependent_identity(expr, properties) {
+        return expr.clone();
+    }
+
+    let Some(dim) = infer_tensor_dimension(expr, properties) else {
+        return schouten_reduce_failure("missing_dimension", expr, interner);
+    };
+
+    let reduced = match expr {
+        Expr::Indexed(_, _) => {
+            if factor_vanishes_in_dimension(expr, dim, properties) {
+                Expr::zero()
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::Mul(factors) => {
+            if factors
+                .iter()
+                .any(|factor| factor_vanishes_in_dimension(factor, dim, properties))
+            {
+                Expr::zero()
+            } else {
+                let indexed_count = factors
+                    .iter()
+                    .filter(|factor| matches!(factor, Expr::Indexed(_, _)))
+                    .count();
+                if indexed_count >= 2 {
+                    decompose_product(expr, dim, properties, interner)
+                } else {
+                    expr.clone()
+                }
+            }
+        }
+        _ => expr.clone(),
+    };
+
+    if is_timeout_expr(&reduced, interner) {
+        return reduced;
+    }
+    if matches!(&reduced, Expr::Call(sym, _) if interner.resolve(*sym).starts_with("decompose_product_"))
+    {
+        return reduced;
+    }
+
+    let canonical = canonicalise(&reduced, properties, interner);
+    let melded = meld(&canonical, properties, interner);
+    simplify_expr(melded, interner)
 }
 
 // ─── expand_implicit ─────────────────────────────────────────────────────────
@@ -11558,7 +12483,10 @@ mod tests {
         let psi = interner.get_or_intern("psi");
         let chi = interner.get_or_intern("chi");
         let mut props = HashMap::new();
-        props.insert(psi, vec![ax_ir::TensorProperty::AntiCommutingWith(vec![chi])]);
+        props.insert(
+            psi,
+            vec![ax_ir::TensorProperty::AntiCommutingWith(vec![chi])],
+        );
 
         let expr = Expr::mul(vec![Expr::Sym(psi), Expr::Sym(chi)]);
         let expected = Expr::neg(Expr::mul(vec![Expr::Sym(chi), Expr::Sym(psi)]));
@@ -11742,7 +12670,12 @@ mod tests {
         let c = interner.get_or_intern("c");
         let d = interner.get_or_intern("d");
         let mut props = HashMap::new();
-        props.insert(r, vec![ax_ir::TensorProperty::SatisfiesBianchi]);
+        props.insert(
+            r,
+            vec![ax_ir::TensorProperty::SatisfiesBianchi {
+                slots: [0, 1, 2, 3],
+            }],
+        );
         props.insert(c_sym, vec![ax_ir::TensorProperty::WeylTensor]);
 
         let make = |sym, slots: [lasso::Spur; 4]| {
@@ -11930,7 +12863,7 @@ mod tests {
     }
 
     #[test]
-    fn meld_bianchi_identity() {
+    fn riemann_symmetry_does_not_imply_bianchi_identity() {
         let interner = ax_ir::Interner::new();
         let r = interner.get_or_intern("R");
         let a = interner.get_or_intern("a");
@@ -11976,11 +12909,10 @@ mod tests {
         ]);
 
         let result = meld(&bianchi, &props, &interner);
-        assert_eq!(
+        assert_ne!(
             result,
             Expr::zero(),
-            "Bianchi identity should be detected by meld, got: {}",
-            ax_ir::pretty_print(&result, &interner)
+            "RiemannSymmetry should not by itself imply the Bianchi identity"
         );
     }
 
@@ -12406,6 +13338,197 @@ mod tests {
             matches!(result, Expr::Add(_) | Expr::Mul(_)),
             "got: {result:?}"
         );
+    }
+
+    #[test]
+    fn young_project_product_distributes_projected_factor() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let v = interner.get_or_intern("V");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let e = interner.get_or_intern("e");
+
+        let idx = |name, variance| Index {
+            name,
+            variance,
+            index_type: None,
+        };
+        let tterm = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![idx(a, Variance::Down), idx(b, Variance::Down)],
+        );
+        let spectator = Expr::Indexed(Box::new(Expr::Sym(v)), vec![idx(e, Variance::Down)]);
+        let expr = Expr::mul(vec![tterm, spectator]);
+
+        let mut props = HashMap::new();
+        props.insert(
+            t,
+            vec![ax_ir::TensorProperty::TableauSymmetry {
+                shape: vec![2],
+                indices: vec![0, 1],
+            }],
+        );
+
+        let result = young_project_product(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectProductOptions::default(),
+        );
+        let expected = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![idx(a, Variance::Down), idx(b, Variance::Down)],
+            ),
+            Expr::Indexed(Box::new(Expr::Sym(v)), vec![idx(e, Variance::Down)]),
+        ]);
+        assert_eq!(result, expected, "got {:?}", result);
+
+        let through_public_route = young_project_tensor(&expr, &props, &interner);
+        assert_eq!(
+            through_public_route, expected,
+            "got {:?}",
+            through_public_route
+        );
+    }
+
+    #[test]
+    fn young_project_product_reveals_bianchi_identity_in_product() {
+        let interner = ax_ir::Interner::new();
+        let r = interner.get_or_intern("R");
+        let v = interner.get_or_intern("V");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let e = interner.get_or_intern("e");
+
+        let idx = |name, variance| Index {
+            name,
+            variance,
+            index_type: None,
+        };
+        let rterm = |i0, i1, i2, i3| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![
+                    idx(i0, Variance::Down),
+                    idx(i1, Variance::Down),
+                    idx(i2, Variance::Down),
+                    idx(i3, Variance::Down),
+                ],
+            )
+        };
+        let spectator = Expr::Indexed(Box::new(Expr::Sym(v)), vec![idx(e, Variance::Down)]);
+        let expr = Expr::add(vec![
+            Expr::mul(vec![rterm(a, b, c, d), spectator.clone()]),
+            Expr::mul(vec![rterm(a, c, d, b), spectator.clone()]),
+            Expr::mul(vec![rterm(a, d, b, c), spectator]),
+        ]);
+
+        let mut props = HashMap::new();
+        props.insert(
+            r,
+            vec![ax_ir::TensorProperty::SatisfiesBianchi {
+                slots: [0, 1, 2, 3],
+            }],
+        );
+
+        let result = young_project_product(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectProductOptions::default(),
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+
+        let through_public_route = young_project_tensor(&expr, &props, &interner);
+        assert_eq!(
+            through_public_route,
+            Expr::zero(),
+            "got {:?}",
+            through_public_route
+        );
+    }
+
+    #[test]
+    fn young_project_tensor_modulo_monoterm_collects_duplicates() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let mut props = HashMap::new();
+        props.insert(
+            t,
+            vec![ax_ir::TensorProperty::TableauSymmetry {
+                shape: vec![2],
+                indices: vec![0, 1],
+            }],
+        );
+
+        let expanded = young_project_tensor_with_options(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectTensorOptions {
+                modulo_monoterm: false,
+                canonicalize_after: false,
+                rename_dummies_after: false,
+            },
+        );
+        assert!(
+            matches!(expanded, Expr::Mul(_) | Expr::Add(_)),
+            "expected unsimplified projector output, got {:?}",
+            expanded
+        );
+
+        let reduced = young_project_tensor_with_options(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectTensorOptions {
+                modulo_monoterm: true,
+                canonicalize_after: true,
+                rename_dummies_after: true,
+            },
+        );
+        let expected = Expr::mul(vec![
+            Expr::Int(2.into()),
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![
+                    Index {
+                        name: a,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+        ]);
+        assert_eq!(reduced, expected, "got {:?}", reduced);
     }
 
     #[test]
@@ -14252,6 +15375,163 @@ mod tests {
             "inconsistent tableau shape should fail clearly, got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn infer_tensor_dimension_uses_index_family_metadata() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let family = interner.get_or_intern("V");
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(interner.get_or_intern("A"))),
+                vec![Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: Some(family),
+                }],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(interner.get_or_intern("B"))),
+                vec![Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: Some(family),
+                }],
+            ),
+        ]);
+
+        struct TestProps {
+            families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
+        }
+
+        impl PropertyLookup for TestProps {
+            fn get_properties(&self, _name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
+                Vec::new()
+            }
+
+            fn get_properties_with_indices(
+                &self,
+                _name: lasso::Spur,
+                _indices: &[ax_ir::Index],
+            ) -> Vec<&ax_ir::TensorProperty> {
+                Vec::new()
+            }
+
+            fn has_property_kind(&self, _name: lasso::Spur, _kind: &ax_ir::TensorProperty) -> bool {
+                false
+            }
+
+            fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
+                Some(&self.families)
+            }
+        }
+
+        let props = TestProps {
+            families: HashMap::from([(
+                family,
+                ax_ir::IndexFamily {
+                    name: family,
+                    values: vec![a, b],
+                    position: ax_ir::IndexPosition::Free,
+                    dimension: Some(3),
+                    parent: None,
+                },
+            )]),
+        };
+
+        assert_eq!(infer_tensor_dimension(&expr, &props), Some(3));
+    }
+
+    #[test]
+    fn schouten_reduce_vanishes_for_three_form_in_two_dimensions() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let family = interner.get_or_intern("V");
+        let asym = |name, variance| Index {
+            name,
+            variance,
+            index_type: Some(family),
+        };
+        let mk = |sym, slots: [lasso::Spur; 3]| {
+            Expr::Indexed(
+                Box::new(Expr::Sym(sym)),
+                vec![
+                    asym(slots[0], Variance::Down),
+                    asym(slots[1], Variance::Down),
+                    asym(slots[2], Variance::Down),
+                ],
+            )
+        };
+        let t = interner.get_or_intern("T");
+        let expr = Expr::add(vec![
+            mk(t, [a, b, c]),
+            Expr::neg(mk(t, [a, c, b])),
+            Expr::neg(mk(t, [b, a, c])),
+            mk(t, [b, c, a]),
+            mk(t, [c, a, b]),
+            Expr::neg(mk(t, [c, b, a])),
+        ]);
+
+        struct TestProps {
+            props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>>,
+            families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
+        }
+
+        impl PropertyLookup for TestProps {
+            fn get_properties(&self, name: lasso::Spur) -> Vec<&ax_ir::TensorProperty> {
+                self.props
+                    .get(&name)
+                    .map(|props| props.iter().collect())
+                    .unwrap_or_default()
+            }
+
+            fn get_properties_with_indices(
+                &self,
+                name: lasso::Spur,
+                _indices: &[ax_ir::Index],
+            ) -> Vec<&ax_ir::TensorProperty> {
+                self.get_properties(name)
+            }
+
+            fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
+                self.get_properties(name)
+                    .into_iter()
+                    .any(|prop| std::mem::discriminant(prop) == std::mem::discriminant(kind))
+            }
+
+            fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
+                Some(&self.families)
+            }
+        }
+
+        let props = TestProps {
+            props: HashMap::from([(
+                t,
+                vec![
+                    ax_ir::TensorProperty::TableauSymmetry {
+                        shape: vec![1, 1, 1],
+                        indices: vec![0, 1, 2],
+                    },
+                    ax_ir::TensorProperty::DimensionDependentIdentity,
+                ],
+            )]),
+            families: HashMap::from([(
+                family,
+                ax_ir::IndexFamily {
+                    name: family,
+                    values: vec![a, b, c],
+                    position: ax_ir::IndexPosition::Free,
+                    dimension: Some(2),
+                    parent: None,
+                },
+            )]),
+        };
+
+        assert_eq!(schouten_reduce(&expr, &props, &interner), Expr::zero());
     }
 
     #[test]
