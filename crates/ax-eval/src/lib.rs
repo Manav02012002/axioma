@@ -5166,6 +5166,41 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "contracted_bianchi_reduce" => {
+            if args.len() == 4 || args.len() == 5 {
+                let derivative_sym = match args.get(1) {
+                    Some(Expr::Sym(sym)) => *sym,
+                    _ => return Expr::Call(f, args),
+                };
+                let ricci_sym = match args.get(2) {
+                    Some(Expr::Sym(sym)) => *sym,
+                    _ => return Expr::Call(f, args),
+                };
+                let scalar_sym = match args.get(3) {
+                    Some(Expr::Sym(sym)) => *sym,
+                    _ => return Expr::Call(f, args),
+                };
+                let einstein_sym = match args.get(4) {
+                    Some(Expr::Sym(sym)) => Some(*sym),
+                    Some(_) => return Expr::Call(f, args),
+                    None => None,
+                };
+                match ax_tensor::contracted_bianchi_reduce(
+                    &args[0],
+                    derivative_sym,
+                    ricci_sym,
+                    scalar_sym,
+                    einstein_sym,
+                    &env.property_store,
+                    interner,
+                ) {
+                    Ok(result) => result,
+                    Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "symmetrise" | "symmetrize" | "sym" => {
             if args.len() >= 2 {
                 if let Expr::List(pos_list) = &args[1] {
@@ -6607,6 +6642,7 @@ fn builtin_call(
             if args.len() == 2 {
                 match (&args[0], matrix_to_symbolic(&args[1])) {
                     (field, Some(metric)) => {
+                        let metric = symbolic_to_forms_matrix(&metric);
                         let form = ax_forms::form_from_expr(field)
                             .map(|form| ax_forms::resize_form(&form, metric.dim))
                             .unwrap_or_else(|| ax_forms::scalar_form(field, metric.dim));
@@ -6622,6 +6658,7 @@ fn builtin_call(
             if args.len() == 3 {
                 match (&args[0], matrix_to_symbolic(&args[1]), &args[2]) {
                     (field, Some(metric), Expr::List(coords_exprs)) => {
+                        let metric = symbolic_to_forms_matrix(&metric);
                         let coords = coords_exprs
                             .iter()
                             .map(|expr| match expr {
@@ -6743,6 +6780,421 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "killing_equations" => {
+            if args.len() == 2 || args.len() == 3 {
+                match (expr_to_3d(&args[0]), &args[1], args.get(2)) {
+                    (Some(gamma), Expr::List(coords_exprs), prefix_arg) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let field_prefix = match prefix_arg {
+                            Some(Expr::Sym(sym)) => interner.resolve(*sym),
+                            None => "xi",
+                            Some(_) => return Expr::Call(f, args),
+                        };
+                        match coords {
+                            Some(coords) => match ax_tensor::killing_equations(
+                                &gamma,
+                                &coords,
+                                field_prefix,
+                                interner,
+                            ) {
+                                Ok(system) => Expr::List(vec![
+                                    Expr::List(system.covector_components),
+                                    Expr::List(system.equations),
+                                    Expr::List(
+                                        system
+                                            .slot_pairs
+                                            .into_iter()
+                                            .map(|(a, b)| {
+                                                Expr::List(vec![
+                                                    Expr::Int(a.into()),
+                                                    Expr::Int(b.into()),
+                                                ])
+                                            })
+                                            .collect(),
+                                    ),
+                                ]),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "adm_decompose" => {
+            if args.len() == 3 {
+                match (matrix_to_symbolic(&args[0]), &args[1], &args[2]) {
+                    (Some(metric), Expr::List(coords_exprs), Expr::Int(time_coord)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        let Some(time_coord) = time_coord.to_usize() else {
+                            return Expr::Call(f, args);
+                        };
+                        match coords {
+                            Some(coords) => match ax_tensor::adm_decompose(
+                                &metric, &coords, time_coord, interner,
+                            ) {
+                                Ok(adm) => Expr::List(vec![
+                                    adm.lapse,
+                                    Expr::List(adm.shift_covector),
+                                    Expr::List(adm.shift_vector),
+                                    Expr::Matrix(adm.spatial_metric.data),
+                                    Expr::Matrix(adm.spatial_inverse_metric.data),
+                                    Expr::Matrix(adm.extrinsic_curvature),
+                                    adm.hamiltonian_constraint,
+                                    Expr::List(adm.momentum_constraints),
+                                ]),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "contorsion_tensor" => {
+            if args.len() == 2 {
+                match (expr_to_3d(&args[0]), matrix_to_symbolic(&args[1])) {
+                    (Some(torsion), Some(metric)) => {
+                        match ax_tensor::contorsion_tensor(&torsion, &metric, interner) {
+                            Ok(contorsion) => expr_3d_to_list(contorsion),
+                            Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "connection_with_torsion" => {
+            if args.len() == 2 {
+                match (expr_to_3d(&args[0]), expr_to_3d(&args[1])) {
+                    (Some(gamma), Some(contorsion)) => {
+                        match ax_tensor::connection_with_torsion(&gamma, &contorsion, interner) {
+                            Ok(connection) => expr_3d_to_list(connection),
+                            Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "spin_connection" => {
+            if args.len() == 3 {
+                match (
+                    matrix_to_symbolic(&args[0]),
+                    matrix_to_symbolic(&args[1]),
+                    &args[2],
+                ) {
+                    (Some(vielbein), Some(metric), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => match ax_tensor::spin_connection(
+                                &vielbein, &metric, &coords, interner,
+                            ) {
+                                Ok(omega) => expr_3d_to_list(omega),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "first_cartan_structure" => {
+            if args.len() == 3 {
+                match (matrix_to_symbolic(&args[0]), expr_to_3d(&args[1]), &args[2]) {
+                    (Some(vielbein), Some(omega), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => match ax_tensor::first_cartan_structure(
+                                &vielbein, &omega, &coords, interner,
+                            ) {
+                                Ok(forms) => Expr::List(
+                                    forms.iter().map(ax_forms::form_to_expr).collect::<Vec<_>>(),
+                                ),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "second_cartan_structure" => {
+            if args.len() == 2 {
+                match (expr_to_3d(&args[0]), &args[1]) {
+                    (Some(omega), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => {
+                                match ax_tensor::second_cartan_structure(&omega, &coords, interner)
+                                {
+                                    Ok(forms) => Expr::Matrix(
+                                        forms
+                                            .iter()
+                                            .map(|row| {
+                                                row.iter()
+                                                    .map(ax_forms::form_to_expr)
+                                                    .collect::<Vec<_>>()
+                                            })
+                                            .collect::<Vec<_>>(),
+                                    ),
+                                    Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                                }
+                            }
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "conformal_transform_metric" => {
+            if args.len() == 2 {
+                match (matrix_to_symbolic(&args[0]), &args[1]) {
+                    (Some(metric), omega) => Expr::Matrix(
+                        ax_tensor::conformal_transform_metric(&metric, omega, interner).data,
+                    ),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "conformal_transform_inverse_metric" => {
+            if args.len() == 2 {
+                match (matrix_to_symbolic(&args[0]), &args[1]) {
+                    (Some(metric), omega) => Expr::Matrix(
+                        ax_tensor::conformal_transform_inverse_metric(&metric, omega, interner)
+                            .data,
+                    ),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "conformal_transform_christoffel" => {
+            if args.len() == 4 {
+                match (
+                    expr_to_3d(&args[0]),
+                    matrix_to_symbolic(&args[1]),
+                    &args[2],
+                    &args[3],
+                ) {
+                    (Some(gamma), Some(metric), omega, Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => match ax_tensor::conformal_transform_christoffel(
+                                &gamma, &metric, omega, &coords, interner,
+                            ) {
+                                Ok(transformed) => expr_3d_to_list(transformed),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "conformal_transform_ricci" => {
+            if args.len() == 5 {
+                match (
+                    &args[0],
+                    &args[1],
+                    matrix_to_symbolic(&args[2]),
+                    &args[3],
+                    &args[4],
+                ) {
+                    (
+                        Expr::Matrix(ricci),
+                        scalar,
+                        Some(metric),
+                        omega,
+                        Expr::List(coords_exprs),
+                    ) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => match ax_tensor::conformal_transform_ricci(
+                                ricci, scalar, &metric, omega, &coords, interner,
+                            ) {
+                                Ok(transformed) => Expr::Matrix(transformed),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "conformal_transform_scalar" => {
+            if args.len() == 4 {
+                match (&args[0], matrix_to_symbolic(&args[1]), &args[2], &args[3]) {
+                    (scalar, Some(metric), omega, Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => match ax_tensor::conformal_transform_scalar(
+                                scalar, &metric, omega, &coords, interner,
+                            ) {
+                                Ok(transformed) => transformed,
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "null_tetrad" | "null_tetrad_from_metric" => {
+            if args.len() == 2 {
+                match (matrix_to_symbolic(&args[0]), &args[1]) {
+                    (Some(metric), Expr::List(coords_exprs)) => {
+                        let metric = simplify_symbolic_matrix(&metric, env, interner);
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => {
+                                match ax_tensor::null_tetrad_from_metric(&metric, &coords, interner)
+                                {
+                                    Ok(tetrad) => null_tetrad_to_expr(tetrad),
+                                    Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                                }
+                            }
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "verify_null_tetrad" => {
+            if args.len() == 2 {
+                match (expr_to_null_tetrad(&args[0]), matrix_to_symbolic(&args[1])) {
+                    (Some(tetrad), Some(metric)) => {
+                        match ax_tensor::verify_null_tetrad(&tetrad, &metric, interner) {
+                            Ok(()) => Expr::Sym(interner.get_or_intern("ok")),
+                            Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "spin_coefficients" => {
+            if args.len() == 4 {
+                match (
+                    expr_to_null_tetrad(&args[0]),
+                    expr_to_3d(&args[1]),
+                    matrix_to_symbolic(&args[2]),
+                    &args[3],
+                ) {
+                    (Some(tetrad), Some(gamma), Some(metric), Expr::List(coords_exprs)) => {
+                        let coords = coords_exprs
+                            .iter()
+                            .map(|expr| match expr {
+                                Expr::Sym(sym) => Some(*sym),
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        match coords {
+                            Some(coords) => match ax_tensor::spin_coefficients(
+                                &tetrad, &gamma, &metric, &coords, interner,
+                            ) {
+                                Ok(coeffs) => spin_coefficients_to_expr(coeffs),
+                                Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                            },
+                            None => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "riemann" => {
             if args.len() == 2 {
                 match (expr_to_3d(&args[0]), &args[1]) {
@@ -6846,6 +7298,48 @@ fn builtin_call(
                         }
                     }
                     _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "weyl_scalars" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_4d(&args[0]),
+                    expr_to_null_tetrad(&args[1]),
+                    matrix_to_symbolic(&args[2]),
+                ) {
+                    (Some(weyl), Some(tetrad), Some(metric)) => {
+                        match ax_tensor::weyl_scalars(&weyl, &tetrad, &metric, interner) {
+                            Ok(scalars) => weyl_scalars_to_expr(scalars),
+                            Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "petrov_classify" => {
+            if args.len() == 1 {
+                match expr_to_weyl_scalars(&args[0]) {
+                    Some(scalars) => match ax_tensor::petrov_classify(&scalars, interner) {
+                        Ok(kind) => {
+                            let name = match kind {
+                                ax_tensor::PetrovType::I => "I",
+                                ax_tensor::PetrovType::II => "II",
+                                ax_tensor::PetrovType::D => "D",
+                                ax_tensor::PetrovType::III => "III",
+                                ax_tensor::PetrovType::N => "N",
+                                ax_tensor::PetrovType::O => "O",
+                            };
+                            Expr::Sym(interner.get_or_intern(name))
+                        }
+                        Err(err) => Expr::Sym(interner.get_or_intern(&err.to_string())),
+                    },
+                    None => Expr::Call(f, args),
                 }
             } else {
                 Expr::Call(f, args)
@@ -7790,6 +8284,81 @@ fn expr_4d_to_list(data: Vec<Vec<Vec<Vec<Expr>>>>) -> Expr {
     )
 }
 
+pub(crate) fn expr_to_vector(expr: &Expr) -> Option<Vec<Expr>> {
+    match expr {
+        Expr::List(items) => Some(items.clone()),
+        Expr::Group(inner, _) => expr_to_vector(inner),
+        _ => None,
+    }
+}
+
+pub(crate) fn expr_to_null_tetrad(expr: &Expr) -> Option<ax_tensor::NullTetrad> {
+    let Expr::List(parts) = expr else {
+        return None;
+    };
+    if parts.len() != 4 {
+        return None;
+    }
+    Some(ax_tensor::NullTetrad {
+        l: expr_to_vector(&parts[0])?,
+        n: expr_to_vector(&parts[1])?,
+        m: expr_to_vector(&parts[2])?,
+        m_bar: expr_to_vector(&parts[3])?,
+    })
+}
+
+pub(crate) fn null_tetrad_to_expr(tetrad: ax_tensor::NullTetrad) -> Expr {
+    Expr::List(vec![
+        Expr::List(tetrad.l),
+        Expr::List(tetrad.n),
+        Expr::List(tetrad.m),
+        Expr::List(tetrad.m_bar),
+    ])
+}
+
+pub(crate) fn spin_coefficients_to_expr(coeffs: ax_tensor::SpinCoefficients) -> Expr {
+    Expr::List(vec![
+        coeffs.kappa,
+        coeffs.sigma,
+        coeffs.lambda,
+        coeffs.nu,
+        coeffs.rho,
+        coeffs.mu,
+        coeffs.tau,
+        coeffs.pi,
+        coeffs.epsilon,
+        coeffs.gamma,
+        coeffs.alpha,
+        coeffs.beta,
+    ])
+}
+
+pub(crate) fn expr_to_weyl_scalars(expr: &Expr) -> Option<ax_tensor::WeylScalars> {
+    let Expr::List(parts) = expr else {
+        return None;
+    };
+    if parts.len() != 5 {
+        return None;
+    }
+    Some(ax_tensor::WeylScalars {
+        psi0: parts[0].clone(),
+        psi1: parts[1].clone(),
+        psi2: parts[2].clone(),
+        psi3: parts[3].clone(),
+        psi4: parts[4].clone(),
+    })
+}
+
+pub(crate) fn weyl_scalars_to_expr(scalars: ax_tensor::WeylScalars) -> Expr {
+    Expr::List(vec![
+        scalars.psi0,
+        scalars.psi1,
+        scalars.psi2,
+        scalars.psi3,
+        scalars.psi4,
+    ])
+}
+
 fn matrix_to_symbolic(expr: &Expr) -> Option<ax_tensor::SymbolicMatrix> {
     let Expr::Matrix(rows) = expr else {
         return None;
@@ -7806,6 +8375,67 @@ fn matrix_to_symbolic(expr: &Expr) -> Option<ax_tensor::SymbolicMatrix> {
 
 fn symbolic_to_matrix(m: &ax_tensor::SymbolicMatrix) -> Expr {
     Expr::Matrix(m.data.clone())
+}
+
+fn symbolic_to_forms_matrix(m: &ax_tensor::SymbolicMatrix) -> ax_forms::SymbolicMatrix {
+    ax_forms::SymbolicMatrix {
+        dim: m.dim,
+        data: m.data.clone(),
+    }
+}
+
+fn normalize_metric_entry(expr: Expr) -> Expr {
+    match expr {
+        Expr::Group(inner, _) => normalize_metric_entry(*inner),
+        Expr::Neg(inner) => Expr::neg(normalize_metric_entry(*inner)),
+        Expr::Mul(factors) => {
+            let mut factors = factors
+                .into_iter()
+                .map(normalize_metric_entry)
+                .collect::<Vec<_>>();
+            if let Some(first) = factors.first() {
+                match first {
+                    Expr::Int(n) if *n == (-1).into() => {
+                        let _ = factors.remove(0);
+                        return match factors.as_slice() {
+                            [] => Expr::Int((-1).into()),
+                            [single] => Expr::neg(single.clone()),
+                            _ => Expr::neg(Expr::mul(factors)),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            Expr::mul(factors)
+        }
+        Expr::Add(terms) => Expr::add(terms.into_iter().map(normalize_metric_entry).collect()),
+        Expr::Pow(base, exp) => {
+            Expr::pow(normalize_metric_entry(*base), normalize_metric_entry(*exp))
+        }
+        Expr::Call(sym, args) => {
+            Expr::Call(sym, args.into_iter().map(normalize_metric_entry).collect())
+        }
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(normalize_metric_entry(*re)),
+            Box::new(normalize_metric_entry(*im)),
+        ),
+        other => other,
+    }
+}
+
+pub(crate) fn simplify_symbolic_matrix(
+    matrix: &ax_tensor::SymbolicMatrix,
+    _env: &Env,
+    _interner: &ax_ir::Interner,
+) -> ax_tensor::SymbolicMatrix {
+    ax_tensor::SymbolicMatrix {
+        dim: matrix.dim,
+        data: matrix
+            .data
+            .iter()
+            .map(|row| row.iter().cloned().map(normalize_metric_entry).collect())
+            .collect(),
+    }
 }
 
 // ─── Index-aware substitution ────────────────────────────────────────────────
@@ -9589,6 +10219,145 @@ mod tests {
     }
 
     #[test]
+    fn killing_equations_eval_returns_structured_system() {
+        let (result, _interner) =
+            eval_src("killing_equations(christoffel(metric(diag(-1, 1)), [t, x]), [t, x]);");
+        let Expr::List(outer) = result else {
+            panic!("expected outer list");
+        };
+        assert_eq!(outer.len(), 3);
+        let Expr::List(unknowns) = &outer[0] else {
+            panic!("expected unknown list");
+        };
+        let Expr::List(equations) = &outer[1] else {
+            panic!("expected equation list");
+        };
+        let Expr::List(pairs) = &outer[2] else {
+            panic!("expected pair list");
+        };
+        assert_eq!(unknowns.len(), 2);
+        assert_eq!(equations.len(), 3);
+        assert_eq!(pairs.len(), 3);
+    }
+
+    #[test]
+    fn minkowski_adm_eval_returns_trivial_structured_output() {
+        let (result, _interner) =
+            eval_src("adm_decompose(metric(diag(-1, 1, 1, 1)), [t, x, y, z], 0);");
+        let Expr::List(items) = result else {
+            panic!("expected outer list");
+        };
+        assert_eq!(items.len(), 8);
+        assert_eq!(items[0], Expr::one());
+        let Expr::List(shift_covector) = &items[1] else {
+            panic!("expected shift covector");
+        };
+        let Expr::List(shift_vector) = &items[2] else {
+            panic!("expected shift vector");
+        };
+        let Expr::Matrix(extrinsic_curvature) = &items[5] else {
+            panic!("expected extrinsic curvature matrix");
+        };
+        let Expr::List(momentum_constraints) = &items[7] else {
+            panic!("expected momentum constraints");
+        };
+        assert_eq!(shift_covector.len(), 3);
+        assert_eq!(shift_vector.len(), 3);
+        assert!(shift_covector.iter().all(|entry| *entry == Expr::zero()));
+        assert!(shift_vector.iter().all(|entry| *entry == Expr::zero()));
+        assert!(extrinsic_curvature
+            .iter()
+            .flatten()
+            .all(|entry| *entry == Expr::zero()));
+        assert_eq!(items[6], Expr::zero());
+        assert!(momentum_constraints
+            .iter()
+            .all(|entry| *entry == Expr::zero()));
+    }
+
+    #[test]
+    fn flat_frw_adm_eval_has_zero_shift_and_nonzero_k11() {
+        let (result, _interner) =
+            eval_src("adm_decompose(metric(diag(-1, a(t)^2, a(t)^2, a(t)^2)), [t, x, y, z], 0);");
+        let Expr::List(items) = result else {
+            panic!("expected outer list");
+        };
+        let Expr::List(shift_covector) = &items[1] else {
+            panic!("expected shift covector");
+        };
+        let Expr::List(shift_vector) = &items[2] else {
+            panic!("expected shift vector");
+        };
+        let Expr::Matrix(extrinsic_curvature) = &items[5] else {
+            panic!("expected extrinsic curvature matrix");
+        };
+        assert!(shift_covector.iter().all(|entry| *entry == Expr::zero()));
+        assert!(shift_vector.iter().all(|entry| *entry == Expr::zero()));
+        assert_ne!(extrinsic_curvature[0][0], Expr::zero());
+    }
+
+    #[test]
+    fn conformal_transform_metric_eval_scales_by_constant_omega() {
+        let (result, _interner) = eval_src("conformal_transform_metric(metric(diag(-1, 1)), 3);");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::Int((-9).into()), Expr::zero()],
+                vec![Expr::zero(), Expr::Int(9.into())],
+            ])
+        );
+    }
+
+    #[test]
+    fn conformal_transform_scalar_eval_keeps_minkowski_zero_for_constant_omega() {
+        let (result, _interner) = eval_src(
+            "conformal_transform_scalar(ricci_scalar(ricci(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])), inv(metric(diag(-1, 1, 1, 1)))), metric(diag(-1, 1, 1, 1)), 5, [t, x, y, z]);",
+        );
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn cartan_contorsion_tensor_eval_is_zero_for_zero_torsion() {
+        let (result, _interner) = eval_src(
+            "contorsion_tensor([[[0, 0], [0, 0]], [[0, 0], [0, 0]]], metric(diag(1, 1)));",
+        );
+        let contorsion = expr_to_3d(&result).expect("contorsion rank-3 list");
+        assert!(contorsion
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|entry| *entry == Expr::zero()));
+    }
+
+    #[test]
+    fn cartan_spin_connection_eval_is_zero_for_flat_cartesian_vielbein() {
+        let (result, _interner) =
+            eval_src("spin_connection([[1, 0], [0, 1]], metric(diag(1, 1)), [x, y]);");
+        let omega = expr_to_3d(&result).expect("spin connection rank-3 list");
+        assert!(omega
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|entry| *entry == Expr::zero()));
+    }
+
+    #[test]
+    fn minkowski_petrov_pipeline_returns_o() {
+        let (result, interner) = eval_src(
+            "petrov_classify(weyl_scalars(weyl_from_curvature(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z]), ricci(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])), ricci_scalar(ricci(riemann(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])), inv(metric(diag(-1, 1, 1, 1)))), metric(diag(-1, 1, 1, 1))), null_tetrad(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), metric(diag(-1, 1, 1, 1))));",
+        );
+        assert_eq!(result, Expr::Sym(interner.get_or_intern("O")));
+    }
+
+    #[test]
+    fn schwarzschild_petrov_pipeline_returns_d() {
+        let (result, interner) = eval_src(
+            "petrov_classify(weyl_scalars(weyl_from_curvature(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi]), ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), ricci_scalar(ricci(riemann(christoffel(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), [t, r, theta, phi])), inv(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)))), metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2))), null_tetrad(metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2)), [t, r, theta, phi]), metric(diag(-(1 - 2/r), 1/(1 - 2/r), r^2, r^2 * sin(theta)^2))));",
+        );
+        assert_eq!(result, Expr::Sym(interner.get_or_intern("D")));
+    }
+
+    #[test]
     fn covariant_diff_in_flat_space_reduces_to_partial_derivative() {
         let (result, interner) = eval_src(
             "covariant_diff([f(t, x, y, z), 0, 0, 0], christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), 0, [t, x, y, z]);",
@@ -9896,6 +10665,60 @@ mod tests {
             .expr
             .expect("expected expr");
         assert_eq!(result, expected, "got {:?}", result);
+    }
+
+    #[test]
+    fn contracted_bianchi_reduce_rewrites_ricci_divergence_publicly() {
+        let (result, interner) = eval_src(
+            "riemann_tensor(R); covariant_derivative(nabla); contracted_bianchi_reduce(nabla[a+]*Ric[a-,b-], nabla, Ric, R);",
+        );
+        let env = Env::new();
+        let expected = ax_tensor::canonicalise(
+            &ax_core_ir::lower("(1/2)*nabla[b-]*R;", &interner)
+                .expr
+                .expect("expected expr"),
+            &env.property_store,
+            &interner,
+        );
+        assert_eq!(result, expected, "got {:?}", result);
+    }
+
+    #[test]
+    fn contracted_bianchi_reduce_rewrites_einstein_divergence_publicly() {
+        let (result, _interner) = eval_src(
+            "riemann_tensor(R); covariant_derivative(nabla); contracted_bianchi_reduce(nabla[a+]*G[a-,b-], nabla, Ric, R, G);",
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn contracted_bianchi_reduce_mixed_with_abstract_gr_reduce_goes_to_zero() {
+        let (result, _interner) = eval_src(
+            "riemann_tensor(R); covariant_derivative(nabla); abstract_gr_reduce(contracted_bianchi_reduce(nabla[b-]*R - 2*nabla[a+]*Ric[a-,b-], nabla, Ric, R), true, true, true, true, true);",
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn abstract_gr_reduce_second_bianchi_survives_ten_dimensional_index_family() {
+        let (result, _interner) = eval_src(
+            "indices spacetime [mu, nu, rho, sigma, lambda, alpha, beta, gamma, delta, epsilon] dim=10;
+             riemann_tensor(R);
+             covariant_derivative(nabla);
+             abstract_gr_reduce(nabla[mu-]*R[nu-,rho-,sigma-,lambda-] + nabla[nu-]*R[rho-,mu-,sigma-,lambda-] + nabla[rho-]*R[mu-,nu-,sigma-,lambda-], true, true, true, true, true);",
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
+    }
+
+    #[test]
+    fn abstract_gr_reduce_second_bianchi_survives_eleven_dimensional_index_family() {
+        let (result, _interner) = eval_src(
+            "indices spacetime [mu, nu, rho, sigma, lambda, alpha, beta, gamma, delta, epsilon, kappa] dim=11;
+             riemann_tensor(R);
+             covariant_derivative(nabla);
+             abstract_gr_reduce(nabla[mu-]*R[nu-,rho-,sigma-,lambda-] + nabla[nu-]*R[rho-,mu-,sigma-,lambda-] + nabla[rho-]*R[mu-,nu-,sigma-,lambda-], true, true, true, true, true);",
+        );
+        assert_eq!(result, Expr::zero(), "got {:?}", result);
     }
 
     #[test]

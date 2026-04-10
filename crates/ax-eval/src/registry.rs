@@ -1,4 +1,8 @@
-use crate::{expr_3d_to_list, expr_4d_to_list, expr_to_3d, expr_to_4d, matrix_to_symbolic};
+use crate::{
+    expr_3d_to_list, expr_4d_to_list, expr_to_3d, expr_to_4d, expr_to_null_tetrad,
+    expr_to_weyl_scalars, matrix_to_symbolic, null_tetrad_to_expr, simplify_symbolic_matrix,
+    spin_coefficients_to_expr, weyl_scalars_to_expr,
+};
 use num_traits::{One, ToPrimitive};
 
 pub struct BuiltinEntry {
@@ -1180,6 +1184,13 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "abstract_gr_reduce(nabla[mu-]*R[nu-,rho-,sigma-,lambda-] + nabla[nu-]*R[rho-,mu-,sigma-,lambda-] + nabla[rho-]*R[mu-,nu-,sigma-,lambda-])",
         ),
         b(
+            "contracted_bianchi_reduce",
+            "tensor",
+            "contracted_bianchi_reduce(expr, nabla, Ric, R, G?)",
+            "Abstract contracted-Bianchi reducer for Ricci/scalar and optional Einstein-tensor divergence identities.",
+            "contracted_bianchi_reduce(nabla[a+]*Ric[a-,b-], nabla, Ric, R)",
+        ),
+        b(
             "schouten_reduce",
             "tensor",
             "schouten_reduce(expr)",
@@ -1960,7 +1971,7 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "weyl_from_curvature",
             "gr",
             "weyl_from_curvature(riemann, ricci, scalar, metric)",
-            "Component Weyl tensor from curvature inputs, distinct from the abstract property declaration `weyl_tensor(C)`.",
+            "Dimension-generic component Weyl tensor from curvature inputs: identically zero for n <= 3 and the standard n-dimensional decomposition for n >= 4, distinct from the abstract property declaration `weyl_tensor(C)`.",
             "weyl_from_curvature(R, Ric, Scal, g)",
         ),
         b(
@@ -1974,15 +1985,141 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "cotton_from_curvature",
             "gr",
             "cotton_from_curvature(ricci, scalar, gamma, metric, [coords...])",
-            "Component Cotton tensor from Ricci, scalar curvature, Levi-Civita connection, metric, and coordinates.",
+            "Dimension-generic component Cotton tensor from Ricci, scalar curvature, Levi-Civita connection, metric, and coordinates, defined here for n >= 3.",
             "cotton_from_curvature(Ric, R, Gamma, g, [t, x, y])",
         ),
         b(
             "bach_from_curvature",
             "gr",
             "bach_from_curvature(weyl, ricci, gamma, metric, [coords...])",
-            "Component Bach tensor from Weyl, Ricci, Levi-Civita connection, metric, and coordinates.",
+            "Dimension-generic component Bach tensor from Weyl, Ricci, Levi-Civita connection, metric, and coordinates, defined here for n >= 4.",
             "bach_from_curvature(C, Ric, Gamma, g, [t, r, theta, phi])",
+        ),
+        b(
+            "contorsion_tensor",
+            "gr",
+            "contorsion_tensor(T, g)",
+            "Compute the contorsion tensor from a torsion tensor and metric.",
+            "contorsion_tensor(T, g)",
+        ),
+        b(
+            "connection_with_torsion",
+            "gr",
+            "connection_with_torsion(Gamma, K)",
+            "Compose a torsionful connection from Levi-Civita Christoffel symbols and contorsion.",
+            "connection_with_torsion(Gamma, K)",
+        ),
+        b(
+            "spin_connection",
+            "gr",
+            "spin_connection(e, g, [coords...])",
+            "Compute the torsion-free spin connection from a vielbein and metric.",
+            "spin_connection(e, g, [t, r, theta, phi])",
+        ),
+        b(
+            "first_cartan_structure",
+            "gr",
+            "first_cartan_structure(e, omega, [coords...])",
+            "Compute the first Cartan structure equations T^a = de^a + omega^a_b wedge e^b as differential forms.",
+            "first_cartan_structure(e, omega, [x, y])",
+        ),
+        b(
+            "second_cartan_structure",
+            "gr",
+            "second_cartan_structure(omega, [coords...])",
+            "Compute the second Cartan structure equations R^a_b = d omega^a_b + omega^a_c wedge omega^c_b as differential forms.",
+            "second_cartan_structure(omega, [x, y])",
+        ),
+        b(
+            "conformal_transform_metric",
+            "gr",
+            "conformal_transform_metric(metric, Omega)",
+            "Conformally rescale a metric by Omega^2 as a component-level transformation.",
+            "conformal_transform_metric(metric(diag(-1, 1, 1, 1)), a(t))",
+        ),
+        b(
+            "conformal_transform_inverse_metric",
+            "gr",
+            "conformal_transform_inverse_metric(inverse_metric, Omega)",
+            "Conformally rescale an inverse metric by Omega^-2 as a component-level transformation.",
+            "conformal_transform_inverse_metric(inv(metric(diag(-1, 1, 1, 1))), a(t))",
+        ),
+        b(
+            "conformal_transform_christoffel",
+            "gr",
+            "conformal_transform_christoffel(Gamma, g, Omega, [coords...])",
+            "Transform Christoffel symbols under g_tilde = Omega^2 g using the component conformal-connection formula.",
+            "conformal_transform_christoffel(Gamma, g, Omega, [t, x, y, z])",
+        ),
+        b(
+            "conformal_transform_ricci",
+            "gr",
+            "conformal_transform_ricci(Ric, R, g, Omega, [coords...])",
+            "Transform the Ricci tensor under g_tilde = Omega^2 g as a component-level curvature formula.",
+            "conformal_transform_ricci(Ric, R, g, Omega, [t, x, y, z])",
+        ),
+        b(
+            "conformal_transform_scalar",
+            "gr",
+            "conformal_transform_scalar(R, g, Omega, [coords...])",
+            "Transform the scalar curvature under g_tilde = Omega^2 g as a component-level curvature formula.",
+            "conformal_transform_scalar(R, g, Omega, [t, x, y, z])",
+        ),
+        b(
+            "killing_equations",
+            "gr",
+            "killing_equations(Gamma, [coords...], xi?)",
+            "Generate the symmetric Killing system for unknown covector components on a background connection.",
+            "killing_equations(christoffel(metric(diag(-1, 1, 1, 1)), [t, x, y, z]), [t, x, y, z])",
+        ),
+        b(
+            "adm_decompose",
+            "gr",
+            "adm_decompose(metric, [coords...], time_coord)",
+            "Compute the ADM lapse, shift, spatial metric, extrinsic curvature, and constraints for a component metric in any dimension d >= 2 with one chosen time coordinate.",
+            "adm_decompose(metric(diag(-1, 1, 1, 1)), [t, x, y, z], 0)",
+        ),
+        b(
+            "null_tetrad",
+            "gr",
+            "null_tetrad(metric, [coords...])",
+            "Auto-construct a Newman-Penrose null tetrad for a diagonal Lorentzian 4-metric.",
+            "null_tetrad(metric(diag(-f(r), 1/f(r), r^2, r^2*sin(theta)^2)), [t, r, theta, phi])",
+        ),
+        b(
+            "null_tetrad_from_metric",
+            "gr",
+            "null_tetrad_from_metric(metric, [coords...])",
+            "Alias for null_tetrad(metric, [coords...]) using the tensor algorithm's public Rust function name.",
+            "null_tetrad_from_metric(metric(diag(-f(r), 1/f(r), r^2, r^2*sin(theta)^2)), [t, r, theta, phi])",
+        ),
+        b(
+            "verify_null_tetrad",
+            "gr",
+            "verify_null_tetrad(tetrad, metric)",
+            "Verify NP null-tetrad normalization and orthogonality against a metric.",
+            "verify_null_tetrad(T, g)",
+        ),
+        b(
+            "spin_coefficients",
+            "gr",
+            "spin_coefficients(tetrad, Gamma, metric, [coords...])",
+            "Compute the 12 Newman-Penrose spin coefficients from a null tetrad and Levi-Civita connection.",
+            "spin_coefficients(T, Gamma, g, [t, r, theta, phi])",
+        ),
+        b(
+            "weyl_scalars",
+            "gr",
+            "weyl_scalars(C, tetrad, metric)",
+            "Compute the five Newman-Penrose Weyl scalars from a Weyl tensor and null tetrad.",
+            "weyl_scalars(C, T, g)",
+        ),
+        b(
+            "petrov_classify",
+            "gr",
+            "petrov_classify(weyl_scalars(...))",
+            "Classify the Weyl tensor algebraically from its Newman-Penrose scalars.",
+            "petrov_classify(weyl_scalars(C, T, g))",
         ),
         b(
             "kretschner",
@@ -2141,29 +2278,50 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("young_project_tensor", "tensor", "young_project_tensor_with_options(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &YoungProjectTensorOptions) -> Expr", "Apply declared Young-tableau symmetry and optionally simplify modulo monoterm symmetries by distributing, canonicalizing slots/products, renaming dummies, and collecting duplicates.", "The relevant tensor symbol must carry TableauSymmetry, RiemannSymmetry, SatisfiesBianchi, or WeylTensor properties; enabling modulo_monoterm is most useful when ordinary monoterm symmetries are also declared.", "young_project_tensor(T[a-,b-,c-], true, true, true)"),
         a("tensor_reduce", "tensor", "tensor_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &TensorReduceOptions) -> Expr", "Run the finished tensor-reduction pipeline in order: monoterm canonicalisation, Cadabra-style multi-term Young projection on products, dimension-dependent reduction, dummy renaming, and optional meld.", "The expression should carry the relevant tensor properties for each enabled phase; dimension-dependent reduction additionally needs DimensionDependentIdentity plus inferable index-family dimension metadata.", "tensor_reduce(R[a-,b-,c-,d-]*V[e-] + R[a-,c-,d-,b-]*V[e-] + R[a-,d-,b-,c-]*V[e-])"),
         a("abstract_tensor_reduce", "tensor", "abstract_tensor_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner, opts: &TensorReduceOptions) -> Expr", "User-facing abstract tensor reduction pipeline for declared symmetries and inherited covariant-derivative identities such as the second Bianchi identity of a declared Riemann tensor.", "Use riemann_tensor(...) or property R riemann_tensor together with covariant_derivative(...) for abstract GR workflows.", "abstract_tensor_reduce(nabla[mu-]*R[nu-,rho-,sigma-,lambda-] + nabla[nu-]*R[rho-,mu-,sigma-,lambda-] + nabla[rho-]*R[mu-,nu-,sigma-,lambda-])"),
+        a("contracted_bianchi_reduce", "tensor", "contracted_bianchi_reduce(expr: &Expr, derivative_sym: Spur, ricci_sym: Spur, scalar_sym: Spur, einstein_sym: Option<Spur>, properties: &dyn PropertyLookup, interner: &Interner) -> Result<Expr, ContractedBianchiError>", "Reduce abstract contracted-Bianchi identities only. This reducer performs no metric insertion, no component computation, and complements rather than replaces `abstract_gr_reduce`.", "The derivative product must already contain an explicit up/down contracted dummy index; this routine rewrites only abstract local patterns and does not raise or lower indices.", "contracted_bianchi_reduce(nabla[a+]*Ric[a-,b-], nabla, Ric, R)"),
         a("riemann_to_ricci", "tensor", "riemann_to_ricci(expr: &Expr, ricci_sym: Spur, scalar_sym: Option<Spur>, properties: &dyn PropertyLookup, interner: &Interner) -> Result<Expr, AbstractCurvatureReduceError>", "Rewrite internal abstract Riemann contractions inside a single factor into Ricci or scalar-curvature factors. This is abstract/internal contraction only, performs no component computation, and does not contract indices across distinct factors in a product. Typical uses are riemann_to_ricci(R[a-,b-,a+,d-], Ric) and riemann_to_ricci(R[a-,b-,a+,b+], Ric, Scal).", "The target indexed factor must be Riemann-like under the current property lookup; cross-factor contractions remain the responsibility of canonicalise/tensor_reduce.", "riemann_to_ricci(R[a-,b-,a+,d-], Ric)"),
         a("reduce_delta", "tensor", "reduce_delta(expr: &Expr, delta_sym: Spur, dim_sym: Spur, interner: &Interner) -> Expr", "Iteratively contract products and traces of Kronecker deltas back to simpler delta or dimension factors.", "The delta symbol and the symbol representing the dimension must be supplied.", "reduce_delta(Delta[a+,b-] * Delta[b+,c-])"),
         a("eliminate_kronecker", "tensor", "eliminate_kronecker(expr: &Expr, delta_sym: Spur, interner: &Interner) -> Expr", "Use Kronecker deltas to substitute contracted indices and remove delta factors from products.", "The delta symbol must identify a two-index Kronecker delta with one up and one down slot.", "eliminate_kronecker(delta[mu+,nu-] * T[nu+,rho-])"),
         a("eliminate_metric", "tensor", "eliminate_metric(expr: &Expr, metric_sym: Spur, inv_metric_sym: Spur, interner: &Interner) -> Expr", "Use metric or inverse-metric factors to raise or lower contracted indices and remove those metric factors.", "Metric components must use two down indices and inverse-metric components two up indices.", "eliminate_metric(g[mu-,nu-] * V[nu+])"),
         a("eliminate_vielbein", "tensor", "eliminate_vielbein(expr: &Expr, vielbein_sym: Spur, inv_vielbein_sym: Spur, interner: &Interner) -> Expr", "Use vielbein or inverse-vielbein factors to convert contracted indices between two families and remove the conversion factors.", "Vielbein factors must appear as indexed two-slot tensors with one contractible index matching another factor.", "eliminate_vielbein(e[a-,mu-] * V[mu+])"),
         a("rewrite_indices_vielbein", "tensor", "rewrite_indices_vielbein(expr: &Expr, e_sym: Spur, e_inv_sym: Spur, from_family: Spur, to_family: Spur, interner: &Interner) -> Expr", "Insert vielbein or inverse-vielbein factors so indices are rewritten from one index family into another frame family.", "The expression should carry explicit index-family metadata; e is assumed to map `from_family` coordinate indices into `to_family` frame indices via e[a+,mu-], with the inverse map carried by e_inv[mu+,a-].", "rewrite_indices_vielbein(V[mu+], e, einv, spacetime, frame)"),
-        a("christoffel_from_metric", "gr", "christoffel_from_metric(g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Vec<Vec<Vec<Expr>>>", "Compute Christoffel symbols from a symbolic metric by the standard Levi-Civita formula.", "The metric must be square and coords.len() must equal g.dim; the routine uses the symbolic inverse of g.", "christoffel(metric(diag(-1, 1)), [t, r])"),
-        a("riemann_from_christoffel", "gr", "riemann_from_christoffel(gamma: &[Vec<Vec<Expr>>], coords: &[Spur], interner: &Interner, convention: &Convention) -> Vec<Vec<Vec<Vec<Expr>>>>", "Compute the Riemann tensor from Christoffel symbols, respecting the active sign convention.", "The connection array dimensions must match coords.len(); the Convention determines MTW versus Weinberg sign.", "riemann(Gamma, [t, r, theta, phi])"),
-        a("ricci_from_riemann", "gr", "ricci_from_riemann(riemann: &[Vec<Vec<Vec<Expr>>>], n: usize, interner: &Interner, convention: &Convention) -> Vec<Vec<Expr>>", "Contract a Riemann tensor into the Ricci tensor using the configured Ricci-contraction convention.", "n must match the tensor dimensions; the Convention selects first-third or first-fourth contraction.", "ricci(R)"),
-        a("ricci_scalar", "gr", "ricci_scalar(ricci: &[Vec<Expr>], ginv: &SymbolicMatrix, interner: &Interner) -> Expr", "Contract the Ricci tensor with the inverse metric to obtain the scalar curvature.", "The inverse metric dimension must match the Ricci tensor dimensions.", "ricci_scalar(ginv, Ric)"),
-        a("einstein_tensor", "gr", "einstein_tensor(ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Vec<Vec<Expr>>", "Build the Einstein tensor G_ab = R_ab - 1/2 g_ab R.", "The metric dimension must match the Ricci tensor dimensions.", "einstein(g, Ric, R)"),
-        a("weyl_from_curvature", "gr", "weyl_from_curvature(riemann: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Result<Vec<Vec<Vec<Vec<Expr>>>>, WeylError>", "Compute the Weyl tensor as a component-computation algorithm from already-computed Riemann, Ricci, scalar curvature, and metric data. This is distinct from the abstract property declaration `weyl_tensor(C)`.", "The inputs must already be concrete component tensors with consistent dimensions; this algorithm computes components rather than declaring abstract symmetries.", "weyl_from_curvature(R, Ric, Scal, g)"),
-        a("weyl_from_riemann", "gr", "weyl_from_curvature(riemann: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Result<Vec<Vec<Vec<Vec<Expr>>>>, WeylError>", "Alias for the component-computation algorithm `weyl_from_curvature(...)`, distinct from the abstract property declaration `weyl_tensor(C)`.", "Use this alias when you want the same component Weyl computation under a name that emphasizes the Riemann-curvature input.", "weyl_from_riemann(R, Ric, Scal, g)"),
-        a("cotton_from_curvature", "gr", "cotton_from_curvature(ricci: &[Vec<Expr>], scalar: &Expr, gamma: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Vec<Expr>>>, ConformalCurvatureError>", "Compute the Cotton tensor as a component algorithm from Ricci, scalar curvature, Christoffel symbols, metric, and coordinates.", "The Ricci tensor, connection, metric, and coordinate list must have consistent dimensions; this is a component-computation routine rather than an abstract property declaration.", "cotton_from_curvature(Ric, R, Gamma, g, [t, x, y])"),
-        a("bach_from_curvature", "gr", "bach_from_curvature(weyl: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], gamma: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Expr>>, ConformalCurvatureError>", "Compute the Bach tensor as a component algorithm from Weyl, Ricci, Christoffel symbols, metric, and coordinates.", "The Weyl tensor, Ricci tensor, connection, metric, and coordinate list must have consistent dimensions; this is a component-computation routine rather than an abstract property declaration.", "bach_from_curvature(C, Ric, Gamma, g, [t, r, theta, phi])"),
+        a("christoffel_from_metric", "gr", "christoffel_from_metric(g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Vec<Vec<Vec<Expr>>>", "Compute Christoffel symbols from a symbolic metric by the standard Levi-Civita formula in any metric dimension.", "The metric must be square and coords.len() must equal g.dim; the routine uses the symbolic inverse of g and is dimension-generic.", "christoffel(metric(diag(-1, 1)), [t, r])"),
+        a("riemann_from_christoffel", "gr", "riemann_from_christoffel(gamma: &[Vec<Vec<Expr>>], coords: &[Spur], interner: &Interner, convention: &Convention) -> Vec<Vec<Vec<Vec<Expr>>>>", "Compute the Riemann tensor from Christoffel symbols in any dimension, respecting the active sign convention.", "The connection array dimensions must match coords.len(); the Convention determines MTW versus Weinberg sign.", "riemann(Gamma, [t, r, theta, phi])"),
+        a("ricci_from_riemann", "gr", "ricci_from_riemann(riemann: &[Vec<Vec<Vec<Expr>>>], n: usize, interner: &Interner, convention: &Convention) -> Vec<Vec<Expr>>", "Contract a Riemann tensor into the Ricci tensor using the configured Ricci-contraction convention in any dimension.", "n must match the tensor dimensions; the Convention selects first-third or first-fourth contraction.", "ricci(R)"),
+        a("ricci_scalar", "gr", "ricci_scalar(ricci: &[Vec<Expr>], ginv: &SymbolicMatrix, interner: &Interner) -> Expr", "Contract the Ricci tensor with the inverse metric to obtain the scalar curvature in any dimension.", "The inverse metric dimension must match the Ricci tensor dimensions.", "ricci_scalar(ginv, Ric)"),
+        a("einstein_tensor", "gr", "einstein_tensor(ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Vec<Vec<Expr>>", "Build the Einstein tensor G_ab = R_ab - 1/2 g_ab R in any metric dimension.", "The metric dimension must match the Ricci tensor dimensions.", "einstein(g, Ric, R)"),
+        a("weyl_from_curvature", "gr", "weyl_from_curvature(riemann: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Result<Vec<Vec<Vec<Vec<Expr>>>>, WeylError>", "Compute the Weyl tensor as a component-computation algorithm from already-computed Riemann, Ricci, scalar curvature, and metric data. This is distinct from the abstract property declaration `weyl_tensor(C)`.", "The inputs must already be concrete component tensors with consistent dimensions. The algorithm is dimension-generic: it returns the identically zero Weyl tensor for n <= 3 and uses the standard n-dimensional decomposition for n >= 4.", "weyl_from_curvature(R, Ric, Scal, g)"),
+        a("weyl_from_riemann", "gr", "weyl_from_curvature(riemann: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, interner: &Interner) -> Result<Vec<Vec<Vec<Vec<Expr>>>>, WeylError>", "Alias for the component-computation algorithm `weyl_from_curvature(...)`, distinct from the abstract property declaration `weyl_tensor(C)`.", "Use this alias when you want the same dimension-generic component Weyl computation under a name that emphasizes the Riemann-curvature input.", "weyl_from_riemann(R, Ric, Scal, g)"),
+        a("cotton_from_curvature", "gr", "cotton_from_curvature(ricci: &[Vec<Expr>], scalar: &Expr, gamma: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Vec<Expr>>>, ConformalCurvatureError>", "Compute the Cotton tensor as a component algorithm from Ricci, scalar curvature, Christoffel symbols, metric, and coordinates.", "The Ricci tensor, connection, metric, and coordinate list must have consistent dimensions. This component-computation routine is dimension-generic for n >= 3 and rejects n < 3 exactly.", "cotton_from_curvature(Ric, R, Gamma, g, [t, x, y])"),
+        a("bach_from_curvature", "gr", "bach_from_curvature(weyl: &[Vec<Vec<Vec<Expr>>>], ricci: &[Vec<Expr>], gamma: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Expr>>, ConformalCurvatureError>", "Compute the Bach tensor as a component algorithm from Weyl, Ricci, Christoffel symbols, metric, and coordinates.", "The Weyl tensor, Ricci tensor, connection, metric, and coordinate list must have consistent dimensions. This component-computation routine is dimension-generic for n >= 4 and rejects n < 4 exactly.", "bach_from_curvature(C, Ric, Gamma, g, [t, r, theta, phi])"),
+        a("contorsion_tensor", "gr", "contorsion_tensor(torsion: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, interner: &Interner) -> Result<Vec<Vec<Vec<Expr>>>, CartanError>", "Compute the contorsion tensor K^a_bc from a torsion tensor T^a_bc and the metric.", "The torsion tensor must be a consistently shaped rank-3 array and the metric dimension must match it.", "contorsion_tensor(T, g)"),
+        a("connection_with_torsion", "gr", "connection_with_torsion(christoffel: &[Vec<Vec<Expr>>], contorsion: &[Vec<Vec<Expr>>], interner: &Interner) -> Result<Vec<Vec<Vec<Expr>>>, CartanError>", "Compose a torsionful affine connection from Levi-Civita Christoffel symbols and contorsion.", "Both rank-3 tensors must have the same dimension and consistent shape.", "connection_with_torsion(Gamma, K)"),
+        a("spin_connection", "gr", "spin_connection(vielbein: &SymbolicMatrix, g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Vec<Expr>>>, CartanError>", "Compute the torsion-free spin connection omega_mu^a_b from a vielbein and metric in any dimension.", "The vielbein must be square and invertible, the metric dimension must match it, and coords.len() must equal that dimension.", "spin_connection(e, g, [t, r, theta, phi])"),
+        a("first_cartan_structure", "gr", "first_cartan_structure(vielbein: &SymbolicMatrix, spin_connection: &[Vec<Vec<Expr>>], coords: &[Spur], interner: &Interner) -> Result<Vec<DiffForm>, CartanError>", "Compute the first Cartan structure equations T^a = de^a + omega^a_b ∧ e^b as component differential forms in any dimension.", "This routine converts the coframe and spin connection into `ax_forms::DiffForm` values and reuses the forms wedge and exterior-derivative machinery.", "first_cartan_structure(e, omega, [x, y])"),
+        a("second_cartan_structure", "gr", "second_cartan_structure(spin_connection: &[Vec<Vec<Expr>>], coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<DiffForm>>, CartanError>", "Compute the second Cartan structure equations R^a_b = d omega^a_b + omega^a_c ∧ omega^c_b as component differential forms in any dimension.", "This routine reuses `ax_forms::DiffForm`, `wedge`, and `exterior_derivative` rather than duplicating form algebra in the tensor crate.", "second_cartan_structure(omega, [x, y])"),
+        a("conformal_transform_metric", "gr", "conformal_transform_metric(g: &SymbolicMatrix, omega: &Expr, interner: &Interner) -> SymbolicMatrix", "Conformally rescale a metric by Omega^2 as a component-level transformation in any metric dimension.", "This routine acts directly on metric components and does not compute abstract tensor properties.", "conformal_transform_metric(metric(diag(-1,1,1,1)), a(t))"),
+        a("conformal_transform_inverse_metric", "gr", "conformal_transform_inverse_metric(g_inv: &SymbolicMatrix, omega: &Expr, interner: &Interner) -> SymbolicMatrix", "Conformally rescale an inverse metric by Omega^-2 as a component-level transformation in any metric dimension.", "This routine acts directly on inverse-metric components and does not compute abstract tensor properties.", "conformal_transform_inverse_metric(inv(metric(diag(-1,1,1,1))), a(t))"),
+        a("conformal_transform_christoffel", "gr", "conformal_transform_christoffel(gamma: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, omega: &Expr, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Vec<Expr>>>, ConformalError>", "Transform Christoffel symbols under the component conformal rescaling g_tilde = Omega^2 g.", "The metric, Christoffel symbols, and coordinate list must have consistent dimensions; the formula is dimension-generic and uses the original metric to raise the conformal-gradient index.", "conformal_transform_christoffel(Gamma, g, Omega, [t, x, y, z])"),
+        a("conformal_transform_ricci", "gr", "conformal_transform_ricci(ricci: &[Vec<Expr>], scalar: &Expr, g: &SymbolicMatrix, omega: &Expr, coords: &[Spur], interner: &Interner) -> Result<Vec<Vec<Expr>>, ConformalError>", "Transform the Ricci tensor under the component conformal rescaling g_tilde = Omega^2 g.", "The metric, Ricci tensor, and coordinate list must have consistent dimensions; the implementation is dimension-generic and builds the needed covariant derivatives from the original Levi-Civita connection.", "conformal_transform_ricci(Ric, R, g, Omega, [t, x, y, z])"),
+        a("conformal_transform_scalar", "gr", "conformal_transform_scalar(scalar: &Expr, g: &SymbolicMatrix, omega: &Expr, coords: &[Spur], interner: &Interner) -> Result<Expr, ConformalError>", "Transform the scalar curvature under the component conformal rescaling g_tilde = Omega^2 g.", "The metric and coordinate list must have consistent dimensions; the implementation is dimension-generic and uses the original metric to build U_a, U^a, and ∇_a U^a.", "conformal_transform_scalar(R, g, Omega, [t, x, y, z])"),
+        a("killing_equations", "gr", "killing_equations(gamma: &[Vec<Vec<Expr>>], coords: &[Spur], field_prefix: &str, interner: &Interner) -> Result<KillingSystem, KillingError>", "Generate the symmetric Killing system ∇_a ξ_b + ∇_b ξ_a = 0 for unknown covector components.", "The connection dimensions must match the coordinate list, and the routine returns the unknown covector components, the independent symmetric equations, and their slot-pair labels.", "killing_equations(Gamma, [t, r, theta, phi], k)"),
+        a("adm_decompose", "gr", "adm_decompose(g: &SymbolicMatrix, coords: &[Spur], time_coord: usize, interner: &Interner) -> Result<ADMDecomposition, ADMError>", "Compute the ADM decomposition of a component metric into lapse, shift, spatial metric, spatial inverse metric, extrinsic curvature, and the Hamiltonian and momentum constraints.", "The metric must be square with dimension at least two, coords.len() must match the metric dimension, and time_coord must choose one valid coordinate slot. This implementation is dimension-generic for any d >= 2.", "adm_decompose(metric(diag(-1, 1, 1, 1)), [t, x, y, z], 0)"),
+        a("spatial_christoffel", "gr", "spatial_christoffel(gamma_ij: &SymbolicMatrix, spatial_coords: &[Spur], interner: &Interner) -> Vec<Vec<Vec<Expr>>>", "Compute Christoffel symbols for the spatial metric induced by an ADM split in any spatial dimension.", "The spatial metric must be square and its dimension must match the spatial coordinate list length.", "adm_decompose(g, [t, r, theta, phi], 0)"),
+        a("spatial_ricci_tensor", "gr", "spatial_ricci_tensor(gamma_ij: &SymbolicMatrix, spatial_coords: &[Spur], interner: &Interner) -> Vec<Vec<Expr>>", "Compute the Ricci tensor of the spatial metric appearing in an ADM decomposition in any spatial dimension.", "The spatial metric must be square and compatible with the supplied spatial coordinates.", "adm_decompose(g, [t, r, theta, phi], 0)"),
+        a("spatial_ricci_scalar", "gr", "spatial_ricci_scalar(gamma_ij: &SymbolicMatrix, spatial_coords: &[Spur], interner: &Interner) -> Expr", "Compute the Ricci scalar of the spatial metric appearing in an ADM decomposition in any spatial dimension.", "The spatial metric must be square and compatible with the supplied spatial coordinates.", "adm_decompose(g, [t, r, theta, phi], 0)"),
+        a("verify_null_tetrad", "gr", "verify_null_tetrad(tetrad: &NullTetrad, g: &SymbolicMatrix, interner: &Interner) -> Result<(), NewmanPenroseError>", "Verify that a Newman-Penrose tetrad is null, normalized, and mutually orthogonal with respect to the supplied metric.", "The tetrad vectors must be contravariant 4-vectors compatible with the metric dimension; Newman-Penrose support is intentionally restricted to 4D.", "verify_null_tetrad(T, g)"),
+        a("null_tetrad_from_metric", "gr", "null_tetrad_from_metric(g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<NullTetrad, NewmanPenroseError>", "Auto-construct a Newman-Penrose null tetrad as a component algorithm from a diagonal Lorentzian 4-metric.", "Auto-construction is limited to diagonal Lorentzian 4-metrics; this is independent of the abstract property declaration system.", "null_tetrad(metric(diag(-f(r), 1/f(r), r^2, r^2*sin(theta)^2)), [t, r, theta, phi])"),
+        a("spin_coefficients", "gr", "spin_coefficients(tetrad: &NullTetrad, gamma: &[Vec<Vec<Expr>>], g: &SymbolicMatrix, coords: &[Spur], interner: &Interner) -> Result<SpinCoefficients, NewmanPenroseError>", "Compute the 12 Newman-Penrose spin coefficients from a null tetrad, Levi-Civita connection, metric, and coordinates.", "The tetrad, connection, metric, and coordinate list must all be 4-dimensional and mutually compatible.", "spin_coefficients(T, Gamma, g, [t, r, theta, phi])"),
+        a("weyl_scalars", "gr", "weyl_scalars(weyl: &[Vec<Vec<Vec<Expr>>>], tetrad: &NullTetrad, g: &SymbolicMatrix, interner: &Interner) -> Result<WeylScalars, NewmanPenroseError>", "Compute the Newman-Penrose Weyl scalars by contracting a component Weyl tensor with a null tetrad.", "The Weyl tensor, tetrad, and metric must all be 4-dimensional; this is a component algorithm distinct from abstract Weyl-property declarations.", "weyl_scalars(C, T, g)"),
+        a("petrov_classify", "gr", "petrov_classify(scalars: &WeylScalars, interner: &Interner) -> Result<PetrovType, NewmanPenroseError>", "Classify the Weyl tensor algebraically from the exact vanishing pattern and invariants of the Newman-Penrose Weyl scalars.", "Classification requires exact simplification enough to decide the necessary zero and nonzero conditions.", "petrov_classify(weyl_scalars(C, T, g))"),
         a("kretschner_scalar", "gr", "kretschner_scalar(riemann: &[Vec<Vec<Vec<Expr>>>], g: &SymbolicMatrix, interner: &Interner) -> Expr", "Compute the full Kretschmann scalar by contracting two Riemann tensors with four inverse metrics.", "The metric must be invertible; Axioma keeps a Schwarzschild closed-form shortcut as an optimization, and also provides a separate kretschmann_scalar_diagonal_approx helper when a diagonal-only approximation is desired.", "kretschner(g, R)"),
         a("kretschmann_scalar_diagonal_approx", "gr", "kretschmann_scalar_diagonal_approx(riemann: &[Vec<Vec<Vec<Expr>>>], g: &SymbolicMatrix, interner: &Interner) -> Expr", "Compute the old diagonal-only approximation to the Kretschmann scalar by contracting only matching diagonal inverse-metric entries against squared Riemann components.", "This is only exact for diagonal metrics in bases where the contraction really reduces that way; for the physical invariant use kretschner_scalar instead.", "kretschmann_scalar_diagonal_approx(R, g)"),
         a("inverse_vielbein", "gr", "inverse_vielbein(e: &SymbolicMatrix, interner: &Interner) -> SymbolicMatrix", "Compute the inverse vielbein matrix symbolically.", "The vielbein matrix must be square and invertible.", "inv_vielbein(e)"),
         a("metric_from_vielbein", "gr", "metric_from_vielbein(e: &SymbolicMatrix, eta: &SymbolicMatrix, interner: &Interner) -> SymbolicMatrix", "Build g_{mu nu} = eta_{ab} e^a_mu e^b_nu from a vielbein and frame metric.", "Both matrices must be square with the same dimension.", "metric_from_vielbein(e, eta)"),
         a("vielbein_from_metric_diagonal", "gr", "vielbein_from_metric_diagonal(g: &SymbolicMatrix, signature: Signature, interner: &Interner) -> SymbolicMatrix", "Construct a diagonal vielbein whose frame metric is fixed by the chosen signature convention.", "This helper assumes the input metric is already diagonal in the chosen coordinates.", "vielbein_from_metric_diagonal(g, mostly_plus)"),
-        a("covariant_derivative_vector", "gr", "covariant_derivative_vector(v: &[Expr], gamma: &[Vec<Vec<Expr>>], coord_index: usize, coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Compute ∇_coord_index v for a contravariant vector field.", "The vector length, connection dimensions, and coordinate list length must agree.", "covariant_diff(V, g, [t, r])"),
-        a("covariant_derivative_covector", "gr", "covariant_derivative_covector(w: &[Expr], gamma: &[Vec<Vec<Expr>>], coord_index: usize, coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Compute ∇_coord_index w for a covector field.", "The covector length, connection dimensions, and coordinate list length must agree.", "covariant_diff(W, g, [t, r])"),
-        a("geodesic_equations", "gr", "geodesic_equations(gamma: &[Vec<Vec<Expr>>], coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Construct the geodesic equations ẍ^i = -Γ^i_jk ẋ^j ẋ^k in symbolic form.", "Connection dimensions must match the coordinate list.", "geodesic(g, [t, r, theta, phi], lambda)"),
+        a("covariant_derivative_vector", "gr", "covariant_derivative_vector(v: &[Expr], gamma: &[Vec<Vec<Expr>>], coord_index: usize, coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Compute ∇_coord_index v for a contravariant vector field in any dimension.", "The vector length, connection dimensions, and coordinate list length must agree.", "covariant_diff(V, g, [t, r])"),
+        a("covariant_derivative_covector", "gr", "covariant_derivative_covector(w: &[Expr], gamma: &[Vec<Vec<Expr>>], coord_index: usize, coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Compute ∇_coord_index w for a covector field in any dimension.", "The covector length, connection dimensions, and coordinate list length must agree.", "covariant_diff(W, g, [t, r])"),
+        a("geodesic_equations", "gr", "geodesic_equations(gamma: &[Vec<Vec<Expr>>], coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Construct the geodesic equations ẍ^i = -Γ^i_jk ẋ^j ẋ^k in symbolic form in any dimension.", "Connection dimensions must match the coordinate list.", "geodesic(g, [t, r, theta, phi], lambda)"),
         a("lie_derivative_scalar", "gr", "lie_derivative_scalar(f: &Expr, v: &[Expr], coords: &[Spur], interner: &Interner) -> Expr", "Compute the Lie derivative of a scalar along a vector field.", "The vector field length must match the coordinate list length.", "lie_derivative(phi, V, [x, y, z])"),
         a("lie_derivative_vector", "gr", "lie_derivative_vector(w: &[Expr], v: &[Expr], coords: &[Spur], interner: &Interner) -> Vec<Expr>", "Compute the Lie derivative of a vector field along another vector field.", "Both vectors must have the same length as coords.", "lie_derivative(W, V, [x, y, z])"),
         a("unwrap_derivatives", "tensor", "unwrap_derivatives(expr: &Expr, derivative_syms: &HashSet<Spur>, depends: &HashMap<Spur, Vec<Spur>>, interner: &Interner) -> Expr", "Pull factors that do not depend on the differentiation variables outside derivative operators, and kill derivatives of constants.", "Derivative symbols must be listed explicitly, and dependence information should be populated for symbols that are not constant.", "unwrap(diff(a * phi, x))"),
@@ -2219,6 +2377,8 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("solve_ode", "ode", "solve_ode(equation: &Expr, y_sym: Spur, x_sym: Spur, interner: &Interner) -> Expr", "Solve simple separable or first-order linear ODEs symbolically.", "The ODE right-hand side must match one of the supported separable or linear forms; otherwise an unevaluated solve_ode call is returned.", "dsolve(y - x, y, x)"),
         a("rk4", "ode", "rk4(f: &Expr, x_sym: Spur, y_sym: Spur, x0: f64, y0: f64, x_end: f64, n_steps: usize, interner: &Interner) -> Vec<(f64, f64)>", "Numerically integrate a scalar first-order ODE y' = f(x, y) with fourth-order Runge-Kutta.", "f must evaluate numerically for the supplied bindings, and n_steps must be nonzero.", "rk4(y, x, y, 0, 1, 1, 100)"),
         a("rk4_system", "ode", "rk4_system(fs: &[Expr], x_sym: Spur, y_syms: &[Spur], x0: f64, y0s: &[f64], x_end: f64, n_steps: usize, interner: &Interner) -> Vec<Vec<f64>>", "Numerically integrate a coupled first-order ODE system with fourth-order Runge-Kutta.", "The numbers of equations, dependent variables, and initial values must match, and each expression must evaluate numerically.", "rk4_system([y, -x], t, [x, y], 0, [1, 0], 10, 1000)"),
+        a("parallel_transport", "gr", "parallel_transport(initial_vector: &[f64], curve: &[Vec<f64>], gamma_numeric: &dyn Fn(&[f64]) -> Vec<Vec<Vec<f64>>>) -> Result<Vec<Vec<f64>>, NumericalGRError>", "Numerically parallel-transport a contravariant vector along a discrete curve using the GR transport equation and the shared RK4 system integrator.", "This is currently a library-level/native-callback API rather than ordinary source syntax; the Christoffel callback must be provided from Rust, and the implementation is dimension-generic over the callback output shape.", "parallel_transport(initial_vector, curve, gamma_numeric)"),
+        a("integrate_geodesic", "gr", "integrate_geodesic(gamma_numeric: &dyn Fn(&[f64]) -> Vec<Vec<Vec<f64>>>, initial_position: &[f64], initial_velocity: &[f64], tau_range: (f64, f64), n_steps: usize) -> Result<Vec<(f64, Vec<f64>, Vec<f64>)>, NumericalGRError>", "Numerically integrate the first-order geodesic system (x^mu, v^mu) using the shared RK4 system integrator.", "This is currently a library-level/native-callback API rather than ordinary source syntax; the Christoffel callback must be provided from Rust, and the implementation is dimension-generic over the callback output shape.", "integrate_geodesic(gamma_numeric, x0, v0, [0.0, 1.0], 1000)"),
         a("first_order_form", "ode", "first_order_form(ode: &Expr, dependent_var: Spur, independent_var: Spur, interner: &Interner) -> Vec<(Expr, Expr)>", "Convert a higher-order ODE into a first-order system by introducing auxiliary derivative variables.", "The ODE should contain nested diff calls with respect to independent_var, or else it is treated as the right-hand side of a second-order equation.", "first_order_form(diff(diff(x,t),t) + x, x, t)"),
         a("evaluate_components_v2", "tensor", "evaluate_components_v2(expr: &Expr, rules: &[ComponentRule], env: &dyn ComponentEvalEnv, interner: &Interner) -> Expr", "Evaluate tensor component algebra across sums, products, traces, derivatives, deltas, epsilon tensors, metrics, inverse metrics, and symmetry-aware sparse rules.", "Component rules, coordinates, and tensor properties must be available through env; dummy contractions are assigned before lookup, missing sparse components evaluate to zero, and generated inverse-metric components are collected with downstream terms.", "evaluate(g[mu-,nu-] * ginv[nu+,mu+], rules)"),
         a("rename_dummy_indices", "tensor", "rename_dummy_indices(expr: &Expr, prefix: &str, interner: &Interner) -> Expr", "Rename repeated contracted indices to fresh deterministic names with the chosen prefix.", "Useful when preparing expressions for display or comparison.", "rename_dummy_indices(T[a-,a+], d)"),
@@ -4379,6 +4539,28 @@ fn handle_riemann_to_ricci_tensor(
     expr_or_struct_response_with_change(&expr, result, "riemann_to_ricci", state)
 }
 
+fn handle_contracted_bianchi_reduce_tensor(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    let derivative_sym = symbol_arg(args, 1, "derivative_sym", state)?;
+    let ricci_sym = symbol_arg(args, 2, "ricci_sym", state)?;
+    let scalar_sym = symbol_arg(args, 3, "scalar_sym", state)?;
+    let mut call_args = vec![
+        expr.clone(),
+        ax_ir::Expr::Sym(derivative_sym),
+        ax_ir::Expr::Sym(ricci_sym),
+        ax_ir::Expr::Sym(scalar_sym),
+    ];
+    if !matches!(args.get(4), None | Some(serde_json::Value::Null)) {
+        let einstein_sym = symbol_arg(args, 4, "einstein_sym", state)?;
+        call_args.push(ax_ir::Expr::Sym(einstein_sym));
+    }
+    let result = call_named("contracted_bianchi_reduce", call_args, state);
+    expr_or_struct_response_with_change(&expr, result, "contracted_bianchi_reduce", state)
+}
+
 fn handle_reduce_delta(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -4980,6 +5162,527 @@ fn handle_bach_from_curvature_expr(
         Ok(bach) => expr_response(ax_ir::Expr::Matrix(bach), state),
         Err(err) => Err(err.to_string()),
     }
+}
+
+fn handle_contorsion_tensor_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let torsion_expr = expr_from_id(args, 0, "torsion", state)?;
+    let torsion = expr_to_3d(&torsion_expr)
+        .ok_or_else(|| "argument 'torsion' must be a rank-3 list tensor".to_string())?;
+    let metric_expr = expr_from_id(args, 1, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    match ax_tensor::contorsion_tensor(&torsion, &metric, state.interner()) {
+        Ok(contorsion) => expr_response(expr_3d_to_list(contorsion), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_connection_with_torsion_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let gamma_expr = expr_from_id(args, 0, "christoffel", state)?;
+    let gamma = expr_to_3d(&gamma_expr)
+        .ok_or_else(|| "argument 'christoffel' must be a rank-3 list tensor".to_string())?;
+    let contorsion_expr = expr_from_id(args, 1, "contorsion", state)?;
+    let contorsion = expr_to_3d(&contorsion_expr)
+        .ok_or_else(|| "argument 'contorsion' must be a rank-3 list tensor".to_string())?;
+    match ax_tensor::connection_with_torsion(&gamma, &contorsion, state.interner()) {
+        Ok(connection) => expr_response(expr_3d_to_list(connection), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_spin_connection_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let vielbein_expr = expr_from_id(args, 0, "vielbein", state)?;
+    let vielbein = matrix_to_symbolic(&vielbein_expr)
+        .ok_or_else(|| "argument 'vielbein' must be a square matrix".to_string())?;
+    let metric_expr = expr_from_id(args, 1, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let coords = symbol_list_arg(args, 2, "coords", state)?;
+    match ax_tensor::spin_connection(&vielbein, &metric, &coords, state.interner()) {
+        Ok(omega) => expr_response(expr_3d_to_list(omega), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_first_cartan_structure_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let vielbein_expr = expr_from_id(args, 0, "vielbein", state)?;
+    let vielbein = matrix_to_symbolic(&vielbein_expr)
+        .ok_or_else(|| "argument 'vielbein' must be a square matrix".to_string())?;
+    let omega_expr = expr_from_id(args, 1, "spin_connection", state)?;
+    let omega = expr_to_3d(&omega_expr)
+        .ok_or_else(|| "argument 'spin_connection' must be a rank-3 list tensor".to_string())?;
+    let coords = symbol_list_arg(args, 2, "coords", state)?;
+    match ax_tensor::first_cartan_structure(&vielbein, &omega, &coords, state.interner()) {
+        Ok(forms) => expr_response(
+            ax_ir::Expr::List(forms.iter().map(ax_forms::form_to_expr).collect()),
+            state,
+        ),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_second_cartan_structure_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let omega_expr = expr_from_id(args, 0, "spin_connection", state)?;
+    let omega = expr_to_3d(&omega_expr)
+        .ok_or_else(|| "argument 'spin_connection' must be a rank-3 list tensor".to_string())?;
+    let coords = symbol_list_arg(args, 1, "coords", state)?;
+    match ax_tensor::second_cartan_structure(&omega, &coords, state.interner()) {
+        Ok(forms) => expr_response(
+            ax_ir::Expr::Matrix(
+                forms
+                    .iter()
+                    .map(|row| row.iter().map(ax_forms::form_to_expr).collect())
+                    .collect(),
+            ),
+            state,
+        ),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_conformal_transform_metric_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let metric_expr = expr_from_id(args, 0, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let omega = expr_from_id(args, 1, "omega", state)?;
+    expr_response(
+        ax_ir::Expr::Matrix(
+            ax_tensor::conformal_transform_metric(&metric, &omega, state.interner()).data,
+        ),
+        state,
+    )
+}
+
+fn handle_conformal_transform_inverse_metric_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let metric_expr = expr_from_id(args, 0, "inverse_metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'inverse_metric' must be a square matrix".to_string())?;
+    let omega = expr_from_id(args, 1, "omega", state)?;
+    expr_response(
+        ax_ir::Expr::Matrix(
+            ax_tensor::conformal_transform_inverse_metric(&metric, &omega, state.interner()).data,
+        ),
+        state,
+    )
+}
+
+fn handle_conformal_transform_christoffel_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let gamma_expr = expr_from_id(args, 0, "gamma", state)?;
+    let gamma = expr_to_3d(&gamma_expr)
+        .ok_or_else(|| "argument 'gamma' must be a rank-3 list tensor".to_string())?;
+    let metric_expr = expr_from_id(args, 1, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let omega = expr_from_id(args, 2, "omega", state)?;
+    let coords_expr = expr_from_id(args, 3, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+
+    match ax_tensor::conformal_transform_christoffel(
+        &gamma,
+        &metric,
+        &omega,
+        &coords,
+        state.interner(),
+    ) {
+        Ok(out) => expr_response(expr_3d_to_list(out), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_conformal_transform_ricci_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let ricci_expr = expr_from_id(args, 0, "ricci", state)?;
+    let ricci = match &ricci_expr {
+        ax_ir::Expr::Matrix(rows) => rows.clone(),
+        _ => return Err("argument 'ricci' must be a matrix expression".to_string()),
+    };
+    let scalar = expr_from_id(args, 1, "scalar", state)?;
+    let metric_expr = expr_from_id(args, 2, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let omega = expr_from_id(args, 3, "omega", state)?;
+    let coords_expr = expr_from_id(args, 4, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+
+    match ax_tensor::conformal_transform_ricci(
+        &ricci,
+        &scalar,
+        &metric,
+        &omega,
+        &coords,
+        state.interner(),
+    ) {
+        Ok(out) => expr_response(ax_ir::Expr::Matrix(out), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_conformal_transform_scalar_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let scalar = expr_from_id(args, 0, "scalar", state)?;
+    let metric_expr = expr_from_id(args, 1, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let omega = expr_from_id(args, 2, "omega", state)?;
+    let coords_expr = expr_from_id(args, 3, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+
+    match ax_tensor::conformal_transform_scalar(&scalar, &metric, &omega, &coords, state.interner())
+    {
+        Ok(out) => expr_response(out, state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_killing_equations_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let gamma_expr = expr_from_id(args, 0, "gamma", state)?;
+    let gamma = expr_to_3d(&gamma_expr)
+        .ok_or_else(|| "argument 'gamma' must be a rank-3 list tensor".to_string())?;
+    let coords_expr = expr_from_id(args, 1, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+    let field_prefix = match args.get(2) {
+        Some(serde_json::Value::Null) | None => "xi",
+        Some(_) => string_arg(args, 2, "field_prefix")?,
+    };
+    match ax_tensor::killing_equations(&gamma, &coords, field_prefix, state.interner()) {
+        Ok(system) => expr_response(
+            ax_ir::Expr::List(vec![
+                ax_ir::Expr::List(system.covector_components),
+                ax_ir::Expr::List(system.equations),
+                ax_ir::Expr::List(
+                    system
+                        .slot_pairs
+                        .into_iter()
+                        .map(|(a, b)| {
+                            ax_ir::Expr::List(vec![
+                                ax_ir::Expr::Int(a.into()),
+                                ax_ir::Expr::Int(b.into()),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ]),
+            state,
+        ),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_adm_decompose_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let metric_expr = expr_from_id(args, 0, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let coords_expr = expr_from_id(args, 1, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+    let time_coord_i64 = int_arg(args, 2, "time_coord")?;
+    let Some(time_coord) = time_coord_i64.to_usize() else {
+        return Err("argument 'time_coord' must be a non-negative integer".to_string());
+    };
+
+    match ax_tensor::adm_decompose(&metric, &coords, time_coord, state.interner()) {
+        Ok(adm) => expr_response(
+            ax_ir::Expr::List(vec![
+                adm.lapse,
+                ax_ir::Expr::List(adm.shift_covector),
+                ax_ir::Expr::List(adm.shift_vector),
+                ax_ir::Expr::Matrix(adm.spatial_metric.data),
+                ax_ir::Expr::Matrix(adm.spatial_inverse_metric.data),
+                ax_ir::Expr::Matrix(adm.extrinsic_curvature),
+                adm.hamiltonian_constraint,
+                ax_ir::Expr::List(adm.momentum_constraints),
+            ]),
+            state,
+        ),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_spatial_christoffel_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let metric_expr = expr_from_id(args, 0, "gamma_ij", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'gamma_ij' must be a square matrix".to_string())?;
+    let coords_expr = expr_from_id(args, 1, "spatial_coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'spatial_coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'spatial_coords' must be a list of symbols".to_string()),
+    };
+    expr_response(
+        expr_3d_to_list(ax_tensor::spatial_christoffel(
+            &metric,
+            &coords,
+            state.interner(),
+        )),
+        state,
+    )
+}
+
+fn handle_spatial_ricci_tensor_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let metric_expr = expr_from_id(args, 0, "gamma_ij", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'gamma_ij' must be a square matrix".to_string())?;
+    let coords_expr = expr_from_id(args, 1, "spatial_coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'spatial_coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'spatial_coords' must be a list of symbols".to_string()),
+    };
+    expr_response(
+        ax_ir::Expr::Matrix(ax_tensor::spatial_ricci_tensor(
+            &metric,
+            &coords,
+            state.interner(),
+        )),
+        state,
+    )
+}
+
+fn handle_spatial_ricci_scalar_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let metric_expr = expr_from_id(args, 0, "gamma_ij", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'gamma_ij' must be a square matrix".to_string())?;
+    let coords_expr = expr_from_id(args, 1, "spatial_coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'spatial_coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'spatial_coords' must be a list of symbols".to_string()),
+    };
+    expr_response(
+        ax_tensor::spatial_ricci_scalar(&metric, &coords, state.interner()),
+        state,
+    )
+}
+
+fn handle_null_tetrad_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let metric_expr = expr_from_id(args, 0, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let metric = simplify_symbolic_matrix(&metric, state.env(), state.interner());
+    let coords_expr = expr_from_id(args, 1, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+
+    match ax_tensor::null_tetrad_from_metric(&metric, &coords, state.interner()) {
+        Ok(tetrad) => expr_response(null_tetrad_to_expr(tetrad), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_verify_null_tetrad_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let tetrad_expr = expr_from_id(args, 0, "tetrad", state)?;
+    let tetrad = expr_to_null_tetrad(&tetrad_expr)
+        .ok_or_else(|| "argument 'tetrad' must be a 4-list of vector components".to_string())?;
+    let metric_expr = expr_from_id(args, 1, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+
+    ax_tensor::verify_null_tetrad(&tetrad, &metric, state.interner())
+        .map_err(|err| err.to_string())?;
+    expr_response(
+        ax_ir::Expr::Sym(state.interner().get_or_intern("ok")),
+        state,
+    )
+}
+
+fn handle_spin_coefficients_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let tetrad_expr = expr_from_id(args, 0, "tetrad", state)?;
+    let tetrad = expr_to_null_tetrad(&tetrad_expr)
+        .ok_or_else(|| "argument 'tetrad' must be a 4-list of vector components".to_string())?;
+    let gamma_expr = expr_from_id(args, 1, "gamma", state)?;
+    let gamma = expr_to_3d(&gamma_expr)
+        .ok_or_else(|| "argument 'gamma' must be a rank-3 list tensor".to_string())?;
+    let metric_expr = expr_from_id(args, 2, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+    let coords_expr = expr_from_id(args, 3, "coords", state)?;
+    let coords = match coords_expr {
+        ax_ir::Expr::List(items) => items
+            .iter()
+            .map(|expr| match expr {
+                ax_ir::Expr::Sym(sym) => Some(*sym),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "argument 'coords' must be a list of symbols".to_string())?,
+        _ => return Err("argument 'coords' must be a list of symbols".to_string()),
+    };
+
+    match ax_tensor::spin_coefficients(&tetrad, &gamma, &metric, &coords, state.interner()) {
+        Ok(coeffs) => expr_response(spin_coefficients_to_expr(coeffs), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_weyl_scalars_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let weyl_expr = expr_from_id(args, 0, "weyl", state)?;
+    let weyl = expr_to_4d(&weyl_expr)
+        .ok_or_else(|| "argument 'weyl' must be a rank-4 list tensor".to_string())?;
+    let tetrad_expr = expr_from_id(args, 1, "tetrad", state)?;
+    let tetrad = expr_to_null_tetrad(&tetrad_expr)
+        .ok_or_else(|| "argument 'tetrad' must be a 4-list of vector components".to_string())?;
+    let metric_expr = expr_from_id(args, 2, "metric", state)?;
+    let metric = matrix_to_symbolic(&metric_expr)
+        .ok_or_else(|| "argument 'metric' must be a square matrix".to_string())?;
+
+    match ax_tensor::weyl_scalars(&weyl, &tetrad, &metric, state.interner()) {
+        Ok(scalars) => expr_response(weyl_scalars_to_expr(scalars), state),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn handle_petrov_classify_expr(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let scalars_expr = expr_from_id(args, 0, "scalars", state)?;
+    let scalars = expr_to_weyl_scalars(&scalars_expr)
+        .ok_or_else(|| "argument 'scalars' must be a 5-list of Weyl scalars".to_string())?;
+    let kind =
+        ax_tensor::petrov_classify(&scalars, state.interner()).map_err(|err| err.to_string())?;
+    let label = match kind {
+        ax_tensor::PetrovType::I => "I",
+        ax_tensor::PetrovType::II => "II",
+        ax_tensor::PetrovType::D => "D",
+        ax_tensor::PetrovType::III => "III",
+        ax_tensor::PetrovType::N => "N",
+        ax_tensor::PetrovType::O => "O",
+    };
+    expr_response(
+        ax_ir::Expr::Sym(state.interner().get_or_intern(label)),
+        state,
+    )
 }
 
 fn handle_weyl_curvature_gr(
@@ -5820,6 +6523,20 @@ fn handle_first_order_form_ode(
             .collect(),
     );
     expr_or_struct_response_with_change(&ode, expr, "first_order_form", state)
+}
+
+fn handle_parallel_transport_native_only(
+    _args: &[serde_json::Value],
+    _state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    Err("parallel_transport is currently a library-level API that requires a native numeric Christoffel callback and is not exposed through ordinary source syntax".to_string())
+}
+
+fn handle_integrate_geodesic_native_only(
+    _args: &[serde_json::Value],
+    _state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    Err("integrate_geodesic is currently a library-level API that requires a native numeric Christoffel callback and is not exposed through ordinary source syntax".to_string())
 }
 
 fn handle_classify_pde_ode(
@@ -7578,6 +8295,13 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("meld", ParamType::Bool, false, "Whether to run final basis reduction with meld. Defaults to true."),
             pdef("modulo_monoterm", ParamType::Bool, false, "Whether the multi-term stage should simplify modulo monoterm symmetries. Defaults to true."),
         ]), handle_abstract_tensor_reduce),
+        centry("contracted_bianchi_reduce", "Reduce abstract contracted-Bianchi Ricci/scalar and optional Einstein-divergence identities without inserting metrics.", ps(vec![
+            pdef("expr", ParamType::ExprId, true, "Stored expression id."),
+            pdef("derivative_sym", ParamType::Symbol, true, "Abstract covariant-derivative symbol."),
+            pdef("ricci_sym", ParamType::Symbol, true, "Ricci tensor symbol."),
+            pdef("scalar_sym", ParamType::Symbol, true, "Scalar-curvature symbol."),
+            pdef("einstein_sym", ParamType::Optional(Box::new(ParamType::Symbol)), false, "Optional Einstein tensor symbol."),
+        ]), handle_contracted_bianchi_reduce_tensor),
         centry("riemann_to_ricci", "Rewrite internal abstract Riemann contractions into Ricci or scalar-curvature factors.", ps(vec![
             pdef("expr", ParamType::ExprId, true, "Stored expression id."),
             pdef("ricci_sym", ParamType::Symbol, true, "Ricci tensor symbol."),
@@ -7655,6 +8379,103 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
             pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
         ]), handle_bach_from_curvature_expr),
+        centry("contorsion_tensor", "Compute the contorsion tensor from torsion and metric inputs.", ps(vec![
+            pdef("torsion", ParamType::ExprId, true, "Stored rank-3 torsion tensor list expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+        ]), handle_contorsion_tensor_expr),
+        centry("connection_with_torsion", "Compose a torsionful connection from Christoffel symbols and contorsion.", ps(vec![
+            pdef("christoffel", ParamType::ExprId, true, "Stored rank-3 Christoffel tensor list expression id."),
+            pdef("contorsion", ParamType::ExprId, true, "Stored rank-3 contorsion tensor list expression id."),
+        ]), handle_connection_with_torsion_expr),
+        centry("spin_connection", "Compute the torsion-free spin connection from a vielbein and metric.", ps(vec![
+            pdef("vielbein", ParamType::ExprId, true, "Stored vielbein matrix expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_spin_connection_expr),
+        centry("first_cartan_structure", "Compute the first Cartan structure equations as differential forms.", ps(vec![
+            pdef("vielbein", ParamType::ExprId, true, "Stored vielbein matrix expression id."),
+            pdef("spin_connection", ParamType::ExprId, true, "Stored rank-3 spin-connection tensor list expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_first_cartan_structure_expr),
+        centry("second_cartan_structure", "Compute the second Cartan structure equations as differential forms.", ps(vec![
+            pdef("spin_connection", ParamType::ExprId, true, "Stored rank-3 spin-connection tensor list expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_second_cartan_structure_expr),
+        centry("conformal_transform_metric", "Conformally rescale a metric by Omega^2.", ps(vec![
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("omega", ParamType::ExprId, true, "Stored conformal-factor expression id."),
+        ]), handle_conformal_transform_metric_expr),
+        centry("conformal_transform_inverse_metric", "Conformally rescale an inverse metric by Omega^-2.", ps(vec![
+            pdef("inverse_metric", ParamType::ExprId, true, "Stored inverse-metric matrix expression id."),
+            pdef("omega", ParamType::ExprId, true, "Stored conformal-factor expression id."),
+        ]), handle_conformal_transform_inverse_metric_expr),
+        centry("conformal_transform_christoffel", "Transform Christoffel symbols under g_tilde = Omega^2 g.", ps(vec![
+            pdef("gamma", ParamType::ExprId, true, "Stored rank-3 Christoffel tensor list expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("omega", ParamType::ExprId, true, "Stored conformal-factor expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_conformal_transform_christoffel_expr),
+        centry("conformal_transform_ricci", "Transform the Ricci tensor under g_tilde = Omega^2 g.", ps(vec![
+            pdef("ricci", ParamType::ExprId, true, "Stored Ricci matrix expression id."),
+            pdef("scalar", ParamType::ExprId, true, "Stored scalar-curvature expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("omega", ParamType::ExprId, true, "Stored conformal-factor expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_conformal_transform_ricci_expr),
+        centry("conformal_transform_scalar", "Transform the scalar curvature under g_tilde = Omega^2 g.", ps(vec![
+            pdef("scalar", ParamType::ExprId, true, "Stored scalar-curvature expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("omega", ParamType::ExprId, true, "Stored conformal-factor expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_conformal_transform_scalar_expr),
+        centry("killing_equations", "Generate the symmetric Killing system for unknown covector components from a connection and coordinate list.", ps(vec![
+            pdef("gamma", ParamType::ExprId, true, "Stored rank-3 Christoffel tensor list expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+            pdef("field_prefix", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional prefix for the unknown covector components."),
+        ]), handle_killing_equations_expr),
+        centry("adm_decompose", "Compute the ADM decomposition of a metric into lapse, shift, spatial metric, extrinsic curvature, and constraints.", ps(vec![
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+            pdef("time_coord", ParamType::Integer, true, "Index of the time coordinate."),
+        ]), handle_adm_decompose_expr),
+        centry("spatial_christoffel", "Compute Christoffel symbols for a spatial metric.", ps(vec![
+            pdef("gamma_ij", ParamType::ExprId, true, "Stored spatial metric matrix expression id."),
+            pdef("spatial_coords", ParamType::ExprId, true, "Stored spatial-coordinate-list expression id."),
+        ]), handle_spatial_christoffel_expr),
+        centry("spatial_ricci_tensor", "Compute the Ricci tensor of a spatial metric.", ps(vec![
+            pdef("gamma_ij", ParamType::ExprId, true, "Stored spatial metric matrix expression id."),
+            pdef("spatial_coords", ParamType::ExprId, true, "Stored spatial-coordinate-list expression id."),
+        ]), handle_spatial_ricci_tensor_expr),
+        centry("spatial_ricci_scalar", "Compute the Ricci scalar of a spatial metric.", ps(vec![
+            pdef("gamma_ij", ParamType::ExprId, true, "Stored spatial metric matrix expression id."),
+            pdef("spatial_coords", ParamType::ExprId, true, "Stored spatial-coordinate-list expression id."),
+        ]), handle_spatial_ricci_scalar_expr),
+        centry("null_tetrad", "Auto-construct a Newman-Penrose null tetrad for a diagonal Lorentzian 4-metric.", ps(vec![
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_null_tetrad_expr),
+        centry("null_tetrad_from_metric", "Alias for null_tetrad(metric, [coords...]) using the public tensor-algorithm name.", ps(vec![
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_null_tetrad_expr),
+        centry("verify_null_tetrad", "Verify NP null-tetrad normalization and orthogonality against a metric.", ps(vec![
+            pdef("tetrad", ParamType::ExprId, true, "Stored 4-list null-tetrad expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+        ]), handle_verify_null_tetrad_expr),
+        centry("spin_coefficients", "Compute the Newman-Penrose spin coefficients from a tetrad, connection, metric, and coordinates.", ps(vec![
+            pdef("tetrad", ParamType::ExprId, true, "Stored 4-list null-tetrad expression id."),
+            pdef("gamma", ParamType::ExprId, true, "Stored rank-3 Christoffel tensor list expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+            pdef("coords", ParamType::ExprId, true, "Stored coordinate-list expression id."),
+        ]), handle_spin_coefficients_expr),
+        centry("weyl_scalars", "Compute the Newman-Penrose Weyl scalars from a Weyl tensor and null tetrad.", ps(vec![
+            pdef("weyl", ParamType::ExprId, true, "Stored rank-4 Weyl tensor list expression id."),
+            pdef("tetrad", ParamType::ExprId, true, "Stored 4-list null-tetrad expression id."),
+            pdef("metric", ParamType::ExprId, true, "Stored metric matrix expression id."),
+        ]), handle_weyl_scalars_expr),
+        centry("petrov_classify", "Classify the Weyl tensor algebraically from Newman-Penrose scalars.", ps(vec![
+            pdef("scalars", ParamType::ExprId, true, "Stored 5-list Weyl-scalars expression id."),
+        ]), handle_petrov_classify_expr),
         centry("kretschner_scalar", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
         centry("kretschner", "Compute the Kretschmann scalar.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschner_scalar_gr),
         centry("kretschmann_scalar_diagonal_approx", "Compute the diagonal-only Kretschmann approximation.", ps(vec![pdef("riemann_id", ParamType::Code, true, "Stored riemann id.")]), handle_kretschmann_scalar_diagonal_approx_gr),
@@ -7734,6 +8555,18 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("dsolve", "Solve a supported first-order ODE.", ps(vec![pdef("equation", ParamType::ExprId, true, "Stored ODE rhs/expression id."), pdef("dependent", ParamType::Symbol, true, "Dependent variable."), pdef("independent", ParamType::Symbol, true, "Independent variable.")]), handle_solve_ode_ode),
         centry("rk4", "Numerical fourth-order Runge-Kutta integration.", ps(vec![pdef("f", ParamType::ExprId, true, "Stored RHS expression id."), pdef("x", ParamType::Symbol, true, "Independent variable."), pdef("y", ParamType::Symbol, true, "Dependent variable."), pdef("x0", ParamType::Float, true, "Initial x."), pdef("y0", ParamType::Float, true, "Initial y."), pdef("x_end", ParamType::Float, true, "Final x."), pdef("steps", ParamType::Integer, false, "Optional step count.")]), handle_rk4_ode),
         centry("rk4_system", "Numerical fourth-order Runge-Kutta for coupled systems.", ps(vec![pdef("functions", ParamType::ExprId, true, "Stored list of RHS expressions."), pdef("independent", ParamType::Symbol, true, "Independent variable."), pdef("dependents", ParamType::SymbolList, true, "Dependent variables."), pdef("x0", ParamType::Float, true, "Initial x."), pdef("y0s", ParamType::Code, true, "JSON array of initial values."), pdef("x_end", ParamType::Float, true, "Final x."), pdef("steps", ParamType::Integer, false, "Optional step count.")]), handle_rk4_system_ode),
+        centry("parallel_transport", "Library-level numerical parallel transport using a native Christoffel callback; ordinary source syntax does not currently expose that callback mechanism.", ps(vec![
+            pdef("initial_vector", ParamType::Code, false, "Native callback mode only: numeric initial contravariant vector."),
+            pdef("curve", ParamType::Code, false, "Native callback mode only: numeric curve samples."),
+            pdef("gamma_numeric", ParamType::Code, false, "Native callback mode only: Christoffel callback handle."),
+        ]), handle_parallel_transport_native_only),
+        centry("integrate_geodesic", "Library-level numerical geodesic integration using a native Christoffel callback; ordinary source syntax does not currently expose that callback mechanism.", ps(vec![
+            pdef("gamma_numeric", ParamType::Code, false, "Native callback mode only: Christoffel callback handle."),
+            pdef("initial_position", ParamType::Code, false, "Native callback mode only: numeric initial position."),
+            pdef("initial_velocity", ParamType::Code, false, "Native callback mode only: numeric initial velocity."),
+            pdef("tau_range", ParamType::Code, false, "Native callback mode only: numeric tau interval."),
+            pdef("steps", ParamType::Integer, false, "Native callback mode only: integration step count."),
+        ]), handle_integrate_geodesic_native_only),
         centry("first_order_form", "Convert a higher-order ODE into first-order form.", ps(vec![pdef("ode", ParamType::ExprId, true, "Stored ODE expression id."), pdef("dependent", ParamType::Symbol, true, "Dependent variable."), pdef("independent", ParamType::Symbol, true, "Independent variable.")]), handle_first_order_form_ode),
         centry("classify_pde", "Classify a second-order PDE by its discriminant.", ps(vec![pdef("A", ParamType::ExprId, true, "Coefficient A."), pdef("B", ParamType::ExprId, true, "Coefficient B."), pdef("C", ParamType::ExprId, true, "Coefficient C.")]), handle_classify_pde_ode),
         centry("separate_variables", "Return a separated-variables ansatz.", ps(vec![pdef("pde_type", ParamType::Code, true, "PDE family name."), pdef("spatial", ParamType::Symbol, true, "Spatial variable."), pdef("temporal", ParamType::Symbol, true, "Temporal variable."), pdef("coefficient", ParamType::Code, false, "Optional PDE coefficient.")]), handle_separate_variables_ode),

@@ -247,3 +247,106 @@ fn frw_christoffel_only_depends_on_time_derivative_of_scale_factor() {
         "FRW Christoffel should not depend on diff(a(t), z), got {rendered}"
     );
 }
+
+#[test]
+fn polar_plane_2d_curvature_pipeline_is_dimension_generic() {
+    let interner = int();
+    let r = interner.get_or_intern("r");
+    let theta = interner.get_or_intern("theta");
+    let coords = vec![r, theta];
+    let radial = Expr::Sym(r);
+    let g = SymbolicMatrix::from_diagonal(vec![
+        Expr::one(),
+        Expr::pow(radial.clone(), Expr::Int(2.into())),
+    ]);
+
+    let gamma = christoffel_from_metric(&g, &coords, &interner);
+    assert_eq!(gamma.len(), 2);
+    assert_eq!(gamma[0].len(), 2);
+    assert_eq!(gamma[1].len(), 2);
+    assert_eq!(
+        gamma[0][1][1].clone(),
+        Expr::mul(vec![Expr::Int((-1).into()), radial.clone()])
+    );
+    assert_eq!(
+        gamma[1][0][1].clone(),
+        Expr::pow(radial.clone(), Expr::Int((-1).into()))
+    );
+    assert_eq!(
+        gamma[1][1][0].clone(),
+        Expr::pow(radial.clone(), Expr::Int((-1).into()))
+    );
+
+    let riem = riemann_from_christoffel(&gamma, &coords, &interner, &Convention::default());
+    assert_eq!(riem.len(), 2);
+    for a in 0..2 {
+        for b in 0..2 {
+            for c in 0..2 {
+                for d in 0..2 {
+                    assert_eq!(
+                        riem[a][b][c][d].clone(),
+                        Expr::zero(),
+                        "2D polar-plane Riemann component [{a}][{b}][{c}][{d}] should vanish"
+                    );
+                }
+            }
+        }
+    }
+
+    let ricci = ricci_from_riemann(&riem, g.dim, &interner, &Convention::default());
+    assert_eq!(ricci.len(), 2);
+    for a in 0..2 {
+        for b in 0..2 {
+            assert_eq!(
+                ricci[a][b].clone(),
+                Expr::zero(),
+                "2D polar-plane Ricci component [{a}][{b}] should vanish"
+            );
+        }
+    }
+
+    let scalar = ricci_scalar(&ricci, &g.symbolic_inverse(&interner), &interner);
+    assert_eq!(
+        scalar,
+        Expr::zero(),
+        "2D polar-plane scalar curvature should vanish"
+    );
+}
+
+#[test]
+fn five_dimensional_einstein_path_is_dimension_generic() {
+    let interner = int();
+    let t = interner.get_or_intern("t");
+    let x = interner.get_or_intern("x");
+    let y = interner.get_or_intern("y");
+    let z = interner.get_or_intern("z");
+    let w = interner.get_or_intern("w");
+    let coords = vec![t, x, y, z, w];
+    let g = SymbolicMatrix::from_diagonal(vec![
+        Expr::Int((-1).into()),
+        Expr::one(),
+        Expr::one(),
+        Expr::one(),
+        Expr::one(),
+    ]);
+
+    let gamma = christoffel_from_metric(&g, &coords, &interner);
+    let riem = riemann_from_christoffel(&gamma, &coords, &interner, &Convention::default());
+    let ricci = ricci_from_riemann(&riem, g.dim, &interner, &Convention::default());
+    let scalar = ricci_scalar(&ricci, &g.symbolic_inverse(&interner), &interner);
+    let einstein = einstein_tensor(&ricci, &scalar, &g, &interner);
+
+    assert_eq!(gamma.len(), 5);
+    assert_eq!(riem.len(), 5);
+    assert_eq!(ricci.len(), 5);
+    assert_eq!(einstein.len(), 5);
+    for row in &ricci {
+        assert_eq!(row.len(), 5);
+        assert!(row.iter().all(|entry| *entry == Expr::zero()));
+    }
+    for row in &einstein {
+        assert_eq!(row.len(), 5);
+        assert!(row.iter().all(|entry| *entry == Expr::zero()));
+    }
+    assert_eq!(scalar, Expr::zero());
+}

@@ -609,6 +609,22 @@ mod tests {
         (g, vec![x, y, z])
     }
 
+    fn five_dimensional_test_metric(interner: &Interner) -> (SymbolicMatrix, Vec<lasso::Spur>) {
+        let t = interner.get_or_intern("t");
+        let x = interner.get_or_intern("x");
+        let y = interner.get_or_intern("y");
+        let z = interner.get_or_intern("z");
+        let w = interner.get_or_intern("w");
+        let g = SymbolicMatrix::from_diagonal(vec![
+            Expr::Int((-1).into()),
+            Expr::one(),
+            Expr::one(),
+            Expr::one(),
+            Expr::one(),
+        ]);
+        (g, vec![t, x, y, z, w])
+    }
+
     #[test]
     fn weyl_vanishes_in_low_dimension() {
         let interner = Interner::new();
@@ -624,6 +640,35 @@ mod tests {
         assert_eq!(weyl[0][0].len(), 2);
         assert_eq!(weyl[0][0][0].len(), 2);
         assert_rank4_zero(&weyl);
+    }
+
+    #[test]
+    fn weyl_vanishes_in_three_dimensions() {
+        let interner = Interner::new();
+        let (g, coords) = three_dimensional_test_metric(&interner);
+        let gamma = christoffel_from_metric(&g, &coords, &interner);
+        let riemann = riemann_from_christoffel(&gamma, &coords, &interner, &Convention::default());
+        let ricci = ricci_from_riemann(&riemann, g.dim, &interner, &Convention::default());
+        let scalar = ricci_scalar(&ricci, &g.symbolic_inverse(&interner), &interner);
+
+        let weyl = weyl_from_curvature(&riemann, &ricci, &scalar, &g, &interner).expect("weyl");
+        assert_eq!(weyl.len(), 3);
+        assert_eq!(weyl[0].len(), 3);
+        assert_eq!(weyl[0][0].len(), 3);
+        assert_eq!(weyl[0][0][0].len(), 3);
+        for a in 0..g.dim {
+            for b in 0..g.dim {
+                for c in 0..g.dim {
+                    for d in 0..g.dim {
+                        assert_eq!(
+                            simplify_invariant_expr(weyl[a][b][c][d].clone(), &interner),
+                            Expr::zero(),
+                            "3D Weyl component [{a}][{b}][{c}][{d}] should vanish"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -698,6 +743,36 @@ mod tests {
                             simplify_invariant_expr(weyl[a][b][c][d].clone(), &interner),
                             Expr::zero(),
                             "FRW Weyl component [{a}][{b}][{c}][{d}] should vanish"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn five_dimensional_weyl_decomposition_has_correct_shape_and_simplifiable_entries() {
+        let interner = Interner::new();
+        let (g, coords) = five_dimensional_test_metric(&interner);
+        let gamma = christoffel_from_metric(&g, &coords, &interner);
+        let riemann = riemann_from_christoffel(&gamma, &coords, &interner, &Convention::default());
+        let ricci = ricci_from_riemann(&riemann, g.dim, &interner, &Convention::default());
+        let scalar = ricci_scalar(&ricci, &g.symbolic_inverse(&interner), &interner);
+
+        let weyl = weyl_from_curvature(&riemann, &ricci, &scalar, &g, &interner).expect("weyl");
+        assert_eq!(weyl.len(), 5);
+        assert_eq!(weyl[0].len(), 5);
+        assert_eq!(weyl[0][0].len(), 5);
+        assert_eq!(weyl[0][0][0].len(), 5);
+
+        for a in 0..g.dim {
+            for b in 0..g.dim {
+                for c in 0..g.dim {
+                    for d in 0..g.dim {
+                        assert_eq!(
+                            simplify_invariant_expr(weyl[a][b][c][d].clone(), &interner),
+                            Expr::zero(),
+                            "5D flat Weyl component [{a}][{b}][{c}][{d}] should vanish"
                         );
                     }
                 }
