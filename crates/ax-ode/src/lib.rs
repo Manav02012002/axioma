@@ -137,7 +137,8 @@ fn integrate_elementary(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interne
 }
 
 fn integrate_if_simple(expr: Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Expr {
-    integrate_elementary(&expr, var, interner).unwrap_or_else(|| integrate_call(expr, var, interner))
+    integrate_elementary(&expr, var, interner)
+        .unwrap_or_else(|| integrate_call(expr, var, interner))
 }
 
 fn constant_symbol(interner: &ax_ir::Interner) -> Expr {
@@ -737,7 +738,9 @@ fn normalize_highest_derivative_rhs(
 ) -> Option<Expr> {
     let terms = match equation {
         Expr::Add(terms) => terms.clone(),
-        Expr::Group(inner, _) => return normalize_highest_derivative_rhs(inner, derivative, interner),
+        Expr::Group(inner, _) => {
+            return normalize_highest_derivative_rhs(inner, derivative, interner)
+        }
         _ => vec![equation.clone()],
     };
 
@@ -930,6 +933,74 @@ pub fn rk4_system(
     out
 }
 
+pub fn rk4_system_numeric(
+    f: &dyn Fn(f64, &[f64]) -> Vec<f64>,
+    x0: f64,
+    y0s: &[f64],
+    x_end: f64,
+    n_steps: usize,
+) -> Vec<Vec<f64>> {
+    if n_steps == 0 {
+        return Vec::new();
+    }
+
+    let n = y0s.len();
+    let h = (x_end - x0) / n_steps as f64;
+    let mut x = x0;
+    let mut ys = y0s.to_vec();
+    let mut out = Vec::with_capacity(n_steps + 1);
+    let mut row = Vec::with_capacity(n + 1);
+    row.push(x);
+    row.extend_from_slice(&ys);
+    out.push(row);
+
+    for _ in 0..n_steps {
+        let k1 = f(x, &ys);
+        if k1.len() != n {
+            return Vec::new();
+        }
+        let yk2 = ys
+            .iter()
+            .zip(k1.iter())
+            .map(|(y, k)| y + h * k / 2.0)
+            .collect::<Vec<_>>();
+        let k2 = f(x + h / 2.0, &yk2);
+        if k2.len() != n {
+            return Vec::new();
+        }
+        let yk3 = ys
+            .iter()
+            .zip(k2.iter())
+            .map(|(y, k)| y + h * k / 2.0)
+            .collect::<Vec<_>>();
+        let k3 = f(x + h / 2.0, &yk3);
+        if k3.len() != n {
+            return Vec::new();
+        }
+        let yk4 = ys
+            .iter()
+            .zip(k3.iter())
+            .map(|(y, k)| y + h * k)
+            .collect::<Vec<_>>();
+        let k4 = f(x + h, &yk4);
+        if k4.len() != n {
+            return Vec::new();
+        }
+
+        for i in 0..n {
+            ys[i] += h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
+        }
+        x += h;
+
+        let mut row = Vec::with_capacity(n + 1);
+        row.push(x);
+        row.extend_from_slice(&ys);
+        out.push(row);
+    }
+
+    out
+}
+
 // ─── first_order_form ────────────────────────────────────────────────────────
 
 /// Convert a second-order (or higher-order) ODE into a system of first-order
@@ -985,7 +1056,8 @@ pub fn first_order_form(
     // Last equation: v_{n-1}' = rhs
     // If the caller passed a full ODE containing the highest derivative, first
     // isolate that derivative to get an explicit right-hand side.
-    let highest_derivative = make_nth_derivative(dependent_var, independent_var, max_order, diff_sym);
+    let highest_derivative =
+        make_nth_derivative(dependent_var, independent_var, max_order, diff_sym);
     let base_rhs = if detected_order == 0 {
         ode.clone()
     } else {

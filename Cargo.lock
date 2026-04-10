@@ -279,7 +279,7 @@ version = "0.1.0"
 dependencies = [
  "ax-core-ir",
  "ax-ir",
- "ax-tensor",
+ "ax-linalg",
  "lasso",
  "num-bigint",
  "num-rational",
@@ -530,8 +530,10 @@ version = "0.1.0"
 dependencies = [
  "ax-core-ir",
  "ax-eval",
+ "ax-forms",
  "ax-ir",
  "ax-linalg",
+ "ax-ode",
  "ax-perm",
  "ax-young",
  "lasso",
@@ -539,6 +541,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "rayon",
+ "thiserror",
 ]
 
 [[package]]

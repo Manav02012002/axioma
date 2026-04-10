@@ -6,8 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ax-forms = { path = "../ax-forms" }
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
+ax-ode = { path = "../ax-ode" }
 ax-perm = { path = "../ax-perm" }
 ax-young = { path = "../ax-young" }
 lasso = { workspace = true }

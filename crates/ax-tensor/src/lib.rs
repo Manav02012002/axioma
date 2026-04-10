@@ -12,17 +12,44 @@
 
 mod abstract_curvature;
 pub mod adjform;
+mod adm;
+mod cartan;
+mod conformal;
+mod contracted_bianchi;
 pub mod index_classifier;
+mod killing;
+mod newman_penrose;
+mod numerical_gr;
 pub mod pooled_canon;
 mod weyl;
 
 pub use abstract_curvature::{riemann_to_ricci, AbstractCurvatureReduceError};
+pub use adm::{
+    adm_decompose, spatial_christoffel, spatial_ricci_scalar, spatial_ricci_tensor,
+    ADMDecomposition, ADMError,
+};
 use ax_ir::{Expr, Index, Interner};
 use ax_perm::{Perm, SGS};
+pub use cartan::{
+    connection_with_torsion, contorsion_tensor, first_cartan_structure, second_cartan_structure,
+    spin_connection, CartanError,
+};
+pub use conformal::{
+    conformal_transform_christoffel, conformal_transform_inverse_metric,
+    conformal_transform_metric, conformal_transform_ricci, conformal_transform_scalar,
+    ConformalError,
+};
+pub use contracted_bianchi::{contracted_bianchi_reduce, ContractedBianchiError};
 use index_classifier::{classify_indices, IndexClassification};
+pub use killing::{killing_equations, KillingError, KillingSystem};
+pub use newman_penrose::{
+    null_tetrad_from_metric, petrov_classify, spin_coefficients, verify_null_tetrad, weyl_scalars,
+    NewmanPenroseError, NullTetrad, PetrovType, SpinCoefficients, WeylScalars,
+};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+pub use numerical_gr::{integrate_geodesic, parallel_transport, NumericalGRError};
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -4320,7 +4347,7 @@ pub fn evaluate_components<E: ComponentEvalEnv>(
     evaluate_components_v2(expr, rules, env, interner)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SymbolicMatrix {
     pub dim: usize,
     pub data: Vec<Vec<ax_ir::Expr>>,

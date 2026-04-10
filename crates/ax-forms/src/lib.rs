@@ -2,9 +2,68 @@
 #![allow(clippy::needless_range_loop)]
 
 use ax_ir::Expr;
-use ax_tensor::SymbolicMatrix;
 use num_bigint::BigInt;
+use num_rational::BigRational;
 use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SymbolicMatrix {
+    pub dim: usize,
+    pub data: Vec<Vec<ax_ir::Expr>>,
+}
+
+impl SymbolicMatrix {
+    pub fn new(dim: usize) -> Self {
+        Self {
+            dim,
+            data: vec![vec![Expr::zero(); dim]; dim],
+        }
+    }
+
+    pub fn from_diagonal(diag: Vec<ax_ir::Expr>) -> Self {
+        let dim = diag.len();
+        let mut matrix = Self::new(dim);
+        for (i, value) in diag.into_iter().enumerate() {
+            matrix.data[i][i] = value;
+        }
+        matrix
+    }
+
+    pub fn get(&self, row: usize, col: usize) -> &ax_ir::Expr {
+        &self.data[row][col]
+    }
+
+    pub fn symbolic_inverse(&self, interner: &ax_ir::Interner) -> Self {
+        let is_diagonal = (0..self.dim)
+            .all(|row| (0..self.dim).all(|col| row == col || self.data[row][col] == Expr::zero()));
+
+        if is_diagonal {
+            let mut inverse = Self::new(self.dim);
+            for i in 0..self.dim {
+                inverse.data[i][i] = simplify_expr(
+                    Expr::pow(self.data[i][i].clone(), Expr::Int((-1).into())),
+                    interner,
+                );
+            }
+            return inverse;
+        }
+
+        match ax_linalg::inverse(&self.data, interner) {
+            Some(inv_data) => Self {
+                dim: self.dim,
+                data: inv_data
+                    .into_iter()
+                    .map(|row| {
+                        row.into_iter()
+                            .map(|cell| simplify_expr(cell, interner))
+                            .collect()
+                    })
+                    .collect(),
+            },
+            None => panic!("metric tensor is singular (determinant is zero)"),
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct DiffForm {
@@ -97,6 +156,129 @@ fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
     }
 }
 
+pub fn diff_component(
+    expr: &ax_ir::Expr,
+    coord: lasso::Spur,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    fn contains_var(expr: &Expr, var: lasso::Spur) -> bool {
+        match expr {
+            Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => false,
+            Expr::Complex(re, im) => contains_var(re, var) || contains_var(im, var),
+            Expr::Sym(s) => *s == var,
+            Expr::Add(items) | Expr::Mul(items) | Expr::List(items) => {
+                items.iter().any(|item| contains_var(item, var))
+            }
+            Expr::Pow(base, exp) => contains_var(base, var) || contains_var(exp, var),
+            Expr::Neg(e) => contains_var(e, var),
+            Expr::Call(_, args) => args.iter().any(|arg| contains_var(arg, var)),
+            Expr::FnDef(_, _, body) => contains_var(body, var),
+            Expr::Rule(lhs, rhs, _) => contains_var(lhs, var) || contains_var(rhs, var),
+            Expr::Import(_) | Expr::Assume(_, _) | Expr::SetConvention(_, _) => false,
+            Expr::Piecewise(cases) => cases.iter().any(|(value, _)| contains_var(value, var)),
+            Expr::Indexed(base, _) => contains_var(base, var),
+            Expr::Group(inner, _) => contains_var(inner, var),
+            Expr::Let(_, val, body) => contains_var(val, var) || contains_var(body, var),
+            Expr::Matrix(rows) => rows
+                .iter()
+                .any(|row| row.iter().any(|cell| contains_var(cell, var))),
+        }
+    }
+
+    fn one_half() -> Expr {
+        Expr::Rational(BigRational::new(1.into(), 2.into()))
+    }
+
+    fn diff(expr: &Expr, var: lasso::Spur, interner: &ax_ir::Interner) -> Expr {
+        match expr {
+            Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => Expr::zero(),
+            Expr::Complex(re, im) => Expr::Complex(
+                Box::new(diff(re, var, interner)),
+                Box::new(diff(im, var, interner)),
+            ),
+            Expr::Sym(s) => {
+                if *s == var {
+                    Expr::one()
+                } else {
+                    Expr::zero()
+                }
+            }
+            Expr::Add(terms) => Expr::add(terms.iter().map(|t| diff(t, var, interner)).collect()),
+            Expr::Neg(e) => Expr::neg(diff(e, var, interner)),
+            Expr::Mul(factors) => Expr::add(
+                factors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, factor)| {
+                        let mut product = Vec::with_capacity(factors.len());
+                        product.extend(factors[..i].iter().cloned());
+                        product.push(diff(factor, var, interner));
+                        product.extend(factors[i + 1..].iter().cloned());
+                        Expr::mul(product)
+                    })
+                    .collect(),
+            ),
+            Expr::Pow(base, exp) if !contains_var(exp, var) => Expr::mul(vec![
+                exp.as_ref().clone(),
+                Expr::pow(
+                    base.as_ref().clone(),
+                    Expr::add(vec![exp.as_ref().clone(), Expr::neg(Expr::one())]),
+                ),
+                diff(base, var, interner),
+            ]),
+            Expr::Pow(_, _) => Expr::Call(
+                interner.get_or_intern("diff"),
+                vec![expr.clone(), Expr::Sym(var)],
+            ),
+            Expr::Call(f, args) if args.len() == 1 => match interner.resolve(*f) {
+                "sin" => Expr::mul(vec![
+                    Expr::Call(interner.get_or_intern("cos"), args.clone()),
+                    diff(&args[0], var, interner),
+                ]),
+                "cos" => Expr::mul(vec![
+                    Expr::neg(Expr::Call(interner.get_or_intern("sin"), args.clone())),
+                    diff(&args[0], var, interner),
+                ]),
+                "exp" => Expr::mul(vec![
+                    Expr::Call(interner.get_or_intern("exp"), args.clone()),
+                    diff(&args[0], var, interner),
+                ]),
+                "log" => Expr::mul(vec![
+                    Expr::pow(args[0].clone(), Expr::neg(Expr::one())),
+                    diff(&args[0], var, interner),
+                ]),
+                "sqrt" => diff(&Expr::pow(args[0].clone(), one_half()), var, interner),
+                _ if !contains_var(&args[0], var) => Expr::zero(),
+                _ => Expr::Call(
+                    interner.get_or_intern("diff"),
+                    vec![expr.clone(), Expr::Sym(var)],
+                ),
+            },
+            Expr::Call(_, args) if args.iter().all(|arg| !contains_var(arg, var)) => Expr::zero(),
+            Expr::Call(_, _) => Expr::Call(
+                interner.get_or_intern("diff"),
+                vec![expr.clone(), Expr::Sym(var)],
+            ),
+            Expr::FnDef(_, _, _)
+            | Expr::Rule(_, _, _)
+            | Expr::Import(_)
+            | Expr::Assume(_, _)
+            | Expr::SetConvention(_, _)
+            | Expr::Piecewise(_)
+            | Expr::Indexed(_, _)
+            | Expr::Group(_, _)
+            | Expr::Let(_, _, _)
+            | Expr::List(_)
+            | Expr::Matrix(_) => Expr::Call(
+                interner.get_or_intern("diff"),
+                vec![expr.clone(), Expr::Sym(var)],
+            ),
+        }
+    }
+
+    simplify_expr(diff(expr, coord, interner), interner)
+}
+
 fn add_component(
     map: &mut BTreeMap<Vec<usize>, Expr>,
     key: Vec<usize>,
@@ -174,7 +356,7 @@ pub fn exterior_derivative(
                 continue;
             }
 
-            let derivative = ax_tensor::diff_component(value, *coord, interner);
+            let derivative = diff_component(value, *coord, interner);
             if derivative == Expr::zero() {
                 continue;
             }
@@ -291,10 +473,16 @@ pub fn two_form_from_expr(expr: &Expr) -> Option<DiffForm> {
 
 pub fn form_from_expr(expr: &Expr) -> Option<DiffForm> {
     match expr {
-        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Sym(_) | Expr::Add(_)
-        | Expr::Mul(_) | Expr::Pow(_, _) | Expr::Neg(_) | Expr::Call(_, _) | Expr::Group(_, _) => {
-            Some(scalar_form(expr, 0))
-        }
+        Expr::Int(_)
+        | Expr::Rational(_)
+        | Expr::Float(_)
+        | Expr::Sym(_)
+        | Expr::Add(_)
+        | Expr::Mul(_)
+        | Expr::Pow(_, _)
+        | Expr::Neg(_)
+        | Expr::Call(_, _)
+        | Expr::Group(_, _) => Some(scalar_form(expr, 0)),
         Expr::List(items)
             if items
                 .iter()
@@ -379,11 +567,7 @@ pub fn resize_form(form: &DiffForm, dim: usize) -> DiffForm {
     }
 }
 
-pub fn interior_product(
-    vector: &[Expr],
-    form: &DiffForm,
-    interner: &ax_ir::Interner,
-) -> DiffForm {
+pub fn interior_product(vector: &[Expr], form: &DiffForm, interner: &ax_ir::Interner) -> DiffForm {
     assert_eq!(vector.len(), form.dim);
     if form.degree == 0 {
         return scalar_form(&Expr::zero(), form.dim);
@@ -437,7 +621,11 @@ pub fn lie_derivative_form(
     coords: &[lasso::Spur],
     interner: &ax_ir::Interner,
 ) -> DiffForm {
-    let interior_then_d = interior_product(vector, &exterior_derivative(form, coords, interner), interner);
+    let interior_then_d = interior_product(
+        vector,
+        &exterior_derivative(form, coords, interner),
+        interner,
+    );
     let d_then_interior =
         exterior_derivative(&interior_product(vector, form, interner), coords, interner);
     let mut components = interior_then_d.components.clone();
@@ -582,7 +770,11 @@ mod tests {
     #[test]
     fn parse_generic_three_form_round_trip() {
         let expr = Expr::List(vec![Expr::List(vec![
-            Expr::List(vec![Expr::Int(0.into()), Expr::Int(1.into()), Expr::Int(2.into())]),
+            Expr::List(vec![
+                Expr::Int(0.into()),
+                Expr::Int(1.into()),
+                Expr::Int(2.into()),
+            ]),
             Expr::one(),
         ])]);
         let form = form_from_expr(&expr).expect("generic form");
@@ -610,15 +802,17 @@ mod tests {
         let interner = ax_ir::Interner::new();
         let x = interner.get_or_intern("x");
         let y = interner.get_or_intern("y");
-        let metric =
-            ax_tensor::SymbolicMatrix::from_diagonal(vec![Expr::one(), Expr::one()]);
+        let metric = SymbolicMatrix::from_diagonal(vec![Expr::one(), Expr::one()]);
         let form = DiffForm {
             degree: 1,
             dim: 2,
             components: BTreeMap::from([(vec![0], Expr::one())]),
         };
         let delta = codifferential(&form, &metric, &[x, y], &interner);
-        assert!(delta.components.values().all(|value| *value == Expr::zero()));
+        assert!(delta
+            .components
+            .values()
+            .all(|value| *value == Expr::zero()));
     }
 
     #[test]
@@ -629,12 +823,12 @@ mod tests {
         let omega = DiffForm {
             degree: 1,
             dim: 2,
-            components: BTreeMap::from([
-                (vec![0], Expr::Sym(x)),
-                (vec![1], Expr::zero()),
-            ]),
+            components: BTreeMap::from([(vec![0], Expr::Sym(x)), (vec![1], Expr::zero())]),
         };
         let result = lie_derivative_form(&[Expr::one(), Expr::zero()], &omega, &[x, y], &interner);
-        assert_eq!(form_to_expr(&result), Expr::List(vec![Expr::one(), Expr::zero()]));
+        assert_eq!(
+            form_to_expr(&result),
+            Expr::List(vec![Expr::one(), Expr::zero()])
+        );
     }
 }

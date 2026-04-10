@@ -68,7 +68,7 @@ fn hodge_dual_of_dual() {
     // *(*ω) = ω for a 1-form in 3D Euclidean signature.
     let interner = int();
     let metric =
-        ax_tensor::SymbolicMatrix::from_diagonal(vec![Expr::one(), Expr::one(), Expr::one()]);
+        ax_forms::SymbolicMatrix::from_diagonal(vec![Expr::one(), Expr::one(), Expr::one()]);
     let a = interner.get_or_intern("a");
     let omega = form(1, 3, vec![(vec![0], Expr::Sym(a))]);
     let star_omega = hodge_dual(&omega, &metric, &interner);

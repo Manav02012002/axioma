@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 ax-ir = { path = "../ax-ir" }
-ax-tensor = { path = "../ax-tensor" }
+ax-linalg = { path = "../ax-linalg" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }
