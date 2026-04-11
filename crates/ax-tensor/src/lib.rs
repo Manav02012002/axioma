@@ -16,12 +16,15 @@ mod adm;
 mod cartan;
 mod conformal;
 mod contracted_bianchi;
+mod dimension_reduce;
 pub mod index_classifier;
 mod killing;
 mod newman_penrose;
 mod numerical_gr;
 pub mod pooled_canon;
+pub mod symmetry_bridge;
 mod weyl;
+pub mod young_engine;
 
 pub use abstract_curvature::{riemann_to_ricci, AbstractCurvatureReduceError};
 pub use adm::{
@@ -40,6 +43,7 @@ pub use conformal::{
     ConformalError,
 };
 pub use contracted_bianchi::{contracted_bianchi_reduce, ContractedBianchiError};
+pub use dimension_reduce::{reduce_expr_by_dimension, tensor_annihilates_from_properties, DimensionReduceError};
 use index_classifier::{classify_indices, IndexClassification};
 pub use killing::{killing_equations, KillingError, KillingSystem};
 pub use newman_penrose::{
@@ -53,10 +57,14 @@ pub use numerical_gr::{integrate_geodesic, parallel_transport, NumericalGRError}
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use symmetry_bridge::{
+    realized_tableaux_from_properties, realized_tableaux_from_symmetry, RealizedTableau,
+};
 pub use weyl::{
     bach_from_curvature, cotton_from_curvature, weyl_from_curvature, ConformalCurvatureError,
     WeylError,
 };
+use young_engine::apply_realized_tableaux_to_factor;
 
 fn deadline_timeout_expr(interner: &Interner) -> Option<Expr> {
     ax_ir::check_deadline()
@@ -224,6 +232,13 @@ pub struct ComponentRule {
     pub value: ax_ir::Expr,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrreducibleProductSummary {
+    pub shapes: Vec<Vec<usize>>,
+    pub multiplicities: Vec<usize>,
+    pub basis_labels: Vec<Vec<String>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct YoungProjectProductOptions {
     pub modulo_monoterm: bool,
@@ -341,6 +356,12 @@ fn tableau_groups_from_shape(
     (rows, columns)
 }
 
+fn tableau_groups_from_attachment(
+    attachment: &ax_ir::TableauAttachment,
+) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+    tableau_groups_from_shape(&attachment.shape, &attachment.slot_map)
+}
+
 fn push_slot_swap_generator(
     generators: &mut Vec<Perm>,
     degree: usize,
@@ -385,6 +406,26 @@ fn push_adjacent_slot_generators(
             signed,
         );
     }
+}
+
+fn embed_projector_generator(
+    degree: usize,
+    absolute_slots: &[usize],
+    generator: &[usize],
+    sign_swap: Option<(usize, usize)>,
+) -> Perm {
+    let mut embedded: Perm = (0..degree).collect();
+    for (local_slot, &image) in generator.iter().enumerate() {
+        if let (Some(&from), Some(&to)) =
+            (absolute_slots.get(local_slot), absolute_slots.get(image))
+        {
+            embedded[from] = to;
+        }
+    }
+    if let Some((sign_pos, sign_neg)) = sign_swap {
+        embedded.swap(sign_pos, sign_neg);
+    }
+    embedded
 }
 
 /// Build the generating set for the symmetry group of a tensor product expression.
@@ -498,31 +539,38 @@ pub fn build_generating_set(
                         factor.n_indices,
                     );
                 }
-                ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-                    let (rows, columns) = tableau_groups_from_shape(shape, indices);
-                    for row in rows {
-                        push_adjacent_slot_generators(
-                            &mut generators,
-                            degree,
-                            sign_pos,
-                            sign_neg,
-                            factor.start_position,
-                            &row,
-                            false,
-                            factor.n_indices,
-                        );
-                    }
-                    for column in columns {
-                        push_adjacent_slot_generators(
-                            &mut generators,
-                            degree,
-                            sign_pos,
-                            sign_neg,
-                            factor.start_position,
-                            &column,
-                            true,
-                            factor.n_indices,
-                        );
+                ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
+                    if let Ok(realized) = realized_tableaux_from_symmetry(symmetry) {
+                        for tableau in realized {
+                            if tableau
+                                .slot_map
+                                .iter()
+                                .any(|slot| *slot >= factor.n_indices)
+                            {
+                                continue;
+                            }
+                            let absolute_slots = tableau
+                                .slot_map
+                                .iter()
+                                .map(|slot| factor.start_position + *slot)
+                                .collect::<Vec<_>>();
+                            for row_gen in &tableau.projector.row_group.generators {
+                                generators.push(embed_projector_generator(
+                                    degree,
+                                    &absolute_slots,
+                                    row_gen,
+                                    None,
+                                ));
+                            }
+                            for column_gen in &tableau.projector.column_group.generators {
+                                generators.push(embed_projector_generator(
+                                    degree,
+                                    &absolute_slots,
+                                    column_gen,
+                                    (ax_perm::sign(column_gen) < 0).then_some((sign_pos, sign_neg)),
+                                ));
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1735,8 +1783,12 @@ pub fn meld(
                     let mut proj = adjform::ProjectedAdjform::from_adjform(adj, coeff);
                     for op in &projection_ops {
                         match op {
-                            TensorProjectionOp::Tableau(tableau) => {
-                                proj.young_project(std::slice::from_ref(tableau));
+                            TensorProjectionOp::Structured(tableaux) => {
+                                for tableau in tableaux {
+                                    let info_tableau =
+                                        adjform::TableauInfo::from_realized(tableau, 0);
+                                    proj.young_project(std::slice::from_ref(&info_tableau));
+                                }
                             }
                             TensorProjectionOp::PermutationProjector {
                                 positions,
@@ -1961,8 +2013,12 @@ pub fn meld_parallel(
                     let mut proj = adjform::ProjectedAdjform::from_adjform(adj, coeff);
                     for op in &projection_ops {
                         match op {
-                            TensorProjectionOp::Tableau(tableau) => {
-                                proj.young_project(std::slice::from_ref(tableau));
+                            TensorProjectionOp::Structured(tableaux) => {
+                                for tableau in tableaux {
+                                    let info_tableau =
+                                        adjform::TableauInfo::from_realized(tableau, 0);
+                                    proj.young_project(std::slice::from_ref(&info_tableau));
+                                }
                             }
                             TensorProjectionOp::PermutationProjector {
                                 positions,
@@ -2216,7 +2272,7 @@ fn extract_factor_info_from_term(
 
 #[derive(Clone, Debug)]
 enum TensorProjectionOp {
-    Tableau(adjform::TableauInfo),
+    Structured(Vec<RealizedTableau>),
     PermutationProjector {
         positions: Vec<usize>,
         permutations: Vec<(Vec<usize>, BigRational)>,
@@ -2311,6 +2367,78 @@ fn differential_bianchi_inherited_properties(
     }]
 }
 
+fn inherited_tensor_symmetry_property(
+    symmetry: &ax_ir::TensorSymmetry,
+    offset: usize,
+    composite_rank: usize,
+) -> Option<ax_ir::TensorProperty> {
+    let tableaux = symmetry
+        .tableaux
+        .iter()
+        .filter_map(|attachment| {
+            let slot_map = attachment
+                .slot_map
+                .iter()
+                .map(|slot| slot + offset)
+                .collect::<Vec<_>>();
+            if slot_map.iter().any(|slot| *slot >= composite_rank) {
+                return None;
+            }
+            Some(ax_ir::TableauAttachment {
+                shape: attachment.shape.clone(),
+                slot_map,
+                multiplicity_numer: attachment.multiplicity_numer,
+                multiplicity_denom: attachment.multiplicity_denom,
+                duality: attachment.duality.clone(),
+                restricted_mode: attachment.restricted_mode.clone(),
+                trace_free: attachment.trace_free,
+                dimension_guard: attachment.dimension_guard.clone(),
+                source: ax_ir::SymmetrySource::Inherited,
+                label: attachment.label.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if tableaux.is_empty() {
+        return None;
+    }
+
+    let symmetry = ax_ir::TensorSymmetry {
+        tableaux,
+        inherits_under_derivative: symmetry.inherits_under_derivative,
+        inherits_under_tensor_product: symmetry.inherits_under_tensor_product,
+        inherits_under_contraction: symmetry.inherits_under_contraction,
+        preserves_trace_free_under_projection: symmetry.preserves_trace_free_under_projection,
+    };
+
+    if symmetry.validate().is_ok() {
+        Some(ax_ir::TensorProperty::TableauSymmetry(symmetry))
+    } else {
+        None
+    }
+}
+
+fn derived_riemann_tensor_symmetry(offset: usize) -> ax_ir::TensorProperty {
+    ax_ir::TensorProperty::TableauSymmetry(ax_ir::TensorSymmetry {
+        tableaux: vec![ax_ir::TableauAttachment {
+            shape: vec![2, 2],
+            slot_map: vec![offset, offset + 1, offset + 2, offset + 3],
+            multiplicity_numer: 1,
+            multiplicity_denom: 1,
+            duality: ax_ir::DualityKind::None,
+            restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
+            trace_free: false,
+            dimension_guard: None,
+            source: ax_ir::SymmetrySource::Derived,
+            label: Some("riemann".to_string()),
+        }],
+        inherits_under_derivative: false,
+        inherits_under_tensor_product: false,
+        inherits_under_contraction: false,
+        preserves_trace_free_under_projection: false,
+    })
+}
+
 fn shifted_tableau_inherited_properties(
     leader_props: &[ax_ir::TensorProperty],
     props: &[ax_ir::TensorProperty],
@@ -2322,13 +2450,11 @@ fn shifted_tableau_inherited_properties(
 
     for prop in props {
         match prop {
-            ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-                let shifted = indices.iter().map(|slot| slot + offset).collect::<Vec<_>>();
-                if shifted.iter().all(|slot| *slot < composite_rank) {
-                    inherited.push(ax_ir::TensorProperty::TableauSymmetry {
-                        shape: shape.clone(),
-                        indices: shifted,
-                    });
+            ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
+                if let Some(shifted) =
+                    inherited_tensor_symmetry_property(symmetry, offset, composite_rank)
+                {
+                    inherited.push(shifted);
                 }
             }
             ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
@@ -2346,10 +2472,7 @@ fn shifted_tableau_inherited_properties(
             ax_ir::TensorProperty::WeylTensor => {
                 inherited.push(ax_ir::TensorProperty::Traceless);
                 if offset + 4 <= composite_rank {
-                    inherited.push(ax_ir::TensorProperty::TableauSymmetry {
-                        shape: vec![2, 2],
-                        indices: vec![offset, offset + 1, offset + 2, offset + 3],
-                    });
+                    inherited.push(derived_riemann_tensor_symmetry(offset));
                     inherited.push(ax_ir::TensorProperty::SatisfiesBianchi {
                         slots: vec![offset, offset + 1, offset + 2, offset + 3],
                     });
@@ -2357,10 +2480,7 @@ fn shifted_tableau_inherited_properties(
             }
             ax_ir::TensorProperty::RiemannSymmetry => {
                 if has_bianchi_property(props, follower_rank) && offset + 4 <= composite_rank {
-                    inherited.push(ax_ir::TensorProperty::TableauSymmetry {
-                        shape: vec![2, 2],
-                        indices: vec![offset, offset + 1, offset + 2, offset + 3],
-                    });
+                    inherited.push(derived_riemann_tensor_symmetry(offset));
                 }
             }
             _ => {}
@@ -2400,7 +2520,7 @@ fn inherited_tableau_factor_infos(
                 .filter(|prop| {
                     matches!(
                         prop,
-                        ax_ir::TensorProperty::TableauSymmetry { .. }
+                        ax_ir::TensorProperty::TableauSymmetry(_)
                             | ax_ir::TensorProperty::SatisfiesBianchi { .. }
                             | ax_ir::TensorProperty::DimensionDependentIdentity
                             | ax_ir::TensorProperty::Traceless
@@ -2506,43 +2626,21 @@ fn bianchi_cycle_permutations(slots_len: usize) -> Option<[Vec<usize>; 2]> {
     }
 }
 
-fn tableau_info_from_declared_symmetry(
-    info: &TensorFactorInfo,
-    shape: &[usize],
-    indices: &[usize],
-) -> Option<adjform::TableauInfo> {
-    let (rows, columns) = tableau_groups_from_shape(shape, indices);
-    if rows.is_empty() && columns.is_empty() {
-        return None;
-    }
-    let rows: Vec<Vec<usize>> = rows
-        .into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|slot| info.start_position + slot)
-                .collect()
-        })
-        .collect();
-    let columns: Vec<Vec<usize>> = columns
-        .into_iter()
-        .map(|column| {
-            column
-                .into_iter()
-                .map(|slot| info.start_position + slot)
-                .collect()
-        })
-        .collect();
-    Some(adjform::TableauInfo { rows, columns })
-}
-
 fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
     let mut result = Vec::new();
     let mut seen_tableaux: HashSet<(Vec<Vec<usize>>, Vec<Vec<usize>>)> = HashSet::new();
     let mut seen_projectors: HashSet<String> = HashSet::new();
+    let saw_structured = info
+        .properties
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauSymmetry(_)));
 
     for prop in &info.properties {
         match prop {
             ax_ir::TensorProperty::RiemannSymmetry => {
+                if saw_structured {
+                    continue;
+                }
                 if default_riemann_slots(info.n_indices).is_some() {
                     let key = format!("riemann:{:?}", info.start_position);
                     if seen_projectors.insert(key) {
@@ -2551,6 +2649,9 @@ fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjecti
                 }
             }
             ax_ir::TensorProperty::SatisfiesBianchi { .. } => {
+                if saw_structured {
+                    continue;
+                }
                 if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
                     let abs = slots
                         .iter()
@@ -2565,6 +2666,9 @@ fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjecti
                 }
             }
             ax_ir::TensorProperty::WeylTensor => {
+                if saw_structured {
+                    continue;
+                }
                 if default_riemann_slots(info.n_indices).is_some() {
                     let key = format!("weyl-riemann:{:?}", info.start_position);
                     if seen_projectors.insert(key) {
@@ -2584,11 +2688,15 @@ fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjecti
                     }
                 }
             }
-            ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-                if let Some(tableau) = tableau_info_from_declared_symmetry(info, shape, indices) {
-                    let key = (tableau.rows.clone(), tableau.columns.clone());
-                    if seen_tableaux.insert(key) {
-                        result.push(TensorProjectionOp::Tableau(tableau));
+            ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
+                if let Ok(realized) = realized_tableaux_from_symmetry(symmetry) {
+                    for tableau in &realized {
+                        let info_tableau =
+                            adjform::TableauInfo::from_realized(tableau, info.start_position);
+                        let key = (info_tableau.rows.clone(), info_tableau.columns.clone());
+                        if seen_tableaux.insert(key) {
+                            result.push(TensorProjectionOp::Structured(vec![tableau.clone()]));
+                        }
                     }
                 }
             }
@@ -2601,12 +2709,18 @@ fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjecti
 
 fn young_project_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
     let mut result = Vec::new();
-    let mut seen_tableaux: HashSet<(Vec<Vec<usize>>, Vec<Vec<usize>>)> = HashSet::new();
     let mut seen_projectors: HashSet<String> = HashSet::new();
+    let saw_structured = info
+        .properties
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauSymmetry(_)));
 
     for prop in &info.properties {
         match prop {
             ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor => {
+                if saw_structured {
+                    continue;
+                }
                 if default_riemann_slots(info.n_indices).is_some() {
                     let key = format!("expr-riemann:{:?}", info.start_position);
                     if seen_projectors.insert(key) {
@@ -2615,6 +2729,9 @@ fn young_project_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjection
                 }
             }
             ax_ir::TensorProperty::SatisfiesBianchi { .. } => {
+                if saw_structured {
+                    continue;
+                }
                 if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
                     let abs = slots
                         .iter()
@@ -2628,12 +2745,9 @@ fn young_project_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjection
                     }
                 }
             }
-            ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-                if let Some(tableau) = tableau_info_from_declared_symmetry(info, shape, indices) {
-                    let key = (tableau.rows.clone(), tableau.columns.clone());
-                    if seen_tableaux.insert(key) {
-                        result.push(TensorProjectionOp::Tableau(tableau));
-                    }
+            ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
+                if let Ok(realized) = realized_tableaux_from_symmetry(symmetry) {
+                    result.push(TensorProjectionOp::Structured(realized));
                 }
             }
             _ => {}
@@ -2650,7 +2764,17 @@ pub fn symmetry_tableaux_from_properties(
     let mut result = Vec::new();
 
     for info in factor_info {
-        for prop in properties.get_properties(info.name) {
+        let props = properties.get_properties(info.name);
+        if let Ok(realized) = realized_tableaux_from_properties(&props) {
+            result.extend(
+                realized.iter().map(|tableau| {
+                    adjform::TableauInfo::from_realized(tableau, info.start_position)
+                }),
+            );
+            continue;
+        }
+
+        for prop in props {
             match prop {
                 ax_ir::TensorProperty::Symmetric(positions) => {
                     let abs: Vec<usize> =
@@ -2658,6 +2782,8 @@ pub fn symmetry_tableaux_from_properties(
                     result.push(adjform::TableauInfo {
                         rows: vec![abs],
                         columns: vec![],
+                        trace_free: false,
+                        duality: ax_ir::DualityKind::None,
                     });
                 }
                 ax_ir::TensorProperty::AntiSymmetric(positions) => {
@@ -2666,6 +2792,8 @@ pub fn symmetry_tableaux_from_properties(
                     result.push(adjform::TableauInfo {
                         rows: vec![],
                         columns: vec![abs],
+                        trace_free: false,
+                        duality: ax_ir::DualityKind::None,
                     });
                 }
                 ax_ir::TensorProperty::Metric
@@ -2675,6 +2803,8 @@ pub fn symmetry_tableaux_from_properties(
                         result.push(adjform::TableauInfo {
                             rows: vec![vec![info.start_position, info.start_position + 1]],
                             columns: vec![],
+                            trace_free: false,
+                            duality: ax_ir::DualityKind::None,
                         });
                     }
                 }
@@ -2685,6 +2815,8 @@ pub fn symmetry_tableaux_from_properties(
                             columns: vec![(0..info.n_indices)
                                 .map(|p| info.start_position + p)
                                 .collect()],
+                            trace_free: false,
+                            duality: ax_ir::DualityKind::None,
                         });
                     }
                 }
@@ -2695,53 +2827,12 @@ pub fn symmetry_tableaux_from_properties(
                             columns: vec![(0..info.n_indices)
                                 .map(|p| info.start_position + p)
                                 .collect()],
+                            trace_free: false,
+                            duality: ax_ir::DualityKind::None,
                         });
                     }
                 }
-                ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-                    let mut cursor = 0usize;
-                    let mut rows = Vec::new();
-                    for row_len in shape {
-                        let mut row = Vec::new();
-                        for _ in 0..row_len {
-                            if cursor < indices.len() {
-                                row.push(indices[cursor]);
-                                cursor += 1;
-                            }
-                        }
-                        rows.push(row);
-                    }
-                    let mut tabs = ax_young::Tableaux::new();
-                    tabs.add_tableau(ax_young::YoungTableau {
-                        rows,
-                        multiplicity: BigRational::one(),
-                        selfdual_column: 0,
-                    });
-                    tabs.standard_form();
-                    for tab in tabs.storage {
-                        let rows: Vec<Vec<usize>> = tab
-                            .rows
-                            .iter()
-                            .map(|row| {
-                                row.iter()
-                                    .map(|p| info.start_position + *p)
-                                    .collect::<Vec<_>>()
-                            })
-                            .collect();
-                        let max_cols = tab.rows.iter().map(Vec::len).max().unwrap_or(0);
-                        let columns: Vec<Vec<usize>> = (0..max_cols)
-                            .map(|col| {
-                                tab.rows
-                                    .iter()
-                                    .filter_map(|row| row.get(col).copied())
-                                    .map(|p| info.start_position + p)
-                                    .collect::<Vec<_>>()
-                            })
-                            .filter(|column| column.len() > 1)
-                            .collect();
-                        result.push(adjform::TableauInfo { rows, columns });
-                    }
-                }
+                ax_ir::TensorProperty::TableauSymmetry(_) => {}
                 _ => {}
             }
         }
@@ -2754,7 +2845,7 @@ fn projectable_factor_key(info: &TensorFactorInfo) -> Option<YoungProjectFactorK
     let mut projector_mask = 0u8;
     for prop in &info.properties {
         match prop {
-            ax_ir::TensorProperty::TableauSymmetry { .. } => projector_mask |= 1,
+            ax_ir::TensorProperty::TableauSymmetry(_) => projector_mask |= 1,
             ax_ir::TensorProperty::RiemannSymmetry => projector_mask |= 1 << 1,
             ax_ir::TensorProperty::SatisfiesBianchi { .. } => projector_mask |= 1 << 2,
             ax_ir::TensorProperty::WeylTensor => projector_mask |= 1 << 3,
@@ -2868,7 +2959,7 @@ fn young_project_factor_in_term(
 ) -> Expr {
     let factor_info = extract_factor_info_from_term(expr, properties, interner);
     let inherited_factor_info = inherited_tableau_factor_infos(&factor_info, properties);
-    let ops = match spec {
+    let selected_info = match spec {
         YoungProjectTargetSpec::Direct(spec) => {
             let mut seen = 0usize;
             let mut selected = None;
@@ -2877,7 +2968,7 @@ fn young_project_factor_in_term(
                     continue;
                 }
                 if seen == spec.occurrence {
-                    selected = Some(young_project_ops_for_factor(&info));
+                    selected = Some(info);
                     break;
                 }
                 seen += 1;
@@ -2892,7 +2983,7 @@ fn young_project_factor_in_term(
                     continue;
                 }
                 if seen == spec.occurrence {
-                    selected = Some(young_project_ops_for_factor(&info));
+                    selected = Some(info);
                     break;
                 }
                 seen += 1;
@@ -2901,29 +2992,21 @@ fn young_project_factor_in_term(
         }
     };
 
-    let Some(ops) = ops else {
+    let Some(selected_info) = selected_info else {
         return expr.clone();
     };
+    let ops = young_project_ops_for_factor(&selected_info);
 
     let mut projected = expr.clone();
     for op in ops {
         projected = match op {
-            TensorProjectionOp::Tableau(tableau_info) => {
-                let mut current = projected;
-                for column in &tableau_info.columns {
-                    if column.len() > 1 {
-                        current = symmetrise(&current, column, true, interner);
-                        current = simplify_expr(current, interner);
-                    }
-                }
-                for row in &tableau_info.rows {
-                    if row.len() > 1 {
-                        current = symmetrise(&current, row, false, interner);
-                        current = simplify_expr(current, interner);
-                    }
-                }
-                current
-            }
+            TensorProjectionOp::Structured(tableaux) => apply_structured_projection_to_term(
+                &projected,
+                selected_info.start_position,
+                selected_info.n_indices,
+                &tableaux,
+            )
+            .unwrap_or(projected),
             TensorProjectionOp::PermutationProjector {
                 positions,
                 permutations,
@@ -2959,6 +3042,50 @@ fn young_project_factor_in_expr(
             inner, spec, properties, interner,
         )),
         _ => young_project_factor_in_term(expr, spec, properties, interner),
+    }
+}
+
+fn apply_structured_projection_to_term(
+    expr: &Expr,
+    start_position: usize,
+    n_indices: usize,
+    tableaux: &[RealizedTableau],
+) -> Result<Expr, young_engine::YoungEngineError> {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut rewritten = Vec::with_capacity(factors.len());
+            let mut cursor = 0usize;
+            let mut applied = false;
+            for factor in factors {
+                match factor {
+                    Expr::Indexed(_, indices)
+                        if cursor == start_position && indices.len() == n_indices =>
+                    {
+                        rewritten.push(apply_realized_tableaux_to_factor(
+                            factor,
+                            tableaux,
+                            usize::MAX,
+                        )?);
+                        applied = true;
+                        cursor += indices.len();
+                    }
+                    Expr::Indexed(_, indices) => {
+                        rewritten.push(factor.clone());
+                        cursor += indices.len();
+                    }
+                    _ => rewritten.push(factor.clone()),
+                }
+            }
+            if applied {
+                Ok(Expr::mul(rewritten))
+            } else {
+                Ok(expr.clone())
+            }
+        }
+        Expr::Indexed(_, indices) if start_position == 0 && indices.len() == n_indices => {
+            apply_realized_tableaux_to_factor(expr, tableaux, usize::MAX)
+        }
+        _ => Ok(expr.clone()),
     }
 }
 
@@ -4632,12 +4759,11 @@ fn canonicalize_indexed_slots(
             ax_ir::TensorProperty::EpsilonTensor => {
                 signed_groups.push((0..indices.len()).collect());
             }
-            ax_ir::TensorProperty::TableauSymmetry {
-                shape,
-                indices: tab_indices,
-            } => {
-                let (_, columns) = tableau_groups_from_shape(shape, tab_indices);
-                signed_groups.extend(columns);
+            ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
+                for attachment in &symmetry.tableaux {
+                    let (_, columns) = tableau_groups_from_attachment(attachment);
+                    signed_groups.extend(columns);
+                }
             }
             _ => {}
         }
@@ -6955,19 +7081,23 @@ pub fn young_project(
     tableau: &ax_young::YoungTableau,
     interner: &ax_ir::Interner,
 ) -> Expr {
-    let projector = tableau.projector(false);
+    let Ok(projector) = ax_young::build_group_backed_projector(
+        tableau,
+        ax_young::ProjectorNormalization::Unnormalized,
+    ) else {
+        return expr.clone();
+    };
     let mut terms = Vec::new();
-    for (permuted, coeff) in projector.permutations {
-        let mut perm = Vec::new();
-        for original in &projector.original {
-            let pos = permuted
-                .iter()
-                .position(|candidate| candidate == original)
-                .unwrap_or(0);
-            perm.push(pos);
-        }
-        let permuted_expr = permute_indices_at_positions(expr, &projector.original, &perm);
-        terms.push(multiply_expr_by_rational(permuted_expr, coeff));
+    let Ok(expanded) = ax_young::expand_projector_group_algebra(&projector) else {
+        return expr.clone();
+    };
+    for term in expanded {
+        let permuted_expr = permute_indices_at_positions(
+            expr,
+            &(0..term.images.len()).collect::<Vec<_>>(),
+            &term.images,
+        );
+        terms.push(multiply_expr_by_rational(permuted_expr, term.coefficient));
     }
     let _ = interner;
     Expr::add(terms)
@@ -7075,13 +7205,9 @@ pub fn young_project_tensor_with_options(
             let mut projected = expr.clone();
             for op in projection_ops {
                 projected = match op {
-                    TensorProjectionOp::Tableau(tableau_info) => {
-                        let tableau = ax_young::YoungTableau {
-                            rows: tableau_info.rows,
-                            multiplicity: BigRational::one(),
-                            selfdual_column: 0,
-                        };
-                        young_project(&projected, &tableau, interner)
+                    TensorProjectionOp::Structured(tableaux) => {
+                        apply_realized_tableaux_to_factor(&projected, &tableaux, usize::MAX)
+                            .unwrap_or(projected)
                     }
                     TensorProjectionOp::PermutationProjector {
                         positions,
@@ -9500,11 +9626,18 @@ fn inferred_rank_from_properties(
                 .max()
                 .map(|pos| pos + 1)
                 .or(Some(positions.len())),
-            ax_ir::TensorProperty::TableauSymmetry { indices, shape } => indices
+            ax_ir::TensorProperty::TableauSymmetry(symmetry) => symmetry
+                .tableaux
                 .iter()
-                .max()
-                .map(|pos| pos + 1)
-                .or(Some(shape.iter().sum())),
+                .filter_map(|attachment| {
+                    attachment
+                        .slot_map
+                        .iter()
+                        .max()
+                        .map(|pos| pos + 1)
+                        .or(Some(attachment.shape.iter().sum()))
+                })
+                .max(),
             ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor => Some(4),
             ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
                 Some(slots.iter().max().copied().unwrap_or(3) + 1)
@@ -10374,163 +10507,6 @@ fn shape_fits_dim(shape: &[usize], dim: usize) -> bool {
     (0..shape.first().copied().unwrap_or(0)).all(|col| shape_column_height(shape, col) <= dim)
 }
 
-fn addable_rows(shape: &[usize], dim: usize) -> Vec<usize> {
-    let mut rows = Vec::new();
-    for row in 0..=shape.len() {
-        let row_len = shape.get(row).copied().unwrap_or(0);
-        if row > 0 && shape[row - 1] <= row_len {
-            continue;
-        }
-        let mut trial = shape.to_vec();
-        if row == trial.len() {
-            trial.push(1);
-        } else {
-            trial[row] += 1;
-        }
-        if shape_fits_dim(&trial, dim) {
-            rows.push(row);
-        }
-    }
-    rows
-}
-
-fn add_cell(shape: &[usize], row: usize) -> (Vec<usize>, usize) {
-    let mut out = shape.to_vec();
-    let col;
-    if row == out.len() {
-        out.push(1);
-        col = 0;
-    } else {
-        col = out[row];
-        out[row] += 1;
-    }
-    (out, col)
-}
-
-fn lr_lattice_word_ok(cells: &[(usize, usize, u8)]) -> bool {
-    let mut word = cells.to_vec();
-    word.sort_by(|(row_a, col_a, _), (row_b, col_b, _)| {
-        row_a.cmp(row_b).then_with(|| col_b.cmp(col_a))
-    });
-    let max_label = word
-        .iter()
-        .map(|(_, _, label)| *label as usize)
-        .max()
-        .unwrap_or(0);
-    let mut counts = vec![0usize; max_label + 2];
-    for (_, _, label) in word {
-        counts[label as usize] += 1;
-        for i in 1..max_label {
-            if counts[i] < counts[i + 1] {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn place_lr_row(
-    shape: &[usize],
-    cells_to_place: usize,
-    label: u8,
-    dim: usize,
-    used_columns: &mut HashSet<usize>,
-    placed_cells: &mut Vec<(usize, usize, u8)>,
-    out: &mut Vec<(Vec<usize>, Vec<(usize, usize, u8)>)>,
-) {
-    if cells_to_place == 0 {
-        if lr_lattice_word_ok(placed_cells) {
-            out.push((shape.to_vec(), placed_cells.clone()));
-        }
-        return;
-    }
-
-    for row in addable_rows(shape, dim) {
-        let (next_shape, col) = add_cell(shape, row);
-        if used_columns.contains(&col) {
-            continue;
-        }
-        used_columns.insert(col);
-        placed_cells.push((row, col, label));
-        if lr_lattice_word_ok(placed_cells) {
-            place_lr_row(
-                &next_shape,
-                cells_to_place - 1,
-                label,
-                dim,
-                used_columns,
-                placed_cells,
-                out,
-            );
-        }
-        placed_cells.pop();
-        used_columns.remove(&col);
-    }
-}
-
-fn lr_decompose_cells(
-    current_shape: &[usize],
-    remaining_rows: &[usize],
-    placed_cells: &[(usize, usize, u8)],
-    current_label: u8,
-    dim: usize,
-    results: &mut HashMap<Vec<usize>, usize>,
-) {
-    if remaining_rows.is_empty() {
-        if shape_fits_dim(current_shape, dim) && lr_lattice_word_ok(placed_cells) {
-            *results.entry(normalize_shape(current_shape)).or_default() += 1;
-        }
-        return;
-    }
-
-    let mut row_placements = Vec::new();
-    let mut used_columns = HashSet::new();
-    let mut cells = placed_cells.to_vec();
-    place_lr_row(
-        current_shape,
-        remaining_rows[0],
-        current_label,
-        dim,
-        &mut used_columns,
-        &mut cells,
-        &mut row_placements,
-    );
-
-    for (shape, cells) in row_placements {
-        lr_decompose_cells(
-            &shape,
-            &remaining_rows[1..],
-            &cells,
-            current_label + 1,
-            dim,
-            results,
-        );
-    }
-}
-
-fn lr_decompose_recursive(
-    current_shape: &[usize],
-    remaining_rows: &[usize],
-    placed_labels: &[u8],
-    current_label: u8,
-    dim: usize,
-    results: &mut HashMap<Vec<usize>, usize>,
-) {
-    let placed_cells = placed_labels
-        .iter()
-        .enumerate()
-        .map(|(col, label)| (0usize, col, *label))
-        .collect::<Vec<_>>();
-    lr_decompose_cells(
-        current_shape,
-        remaining_rows,
-        &placed_cells,
-        current_label,
-        dim,
-        results,
-    );
-}
-
 pub fn littlewood_richardson(
     tab_a: &[usize],
     tab_b: &[usize],
@@ -10541,11 +10517,24 @@ pub fn littlewood_richardson(
     if !shape_fits_dim(&shape_a, dim) || !shape_fits_dim(&shape_b, dim) {
         return Vec::new();
     }
-
-    let mut results = HashMap::new();
-    lr_decompose_recursive(&shape_a, &shape_b, &[], 1, dim, &mut results);
-    let mut out = results.into_iter().collect::<Vec<_>>();
-    out.sort_by(|(shape_a, _), (shape_b, _)| shape_b.cmp(shape_a));
+    let Ok(left) = ax_young::YoungDiagram::try_new(shape_a) else {
+        return Vec::new();
+    };
+    let Ok(right) = ax_young::YoungDiagram::try_new(shape_b) else {
+        return Vec::new();
+    };
+    let Ok(expansion) = ax_young::schur_tensor_product(&left, &right) else {
+        return Vec::new();
+    };
+    let mut out = expansion
+        .terms
+        .into_iter()
+        .filter(|(shape, _)| shape_fits_dim(&shape.rows, dim))
+        .filter_map(|(shape, coeff)| coeff.to_usize().map(|multiplicity| (shape.rows, multiplicity)))
+        .collect::<Vec<_>>();
+    out.sort_by(|(shape_a, mult_a), (shape_b, mult_b)| {
+        shape_b.cmp(shape_a).then_with(|| mult_a.cmp(mult_b))
+    });
     out
 }
 
@@ -10592,9 +10581,12 @@ fn inferred_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> 
 
     for prop in properties.get_properties_with_indices(*name, indices, None) {
         match prop {
-            ax_ir::TensorProperty::TableauSymmetry { shape, .. } => {
-                let shape = normalize_shape(&shape);
-                if shape.iter().sum::<usize>() == indices.len() {
+            ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
+                let maybe_shape = symmetry.tableaux.iter().find_map(|attachment| {
+                    let shape = normalize_shape(&attachment.shape);
+                    (shape.iter().sum::<usize>() == indices.len()).then_some(shape)
+                });
+                if let Some(shape) = maybe_shape {
                     return Some(shape);
                 }
                 return None;
@@ -10632,8 +10624,9 @@ fn inferred_shape_for_factor(factor: &Expr, properties: &dyn PropertyLookup) -> 
     }
 }
 
-fn standard_tableau_for_shape(shape: &[usize]) -> ax_young::YoungTableau {
-    ax_young::YoungTableau::standard(&ax_young::YoungDiagram::new(shape.to_vec()))
+fn standard_tableau_for_shape(shape: &[usize]) -> Option<ax_young::YoungTableau> {
+    let diagram = ax_young::YoungDiagram::try_new(shape.to_vec()).ok()?;
+    ax_young::YoungTableau::standard(&diagram).ok()
 }
 
 fn factor_vanishes_in_dimension(
@@ -10641,35 +10634,66 @@ fn factor_vanishes_in_dimension(
     dim: usize,
     properties: &dyn PropertyLookup,
 ) -> bool {
+    if let Expr::Indexed(base, indices) = factor {
+        if let Expr::Sym(name) = base.as_ref() {
+            let props = properties.get_properties_with_indices(*name, indices, None);
+            if tensor_annihilates_from_properties(&props, dim) {
+                return true;
+            }
+        }
+    }
+
     inferred_shape_for_factor(factor, properties)
-        .map(|shape| !shape_fits_dim(&shape, dim))
+        .and_then(|shape| ax_young::YoungDiagram::try_new(shape).ok())
+        .map(|shape| {
+            ax_young::vanishes_in_gl_dimension(&shape, dim)
+                || (shape.rows.iter().all(|row| *row == 1)
+                    && ax_young::schouten_annihilates_antisym_degree(shape.n_cells(), dim))
+        })
         .unwrap_or(false)
 }
 
 fn lr_product_decomposition(shapes: &[Vec<usize>], dim: usize) -> Vec<(Vec<usize>, usize)> {
-    let Some(first) = shapes.first() else {
+    let Ok(summary) = decompose_product_irreps(shapes) else {
         return Vec::new();
     };
-    let mut current: HashMap<Vec<usize>, usize> = HashMap::from([(normalize_shape(first), 1usize)]);
-
-    for shape in &shapes[1..] {
-        let mut next: HashMap<Vec<usize>, usize> = HashMap::new();
-        for (left, left_mult) in current {
-            for (right, right_mult) in littlewood_richardson(&left, shape, dim) {
-                *next.entry(right).or_default() += left_mult * right_mult;
-            }
-        }
-        current = next;
-        if current.is_empty() {
-            break;
-        }
-    }
-
-    let mut out = current.into_iter().collect::<Vec<_>>();
+    let mut out = summary
+        .shapes
+        .into_iter()
+        .zip(summary.multiplicities)
+        .filter(|(shape, _)| shape_fits_dim(shape, dim))
+        .collect::<Vec<_>>();
     out.sort_by(|(shape_a, mult_a), (shape_b, mult_b)| {
         shape_b.cmp(shape_a).then_with(|| mult_a.cmp(mult_b))
     });
     out
+}
+
+pub fn decompose_product_irreps(
+    shapes: &[Vec<usize>],
+) -> Result<IrreducibleProductSummary, anyhow::Error> {
+    let diagrams = shapes
+        .iter()
+        .map(|shape| ax_young::YoungDiagram::try_new(normalize_shape(shape)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let decomposition = ax_young::tensor_product_decomposition(&diagrams)?;
+    Ok(IrreducibleProductSummary {
+        shapes: decomposition
+            .irreps
+            .iter()
+            .map(|space| space.shape.rows.clone())
+            .collect(),
+        multiplicities: decomposition
+            .irreps
+            .iter()
+            .map(|space| space.multiplicity)
+            .collect(),
+        basis_labels: decomposition
+            .irreps
+            .iter()
+            .map(|space| space.basis_labels.clone())
+            .collect(),
+    })
 }
 
 fn decompose_product_failure(reason: &str, expr: &Expr, interner: &Interner) -> Expr {
@@ -10741,7 +10765,9 @@ pub fn decompose_product(
         if shape.iter().sum::<usize>() != total_indices {
             continue;
         }
-        let tableau = standard_tableau_for_shape(&shape);
+        let Some(tableau) = standard_tableau_for_shape(&shape) else {
+            continue;
+        };
         let projected = young_project(expr, &tableau, interner);
         let projected = canonicalise(&projected, properties, interner);
         if projected != Expr::zero() {
@@ -10812,12 +10838,27 @@ fn schouten_reduce_impl(
         return schouten_reduce_failure("missing_dimension", expr, interner);
     };
 
-    let reduced = match expr {
+    let dimension_reduced = match reduce_expr_by_dimension(
+        expr,
+        &|symbol| properties.get_properties(symbol),
+        Some(dim),
+    ) {
+        Ok(reduced) => reduced,
+        Err(DimensionReduceError::MissingAmbientDimension) => {
+            return schouten_reduce_failure("missing_dimension", expr, interner);
+        }
+        Err(DimensionReduceError::UnsupportedExpr) => expr.clone(),
+    };
+    if dimension_reduced == Expr::zero() {
+        return Expr::zero();
+    }
+
+    let reduced = match &dimension_reduced {
         Expr::Indexed(_, _) => {
-            if factor_vanishes_in_dimension(expr, dim, properties) {
+            if factor_vanishes_in_dimension(&dimension_reduced, dim, properties) {
                 Expr::zero()
             } else {
-                expr.clone()
+                dimension_reduced.clone()
             }
         }
         Expr::Mul(factors) => {
@@ -10832,13 +10873,13 @@ fn schouten_reduce_impl(
                     .filter(|factor| matches!(factor, Expr::Indexed(_, _)))
                     .count();
                 if indexed_count >= 2 {
-                    decompose_product(expr, dim, properties, interner)
+                    decompose_product(&dimension_reduced, dim, properties, interner)
                 } else {
-                    expr.clone()
+                    dimension_reduced.clone()
                 }
             }
         }
-        _ => expr.clone(),
+        _ => dimension_reduced.clone(),
     };
 
     if is_timeout_expr(&reduced, interner) {
@@ -11021,6 +11062,27 @@ mod tests {
     use super::*;
     use ax_ir::{Index, Variance};
     use std::collections::HashMap;
+
+    fn declared_tableau_symmetry(shape: Vec<usize>, slot_map: Vec<usize>) -> ax_ir::TensorProperty {
+        ax_ir::TensorProperty::TableauSymmetry(ax_ir::TensorSymmetry {
+            tableaux: vec![ax_ir::TableauAttachment {
+                shape,
+                slot_map,
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: ax_ir::DualityKind::None,
+                restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: ax_ir::SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        })
+    }
 
     #[test]
     fn classify_simple_product() {
@@ -13048,10 +13110,7 @@ mod tests {
         let mut props = HashMap::new();
         props.insert(
             t,
-            vec![ax_ir::TensorProperty::TableauSymmetry {
-                shape: vec![2, 1],
-                indices: vec![0, 1, 2],
-            }],
+            vec![declared_tableau_symmetry(vec![2, 1], vec![0, 1, 2])],
         );
 
         let make_t = |slots: [lasso::Spur; 3]| {
@@ -13090,10 +13149,7 @@ mod tests {
         let mut props = HashMap::new();
         props.insert(
             t,
-            vec![ax_ir::TensorProperty::TableauSymmetry {
-                shape: vec![2, 1],
-                indices: vec![0, 1, 2],
-            }],
+            vec![declared_tableau_symmetry(vec![2, 1], vec![0, 1, 2])],
         );
 
         let make_t = |slots: [lasso::Spur; 3]| {
@@ -13131,10 +13187,7 @@ mod tests {
         props.insert(eps, vec![ax_ir::TensorProperty::EpsilonTensor]);
         props.insert(
             t,
-            vec![ax_ir::TensorProperty::TableauSymmetry {
-                shape: vec![2, 1],
-                indices: vec![0, 1, 2],
-            }],
+            vec![declared_tableau_symmetry(vec![2, 1], vec![0, 1, 2])],
         );
 
         let make_index = |name| Index {
@@ -14255,6 +14308,224 @@ mod tests {
     }
 
     #[test]
+    fn structured_symmetric_tableau_canonicalizes_tensor_factor_order() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let mut props = HashMap::new();
+        props.insert(t, vec![declared_tableau_symmetry(vec![2], vec![0, 1])]);
+
+        let result = young_project_tensor_with_options(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectTensorOptions::default(),
+        );
+        assert_eq!(
+            result,
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![
+                    Index {
+                        name: a,
+                        variance: Variance::Down,
+                        index_type: None
+                    },
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None
+                    },
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn structured_antisymmetric_tableau_canonicalizes_tensor_factor_order() {
+        let interner = ax_ir::Interner::new();
+        let a_sym = interner.get_or_intern("A");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(a_sym)),
+            vec![
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let mut props = HashMap::new();
+        props.insert(
+            a_sym,
+            vec![declared_tableau_symmetry(vec![1, 1], vec![0, 1])],
+        );
+
+        let result = young_project_tensor_with_options(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectTensorOptions::default(),
+        );
+        assert_eq!(
+            result,
+            Expr::mul(vec![
+                Expr::Int((-1).into()),
+                Expr::Indexed(
+                    Box::new(Expr::Sym(a_sym)),
+                    vec![
+                        Index {
+                            name: a,
+                            variance: Variance::Down,
+                            index_type: None
+                        },
+                        Index {
+                            name: b,
+                            variance: Variance::Down,
+                            index_type: None
+                        },
+                    ],
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn structured_shape_two_one_projection_is_deterministic() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: c,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let mut props = HashMap::new();
+        props.insert(
+            t,
+            vec![declared_tableau_symmetry(vec![2, 1], vec![0, 1, 2])],
+        );
+
+        let first = young_project_tensor_with_options(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectTensorOptions::default(),
+        );
+        let second = young_project_tensor_with_options(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectTensorOptions::default(),
+        );
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn realized_tableaux_from_properties_rejects_missing_tableaux() {
+        let result = crate::symmetry_bridge::realized_tableaux_from_properties(&[]);
+        assert!(matches!(
+            result,
+            Err(crate::symmetry_bridge::SymmetryBridgeError::MissingTableaux)
+        ));
+    }
+
+    #[test]
+    fn projector_slots_for_indexed_tensor_rejects_sum_expression() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let expr = Expr::add(vec![Expr::Sym(t), Expr::Sym(t)]);
+        assert!(matches!(
+            crate::young_engine::projector_slots_for_indexed_tensor(&expr),
+            Err(crate::young_engine::YoungEngineError::UnsupportedExpr)
+        ));
+    }
+
+    #[test]
+    fn canonicalize_factor_slots_with_projector_rejects_slot_mismatch() {
+        let diagram = ax_young::YoungDiagram::try_new(vec![2, 1]).unwrap();
+        let tableau = ax_young::YoungTableau::standard(&diagram).unwrap();
+        let projector = ax_young::build_group_backed_projector(
+            &tableau,
+            ax_young::ProjectorNormalization::Unnormalized,
+        )
+        .unwrap();
+
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        assert!(matches!(
+            crate::young_engine::canonicalize_factor_slots_with_projector(&expr, &projector),
+            Err(crate::young_engine::YoungEngineError::SlotCountMismatch {
+                expected: 3,
+                actual: 2
+            })
+        ));
+    }
+
+    #[test]
     fn young_project_symmetric_pair() {
         let interner = ax_ir::Interner::new();
         let t = interner.get_or_intern("T");
@@ -14316,13 +14587,7 @@ mod tests {
         let expr = Expr::mul(vec![tterm, spectator]);
 
         let mut props = HashMap::new();
-        props.insert(
-            t,
-            vec![ax_ir::TensorProperty::TableauSymmetry {
-                shape: vec![2],
-                indices: vec![0, 1],
-            }],
-        );
+        props.insert(t, vec![declared_tableau_symmetry(vec![2], vec![0, 1])]);
 
         let result = young_project_product(
             &expr,
@@ -14648,13 +14913,7 @@ mod tests {
                 ax_ir::TensorProperty::TableauInherit,
             ],
         );
-        props.insert(
-            t,
-            vec![ax_ir::TensorProperty::TableauSymmetry {
-                shape: vec![2],
-                indices: vec![0, 1],
-            }],
-        );
+        props.insert(t, vec![declared_tableau_symmetry(vec![2], vec![0, 1])]);
 
         let direct = extract_factor_info_from_term(&expr, &props, &interner);
         let inherited = inherited_tableau_factor_infos(&direct, &props);
@@ -14663,8 +14922,10 @@ mod tests {
                 .iter()
                 .any(|info| info.properties.iter().any(|prop| matches!(
                     prop,
-                    ax_ir::TensorProperty::TableauSymmetry { shape, indices }
-                        if shape == &vec![2] && indices == &vec![1, 2]
+                    ax_ir::TensorProperty::TableauSymmetry(symmetry)
+                        if symmetry.tableaux.len() == 1
+                            && symmetry.tableaux[0].shape == vec![2]
+                            && symmetry.tableaux[0].slot_map == vec![1, 2]
                 ))),
             "expected shifted inherited tableau info, got {:?}",
             inherited
@@ -14799,10 +15060,7 @@ mod tests {
         props.insert(
             r,
             vec![
-                ax_ir::TensorProperty::TableauSymmetry {
-                    shape: vec![2, 2],
-                    indices: vec![0, 1, 2, 3],
-                },
+                declared_tableau_symmetry(vec![2, 2], vec![0, 1, 2, 3]),
                 ax_ir::TensorProperty::SatisfiesBianchi {
                     slots: vec![0, 1, 2, 3],
                 },
@@ -14814,8 +15072,10 @@ mod tests {
         assert!(
             inherited.iter().any(|prop| matches!(
                 prop,
-                ax_ir::TensorProperty::TableauSymmetry { shape, indices }
-                    if shape == &vec![2, 2] && indices == &vec![1, 2, 3, 4]
+                ax_ir::TensorProperty::TableauSymmetry(symmetry)
+                    if symmetry.tableaux.len() == 1
+                        && symmetry.tableaux[0].shape == vec![2, 2]
+                        && symmetry.tableaux[0].slot_map == vec![1, 2, 3, 4]
             )),
             "expected shifted inherited tableau symmetry, got {:?}",
             inherited
@@ -14955,13 +15215,7 @@ mod tests {
         );
 
         let mut props = HashMap::new();
-        props.insert(
-            t,
-            vec![ax_ir::TensorProperty::TableauSymmetry {
-                shape: vec![2],
-                indices: vec![0, 1],
-            }],
-        );
+        props.insert(t, vec![declared_tableau_symmetry(vec![2], vec![0, 1])]);
 
         let expanded = young_project_tensor_with_options(
             &expr,
@@ -14973,24 +15227,8 @@ mod tests {
                 rename_dummies_after: false,
             },
         );
-        assert!(
-            matches!(expanded, Expr::Mul(_) | Expr::Add(_)),
-            "expected unsimplified projector output, got {:?}",
-            expanded
-        );
-
-        let reduced = young_project_tensor_with_options(
-            &expr,
-            &props,
-            &interner,
-            &YoungProjectTensorOptions {
-                modulo_monoterm: true,
-                canonicalize_after: true,
-                rename_dummies_after: true,
-            },
-        );
-        let expected = Expr::mul(vec![
-            Expr::Int(2.into()),
+        assert_eq!(
+            expanded,
             Expr::Indexed(
                 Box::new(Expr::Sym(t)),
                 vec![
@@ -15005,8 +15243,34 @@ mod tests {
                         index_type: None,
                     },
                 ],
-            ),
-        ]);
+            )
+        );
+
+        let reduced = young_project_tensor_with_options(
+            &expr,
+            &props,
+            &interner,
+            &YoungProjectTensorOptions {
+                modulo_monoterm: true,
+                canonicalize_after: true,
+                rename_dummies_after: true,
+            },
+        );
+        let expected = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
         assert_eq!(reduced, expected, "got {:?}", reduced);
     }
 
@@ -16918,13 +17182,7 @@ mod tests {
             }],
         );
         let mut props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> = HashMap::new();
-        props.insert(
-            t,
-            vec![ax_ir::TensorProperty::TableauSymmetry {
-                shape: vec![2],
-                indices: vec![0, 1],
-            }],
-        );
+        props.insert(t, vec![declared_tableau_symmetry(vec![2], vec![0, 1])]);
         assert_eq!(
             inferred_shape_for_factor(&t_expr, &props),
             Some(vec![2]),
@@ -16949,13 +17207,7 @@ mod tests {
         let b = interner.get_or_intern("b");
         let c = interner.get_or_intern("c");
         let mut props: HashMap<lasso::Spur, Vec<ax_ir::TensorProperty>> = HashMap::new();
-        props.insert(
-            t,
-            vec![ax_ir::TensorProperty::TableauSymmetry {
-                shape: vec![3],
-                indices: vec![0, 1, 2],
-            }],
-        );
+        props.insert(t, vec![declared_tableau_symmetry(vec![3], vec![0, 1, 2])]);
         let expr = Expr::mul(vec![
             Expr::Indexed(
                 Box::new(Expr::Sym(t)),
@@ -17123,10 +17375,7 @@ mod tests {
             props: HashMap::from([(
                 t,
                 vec![
-                    ax_ir::TensorProperty::TableauSymmetry {
-                        shape: vec![1, 1, 1],
-                        indices: vec![0, 1, 2],
-                    },
+                    declared_tableau_symmetry(vec![1, 1, 1], vec![0, 1, 2]),
                     ax_ir::TensorProperty::DimensionDependentIdentity,
                 ],
             )]),
@@ -17211,10 +17460,7 @@ mod tests {
             props: HashMap::from([(
                 t,
                 vec![
-                    ax_ir::TensorProperty::TableauSymmetry {
-                        shape: vec![1, 1, 1],
-                        indices: vec![0, 1, 2],
-                    },
+                    declared_tableau_symmetry(vec![1, 1, 1], vec![0, 1, 2]),
                     ax_ir::TensorProperty::DimensionDependentIdentity,
                 ],
             )]),
@@ -17271,6 +17517,29 @@ mod tests {
         let shapes: Vec<Vec<usize>> = result.iter().map(|(s, _)| s.clone()).collect();
         assert!(shapes.contains(&vec![3]), "should contain [3]");
         assert!(shapes.contains(&vec![2, 1]), "should contain [2,1]");
+    }
+
+    #[test]
+    fn decompose_product_irreps_reports_exact_multiplicity_summary() {
+        let summary = decompose_product_irreps(&[vec![1], vec![1], vec![1]]).unwrap();
+        assert_eq!(summary.shapes, vec![vec![1, 1, 1], vec![2, 1], vec![3]]);
+        assert_eq!(summary.multiplicities, vec![1, 2, 1]);
+        assert_eq!(
+            summary.basis_labels,
+            vec![
+                vec!["m0".to_string()],
+                vec!["m0".to_string(), "m1".to_string()],
+                vec!["m0".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn compatibility_lr_product_decomposition_derives_from_irrep_summary() {
+        assert_eq!(
+            lr_product_decomposition(&[vec![1], vec![1], vec![1]], 4),
+            vec![(vec![3], 1), (vec![2, 1], 2), (vec![1, 1, 1], 1)]
+        );
     }
 
     #[test]

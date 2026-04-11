@@ -1,5 +1,6 @@
 #![allow(clippy::manual_contains, clippy::too_many_arguments)]
 
+use ax_ir::{DualityKind, RestrictedSymmetryMode, SymmetrySource, TableauAttachment, TensorSymmetry};
 use num_rational::BigRational;
 use num_traits::{One, Zero};
 use std::collections::HashMap;
@@ -211,6 +212,31 @@ impl SpinorExpr {
     }
 }
 
+pub fn two_spinor_symmetric_tableau() -> TensorSymmetry {
+    TensorSymmetry {
+        tableaux: vec![TableauAttachment {
+            shape: vec![2],
+            slot_map: vec![0, 1],
+            multiplicity_numer: 1,
+            multiplicity_denom: 1,
+            duality: DualityKind::None,
+            restricted_mode: RestrictedSymmetryMode::FullYoung,
+            trace_free: false,
+            dimension_guard: None,
+            source: SymmetrySource::Declared,
+            label: None,
+        }],
+        inherits_under_derivative: false,
+        inherits_under_tensor_product: false,
+        inherits_under_contraction: false,
+        preserves_trace_free_under_projection: false,
+    }
+}
+
+pub fn admits_selfdual_two_form_in_dimension(dim: usize) -> bool {
+    dim == 4
+}
+
 impl SpinorTerm {
     pub fn new(coefficient: BigRational, factors: Vec<SpinorFactor>) -> Self {
         Self {
@@ -232,6 +258,17 @@ impl SpinorTerm {
             .iter()
             .map(|factor| factor.little_group_weight(particle))
             .sum()
+    }
+}
+
+#[cfg(test)]
+mod dimension_tests {
+    use super::admits_selfdual_two_form_in_dimension;
+
+    #[test]
+    fn selfdual_two_form_admissibility_is_exact() {
+        assert!(admits_selfdual_two_form_in_dimension(4));
+        assert!(!admits_selfdual_two_form_in_dimension(6));
     }
 }
 
@@ -2369,5 +2406,11 @@ mod tests {
                 && term.right_particles.len() >= 2
                 && (term.internal_helicity == 1 || term.internal_helicity == -1)
         }));
+    }
+
+    #[test]
+    fn two_spinor_tableau_has_symmetric_shape() {
+        let symmetry = two_spinor_symmetric_tableau();
+        assert_eq!(symmetry.tableaux[0].shape, vec![2]);
     }
 }

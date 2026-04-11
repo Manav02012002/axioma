@@ -2,6 +2,7 @@ pub mod expr;
 pub mod intern;
 pub mod pool;
 pub mod pretty;
+pub mod symmetry;
 
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -19,6 +20,11 @@ pub use expr::{
 pub use intern::Interner;
 pub use pool::{ExprBuilder, ExprId, ExprPool, PooledExpr};
 pub use pretty::pretty_print;
+pub use symmetry::{
+    validate_duality_in_dimension, validate_tableau_attachment, validate_tensor_symmetry,
+    DimensionGuard, DualityKind, DualityValidationError, RestrictedSymmetryMode,
+    SymmetrySource, SymmetryValidationError, TableauAttachment, TensorSymmetry,
+};
 
 thread_local! {
     static CURRENT_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };

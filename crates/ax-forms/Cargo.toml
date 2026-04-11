@@ -6,8 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
+ax-young = { path = "../ax-young" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }

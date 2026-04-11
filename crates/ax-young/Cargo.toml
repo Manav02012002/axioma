@@ -6,7 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ax-ir = { path = "../ax-ir" }
 ax-perm = { path = "../ax-perm" }
+ax-trace = { path = "../ax-trace" }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }
 num-traits = { workspace = true }
+thiserror = { workspace = true }

@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::needless_range_loop)]
 
-use ax_ir::Expr;
+use ax_ir::{
+    DualityKind, Expr, RestrictedSymmetryMode, SymmetrySource, TableauAttachment, TensorSymmetry,
+};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use std::collections::BTreeMap;
@@ -70,6 +72,42 @@ pub struct DiffForm {
     pub degree: usize,
     pub dim: usize,
     pub components: BTreeMap<Vec<usize>, ax_ir::Expr>,
+}
+
+pub fn k_form_tableau(rank: usize) -> TensorSymmetry {
+    TensorSymmetry {
+        tableaux: vec![TableauAttachment {
+            shape: vec![1; rank],
+            slot_map: (0..rank).collect(),
+            multiplicity_numer: 1,
+            multiplicity_denom: 1,
+            duality: DualityKind::None,
+            restricted_mode: RestrictedSymmetryMode::FullYoung,
+            trace_free: false,
+            dimension_guard: None,
+            source: SymmetrySource::Declared,
+            label: None,
+        }],
+        inherits_under_derivative: false,
+        inherits_under_tensor_product: false,
+        inherits_under_contraction: false,
+        preserves_trace_free_under_projection: false,
+    }
+}
+
+pub fn hodge_dual_rank(rank: usize, dim: usize) -> usize {
+    ax_young::duality::hodge_dual_form_degree(rank, dim)
+}
+
+pub fn middle_degree_selfdual_symmetry(dim: usize) -> anyhow::Result<TensorSymmetry> {
+    if dim % 2 != 0 {
+        anyhow::bail!("middle-degree selfdual symmetry requires even dimension");
+    }
+    Ok(ax_young::induced_form_tableau_duality(
+        dim / 2,
+        dim,
+        DualityKind::SelfDual,
+    )?)
 }
 
 fn simplify_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
@@ -689,6 +727,20 @@ pub fn form_to_expr(form: &DiffForm) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn middle_degree_selfdual_symmetry_is_exact_in_four_dimensions() {
+        let symmetry = middle_degree_selfdual_symmetry(4).unwrap();
+        assert_eq!(symmetry.tableaux.len(), 1);
+        assert_eq!(symmetry.tableaux[0].shape, vec![1, 1]);
+        assert_eq!(symmetry.tableaux[0].slot_map, vec![0, 1]);
+        assert_eq!(symmetry.tableaux[0].duality, DualityKind::SelfDual);
+    }
+
+    #[test]
+    fn middle_degree_selfdual_symmetry_rejects_odd_dimension() {
+        assert!(middle_degree_selfdual_symmetry(3).is_err());
+    }
 
     #[test]
     fn exterior_d_of_scalar() {
