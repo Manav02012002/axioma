@@ -195,3 +195,9 @@ fn normal_order_basic() {
         result_str
     );
 }
+
+#[test]
+fn permutation_sector_dimension_for_single_box_is_n() {
+    let dimension = permutation_sector_dimension(&[1], 3).unwrap();
+    assert_eq!(dimension, 3);
+}

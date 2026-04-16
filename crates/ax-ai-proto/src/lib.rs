@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 
+pub mod symmetry;
+
 use serde::{Deserialize, Serialize};
+
+pub use symmetry::{SymmetryExplainResponse, TensorSymmetryEntry, TensorSymmetrySummary};
 
 pub const AI_PACKET_VERSION: &str = "1";
 

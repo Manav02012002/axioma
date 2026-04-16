@@ -12,6 +12,7 @@ mod cmd_parse;
 mod cmd_render;
 mod cmd_repl;
 mod cmd_run;
+mod cmd_tableau;
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "plugins")]
 use ax_context::load_config;
@@ -61,6 +62,30 @@ enum AiCmd {
 }
 
 #[derive(Debug, Subcommand)]
+enum TableauCmd {
+    Render {
+        #[arg(long)]
+        shape: String,
+        #[arg(long)]
+        slots: Option<String>,
+    },
+    Trace {
+        #[arg(long)]
+        shape: String,
+    },
+    Canonicalize {
+        #[arg(long)]
+        shape: String,
+        #[arg(long)]
+        slots: String,
+    },
+    Summary {
+        #[arg(long)]
+        expr: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 
 enum Command {
     Ai {
@@ -85,6 +110,10 @@ enum Command {
         file: std::path::PathBuf,
         #[arg(long, default_value = "latex")]
         format: String,
+    },
+    Tableau {
+        #[command(subcommand)]
+        cmd: TableauCmd,
     },
     Export {
         file: std::path::PathBuf,
@@ -325,6 +354,23 @@ fn real_main() -> Result<()> {
             let code = cmd_render::run(&file, &format)?;
             std::process::exit(code);
         }
+        Command::Tableau { cmd } => {
+            match cmd {
+                TableauCmd::Render { shape, slots } => {
+                    print!("{}", cmd_tableau::render(&shape, slots.as_deref())?);
+                }
+                TableauCmd::Trace { shape } => {
+                    print!("{}", cmd_tableau::trace(&shape)?);
+                }
+                TableauCmd::Canonicalize { shape, slots } => {
+                    print!("{}", cmd_tableau::canonicalize(&shape, &slots)?);
+                }
+                TableauCmd::Summary { expr } => {
+                    print!("{}", cmd_tableau::summary(&expr)?);
+                }
+            }
+            Ok(())
+        }
         Command::Export {
             file,
             format,
@@ -541,5 +587,102 @@ fn real_main() -> Result<()> {
                 }
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_all_top_level_commands() {
+        let cases = [
+            vec!["axioma", "init"],
+            vec!["axioma", "repl"],
+            vec!["axioma", "run", "examples/gr_tutorial.ax"],
+            vec!["axioma", "parse", "examples/gr_tutorial.ax"],
+            vec!["axioma", "render", "examples/gr_tutorial.ax"],
+            vec!["axioma", "tableau", "render", "--shape", "2,1"],
+            vec![
+                "axioma",
+                "tableau",
+                "summary",
+                "--expr",
+                "tableau_symmetry([[2,1]], slots=[[0,1,2]])",
+            ],
+            vec!["axioma", "export", "examples/gr_tutorial.ax"],
+            vec!["axioma", "codegen", "examples/gr_tutorial.ax"],
+            vec!["axioma", "docgen"],
+            vec!["axioma", "install", "demo"],
+            vec!["axioma", "validate", "examples/aas/hello_world.json"],
+            vec!["axioma", "paths"],
+            vec!["axioma", "fix", "examples/gr_tutorial.ax"],
+            vec!["axioma", "ai", "fix", "examples/gr_tutorial.ax"],
+            vec!["axioma", "ai", "pack", "examples/gr_tutorial.ax"],
+            vec![
+                "axioma",
+                "ai",
+                "apply",
+                "examples/gr_tutorial.ax",
+                "build/ai_packet.json",
+            ],
+        ];
+
+        for args in cases {
+            let cli = Cli::try_parse_from(args.clone())
+                .unwrap_or_else(|error| panic!("failed to parse {:?}: {error}", args));
+            match cli.cmd {
+                Command::Ai { .. }
+                | Command::Fix { .. }
+                | Command::Parse { .. }
+                | Command::Render { .. }
+                | Command::Tableau { .. }
+                | Command::Export { .. }
+                | Command::Codegen { .. }
+                | Command::Docgen { .. }
+                | Command::Install { .. }
+                | Command::Init
+                | Command::Run { .. }
+                | Command::Repl
+                | Command::Validate { .. }
+                | Command::Paths { .. } => {}
+                #[cfg(feature = "notebook")]
+                Command::Notebook { .. } => {}
+                #[cfg(feature = "plugins")]
+                Command::Plugin { .. } => {}
+            }
+        }
+    }
+
+    #[test]
+    fn cli_parses_optional_feature_commands() {
+        #[cfg(feature = "notebook")]
+        {
+            let cli = Cli::try_parse_from(["axioma", "notebook"]).expect("notebook should parse");
+            assert!(matches!(cli.cmd, Command::Notebook { .. }));
+        }
+
+        #[cfg(feature = "plugins")]
+        {
+            let list = Cli::try_parse_from(["axioma", "plugin", "list"])
+                .expect("plugin list should parse");
+            assert!(matches!(
+                list.cmd,
+                Command::Plugin {
+                    cmd: PluginCmd::List { .. }
+                }
+            ));
+
+            let run = Cli::try_parse_from([
+                "axioma", "plugin", "run", "--plugin", "axp-echo", "--op", "plan", "--args", "{}",
+            ])
+            .expect("plugin run should parse");
+            assert!(matches!(
+                run.cmd,
+                Command::Plugin {
+                    cmd: PluginCmd::Run { .. }
+                }
+            ));
+        }
     }
 }

@@ -1,3 +1,4 @@
+use crate::{identities::TensorIdentitySet, symmetry::TensorSymmetry};
 use lasso::Key;
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -83,10 +84,10 @@ pub enum TensorProperty {
     WeylSpinor,
     ImplicitIndex,
     SortOrder(Vec<Sym>),
-    TableauSymmetry {
-        shape: Vec<usize>,
-        indices: Vec<usize>,
-    },
+    /// Canonical structured tableau-based symmetry metadata.
+    TableauSymmetry(TensorSymmetry),
+    /// Canonical multiterm-identity carrier used for Young/curvature identities.
+    TensorIdentities(TensorIdentitySet),
     SatisfiesBianchi {
         slots: Vec<usize>,
     },

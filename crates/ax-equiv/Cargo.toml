@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ax-compare = { path = "../ax-compare" }
 ax-ir = { path = "../ax-ir" }
 ax-eval = { path = "../ax-eval" }
 ax-rewrite = { path = "../ax-rewrite" }

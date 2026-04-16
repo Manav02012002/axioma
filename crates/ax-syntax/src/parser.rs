@@ -3,7 +3,7 @@ use rowan::GreenNodeBuilder;
 use crate::diag::{Diagnostic, DiagnosticCode, Severity};
 use crate::kind::{is_trivia, SyntaxKind};
 use crate::lexer::lex;
-use crate::tree::syntax_node_from_green;
+use crate::tree::{syntax_node_from_green, tableau_symmetry_exprs};
 
 #[derive(Debug, Clone)]
 pub struct Parse {
@@ -78,7 +78,7 @@ impl<'a> Parser<'a> {
                 true
             }
             _ => {
-                self.builder.start_node(SyntaxKind::Error.into());
+                self.builder.start_node(SyntaxKind::ExprStmt.into());
                 self.parse_expr_bp(0);
                 self.bump_trivia();
                 self.expect_semi("expression");
@@ -138,15 +138,31 @@ impl<'a> Parser<'a> {
     fn parse_primary(&mut self) {
         self.bump_trivia();
         match self.current() {
-            SyntaxKind::Int | SyntaxKind::Float => {
+            SyntaxKind::Int | SyntaxKind::Float => self.bump(),
+            SyntaxKind::String => {
+                self.builder.start_node(SyntaxKind::StringLiteral.into());
                 self.bump();
+                self.builder.finish_node();
+            }
+            SyntaxKind::KwTrue | SyntaxKind::KwFalse => {
+                self.builder.start_node(SyntaxKind::BoolLiteral.into());
+                self.bump();
+                self.builder.finish_node();
             }
             SyntaxKind::Ident => {
+                let ident_text = self.current_text().to_string();
+                if self.nth_non_trivia_kind(1) == Some(SyntaxKind::LParen)
+                    && ident_text == "tableau_symmetry"
+                {
+                    self.parse_tableau_symmetry_expr();
+                    return;
+                }
+
                 self.bump();
                 self.bump_trivia();
 
                 if self.current() == SyntaxKind::LParen {
-                    self.parse_call_args();
+                    self.parse_call_expr();
                 } else if self.current() == SyntaxKind::LBrack {
                     self.parse_ascii_indices();
                 }
@@ -157,6 +173,7 @@ impl<'a> Parser<'a> {
                 self.bump_trivia();
                 self.expect(SyntaxKind::RParen, "expected ')'");
             }
+            SyntaxKind::LBrack => self.parse_list_expr(),
             _ => {
                 self.unexpected_here("expected expression");
                 self.bump();
@@ -164,12 +181,30 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_call_expr(&mut self) {
+        self.builder.start_node(SyntaxKind::CallExpr.into());
+        self.parse_call_args();
+        self.builder.finish_node();
+    }
+
     fn parse_call_args(&mut self) {
         self.expect(SyntaxKind::LParen, "expected '('");
         self.bump_trivia();
         if self.current() != SyntaxKind::RParen {
             loop {
-                self.parse_expr_bp(0);
+                if self.current() == SyntaxKind::Ident
+                    && self.nth_non_trivia_kind(1) == Some(SyntaxKind::Eq)
+                {
+                    self.builder.start_node(SyntaxKind::NamedArg.into());
+                    self.bump();
+                    self.bump_trivia();
+                    self.expect(SyntaxKind::Eq, "expected '='");
+                    self.bump_trivia();
+                    self.parse_expr_bp(0);
+                    self.builder.finish_node();
+                } else {
+                    self.parse_expr_bp(0);
+                }
                 self.bump_trivia();
                 if self.current() == SyntaxKind::Comma {
                     self.bump();
@@ -183,6 +218,307 @@ impl<'a> Parser<'a> {
         self.expect(SyntaxKind::RParen, "expected ')'");
     }
 
+    fn parse_tableau_symmetry_expr(&mut self) {
+        let start_span = self.current_span();
+        self.builder
+            .start_node(SyntaxKind::TableauSymmetryExpr.into());
+        self.bump();
+        self.bump_trivia();
+        self.expect(SyntaxKind::LParen, "expected '('");
+        self.bump_trivia();
+
+        let mut shapes = self.parse_tableau_shape_list();
+        let mut slots = Vec::new();
+        let mut labels: Option<Vec<String>> = None;
+        let mut trace_free: Option<Vec<bool>> = None;
+        let mut saw_slots = false;
+
+        self.bump_trivia();
+        while self.current() == SyntaxKind::Comma {
+            self.bump();
+            self.bump_trivia();
+
+            if self.current() == SyntaxKind::Ident
+                && self.nth_non_trivia_kind(1) == Some(SyntaxKind::Eq)
+            {
+                let name = self.current_text().to_string();
+                self.bump();
+                self.bump_trivia();
+                self.expect(SyntaxKind::Eq, "expected '='");
+                self.bump_trivia();
+
+                match name.as_str() {
+                    "slots" => {
+                        slots = self.parse_tableau_slot_map_list();
+                        saw_slots = true;
+                    }
+                    "labels" => {
+                        labels = Some(self.parse_tableau_labels());
+                    }
+                    "trace_free" => {
+                        trace_free = Some(self.parse_tableau_trace_free_list());
+                    }
+                    _ => self.parse_expr_bp(0),
+                }
+            } else if !saw_slots {
+                slots = self.parse_tableau_slot_map_list();
+                saw_slots = true;
+            } else {
+                self.parse_expr_bp(0);
+            }
+            self.bump_trivia();
+        }
+
+        self.bump_trivia();
+        self.expect(SyntaxKind::RParen, "expected ')'");
+        self.builder.finish_node();
+
+        if shapes.is_empty() {
+            self.push_tableau_diag(
+                "tableau_symmetry requires at least one tableau shape",
+                start_span.clone(),
+            );
+            shapes = Vec::new();
+        }
+        if saw_slots && shapes.len() != slots.len() {
+            self.push_tableau_diag(
+                "tableau_symmetry shapes and slots lists must have the same length",
+                start_span.clone(),
+            );
+        }
+        if let Some(entries) = &labels {
+            if entries.len() != shapes.len() {
+                self.push_tableau_diag(
+                    "tableau_symmetry labels list length must match shapes list length",
+                    start_span.clone(),
+                );
+            }
+        }
+        if let Some(entries) = &trace_free {
+            if entries.len() != shapes.len() {
+                self.push_tableau_diag(
+                    "tableau_symmetry trace_free list length must match shapes list length",
+                    start_span,
+                );
+            }
+        }
+    }
+
+    fn parse_tableau_shape_list(&mut self) -> Vec<Vec<usize>> {
+        self.builder.start_node(SyntaxKind::TableauShapeList.into());
+        let result = self.parse_nested_usize_list(true);
+        self.builder.finish_node();
+        result
+    }
+
+    fn parse_tableau_slot_map_list(&mut self) -> Vec<Vec<usize>> {
+        self.builder
+            .start_node(SyntaxKind::TableauSlotMapList.into());
+        let result = self.parse_nested_usize_list(true);
+        self.builder.finish_node();
+        result
+    }
+
+    fn parse_tableau_labels(&mut self) -> Vec<String> {
+        self.builder.start_node(SyntaxKind::TableauLabels.into());
+        let result = self.parse_string_list();
+        self.builder.finish_node();
+        result
+    }
+
+    fn parse_tableau_trace_free_list(&mut self) -> Vec<bool> {
+        self.builder
+            .start_node(SyntaxKind::TableauTraceFreeList.into());
+        let result = self.parse_bool_list();
+        self.builder.finish_node();
+        result
+    }
+
+    fn parse_nested_usize_list(&mut self, allow_flat_single: bool) -> Vec<Vec<usize>> {
+        if self.current() != SyntaxKind::LBrack {
+            self.unexpected_here("expected '['");
+            return Vec::new();
+        }
+
+        self.bump();
+        self.bump_trivia();
+        if self.current() == SyntaxKind::RBrack {
+            self.bump();
+            return Vec::new();
+        }
+
+        let mut values = Vec::new();
+        if allow_flat_single && self.current() != SyntaxKind::LBrack {
+            let flat = self.parse_usize_list_body();
+            self.bump_trivia();
+            self.expect(SyntaxKind::RBrack, "expected ']'");
+            return vec![flat];
+        }
+
+        loop {
+            values.push(self.parse_usize_list());
+            self.bump_trivia();
+            if self.current() == SyntaxKind::Comma {
+                self.bump();
+                self.bump_trivia();
+                continue;
+            }
+            break;
+        }
+
+        self.bump_trivia();
+        self.expect(SyntaxKind::RBrack, "expected ']'");
+        values
+    }
+
+    fn parse_usize_list(&mut self) -> Vec<usize> {
+        self.builder.start_node(SyntaxKind::ListExpr.into());
+        if self.current() != SyntaxKind::LBrack {
+            self.unexpected_here("expected '['");
+            self.builder.finish_node();
+            return Vec::new();
+        }
+        self.bump();
+        let values = self.parse_usize_list_body();
+        self.bump_trivia();
+        self.expect(SyntaxKind::RBrack, "expected ']'");
+        self.builder.finish_node();
+        values
+    }
+
+    fn parse_usize_list_body(&mut self) -> Vec<usize> {
+        self.bump_trivia();
+        let mut values = Vec::new();
+        if self.current() == SyntaxKind::RBrack {
+            return values;
+        }
+        loop {
+            self.bump_trivia();
+            if self.current() == SyntaxKind::Int {
+                if let Ok(value) = self.current_text().parse::<usize>() {
+                    values.push(value);
+                }
+                self.bump();
+            } else {
+                self.unexpected_here("expected integer");
+                if self.current() == SyntaxKind::Eof {
+                    break;
+                }
+                self.bump();
+            }
+            self.bump_trivia();
+            if self.current() == SyntaxKind::Comma {
+                self.bump();
+                self.bump_trivia();
+                continue;
+            }
+            break;
+        }
+        values
+    }
+
+    fn parse_string_list(&mut self) -> Vec<String> {
+        if self.current() != SyntaxKind::LBrack {
+            self.unexpected_here("expected '['");
+            return Vec::new();
+        }
+        self.bump();
+        self.bump_trivia();
+        let mut values = Vec::new();
+        if self.current() != SyntaxKind::RBrack {
+            loop {
+                if self.current() == SyntaxKind::String {
+                    values.push(unquote_string(self.current_text()));
+                    self.builder.start_node(SyntaxKind::StringLiteral.into());
+                    self.bump();
+                    self.builder.finish_node();
+                } else {
+                    self.unexpected_here("expected string literal");
+                    if self.current() == SyntaxKind::Eof {
+                        break;
+                    }
+                    self.bump();
+                }
+                self.bump_trivia();
+                if self.current() == SyntaxKind::Comma {
+                    self.bump();
+                    self.bump_trivia();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.bump_trivia();
+        self.expect(SyntaxKind::RBrack, "expected ']'");
+        values
+    }
+
+    fn parse_bool_list(&mut self) -> Vec<bool> {
+        if self.current() != SyntaxKind::LBrack {
+            self.unexpected_here("expected '['");
+            return Vec::new();
+        }
+        self.bump();
+        self.bump_trivia();
+        let mut values = Vec::new();
+        if self.current() != SyntaxKind::RBrack {
+            loop {
+                match self.current() {
+                    SyntaxKind::KwTrue => {
+                        values.push(true);
+                        self.builder.start_node(SyntaxKind::BoolLiteral.into());
+                        self.bump();
+                        self.builder.finish_node();
+                    }
+                    SyntaxKind::KwFalse => {
+                        values.push(false);
+                        self.builder.start_node(SyntaxKind::BoolLiteral.into());
+                        self.bump();
+                        self.builder.finish_node();
+                    }
+                    _ => {
+                        self.unexpected_here("expected boolean literal");
+                        if self.current() == SyntaxKind::Eof {
+                            break;
+                        }
+                        self.bump();
+                    }
+                }
+                self.bump_trivia();
+                if self.current() == SyntaxKind::Comma {
+                    self.bump();
+                    self.bump_trivia();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.bump_trivia();
+        self.expect(SyntaxKind::RBrack, "expected ']'");
+        values
+    }
+
+    fn parse_list_expr(&mut self) {
+        self.builder.start_node(SyntaxKind::ListExpr.into());
+        self.expect(SyntaxKind::LBrack, "expected '['");
+        self.bump_trivia();
+        if self.current() != SyntaxKind::RBrack {
+            loop {
+                self.parse_expr_bp(0);
+                self.bump_trivia();
+                if self.current() == SyntaxKind::Comma {
+                    self.bump();
+                    self.bump_trivia();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.bump_trivia();
+        self.expect(SyntaxKind::RBrack, "expected ']'");
+        self.builder.finish_node();
+    }
+
     fn parse_ascii_indices(&mut self) {
         self.expect(SyntaxKind::LBrack, "expected '['");
         self.bump_trivia();
@@ -191,12 +527,8 @@ impl<'a> Parser<'a> {
                 self.expect(SyntaxKind::Ident, "expected index name");
                 self.bump_trivia();
                 match self.current() {
-                    SyntaxKind::Plus | SyntaxKind::Minus => {
-                        self.bump();
-                    }
-                    _ => {
-                        self.unexpected_here("expected '+' or '-' for index variance");
-                    }
+                    SyntaxKind::Plus | SyntaxKind::Minus => self.bump(),
+                    _ => self.unexpected_here("expected '+' or '-' for index variance"),
                 }
                 self.bump_trivia();
                 if self.current() == SyntaxKind::Comma {
@@ -218,11 +550,31 @@ impl<'a> Parser<'a> {
             .unwrap_or(SyntaxKind::Eof)
     }
 
+    fn current_text(&self) -> &str {
+        let span = self.current_span();
+        &self.input[span]
+    }
+
     fn current_span(&self) -> std::ops::Range<usize> {
         self.toks
             .get(self.pos)
             .map(|t| t.1.clone())
             .unwrap_or(self.input.len()..self.input.len())
+    }
+
+    fn nth_non_trivia_kind(&self, mut offset: usize) -> Option<SyntaxKind> {
+        let mut idx = self.pos;
+        while idx + 1 < self.toks.len() && offset > 0 {
+            idx += 1;
+            if !is_trivia(self.toks[idx].0) {
+                offset -= 1;
+            }
+        }
+        if offset == 0 {
+            self.toks.get(idx).map(|token| token.0)
+        } else {
+            None
+        }
     }
 
     fn prev_non_trivia_end_pos(&self) -> usize {
@@ -232,8 +584,8 @@ impl<'a> Parser<'a> {
         let mut i = self.pos;
         while i > 0 {
             i -= 1;
-            let k = self.toks[i].0;
-            if !crate::kind::is_trivia(k) {
+            let kind = self.toks[i].0;
+            if !is_trivia(kind) {
                 return self.toks[i].1.end;
             }
         }
@@ -241,9 +593,9 @@ impl<'a> Parser<'a> {
     }
 
     fn bump(&mut self) {
-        let (k, span) = self.toks[self.pos].clone();
+        let (kind, span) = self.toks[self.pos].clone();
         let text = &self.input[span.clone()];
-        self.builder.token(k.into(), text);
+        self.builder.token(kind.into(), text);
         self.pos += 1;
     }
 
@@ -253,8 +605,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect(&mut self, k: SyntaxKind, msg: &str) {
-        if self.current() == k {
+    fn expect(&mut self, kind: SyntaxKind, msg: &str) {
+        if self.current() == kind {
             self.bump();
         } else {
             self.unexpected_here(msg);
@@ -294,6 +646,15 @@ impl<'a> Parser<'a> {
         ));
     }
 
+    fn push_tableau_diag(&mut self, message: &str, span: std::ops::Range<usize>) {
+        self.diagnostics.push(Diagnostic::new(
+            DiagnosticCode::UnexpectedToken,
+            Severity::Error,
+            message,
+            span,
+        ));
+    }
+
     fn recover_to_item_boundary(&mut self) {
         while self.current() != SyntaxKind::Eof && self.current() != SyntaxKind::Semi {
             self.bump();
@@ -304,7 +665,39 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn unquote_string(text: &str) -> String {
+    text.strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(text)
+        .to_string()
+}
+
 pub fn parse_file(input: &str) -> (crate::tree::SyntaxNode, Vec<Diagnostic>) {
-    let p = Parser::new(input).parse();
-    (syntax_node_from_green(p.green), p.diagnostics)
+    let parsed = Parser::new(input).parse();
+    (syntax_node_from_green(parsed.green), parsed.diagnostics)
+}
+
+pub fn parse_tableau_symmetry(input: &str) -> Result<ax_ir::TensorSymmetry, Vec<Diagnostic>> {
+    let source = if input.trim_end().ends_with(';') {
+        input.to_string()
+    } else {
+        format!("{input};")
+    };
+    let (root, diagnostics) = parse_file(&source);
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+
+    if let Some(expr) = tableau_symmetry_exprs(&root).into_iter().next() {
+        if let Some(symmetry) = expr.lower_tensor_symmetry() {
+            return Ok(symmetry);
+        }
+    }
+
+    Err(vec![Diagnostic::new(
+        DiagnosticCode::UnexpectedToken,
+        Severity::Error,
+        "expected tableau_symmetry expression",
+        0..input.len(),
+    )])
 }

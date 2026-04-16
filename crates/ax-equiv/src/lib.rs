@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use ax_ir::Expr;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11,6 +12,10 @@ pub enum EquivResult {
     ConventionDifference(Vec<String>),
     NotEqual,
     Unknown,
+}
+
+pub fn equivalent_under_tensor_symmetry(a: &ax_ir::TensorSymmetry, b: &ax_ir::TensorSymmetry) -> bool {
+    ax_compare::compare_tensor_symmetry(a, b) == Ordering::Equal
 }
 
 fn numeric_eval_expr(expr: &Expr, env: &ax_eval::Env, interner: &ax_ir::Interner) -> Option<f64> {
@@ -181,6 +186,51 @@ fn sample_values(sample: usize) -> [f64; 5] {
         base[(sample + 3) % 5],
         base[(sample + 4) % 5],
     ]
+}
+
+#[cfg(test)]
+mod tensor_symmetry_tests {
+    use super::*;
+    use ax_ir::{
+        DualityKind, RestrictedSymmetryMode, SymmetrySource, TableauAttachment, TensorSymmetry,
+    };
+
+    fn symmetry(slots: Vec<usize>) -> TensorSymmetry {
+        TensorSymmetry {
+            tableaux: vec![TableauAttachment {
+                shape: vec![2],
+                slot_map: slots,
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: DualityKind::None,
+                restricted_mode: RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        }
+    }
+
+    #[test]
+    fn identical_structured_symmetries_are_equivalent() {
+        assert!(equivalent_under_tensor_symmetry(
+            &symmetry(vec![0, 1]),
+            &symmetry(vec![0, 1])
+        ));
+    }
+
+    #[test]
+    fn different_slot_maps_are_not_equivalent() {
+        assert!(!equivalent_under_tensor_symmetry(
+            &symmetry(vec![0, 1]),
+            &symmetry(vec![1, 0])
+        ));
+    }
 }
 
 fn numeric_env(base_env: &ax_eval::Env, syms: &[lasso::Spur], sample: usize) -> ax_eval::Env {

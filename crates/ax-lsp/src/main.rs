@@ -330,7 +330,7 @@ fn handle_message(msg: &Value, state: &mut LspState) -> Option<Value> {
 fn publish_diagnostics(state: &LspState, uri: &str) -> Value {
     let text = state.documents.get(uri).map(String::as_str).unwrap_or("");
     let lowered = ax_core_ir::lower(text, &state.interner);
-    let (_node, parse_diags) = ax_syntax::parser::parse_file(text);
+    let parse_diags = syntax_diagnostics(text);
 
     let mut diagnostics = Vec::new();
 
@@ -383,89 +383,95 @@ fn handle_hover(state: &LspState, params: &Value) -> Option<Value> {
 
     let text = state.documents.get(uri)?;
     let offset = position_to_offset(text, line, character);
-    let word = word_at_offset(text, offset)?;
+    let word = word_at_offset(text, offset);
 
     let mut content_parts = Vec::new();
-    if let Some(doc) = lookup_function_doc(word) {
-        content_parts.push(format!("**{}**\n\n{}", doc.name, doc.description));
-        content_parts.push(format!("```\n{}\n```", doc.signature));
-        content_parts.push(format!("Example: `{}`", doc.example));
-    } else {
-        let entries = callable_entries();
-        if let Some(entry) = entries.iter().find(|entry| entry.name == word) {
-            content_parts.push(format!("**{}**\n\n{}", entry.name, entry.description));
-            if !entry.parameters.is_empty() {
-                let params_str = entry
-                    .parameters
-                    .iter()
-                    .map(|param| {
-                        let optional = if param.required { "" } else { "?" };
-                        format!(
-                            "{}{}: {}",
-                            param.name,
-                            optional,
-                            format_param_type(&param.param_type)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                content_parts.push(format!("```\n{}({})\n```", entry.name, params_str));
+    if let Some(tableau_hover) = tableau_hover_content(text, offset) {
+        content_parts.push(tableau_hover);
+    }
+
+    if let Some(word) = word {
+        if let Some(doc) = lookup_function_doc(word) {
+            content_parts.push(format!("**{}**\n\n{}", doc.name, doc.description));
+            content_parts.push(format!("```\n{}\n```", doc.signature));
+            content_parts.push(format!("Example: `{}`", doc.example));
+        } else {
+            let entries = callable_entries();
+            if let Some(entry) = entries.iter().find(|entry| entry.name == word) {
+                content_parts.push(format!("**{}**\n\n{}", entry.name, entry.description));
+                if !entry.parameters.is_empty() {
+                    let params_str = entry
+                        .parameters
+                        .iter()
+                        .map(|param| {
+                            let optional = if param.required { "" } else { "?" };
+                            format!(
+                                "{}{}: {}",
+                                param.name,
+                                optional,
+                                format_param_type(&param.param_type)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    content_parts.push(format!("```\n{}({})\n```", entry.name, params_str));
+                }
+                content_parts.push(format!("Example: `{}`", brief_example(entry)));
             }
-            content_parts.push(format!("Example: `{}`", brief_example(entry)));
         }
-    }
 
-    let sym = state.interner.get_or_intern(word);
-    let props = state.env.property_store.get_all(sym);
-    if !props.is_empty() {
-        let props_str = props
-            .iter()
-            .map(|prop| format_tensor_property(prop, &state.interner))
-            .collect::<Vec<_>>()
-            .join(", ");
-        content_parts.push(format!("**Properties:** {}", props_str));
-    }
+        let sym = state.interner.get_or_intern(word);
+        let props = state.env.property_store.get_all(sym);
+        if !props.is_empty() {
+            let props_str = props
+                .iter()
+                .map(|prop| format_tensor_property(prop, &state.interner))
+                .collect::<Vec<_>>()
+                .join(", ");
+            content_parts.push(format!("**Properties:** {}", props_str));
+        }
 
-    if let Some(unicode) = greek_to_unicode(word) {
-        content_parts.push(format!("Greek letter: `{}`", unicode));
-    }
+        if let Some(unicode) = greek_to_unicode(word) {
+            content_parts.push(format!("Greek letter: `{}`", unicode));
+        }
 
-    if let Some(family) = state.env.index_families.get(&sym) {
-        let values = family
-            .values
-            .iter()
-            .map(|value| state.interner.resolve(*value).to_string())
-            .collect::<Vec<_>>();
-        content_parts.push(format!(
-            "**Index family:** `{}`\n\nValues: {}\n\nDimension: {}",
-            state.interner.resolve(family.name),
-            if values.is_empty() {
-                "(none)".to_string()
-            } else {
-                values.join(", ")
-            },
-            family
-                .dimension
-                .map(|dim| dim.to_string())
-                .unwrap_or_else(|| "unknown".to_string())
-        ));
-    } else if let Some(family_sym) = state.env.index_to_family.get(&sym) {
-        if let Some(family) = state.env.index_families.get(family_sym) {
+        if let Some(family) = state.env.index_families.get(&sym) {
             let values = family
                 .values
                 .iter()
                 .map(|value| state.interner.resolve(*value).to_string())
                 .collect::<Vec<_>>();
             content_parts.push(format!(
-                "**Index:** `{}` belongs to family `{}`\n\nValues: {}",
-                word,
-                state.interner.resolve(*family_sym),
+                "**Index family:** `{}`\n\nValues: {}\n\nDimension: {}",
+                state.interner.resolve(family.name),
                 if values.is_empty() {
                     "(none)".to_string()
                 } else {
                     values.join(", ")
-                }
+                },
+                family
+                    .dimension
+                    .map(|dim| dim.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
             ));
+        } else if let Some(family_sym) = state.env.index_to_family.get(&sym) {
+            if let Some(family) = state.env.index_families.get(family_sym) {
+                let values = family
+                    .values
+                    .iter()
+                    .map(|value| state.interner.resolve(*value).to_string())
+                    .collect::<Vec<_>>();
+                content_parts.push(format!(
+                    "**Index:** `{}` belongs to family `{}`\n\nValues: {}",
+                    word,
+                    state.interner.resolve(*family_sym),
+                    if values.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        values.join(", ")
+                    }
+                ));
+            }
         }
     }
 
@@ -479,6 +485,30 @@ fn handle_hover(state: &LspState, params: &Value) -> Option<Value> {
             "value": content_parts.join("\n\n---\n\n")
         }
     }))
+}
+
+fn syntax_diagnostics(text: &str) -> Vec<ax_syntax::Diagnostic> {
+    let (_node, diags) = ax_syntax::parser::parse_file(text);
+    diags
+}
+
+fn tableau_hover_content(text: &str, offset: usize) -> Option<String> {
+    let (root, _diags) = ax_syntax::parser::parse_file(text);
+    let tableau = ax_syntax::tableau_symmetry_expr_at_offset(&root, offset)?;
+    let shapes = tableau.tableau_shapes();
+    let slots = tableau.tableau_slot_maps();
+
+    let mut lines = vec![
+        "**tableau_symmetry**".to_string(),
+        format!("shape_count={}", shapes.len()),
+    ];
+    for shape in &shapes {
+        lines.push(format!("shape={shape:?}"));
+    }
+    for slot_map in &slots {
+        lines.push(format!("slots={slot_map:?}"));
+    }
+    Some(lines.join("\n"))
 }
 
 fn handle_completion(state: &LspState, params: &Value) -> Option<Value> {
@@ -1169,5 +1199,44 @@ mod tests {
         )
         .unwrap();
         assert!(response.is_array());
+    }
+
+    #[test]
+    fn tableau_hover_contains_shape_and_slots() {
+        let hover = tableau_hover_content(
+            "tableau_symmetry([[2,1]], slots=[[0,1,2]]);",
+            "tableau_symmetry".len(),
+        )
+        .unwrap();
+        assert!(hover.contains("shape=[2, 1]"));
+        assert!(hover.contains("slots=[0, 1, 2]"));
+    }
+
+    #[test]
+    fn tableau_parser_mismatch_diagnostic_is_forwarded() {
+        let diags = syntax_diagnostics("tableau_symmetry([[2,1]], slots=[[0,1],[2]]);");
+        assert!(diags.iter().any(|diag| {
+            diag.message == "tableau_symmetry shapes and slots lists must have the same length"
+        }));
+    }
+
+    #[test]
+    fn tableau_hover_is_exact_for_multiple_tableaux() {
+        let hover = tableau_hover_content(
+            "tableau_symmetry([[2,1],[1,1]], slots=[[0,1,2],[1,2]]);",
+            "tableau_symmetry".len(),
+        )
+        .unwrap();
+        assert_eq!(
+            hover,
+            concat!(
+                "**tableau_symmetry**\n",
+                "shape_count=2\n",
+                "shape=[2, 1]\n",
+                "shape=[1, 1]\n",
+                "slots=[0, 1, 2]\n",
+                "slots=[1, 2]"
+            )
+        );
     }
 }

@@ -2,6 +2,10 @@
 
 use ax_ir::Expr;
 
+pub fn variational_derivative_preserves_arity(before_rank: usize, after_rank: usize) -> bool {
+    before_rank == after_rank
+}
+
 fn second_derivative_symbol(
     field: lasso::Spur,
     coord_a: lasso::Spur,
@@ -226,7 +230,11 @@ mod tests {
                 Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
                 Expr::pow(Expr::Sym(chi_t), Expr::Int(2.into())),
             ]),
-            Expr::neg(Expr::mul(vec![Expr::Sym(g), Expr::Sym(phi), Expr::Sym(chi)])),
+            Expr::neg(Expr::mul(vec![
+                Expr::Sym(g),
+                Expr::Sym(phi),
+                Expr::Sym(chi),
+            ])),
         ]);
         let result = euler_lagrange_system(
             &lagrangian,
@@ -284,5 +292,11 @@ mod tests {
         let lagrangian = Expr::pow(Expr::Sym(phi_t), Expr::Int(2.into()));
         let result = functional_derivative(&lagrangian, phi, &[phi_t], &[t, t], &interner);
         assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn variational_arity_preservation_is_equality_test() {
+        assert!(variational_derivative_preserves_arity(2, 2));
+        assert!(!variational_derivative_preserves_arity(2, 1));
     }
 }

@@ -123,6 +123,49 @@ impl Default for Adjform {
 pub struct TableauInfo {
     pub rows: Vec<Vec<usize>>,
     pub columns: Vec<Vec<usize>>,
+    pub trace_free: bool,
+    pub duality: ax_ir::DualityKind,
+}
+
+impl TableauInfo {
+    pub fn from_realized(
+        realized: &crate::symmetry_bridge::RealizedTableau,
+        offset: usize,
+    ) -> Self {
+        let rows = realized
+            .projector
+            .tableau
+            .rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .filter_map(|label| realized.slot_map.get(*label).map(|slot| offset + *slot))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|row| !row.is_empty())
+            .collect::<Vec<_>>();
+
+        let max_cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let mut columns = Vec::new();
+        for col in 0..max_cols {
+            let mut column = Vec::new();
+            for row in &rows {
+                if let Some(slot) = row.get(col) {
+                    column.push(*slot);
+                }
+            }
+            if column.len() > 1 {
+                columns.push(column);
+            }
+        }
+
+        Self {
+            rows,
+            columns,
+            trace_free: realized.trace_free,
+            duality: realized.duality.clone(),
+        }
+    }
 }
 
 /// A projected adjform: a linear combination of Adjforms with rational coefficients.

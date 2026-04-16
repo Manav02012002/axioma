@@ -1,12 +1,17 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::redundant_closure)]
 
+pub mod tableau;
 pub mod unicode;
 
 use ax_ir::{Assumption, Condition, Expr, Index, Variance};
 use num_rational::BigRational;
 use num_traits::Signed;
 
+pub use tableau::{
+    render_tableau_slot_map_ascii, render_tensor_symmetry_summary, render_young_diagram_ascii,
+    render_young_diagram_unicode,
+};
 pub use unicode::to_unicode;
 
 const PREC_TOP: u8 = 0;
@@ -290,19 +295,39 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
         ),
         ("__angle_chain", n) if n >= 2 => {
             let labels = spinor_labels_latex();
-            format!("\\langle {}\\mid {}\\mid {} \\rangle", labels[0], labels[1..n - 1].join("\\,"), labels[n - 1])
+            format!(
+                "\\langle {}\\mid {}\\mid {} \\rangle",
+                labels[0],
+                labels[1..n - 1].join("\\,"),
+                labels[n - 1]
+            )
         }
         ("__square_chain", n) if n >= 2 => {
             let labels = spinor_labels_latex();
-            format!("[{}\\mid {}\\mid {}]", labels[0], labels[1..n - 1].join("\\,"), labels[n - 1])
+            format!(
+                "[{}\\mid {}\\mid {}]",
+                labels[0],
+                labels[1..n - 1].join("\\,"),
+                labels[n - 1]
+            )
         }
         ("__angle_square_chain", n) if n >= 2 => {
             let labels = spinor_labels_latex();
-            format!("\\langle {}\\mid {}\\mid {}]", labels[0], labels[1..n - 1].join("\\,"), labels[n - 1])
+            format!(
+                "\\langle {}\\mid {}\\mid {}]",
+                labels[0],
+                labels[1..n - 1].join("\\,"),
+                labels[n - 1]
+            )
         }
         ("__square_angle_chain", n) if n >= 2 => {
             let labels = spinor_labels_latex();
-            format!("[{}\\mid {}\\mid {} \\rangle", labels[0], labels[1..n - 1].join("\\,"), labels[n - 1])
+            format!(
+                "[{}\\mid {}\\mid {} \\rangle",
+                labels[0],
+                labels[1..n - 1].join("\\,"),
+                labels[n - 1]
+            )
         }
         ("__four_bracket", 4) => format!(
             "\\langle {}\\,{}\\,{}\\,{} \\rangle",

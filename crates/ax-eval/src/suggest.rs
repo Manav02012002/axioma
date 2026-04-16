@@ -277,7 +277,12 @@ fn goal_priorities(goal: &str) -> Vec<&'static str> {
     } else if g.contains("integrat") {
         vec!["integrate_by_parts", "integrate", "simplify"]
     } else if g.contains("decompos") || g.contains("irrep") {
-        vec!["decompose_product", "decompose", "young_project", "collect_terms"]
+        vec![
+            "decompose_product",
+            "decompose",
+            "young_project",
+            "collect_terms",
+        ]
     } else if g.contains("curv")
         || g.contains("riemann")
         || g.contains("ricci")

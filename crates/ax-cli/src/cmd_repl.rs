@@ -72,24 +72,94 @@ fn ident_color(text: &str) -> &'static str {
         | "nu" | "xi" | "pi" | "rho" | "sigma" | "tau" | "phi" | "chi" | "psi" | "omega"
         | "Gamma" | "Delta" | "Theta" | "Lambda" | "Xi" | "Pi" | "Sigma" | "Phi" | "Psi"
         | "Omega" | "lambda" | "inf" | "infty" => "\x1b[32m",
-        "diff" | "integrate" | "simplify" | "expand" | "factor" | "collect"
-        | "canonicalize" | "canonicalise" | "substitute" | "rewrite" | "solve" | "series"
-        | "limit" | "sum" | "product" | "sin" | "cos" | "tan" | "cot" | "sec" | "csc"
-        | "sinh" | "cosh" | "tanh" | "asin" | "acos" | "atan" | "arcsin" | "arccos"
-        | "arctan" | "asinh" | "acosh" | "atanh" | "arcsinh" | "arccosh" | "arctanh"
-        | "exp" | "log" | "sqrt" | "abs" | "sign" | "sgn" | "det" | "trace"
-        | "transpose" | "inverse" | "eigenvalues" | "christoffel" | "riemann" | "ricci"
-        | "weyl" | "einstein" | "contract" | "symmetrize" | "antisymmetrize"
-        | "antisymmetrise" | "perturb" | "classify_pde" | "check_units"
-        | "double_integral" | "triple_integral" | "definite_integral" | "dblint"
-        | "tplint" | "defint" | "covariant_derivative" | "covariant_diff" | "apart"
-        | "collect_mandelstam" | "decompose" | "atan2" | "laplacian" | "curl"
-        | "divergence" | "gradient" | "conj" | "Re" | "Im" | "arg" | "bra" | "ket"
-        | "braket" | "commutator" | "anticommutator" => "\x1b[34m",
+        "diff"
+        | "integrate"
+        | "simplify"
+        | "expand"
+        | "factor"
+        | "collect"
+        | "canonicalize"
+        | "canonicalise"
+        | "substitute"
+        | "rewrite"
+        | "solve"
+        | "series"
+        | "limit"
+        | "sum"
+        | "product"
+        | "sin"
+        | "cos"
+        | "tan"
+        | "cot"
+        | "sec"
+        | "csc"
+        | "sinh"
+        | "cosh"
+        | "tanh"
+        | "asin"
+        | "acos"
+        | "atan"
+        | "arcsin"
+        | "arccos"
+        | "arctan"
+        | "asinh"
+        | "acosh"
+        | "atanh"
+        | "arcsinh"
+        | "arccosh"
+        | "arctanh"
+        | "exp"
+        | "log"
+        | "sqrt"
+        | "abs"
+        | "sign"
+        | "sgn"
+        | "det"
+        | "trace"
+        | "transpose"
+        | "inverse"
+        | "eigenvalues"
+        | "christoffel"
+        | "riemann"
+        | "ricci"
+        | "weyl"
+        | "einstein"
+        | "contract"
+        | "symmetrize"
+        | "antisymmetrize"
+        | "antisymmetrise"
+        | "perturb"
+        | "classify_pde"
+        | "check_units"
+        | "double_integral"
+        | "triple_integral"
+        | "definite_integral"
+        | "dblint"
+        | "tplint"
+        | "defint"
+        | "covariant_derivative"
+        | "covariant_diff"
+        | "apart"
+        | "collect_mandelstam"
+        | "decompose"
+        | "atan2"
+        | "laplacian"
+        | "curl"
+        | "divergence"
+        | "gradient"
+        | "conj"
+        | "Re"
+        | "Im"
+        | "arg"
+        | "bra"
+        | "ket"
+        | "braket"
+        | "commutator"
+        | "anticommutator" => "\x1b[34m",
         "symmetric" | "antisymmetric" | "metric" | "commuting" | "anticommuting"
         | "anti_commuting" | "bosonic" | "fermionic" | "grassmann" | "creation"
-        | "annihilation" | "real" | "positive" | "negative" | "nonzero" | "integer"
-        | "even" | "odd" => "\x1b[3;36m",
+        | "annihilation" | "real" | "positive" | "negative" | "nonzero" | "integer" | "even"
+        | "odd" => "\x1b[3;36m",
         _ => "",
     }
 }
@@ -489,7 +559,9 @@ fn print_banner(use_color: bool) {
         println!("    / ___ \\ >  < | | (_) | | | | | | (_| |");
         println!("   /_/   \\_/_/\\_\\|_|\\___/|_| |_| |_|\\__,_|");
         println!();
-        println!("   Version {AXIOMA_VERSION} ({BUILD_DATE})              |  Type :help for commands");
+        println!(
+            "   Version {AXIOMA_VERSION} ({BUILD_DATE})              |  Type :help for commands"
+        );
         println!("   {DOCS_URL}  |  :quit to exit");
         println!();
     }
@@ -910,13 +982,9 @@ pub fn run() -> Result<()> {
     let mut env = ax_eval::Env::new();
     let use_color = supports_color();
     let helper = AxiomaHelper::new(use_color);
-    let config = rustyline::Config::builder()
-        .auto_add_history(false)
-        .build();
+    let config = rustyline::Config::builder().auto_add_history(false).build();
     let mut editor =
-        rustyline::Editor::<AxiomaHelper, rustyline::history::DefaultHistory>::with_config(
-            config,
-        )?;
+        rustyline::Editor::<AxiomaHelper, rustyline::history::DefaultHistory>::with_config(config)?;
     editor.set_helper(Some(helper));
     let search_paths = crate::cmd_run::default_search_paths(None);
     let history_path = std::env::var("HOME")
@@ -1301,7 +1369,10 @@ mod tests {
             SyntaxKind::Caret,
             SyntaxKind::Eq,
         ] {
-            assert!(!token_color(kind, "+").is_empty(), "{kind:?} should be colored");
+            assert!(
+                !token_color(kind, "+").is_empty(),
+                "{kind:?} should be colored"
+            );
         }
     }
 
@@ -1497,7 +1568,10 @@ mod tests {
         );
         assert_eq!(start, 0);
         let replacements: Vec<&str> = candidates.iter().map(|(_, r)| r.as_str()).collect();
-        assert!(replacements.contains(&"sin"), "expected sin in: {replacements:?}");
+        assert!(
+            replacements.contains(&"sin"),
+            "expected sin in: {replacements:?}"
+        );
         assert!(
             replacements.contains(&"simplify"),
             "expected simplify in: {replacements:?}"
@@ -1537,7 +1611,10 @@ mod tests {
             &helper.greek_shortcuts,
             &helper.import_paths,
         );
-        assert!(candidates.is_empty(), "empty prefix should yield no completions");
+        assert!(
+            candidates.is_empty(),
+            "empty prefix should yield no completions"
+        );
     }
 
     #[test]

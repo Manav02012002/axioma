@@ -229,18 +229,32 @@ fn strip_groups(expr: &Expr) -> Expr {
         Expr::Mul(factors) => Expr::mul(factors.iter().map(strip_groups).collect()),
         Expr::Pow(base, exp) => Expr::pow(strip_groups(base), strip_groups(exp)),
         Expr::Neg(inner) => Expr::neg(strip_groups(inner)),
-        Expr::Complex(re, im) => Expr::Complex(Box::new(strip_groups(re)), Box::new(strip_groups(im))),
+        Expr::Complex(re, im) => {
+            Expr::Complex(Box::new(strip_groups(re)), Box::new(strip_groups(im)))
+        }
         Expr::Call(f, args) => Expr::Call(*f, args.iter().map(strip_groups).collect()),
-        Expr::FnDef(name, params, body) => Expr::FnDef(*name, params.clone(), Box::new(strip_groups(body))),
-        Expr::Rule(lhs, rhs, trust) => Expr::Rule(Box::new(strip_groups(lhs)), Box::new(strip_groups(rhs)), *trust),
+        Expr::FnDef(name, params, body) => {
+            Expr::FnDef(*name, params.clone(), Box::new(strip_groups(body)))
+        }
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(strip_groups(lhs)),
+            Box::new(strip_groups(rhs)),
+            *trust,
+        ),
         Expr::Piecewise(cases) => Expr::Piecewise(
             cases
                 .iter()
                 .map(|(value, condition)| (strip_groups(value), condition.clone()))
                 .collect(),
         ),
-        Expr::Indexed(base, indices) => Expr::Indexed(Box::new(strip_groups(base)), indices.clone()),
-        Expr::Let(name, value, body) => Expr::Let(*name, Box::new(strip_groups(value)), Box::new(strip_groups(body))),
+        Expr::Indexed(base, indices) => {
+            Expr::Indexed(Box::new(strip_groups(base)), indices.clone())
+        }
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(strip_groups(value)),
+            Box::new(strip_groups(body)),
+        ),
         Expr::List(items) => Expr::List(items.iter().map(strip_groups).collect()),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
@@ -278,7 +292,9 @@ fn expand_scalar_product_powers(expr: &Expr) -> Expr {
             Box::new(expand_scalar_product_powers(re)),
             Box::new(expand_scalar_product_powers(im)),
         ),
-        Expr::Call(f, args) => Expr::Call(*f, args.iter().map(expand_scalar_product_powers).collect()),
+        Expr::Call(f, args) => {
+            Expr::Call(*f, args.iter().map(expand_scalar_product_powers).collect())
+        }
         Expr::FnDef(name, params, body) => Expr::FnDef(
             *name,
             params.clone(),
@@ -295,9 +311,10 @@ fn expand_scalar_product_powers(expr: &Expr) -> Expr {
                 .map(|(value, condition)| (expand_scalar_product_powers(value), condition.clone()))
                 .collect(),
         ),
-        Expr::Indexed(base, indices) => {
-            Expr::Indexed(Box::new(expand_scalar_product_powers(base)), indices.clone())
-        }
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(expand_scalar_product_powers(base)),
+            indices.clone(),
+        ),
         Expr::Let(name, value, body) => Expr::Let(
             *name,
             Box::new(expand_scalar_product_powers(value)),
@@ -325,7 +342,10 @@ fn decompose_term(term: &Expr) -> (BigRational, Expr) {
                 };
                 (coeff, base)
             } else {
-                (BigRational::one(), canonicalize_commutative_base(term.clone()))
+                (
+                    BigRational::one(),
+                    canonicalize_commutative_base(term.clone()),
+                )
             }
         }
         Expr::Neg(inner) => (
@@ -334,7 +354,10 @@ fn decompose_term(term: &Expr) -> (BigRational, Expr) {
         ),
         Expr::Int(n) => (BigRational::from_integer(n.clone()), Expr::one()),
         Expr::Rational(r) => (r.clone(), Expr::one()),
-        _ => (BigRational::one(), canonicalize_commutative_base(term.clone())),
+        _ => (
+            BigRational::one(),
+            canonicalize_commutative_base(term.clone()),
+        ),
     }
 }
 
@@ -1360,7 +1383,10 @@ pub fn rationalize(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Exp
     }
 }
 
-pub fn rationalize_expanded_numerator(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
+pub fn rationalize_expanded_numerator(
+    expr: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
     fn one_pass(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::Expr {
         let stripped = expand_scalar_product_powers(&strip_groups(expr));
         let (numer, denom) = extract_numer_denom(&stripped);
@@ -1375,7 +1401,10 @@ pub fn rationalize_expanded_numerator(expr: &ax_ir::Expr, interner: &ax_ir::Inte
         } else if denom_s == Expr::one() {
             numer_final
         } else {
-            Expr::mul(vec![numer_final, Expr::pow(denom_s, Expr::Int((-1).into()))])
+            Expr::mul(vec![
+                numer_final,
+                Expr::pow(denom_s, Expr::Int((-1).into())),
+            ])
         };
         ax_tensor::bounded_expand_collect(&result, interner)
     }
@@ -1796,22 +1825,34 @@ fn trig_identity_once(expr: &Expr, interner: &ax_ir::Interner) -> Option<Expr> {
 
             if let (Some(arg), Expr::Int(n)) = (match_named_square(t0, "tan", interner), t1) {
                 if *n == 1.into() {
-                    return Some(Expr::pow(Expr::Call(sec_sym, vec![arg]), Expr::Int(2.into())));
+                    return Some(Expr::pow(
+                        Expr::Call(sec_sym, vec![arg]),
+                        Expr::Int(2.into()),
+                    ));
                 }
             }
             if let (Expr::Int(n), Some(arg)) = (t0, match_named_square(t1, "tan", interner)) {
                 if *n == 1.into() {
-                    return Some(Expr::pow(Expr::Call(sec_sym, vec![arg]), Expr::Int(2.into())));
+                    return Some(Expr::pow(
+                        Expr::Call(sec_sym, vec![arg]),
+                        Expr::Int(2.into()),
+                    ));
                 }
             }
             if let (Some(arg), Expr::Neg(inner)) = (match_named_square(t0, "sec", interner), t1) {
                 if matches!(strip_group_ref(inner), Expr::Int(n) if *n == 1.into()) {
-                    return Some(Expr::pow(Expr::Call(tan_sym, vec![arg]), Expr::Int(2.into())));
+                    return Some(Expr::pow(
+                        Expr::Call(tan_sym, vec![arg]),
+                        Expr::Int(2.into()),
+                    ));
                 }
             }
             if let (Expr::Neg(inner), Some(arg)) = (t0, match_named_square(t1, "sec", interner)) {
                 if matches!(strip_group_ref(inner), Expr::Int(n) if *n == 1.into()) {
-                    return Some(Expr::pow(Expr::Call(tan_sym, vec![arg]), Expr::Int(2.into())));
+                    return Some(Expr::pow(
+                        Expr::Call(tan_sym, vec![arg]),
+                        Expr::Int(2.into()),
+                    ));
                 }
             }
 
@@ -1831,15 +1872,21 @@ pub fn trig_simplify(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::E
         Expr::Mul(factors) => {
             Expr::mul(factors.iter().map(|f| trig_simplify(f, interner)).collect())
         }
-        Expr::Pow(base, exp) => Expr::pow(trig_simplify(base, interner), trig_simplify(exp, interner)),
+        Expr::Pow(base, exp) => {
+            Expr::pow(trig_simplify(base, interner), trig_simplify(exp, interner))
+        }
         Expr::Neg(inner) => Expr::neg(trig_simplify(inner, interner)),
         Expr::Call(f, args) => Expr::Call(
             *f,
-            args.iter().map(|arg| trig_simplify(arg, interner)).collect(),
+            args.iter()
+                .map(|arg| trig_simplify(arg, interner))
+                .collect(),
         ),
-        Expr::FnDef(name, params, body) => {
-            Expr::FnDef(*name, params.clone(), Box::new(trig_simplify(body, interner)))
-        }
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(trig_simplify(body, interner)),
+        ),
         Expr::Rule(lhs, rhs, trust) => Expr::Rule(
             Box::new(trig_simplify(lhs, interner)),
             Box::new(trig_simplify(rhs, interner)),
@@ -1863,7 +1910,11 @@ pub fn trig_simplify(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> ax_ir::E
         Expr::List(items) => Expr::List(items.iter().map(|i| trig_simplify(i, interner)).collect()),
         Expr::Matrix(rows) => Expr::Matrix(
             rows.iter()
-                .map(|row| row.iter().map(|cell| trig_simplify(cell, interner)).collect())
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| trig_simplify(cell, interner))
+                        .collect()
+                })
                 .collect(),
         ),
         _ => expr.clone(),

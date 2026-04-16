@@ -2632,16 +2632,8 @@ fn tableau_from_expr(expr: &ax_ir::Expr) -> Result<ax_young::YoungTableau, Strin
         parsed_rows.push(parsed_cells);
     }
 
-    let shape: Vec<usize> = parsed_rows.iter().map(Vec::len).collect();
-    if shape.windows(2).any(|window| window[0] < window[1]) {
-        return Err("tableau row lengths must be weakly decreasing".to_string());
-    }
-
-    Ok(ax_young::YoungTableau {
-        rows: parsed_rows,
-        multiplicity: num_rational::BigRational::one(),
-        selfdual_column: 0,
-    })
+    ax_young::YoungTableau::with_metadata(parsed_rows, num_rational::BigRational::one(), 0)
+        .map_err(|err| err.to_string())
 }
 
 fn symbol_arg(
@@ -2940,11 +2932,11 @@ pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::In
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        TensorProperty::TableauSymmetry { shape, indices } => {
-            format!(
-                "TableauSymmetry(shape: {:?}, indices: {:?})",
-                shape, indices
-            )
+        TensorProperty::TableauSymmetry(symmetry) => {
+            format!("TableauSymmetry(tableaux: {:?})", symmetry.tableaux)
+        }
+        TensorProperty::TensorIdentities(identities) => {
+            format!("TensorIdentities(multiterm: {:?})", identities.multiterm)
         }
         TensorProperty::SatisfiesBianchi { slots } => {
             format!("SatisfiesBianchi(slots: {:?})", slots)
@@ -3229,7 +3221,26 @@ fn parse_property_string(
                 indices = parse_usize_list(rest)?;
             }
         }
-        return Ok(ax_ir::TensorProperty::TableauSymmetry { shape, indices });
+        let symmetry = ax_ir::TensorSymmetry {
+            tableaux: vec![ax_ir::TableauAttachment {
+                shape,
+                slot_map: indices,
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: ax_ir::DualityKind::None,
+                restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: ax_ir::SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        };
+        symmetry.validate().map_err(|err| err.to_string())?;
+        return Ok(ax_ir::TensorProperty::TableauSymmetry(symmetry));
     }
     if let Some(body) = trimmed
         .strip_prefix("SatisfiesBianchi(")

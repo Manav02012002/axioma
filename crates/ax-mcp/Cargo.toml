@@ -8,6 +8,7 @@ name = "axioma-mcp"
 path = "src/main.rs"
 
 [dependencies]
+ax-ai-proto = { path = "../ax-ai-proto" }
 ax-eval = { path = "../ax-eval" }
 ax-core-ir = { path = "../ax-core-ir" }
 ax-ir = { path = "../ax-ir" }

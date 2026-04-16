@@ -13,6 +13,21 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tiny_http::{Header, Method, Response, Server};
 
+pub fn render_symmetry_cell(summary: &ax_ai_proto::TensorSymmetrySummary) -> String {
+    summary
+        .tableaux
+        .iter()
+        .enumerate()
+        .map(|(idx, tableau)| {
+            format!(
+                "### tableau[{idx}]\nshape={:?}\nslots={:?}\ntrace_free={}\nduality={}",
+                tableau.shape, tableau.slots, tableau.trace_free, tableau.duality
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// Trust policy for notebook content and outputs.
 ///
 /// `TrustedLocal` is intended for notebooks authored and executed locally in
@@ -106,7 +121,11 @@ impl SessionStore {
         };
         sessions
             .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(NotebookSession::new(self.base_search_paths.clone()))))
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(NotebookSession::new(
+                    self.base_search_paths.clone(),
+                )))
+            })
             .clone()
     }
 
@@ -209,8 +228,29 @@ fn sanitize_html_fragment(html: &str) -> String {
     let mut builder = ammonia::Builder::default();
     builder.tags(
         [
-            "a", "abbr", "b", "blockquote", "br", "code", "div", "em", "h1", "h2", "h3", "h4",
-            "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "span", "strong", "ul",
+            "a",
+            "abbr",
+            "b",
+            "blockquote",
+            "br",
+            "code",
+            "div",
+            "em",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "hr",
+            "i",
+            "li",
+            "ol",
+            "p",
+            "pre",
+            "span",
+            "strong",
+            "ul",
         ]
         .into_iter()
         .collect(),
@@ -439,17 +479,66 @@ fn sanitize_svg_fragment(svg: &str) -> Option<String> {
 
 fn sanitize_svg_element(elem: &xmltree::Element) -> Option<xmltree::Element> {
     const TAGS: &[&str] = &[
-        "svg", "g", "path", "circle", "ellipse", "line", "polyline", "polygon", "rect",
-        "text", "tspan", "defs", "clipPath", "linearGradient", "radialGradient", "stop",
-        "title", "desc",
+        "svg",
+        "g",
+        "path",
+        "circle",
+        "ellipse",
+        "line",
+        "polyline",
+        "polygon",
+        "rect",
+        "text",
+        "tspan",
+        "defs",
+        "clipPath",
+        "linearGradient",
+        "radialGradient",
+        "stop",
+        "title",
+        "desc",
     ];
     const ATTRS: &[&str] = &[
-        "xmlns", "viewBox", "width", "height", "x", "y", "x1", "y1", "x2", "y2", "cx", "cy",
-        "r", "rx", "ry", "d", "points", "fill", "fill-opacity", "stroke", "stroke-width",
-        "stroke-opacity", "stroke-linecap", "stroke-linejoin", "transform", "opacity",
-        "font-size", "font-family", "text-anchor", "class", "id", "offset", "stop-color",
-        "stop-opacity", "gradientUnits", "gradientTransform", "clip-path", "xmlns:xlink",
-        "xlink:href", "href",
+        "xmlns",
+        "viewBox",
+        "width",
+        "height",
+        "x",
+        "y",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "cx",
+        "cy",
+        "r",
+        "rx",
+        "ry",
+        "d",
+        "points",
+        "fill",
+        "fill-opacity",
+        "stroke",
+        "stroke-width",
+        "stroke-opacity",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "transform",
+        "opacity",
+        "font-size",
+        "font-family",
+        "text-anchor",
+        "class",
+        "id",
+        "offset",
+        "stop-color",
+        "stop-opacity",
+        "gradientUnits",
+        "gradientTransform",
+        "clip-path",
+        "xmlns:xlink",
+        "xlink:href",
+        "href",
     ];
     if !TAGS.contains(&elem.name.as_str()) {
         return None;
@@ -559,7 +648,12 @@ fn export_latex_with_meta(
 }
 
 pub fn export_latex(cells: &[CellData]) -> String {
-    export_latex_with_meta(cells, Some("Axioma Notebook"), Some(""), NotebookTrust::Untrusted)
+    export_latex_with_meta(
+        cells,
+        Some("Axioma Notebook"),
+        Some(""),
+        NotebookTrust::Untrusted,
+    )
 }
 
 fn export_html_with_title(cells: &[CellData], title: Option<&str>) -> String {
@@ -794,7 +888,8 @@ pub fn start_server(port: u16) -> Result<()> {
 
     // Capture the notebook working directory once at startup so module lookup
     // order is stable for the lifetime of the server.
-    let working_dir = std::env::current_dir().context("failed to determine notebook working directory")?;
+    let working_dir =
+        std::env::current_dir().context("failed to determine notebook working directory")?;
     let search_paths = ax_context::build_import_search_paths(&ax_context::ImportSearchPathConfig {
         env_std_path: std::env::var_os("AXIOMA_STD_PATH"),
         working_dir: Some(working_dir),
@@ -818,8 +913,12 @@ pub fn start_server(port: u16) -> Result<()> {
                 let mut body = String::new();
                 request.as_reader().read_to_string(&mut body).unwrap_or(0);
                 let req = serde_json::from_str::<ExportRequest>(&body).unwrap_or_default();
-                let latex =
-                    export_latex_with_meta(&req.cells, req.title.as_deref(), req.author.as_deref(), req.trust);
+                let latex = export_latex_with_meta(
+                    &req.cells,
+                    req.title.as_deref(),
+                    req.author.as_deref(),
+                    req.trust,
+                );
                 let response = Response::from_string(latex)
                     .with_header(
                         Header::from_bytes("Content-Type", "text/plain; charset=utf-8").unwrap(),
@@ -843,10 +942,15 @@ pub fn start_server(port: u16) -> Result<()> {
                 let session_id = match request_session_id(&request) {
                     Some(session_id) => session_id,
                     None => {
-                        let response = Response::from_string(r#"{"error":"missing X-Axioma-Session header"}"#)
-                            .with_status_code(400)
-                            .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-                            .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+                        let response =
+                            Response::from_string(r#"{"error":"missing X-Axioma-Session header"}"#)
+                                .with_status_code(400)
+                                .with_header(
+                                    Header::from_bytes("Content-Type", "application/json").unwrap(),
+                                )
+                                .with_header(
+                                    Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap(),
+                                );
                         let _ = request.respond(response);
                         continue;
                     }
@@ -864,10 +968,15 @@ pub fn start_server(port: u16) -> Result<()> {
                 let session_id = match request_session_id(&request) {
                     Some(session_id) => session_id,
                     None => {
-                        let response = Response::from_string(r#"{"error":"missing X-Axioma-Session header"}"#)
-                            .with_status_code(400)
-                            .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-                            .with_header(Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap());
+                        let response =
+                            Response::from_string(r#"{"error":"missing X-Axioma-Session header"}"#)
+                                .with_status_code(400)
+                                .with_header(
+                                    Header::from_bytes("Content-Type", "application/json").unwrap(),
+                                )
+                                .with_header(
+                                    Header::from_bytes("Access-Control-Allow-Origin", "*").unwrap(),
+                                );
                         let _ = request.respond(response);
                         continue;
                     }
@@ -973,10 +1082,11 @@ mod tests {
         let mut env = ax_eval::Env::new();
         let cwd = temp_dir("cwd-resolution");
         write_module(&cwd, "local.demo", "let imported_value = 42");
-        let search_paths = ax_context::build_import_search_paths(&ax_context::ImportSearchPathConfig {
-            working_dir: Some(cwd),
-            ..ax_context::ImportSearchPathConfig::default()
-        });
+        let search_paths =
+            ax_context::build_import_search_paths(&ax_context::ImportSearchPathConfig {
+                working_dir: Some(cwd),
+                ..ax_context::ImportSearchPathConfig::default()
+            });
 
         let result = handle_eval(
             r#"{"source": "import local.demo\nimported_value"}"#,
@@ -1009,7 +1119,8 @@ mod tests {
         let cells = vec![
             CellData {
                 source: r#"# Heading \input{evil}
-Text with $x^2$ and \write18{boom}"#.into(),
+Text with $x^2$ and \write18{boom}"#
+                    .into(),
                 output_latex: None,
                 output_unicode: None,
                 cell_type: "markdown".into(),
@@ -1035,7 +1146,8 @@ Text with $x^2$ and \write18{boom}"#.into(),
             output_unicode: Some("x²".into()),
             cell_type: "code".into(),
         }];
-        let latex = export_latex_with_meta(&cells, Some("A"), Some("B"), NotebookTrust::TrustedLocal);
+        let latex =
+            export_latex_with_meta(&cells, Some("A"), Some("B"), NotebookTrust::TrustedLocal);
         assert!(latex.contains("\\[\nx^{2}\n\\]"));
     }
 
@@ -1116,5 +1228,51 @@ Text with $x^2$ and \write18{boom}"#.into(),
         }
         store.cleanup_expired();
         assert_eq!(store.session_count(), 0);
+    }
+
+    #[test]
+    fn symmetry_cell_contains_tableau_heading() {
+        let summary = ax_ai_proto::TensorSymmetrySummary {
+            tableaux: vec![ax_ai_proto::TensorSymmetryEntry {
+                shape: vec![2, 1],
+                slots: vec![0, 1, 2],
+                label: None,
+                trace_free: false,
+                duality: "none".to_string(),
+            }],
+        };
+
+        let rendered = render_symmetry_cell(&summary);
+        assert!(rendered.contains("### tableau[0]"), "{rendered}");
+    }
+
+    #[test]
+    fn symmetry_cell_renders_one_exact_section_per_tableau() {
+        let summary = ax_ai_proto::TensorSymmetrySummary {
+            tableaux: vec![
+                ax_ai_proto::TensorSymmetryEntry {
+                    shape: vec![2, 1],
+                    slots: vec![0, 1, 2],
+                    label: Some("main".to_string()),
+                    trace_free: false,
+                    duality: "none".to_string(),
+                },
+                ax_ai_proto::TensorSymmetryEntry {
+                    shape: vec![1, 1],
+                    slots: vec![1, 2],
+                    label: Some("alt".to_string()),
+                    trace_free: true,
+                    duality: "none".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            render_symmetry_cell(&summary),
+            concat!(
+                "### tableau[0]\nshape=[2, 1]\nslots=[0, 1, 2]\ntrace_free=false\nduality=none\n\n",
+                "### tableau[1]\nshape=[1, 1]\nslots=[1, 2]\ntrace_free=true\nduality=none"
+            )
+        );
     }
 }

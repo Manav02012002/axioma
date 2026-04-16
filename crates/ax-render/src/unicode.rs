@@ -1,5 +1,8 @@
 use ax_ir::{Assumption, Condition, Expr, Index, Variance};
 use num_rational::BigRational;
+
+pub const YOUNG_BOX: &str = "□";
+
 const PREC_TOP: u8 = 0;
 const PREC_ADD: u8 = 50;
 const PREC_MUL: u8 = 60;
@@ -176,19 +179,39 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
         ),
         ("__angle_chain", n) if n >= 2 => {
             let labels = spinor_labels_unicode();
-            format!("⟨{}|{}|{}⟩", labels[0], labels[1..n - 1].join(""), labels[n - 1])
+            format!(
+                "⟨{}|{}|{}⟩",
+                labels[0],
+                labels[1..n - 1].join(""),
+                labels[n - 1]
+            )
         }
         ("__square_chain", n) if n >= 2 => {
             let labels = spinor_labels_unicode();
-            format!("[{}|{}|{}]", labels[0], labels[1..n - 1].join(""), labels[n - 1])
+            format!(
+                "[{}|{}|{}]",
+                labels[0],
+                labels[1..n - 1].join(""),
+                labels[n - 1]
+            )
         }
         ("__angle_square_chain", n) if n >= 2 => {
             let labels = spinor_labels_unicode();
-            format!("⟨{}|{}|{}]", labels[0], labels[1..n - 1].join(""), labels[n - 1])
+            format!(
+                "⟨{}|{}|{}]",
+                labels[0],
+                labels[1..n - 1].join(""),
+                labels[n - 1]
+            )
         }
         ("__square_angle_chain", n) if n >= 2 => {
             let labels = spinor_labels_unicode();
-            format!("[{}|{}|{}⟩", labels[0], labels[1..n - 1].join(""), labels[n - 1])
+            format!(
+                "[{}|{}|{}⟩",
+                labels[0],
+                labels[1..n - 1].join(""),
+                labels[n - 1]
+            )
         }
         ("__four_bracket", 4) => format!(
             "⟨{}{}{}{}⟩",

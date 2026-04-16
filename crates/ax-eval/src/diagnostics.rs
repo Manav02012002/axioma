@@ -80,7 +80,11 @@ fn render_expr(expr: &Expr, interner: &Interner) -> String {
             .map(|factor| render_expr(factor, interner))
             .collect::<Vec<_>>()
             .join(" * "),
-        Expr::Pow(base, exp) => format!("({})^({})", render_expr(base, interner), render_expr(exp, interner)),
+        Expr::Pow(base, exp) => format!(
+            "({})^({})",
+            render_expr(base, interner),
+            render_expr(exp, interner)
+        ),
         Expr::Neg(inner) => format!("-{}", render_expr(inner, interner)),
         Expr::Call(name, args) => format!(
             "{}({})",
@@ -112,9 +116,21 @@ fn render_expr(expr: &Expr, interner: &Interner) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
-        Expr::Complex(re, im) => format!("{} + {} i", render_expr(re, interner), render_expr(im, interner)),
-        Expr::FnDef(name, _, body) => format!("fn {} => {}", interner.resolve(*name), render_expr(body, interner)),
-        Expr::Rule(lhs, rhs, _) => format!("{} -> {}", render_expr(lhs, interner), render_expr(rhs, interner)),
+        Expr::Complex(re, im) => format!(
+            "{} + {} i",
+            render_expr(re, interner),
+            render_expr(im, interner)
+        ),
+        Expr::FnDef(name, _, body) => format!(
+            "fn {} => {}",
+            interner.resolve(*name),
+            render_expr(body, interner)
+        ),
+        Expr::Rule(lhs, rhs, _) => format!(
+            "{} -> {}",
+            render_expr(lhs, interner),
+            render_expr(rhs, interner)
+        ),
         Expr::Import(path) => format!(
             "import {}",
             path.iter()
@@ -282,9 +298,9 @@ fn same_structure_ignoring_coefficients(a: &Expr, b: &Expr) -> bool {
             left == right
         }
         _ => {
-    let (_, a_rest) = split_numeric_coeff(a);
-    let (_, b_rest) = split_numeric_coeff(b);
-    a_rest == b_rest
+            let (_, a_rest) = split_numeric_coeff(a);
+            let (_, b_rest) = split_numeric_coeff(b);
+            a_rest == b_rest
         }
     }
 }
@@ -486,7 +502,7 @@ fn symmetry_properties(props: &[&TensorProperty]) -> bool {
             prop,
             TensorProperty::Symmetric(_)
                 | TensorProperty::AntiSymmetric(_)
-                | TensorProperty::TableauSymmetry { .. }
+                | TensorProperty::TableauSymmetry(_)
                 | TensorProperty::RiemannSymmetry
         )
     })
@@ -584,12 +600,7 @@ pub fn diff_expressions(a: &Expr, b: &Expr, interner: &Interner) -> Value {
     })
 }
 
-pub fn check_properties(
-    expr: &Expr,
-    algorithm: &str,
-    env: &Env,
-    interner: &Interner,
-) -> Value {
+pub fn check_properties(expr: &Expr, algorithm: &str, env: &Env, interner: &Interner) -> Value {
     let mut indexed_symbols = Vec::new();
     collect_indexed_symbols(expr, &mut indexed_symbols);
     indexed_symbols.sort_by_key(|sym| interner.resolve(*sym).to_string());
@@ -687,9 +698,9 @@ pub fn check_properties(
                         .to_string(),
                 );
             }
-            let has_dummy_pair = by_name.values().any(|occs| {
-                occs.len() == 2 && occs[0].variance != occs[1].variance
-            });
+            let has_dummy_pair = by_name
+                .values()
+                .any(|occs| occs.len() == 2 && occs[0].variance != occs[1].variance);
             if !has_dummy_pair {
                 issues.push(
                     "No matching up/down dummy index pairs were found for a metric contraction"
@@ -740,7 +751,8 @@ pub fn check_properties(
                 }
             }
             if !has_sort_order {
-                issues.push("No SortOrder property is declared for the product factors".to_string());
+                issues
+                    .push("No SortOrder property is declared for the product factors".to_string());
             }
             if !has_commutativity {
                 issues.push(
@@ -816,7 +828,9 @@ fn indexed_symbols_present(expr: &Expr) -> bool {
         Expr::Call(_, args) => args.iter().any(indexed_symbols_present),
         Expr::FnDef(_, _, body) => indexed_symbols_present(body),
         Expr::Rule(lhs, rhs, _) => indexed_symbols_present(lhs) || indexed_symbols_present(rhs),
-        Expr::Piecewise(cases) => cases.iter().any(|(value, _)| indexed_symbols_present(value)),
+        Expr::Piecewise(cases) => cases
+            .iter()
+            .any(|(value, _)| indexed_symbols_present(value)),
         Expr::Let(_, value, body) => {
             indexed_symbols_present(value) || indexed_symbols_present(body)
         }
@@ -867,6 +881,9 @@ pub fn explain_algorithm(algorithm: &str, expr: &Expr, env: &Env, interner: &Int
             "{summary} It may not have changed this expression because the expression is already in the target form."
         )
     } else {
-        format!("{summary} It may not have changed this expression because:\n- {}", issues.join("\n- "))
+        format!(
+            "{summary} It may not have changed this expression because:\n- {}",
+            issues.join("\n- ")
+        )
     }
 }

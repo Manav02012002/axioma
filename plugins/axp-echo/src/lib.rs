@@ -1,4 +1,7 @@
-use ax_plugin_api::{PluginDiag, PluginRequest, PluginResponse};
+use ax_ai_proto::TensorSymmetrySummary;
+use ax_plugin_api::{
+    PluginDiag, PluginRequest, PluginResponse, SymmetrySummaryRequest, SymmetrySummaryResponse,
+};
 
 #[no_mangle]
 pub extern "C" fn axioma_alloc(len: i32) -> i32 {
@@ -29,15 +32,7 @@ pub extern "C" fn axioma_entry(req_ptr: i32, req_len: i32) -> i32 {
     let req_bytes = unsafe { std::slice::from_raw_parts(req_ptr as *const u8, req_len as usize) };
 
     let resp = match serde_json::from_slice::<PluginRequest>(req_bytes) {
-        Ok(req) => PluginResponse {
-            ok: true,
-            result: serde_json::json!({
-                "echo": req.args,
-                "op": req.op,
-                "plugin": req.plugin
-            }),
-            diagnostics: vec![],
-        },
+        Ok(req) => handle_plugin_request(req),
         Err(e) => PluginResponse {
             ok: false,
             result: serde_json::json!(null),
@@ -52,4 +47,89 @@ pub extern "C" fn axioma_entry(req_ptr: i32, req_len: i32) -> i32 {
     let ptr = out.as_ptr() as i32;
     std::mem::forget(out);
     ptr
+}
+
+pub fn handle_plugin_request(req: PluginRequest) -> PluginResponse {
+    if req.op == "symmetry_summary" {
+        return handle_symmetry_summary(req);
+    }
+
+    PluginResponse {
+        ok: true,
+        result: serde_json::json!({
+            "echo": req.args,
+            "op": req.op,
+            "plugin": req.plugin
+        }),
+        diagnostics: vec![],
+    }
+}
+
+fn handle_symmetry_summary(req: PluginRequest) -> PluginResponse {
+    let request = match serde_json::from_value::<SymmetrySummaryRequest>(req.args) {
+        Ok(request) => request,
+        Err(err) => {
+            return PluginResponse {
+                ok: false,
+                result: serde_json::json!(null),
+                diagnostics: vec![PluginDiag {
+                    level: "error".to_string(),
+                    message: format!("invalid symmetry summary args: {err}"),
+                }],
+            };
+        }
+    };
+
+    let symmetry = match ax_syntax::parse_tableau_symmetry(&request.expr) {
+        Ok(symmetry) => symmetry,
+        Err(diagnostics) => {
+            return PluginResponse {
+                ok: false,
+                result: serde_json::json!(null),
+                diagnostics: diagnostics
+                    .into_iter()
+                    .map(|diag| PluginDiag {
+                        level: "error".to_string(),
+                        message: diag.message,
+                    })
+                    .collect(),
+            };
+        }
+    };
+
+    let summary = TensorSymmetrySummary::from(&symmetry);
+    let summary_json = match serde_json::to_string(&summary) {
+        Ok(summary_json) => summary_json,
+        Err(err) => {
+            return PluginResponse {
+                ok: false,
+                result: serde_json::json!(null),
+                diagnostics: vec![PluginDiag {
+                    level: "error".to_string(),
+                    message: format!("failed to serialize symmetry summary: {err}"),
+                }],
+            };
+        }
+    };
+
+    let response = SymmetrySummaryResponse {
+        summary_json,
+        rendered_ascii: ax_render::render_tensor_symmetry_summary(&symmetry),
+    };
+
+    match serde_json::to_value(response) {
+        Ok(result) => PluginResponse {
+            ok: true,
+            result,
+            diagnostics: vec![],
+        },
+        Err(err) => PluginResponse {
+            ok: false,
+            result: serde_json::json!(null),
+            diagnostics: vec![PluginDiag {
+                level: "error".to_string(),
+                message: format!("failed to encode symmetry summary response: {err}"),
+            }],
+        },
+    }
 }

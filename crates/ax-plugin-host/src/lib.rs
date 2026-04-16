@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 
 use anyhow::{anyhow, Context, Result};
-use ax_plugin_api::{PluginRequest, PluginResponse};
+use ax_ai_proto::TensorSymmetrySummary;
+use ax_plugin_api::{PluginRequest, PluginResponse, SymmetrySummaryResponse};
 use std::path::Path;
 use wasmtime::{Engine, Instance, Module, Store, TypedFunc};
 
@@ -80,4 +81,27 @@ impl WasmPlugin {
 
         Ok(resp)
     }
+}
+
+pub fn summarize_symmetry_for_expr(expr: &str) -> anyhow::Result<SymmetrySummaryResponse> {
+    summarize_symmetry_for_expr_impl(expr).context("failed to summarize symmetry for expression")
+}
+
+fn summarize_symmetry_for_expr_impl(expr: &str) -> Result<SymmetrySummaryResponse> {
+    let symmetry = ax_syntax::parse_tableau_symmetry(expr)
+        .map_err(|diagnostics| anyhow!(diagnostics_to_message(&diagnostics)))?;
+    let summary = TensorSymmetrySummary::from(&symmetry);
+    let summary_json = serde_json::to_string(&summary)?;
+    Ok(SymmetrySummaryResponse {
+        summary_json,
+        rendered_ascii: ax_render::render_tensor_symmetry_summary(&symmetry),
+    })
+}
+
+fn diagnostics_to_message(diagnostics: &[ax_syntax::Diagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(|diag| diag.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
 }

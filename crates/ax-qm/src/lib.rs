@@ -14,6 +14,11 @@ use num_rational::BigRational;
 use num_traits::One;
 use std::collections::{HashMap, HashSet};
 
+pub fn permutation_sector_dimension(shape: &[usize], n: usize) -> anyhow::Result<u64> {
+    let diagram = ax_young::YoungDiagram::try_new(shape.to_vec())?;
+    Ok(ax_young::dimension_of_representation(&diagram, n))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperatorKind {
     Creation,
@@ -61,17 +66,27 @@ fn property_sym(expr: &Expr) -> Option<lasso::Spur> {
     }
 }
 
-fn expr_has_property(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup, kind: &TensorProperty) -> bool {
+fn expr_has_property(
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+    kind: &TensorProperty,
+) -> bool {
     property_sym(expr)
         .map(|sym| properties.has_property_kind(sym, kind))
         .unwrap_or(false)
 }
 
-fn prop_sort_order(sym: lasso::Spur, properties: &dyn ax_tensor::PropertyLookup) -> Option<Vec<lasso::Spur>> {
-    properties.get_properties(sym).into_iter().find_map(|prop| match prop {
-        TensorProperty::SortOrder(order) => Some(order.clone()),
-        _ => None,
-    })
+fn prop_sort_order(
+    sym: lasso::Spur,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> Option<Vec<lasso::Spur>> {
+    properties
+        .get_properties(sym)
+        .into_iter()
+        .find_map(|prop| match prop {
+            TensorProperty::SortOrder(order) => Some(order.clone()),
+            _ => None,
+        })
 }
 
 fn is_majorana_spinor_expr(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup) -> bool {
@@ -89,7 +104,10 @@ fn is_weyl_spinor_expr(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup) 
         .unwrap_or(false)
 }
 
-fn index_family_name(idx: &Index, properties: &dyn ax_tensor::PropertyLookup) -> Option<lasso::Spur> {
+fn index_family_name(
+    idx: &Index,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> Option<lasso::Spur> {
     idx.index_type.or_else(|| {
         properties
             .index_families()
@@ -97,11 +115,18 @@ fn index_family_name(idx: &Index, properties: &dyn ax_tensor::PropertyLookup) ->
     })
 }
 
-fn index_family_dimension(idx: &Index, properties: &dyn ax_tensor::PropertyLookup) -> Option<usize> {
+fn index_family_dimension(
+    idx: &Index,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> Option<usize> {
     let family_name = index_family_name(idx, properties)?;
     properties
         .index_families()
-        .and_then(|families| families.get(&family_name).and_then(|family| family.dimension))
+        .and_then(|families| {
+            families
+                .get(&family_name)
+                .and_then(|family| family.dimension)
+        })
         .or_else(|| {
             properties
                 .index_families()
@@ -164,9 +189,14 @@ struct GammaExprData {
     indices: Vec<Index>,
 }
 
-fn gamma_expr_data(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup) -> Option<GammaExprData> {
+fn gamma_expr_data(
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> Option<GammaExprData> {
     match expr {
-        Expr::Call(sym, args) if properties.has_property_kind(*sym, &TensorProperty::GammaMatrixProp) => {
+        Expr::Call(sym, args)
+            if properties.has_property_kind(*sym, &TensorProperty::GammaMatrixProp) =>
+        {
             let indices = args
                 .iter()
                 .filter_map(|arg| match arg {
@@ -202,8 +232,15 @@ fn gamma_expr_data(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup) -> O
 
 fn build_gamma_expr(head: &Expr, indices: &[Index]) -> Expr {
     match head {
-        Expr::Sym(sym) if indices.iter().all(|idx| idx.index_type.is_none() && idx.variance == Variance::Up) => {
-            Expr::Call(*sym, indices.iter().map(|idx| Expr::Sym(idx.name)).collect())
+        Expr::Sym(sym)
+            if indices
+                .iter()
+                .all(|idx| idx.index_type.is_none() && idx.variance == Variance::Up) =>
+        {
+            Expr::Call(
+                *sym,
+                indices.iter().map(|idx| Expr::Sym(idx.name)).collect(),
+            )
         }
         _ => Expr::Indexed(Box::new(head.clone()), indices.to_vec()),
     }
@@ -226,15 +263,15 @@ fn build_metric_contraction(metric: &Expr, left: &Index, right: &Index) -> Expr 
                 },
             ],
         ),
-        _ => Expr::mul(vec![metric.clone(), Expr::Sym(left.name), Expr::Sym(right.name)]),
+        _ => Expr::mul(vec![
+            metric.clone(),
+            Expr::Sym(left.name),
+            Expr::Sym(right.name),
+        ]),
     }
 }
 
-fn build_generalised_delta(
-    uppers: &[Index],
-    lowers: &[Index],
-    interner: &ax_ir::Interner,
-) -> Expr {
+fn build_generalised_delta(uppers: &[Index], lowers: &[Index], interner: &ax_ir::Interner) -> Expr {
     let sym = interner.get_or_intern("generalised_delta");
     let mut args = Vec::with_capacity(uppers.len() + lowers.len());
     args.extend(uppers.iter().map(|idx| Expr::Sym(idx.name)));
@@ -251,11 +288,21 @@ fn permutation_parity(selection: &[usize]) -> i32 {
             }
         }
     }
-    if inversions % 2 == 0 { 1 } else { -1 }
+    if inversions % 2 == 0 {
+        1
+    } else {
+        -1
+    }
 }
 
 fn combinations_of(n: usize, k: usize) -> Vec<Vec<usize>> {
-    fn helper(start: usize, n: usize, k: usize, current: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+    fn helper(
+        start: usize,
+        n: usize,
+        k: usize,
+        current: &mut Vec<usize>,
+        out: &mut Vec<Vec<usize>>,
+    ) {
         if current.len() == k {
             out.push(current.clone());
             return;
@@ -289,11 +336,8 @@ fn fresh_dummy_from_family(
     }
     let mut counter = 0usize;
     loop {
-        let candidate = interner.get_or_intern(&format!(
-            "{}_{}",
-            interner.resolve(family.name),
-            counter
-        ));
+        let candidate =
+            interner.get_or_intern(&format!("{}_{}", interner.resolve(family.name), counter));
         counter += 1;
         if used.insert(candidate) {
             return candidate;
@@ -1297,14 +1341,17 @@ pub fn sort_spinors(
                 }
 
                 let gamma_rank = gamma_pos
-                    .and_then(|pos| gamma_expr_data(&mapped[pos], properties).map(|data| data.indices.len()))
+                    .and_then(|pos| {
+                        gamma_expr_data(&mapped[pos], properties).map(|data| data.indices.len())
+                    })
                     .unwrap_or(0);
                 let majorana_sign = if ((gamma_rank * (gamma_rank + 1)) / 2) % 2 == 0 {
                     1
                 } else {
                     -1
                 };
-                let comparison = ax_tensor::subtree_compare(&left_spinor, &right_spinor, properties, interner);
+                let comparison =
+                    ax_tensor::subtree_compare(&left_spinor, &right_spinor, properties, interner);
                 let swap_sign = ax_tensor::can_swap(
                     &left_spinor,
                     &right_spinor,
@@ -1320,13 +1367,20 @@ pub fn sort_spinors(
                 out[i] = Expr::Call(*bar_sym, vec![right_spinor.clone()]);
                 out[j] = left_spinor.clone();
                 let reordered = Expr::mul(out);
-                return if total_sign < 0 { Expr::neg(reordered) } else { reordered };
+                return if total_sign < 0 {
+                    Expr::neg(reordered)
+                } else {
+                    reordered
+                };
             }
 
             Expr::mul(mapped)
         }
         Expr::Add(terms) => Expr::add(
-            terms.iter().map(|term| sort_spinors(term, properties, interner)).collect(),
+            terms
+                .iter()
+                .map(|term| sort_spinors(term, properties, interner))
+                .collect(),
         ),
         Expr::Neg(inner) => Expr::neg(sort_spinors(inner, properties, interner)),
         Expr::Pow(base, exp) => Expr::pow(
@@ -1339,13 +1393,17 @@ pub fn sort_spinors(
         ),
         Expr::Call(f, args) => Expr::Call(
             *f,
-            args.iter().map(|arg| sort_spinors(arg, properties, interner)).collect(),
+            args.iter()
+                .map(|arg| sort_spinors(arg, properties, interner))
+                .collect(),
         ),
         Expr::Indexed(base, indices) => Expr::Indexed(
             Box::new(sort_spinors(base, properties, interner)),
             indices.clone(),
         ),
-        Expr::Group(inner, rel) => Expr::Group(Box::new(sort_spinors(inner, properties, interner)), *rel),
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(sort_spinors(inner, properties, interner)), *rel)
+        }
         _ => expr.clone(),
     }
 }
@@ -1377,10 +1435,22 @@ pub fn join_gamma_full(
         .max();
     let dim = dimension.or(inferred_dim);
 
-    let families1: HashSet<_> = g1.indices.iter().filter_map(|idx| index_family_name(idx, properties)).collect();
-    let families2: HashSet<_> = g2.indices.iter().filter_map(|idx| index_family_name(idx, properties)).collect();
+    let families1: HashSet<_> = g1
+        .indices
+        .iter()
+        .filter_map(|idx| index_family_name(idx, properties))
+        .collect();
+    let families2: HashSet<_> = g2
+        .indices
+        .iter()
+        .filter_map(|idx| index_family_name(idx, properties))
+        .collect();
     if !families1.is_empty() && !families2.is_empty() && families1 != families2 {
-        return qm_error_expr("join_gamma_incompatible_index_sets", &Expr::mul(vec![gam1.clone(), gam2.clone()]), interner);
+        return qm_error_expr(
+            "join_gamma_incompatible_index_sets",
+            &Expr::mul(vec![gam1.clone(), gam2.clone()]),
+            interner,
+        );
     }
 
     let dup1: HashSet<_> = g1.indices.iter().map(|idx| idx.name).collect();
@@ -1412,7 +1482,11 @@ pub fn join_gamma_full(
             } else {
                 build_gamma_expr(&g1.head, &free)
             };
-            terms.push(if coeff.is_one() { gamma } else { Expr::mul(vec![Expr::Rational(coeff), gamma]) });
+            terms.push(if coeff.is_one() {
+                gamma
+            } else {
+                Expr::mul(vec![Expr::Rational(coeff), gamma])
+            });
             continue;
         }
 
@@ -1441,14 +1515,22 @@ pub fn join_gamma_full(
                     build_gamma_expr(&g1.head, &free)
                 };
                 let contraction = if use_generalised_delta {
-                    let uppers = left.iter().map(|idx| g1.indices[*idx].clone()).collect::<Vec<_>>();
-                    let lowers = right.iter().map(|idx| g2.indices[*idx].clone()).collect::<Vec<_>>();
+                    let uppers = left
+                        .iter()
+                        .map(|idx| g1.indices[*idx].clone())
+                        .collect::<Vec<_>>();
+                    let lowers = right
+                        .iter()
+                        .map(|idx| g2.indices[*idx].clone())
+                        .collect::<Vec<_>>();
                     build_generalised_delta(&uppers, &lowers, interner)
                 } else {
                     let metrics = left
                         .iter()
                         .zip(right.iter())
-                        .map(|(li, ri)| build_metric_contraction(metric, &g1.indices[*li], &g2.indices[*ri]))
+                        .map(|(li, ri)| {
+                            build_metric_contraction(metric, &g1.indices[*li], &g2.indices[*ri])
+                        })
                         .collect::<Vec<_>>();
                     if metrics.is_empty() {
                         Expr::one()
@@ -1479,7 +1561,9 @@ pub fn join_gamma_full(
             match contraction_sum {
                 Expr::Add(items) => {
                     terms.extend(
-                        items.into_iter().map(|item| Expr::mul(vec![Expr::Rational(coeff.clone()), item])),
+                        items
+                            .into_iter()
+                            .map(|item| Expr::mul(vec![Expr::Rational(coeff.clone()), item])),
                     );
                 }
                 other => terms.push(Expr::mul(vec![Expr::Rational(coeff), other])),
@@ -2115,7 +2199,9 @@ pub fn expand_diracbar_full(
     interner: &ax_ir::Interner,
 ) -> Expr {
     match expr {
-        Expr::Call(f, args) if properties.has_property_kind(*f, &TensorProperty::DiracBar) && args.len() == 1 => {
+        Expr::Call(f, args)
+            if properties.has_property_kind(*f, &TensorProperty::DiracBar) && args.len() == 1 =>
+        {
             let inner = expand_diracbar_full(&args[0], properties, interner);
             let Expr::Mul(factors) = inner else {
                 return Expr::Call(*f, vec![inner]);
@@ -2123,26 +2209,44 @@ pub fn expand_diracbar_full(
             if factors.len() != 2 {
                 return Expr::Call(*f, vec![Expr::Mul(factors)]);
             }
-            let (gamma_expr, spinor) = if expr_has_property(&factors[0], properties, &TensorProperty::GammaMatrixProp)
-            {
-                (factors[0].clone(), factors[1].clone())
-            } else if expr_has_property(&factors[1], properties, &TensorProperty::GammaMatrixProp) {
-                (factors[1].clone(), factors[0].clone())
-            } else {
-                return Expr::Call(*f, vec![Expr::Mul(factors)]);
-            };
+            let (gamma_expr, spinor) =
+                if expr_has_property(&factors[0], properties, &TensorProperty::GammaMatrixProp) {
+                    (factors[0].clone(), factors[1].clone())
+                } else if expr_has_property(
+                    &factors[1],
+                    properties,
+                    &TensorProperty::GammaMatrixProp,
+                ) {
+                    (factors[1].clone(), factors[0].clone())
+                } else {
+                    return Expr::Call(*f, vec![Expr::Mul(factors)]);
+                };
             let rank = gamma_expr_data(&gamma_expr, properties)
                 .map(|data| data.indices.len())
                 .unwrap_or(0);
-            let sign = if ((rank * (rank + 1)) / 2) % 2 == 0 { 1 } else { -1 };
+            let sign = if ((rank * (rank + 1)) / 2) % 2 == 0 {
+                1
+            } else {
+                -1
+            };
             let flipped = Expr::mul(vec![Expr::Call(*f, vec![spinor]), gamma_expr]);
-            if sign < 0 { Expr::neg(flipped) } else { flipped }
+            if sign < 0 {
+                Expr::neg(flipped)
+            } else {
+                flipped
+            }
         }
         Expr::Add(terms) => Expr::add(
-            terms.iter().map(|term| expand_diracbar_full(term, properties, interner)).collect(),
+            terms
+                .iter()
+                .map(|term| expand_diracbar_full(term, properties, interner))
+                .collect(),
         ),
         Expr::Mul(factors) => Expr::mul(
-            factors.iter().map(|factor| expand_diracbar_full(factor, properties, interner)).collect(),
+            factors
+                .iter()
+                .map(|factor| expand_diracbar_full(factor, properties, interner))
+                .collect(),
         ),
         Expr::Neg(inner) => Expr::neg(expand_diracbar_full(inner, properties, interner)),
         Expr::Pow(base, exp) => Expr::pow(
@@ -2155,13 +2259,18 @@ pub fn expand_diracbar_full(
         ),
         Expr::Call(f, args) => Expr::Call(
             *f,
-            args.iter().map(|arg| expand_diracbar_full(arg, properties, interner)).collect(),
+            args.iter()
+                .map(|arg| expand_diracbar_full(arg, properties, interner))
+                .collect(),
         ),
         Expr::Indexed(base, indices) => Expr::Indexed(
             Box::new(expand_diracbar_full(base, properties, interner)),
             indices.clone(),
         ),
-        Expr::Group(inner, rel) => Expr::Group(Box::new(expand_diracbar_full(inner, properties, interner)), *rel),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(expand_diracbar_full(inner, properties, interner)),
+            *rel,
+        ),
         _ => expr.clone(),
     }
 }
@@ -2282,8 +2391,18 @@ pub fn fierz_full(
         .map(property_sym)
         .collect::<Option<Vec<_>>>()?;
     let desired = [desired[0], desired[1], desired[2], desired[3]];
-    let right_order = [parsed.pair.psi1, parsed.pair.psi2, parsed.pair.psi3, parsed.pair.psi4];
-    let wrong_order = [parsed.pair.psi1, parsed.pair.psi4, parsed.pair.psi3, parsed.pair.psi2];
+    let right_order = [
+        parsed.pair.psi1,
+        parsed.pair.psi2,
+        parsed.pair.psi3,
+        parsed.pair.psi4,
+    ];
+    let wrong_order = [
+        parsed.pair.psi1,
+        parsed.pair.psi4,
+        parsed.pair.psi3,
+        parsed.pair.psi2,
+    ];
     if desired == right_order {
         return None;
     }
@@ -2314,9 +2433,7 @@ pub fn fierz_full(
         let coeff = -BigRational::new(BigInt::one(), BigInt::from(spinor_dim) * factorial(rank));
         let gamma_indices = if let Some(info) = &family {
             (0..rank)
-                .map(|_| {
-                    fresh_dummy_from_family(info, &mut used, interner)
-                })
+                .map(|_| fresh_dummy_from_family(info, &mut used, interner))
                 .collect::<Vec<_>>()
         } else {
             (0..rank)
@@ -2336,7 +2453,12 @@ pub fn fierz_full(
         if !parsed.pair.gamma_a.is_empty() {
             second_chain.push(Expr::Call(
                 gamma_sym,
-                parsed.pair.gamma_a.iter().map(|idx| Expr::Sym(*idx)).collect(),
+                parsed
+                    .pair
+                    .gamma_a
+                    .iter()
+                    .map(|idx| Expr::Sym(*idx))
+                    .collect(),
             ));
         }
         if !gamma_indices.is_empty() {
@@ -2348,7 +2470,13 @@ pub fn fierz_full(
         if !parsed.pair.gamma_b.is_empty() {
             second_chain.push(Expr::Call(
                 gamma_sym,
-                parsed.pair.gamma_b.iter().rev().map(|idx| Expr::Sym(*idx)).collect(),
+                parsed
+                    .pair
+                    .gamma_b
+                    .iter()
+                    .rev()
+                    .map(|idx| Expr::Sym(*idx))
+                    .collect(),
             ));
         }
 
@@ -2392,10 +2520,7 @@ pub fn split_gamma_full(
             vec![data.indices[data.indices.len() - 1].clone()],
         )
     } else {
-        (
-            vec![data.indices[0].clone()],
-            data.indices[1..].to_vec(),
-        )
+        (vec![data.indices[0].clone()], data.indices[1..].to_vec())
     };
     let lhs = build_gamma_expr(&data.head, &left_indices);
     let rhs = build_gamma_expr(&data.head, &right_indices);
@@ -2412,11 +2537,21 @@ pub fn split_gamma_full(
         let rank_match = match &term {
             Expr::Mul(factors) => factors.iter().any(|factor| {
                 gamma_expr_data(factor, properties)
-                    .map(|candidate| original_data.as_ref().map(|d| candidate.indices == d.indices).unwrap_or(false))
+                    .map(|candidate| {
+                        original_data
+                            .as_ref()
+                            .map(|d| candidate.indices == d.indices)
+                            .unwrap_or(false)
+                    })
                     .unwrap_or(false)
             }),
             _ => gamma_expr_data(&term, properties)
-                .map(|candidate| original_data.as_ref().map(|d| candidate.indices == d.indices).unwrap_or(false))
+                .map(|candidate| {
+                    original_data
+                        .as_ref()
+                        .map(|d| candidate.indices == d.indices)
+                        .unwrap_or(false)
+                })
                 .unwrap_or(false),
         };
         if !rank_match {
@@ -3575,7 +3710,10 @@ mod tests {
         props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
         let odd = Expr::Call(
             bar,
-            vec![Expr::mul(vec![Expr::Call(gamma, vec![Expr::Sym(a)]), Expr::Sym(eps)])],
+            vec![Expr::mul(vec![
+                Expr::Call(gamma, vec![Expr::Sym(a)]),
+                Expr::Sym(eps),
+            ])],
         );
         let even = Expr::Call(
             bar,
@@ -3633,7 +3771,10 @@ mod tests {
         props.insert(gamma, vec![TensorProperty::GammaMatrixProp]);
         props.insert(bar, vec![TensorProperty::DiracBar]);
         for sym in [psi1, psi2, psi3, psi4] {
-            props.insert(sym, vec![TensorProperty::Spinor, TensorProperty::AntiCommuting]);
+            props.insert(
+                sym,
+                vec![TensorProperty::Spinor, TensorProperty::AntiCommuting],
+            );
         }
         let expr = Expr::mul(vec![
             Expr::Call(bar, vec![Expr::Sym(psi1)]),

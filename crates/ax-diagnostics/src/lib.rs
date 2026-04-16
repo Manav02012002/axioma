@@ -32,3 +32,28 @@ impl Diagnostic {
         self
     }
 }
+
+pub fn invalid_tensor_symmetry(msg: impl Into<String>) -> Diagnostic {
+    Diagnostic::error("invalid_tensor_symmetry", msg)
+}
+
+pub fn tableau_projection_annihilated(msg: impl Into<String>) -> Diagnostic {
+    Diagnostic::error("tableau_projection_annihilated", msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_tensor_symmetry_diagnostic_contains_message() {
+        let diagnostic = invalid_tensor_symmetry("bad symmetry");
+        assert!(diagnostic.message.contains("bad symmetry"));
+    }
+
+    #[test]
+    fn tableau_projection_annihilated_contains_message() {
+        let diagnostic = tableau_projection_annihilated("projector killed term");
+        assert!(diagnostic.message.contains("projector killed term"));
+    }
+}

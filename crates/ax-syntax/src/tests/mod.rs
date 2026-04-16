@@ -1,1 +1,2 @@
 mod smoke;
+mod tableau;

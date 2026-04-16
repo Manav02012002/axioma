@@ -8,12 +8,15 @@ pub enum SyntaxKind {
     Ident,
     Int,
     Float,
+    String,
 
     KwModule,
     KwImport,
     KwLet,
     KwIn,
     KwIndexset,
+    KwTrue,
+    KwFalse,
 
     Plus,
     Minus,
@@ -42,6 +45,18 @@ pub enum SyntaxKind {
 
     Error,
 
+    ExprStmt,
+    CallExpr,
+    ListExpr,
+    NamedArg,
+    StringLiteral,
+    BoolLiteral,
+    TableauSymmetryExpr,
+    TableauShapeList,
+    TableauSlotMapList,
+    TableauLabels,
+    TableauTraceFreeList,
+
     Root,
 }
 
@@ -58,6 +73,7 @@ impl T {
     pub const IDENT: SyntaxKind = SyntaxKind::Ident;
     pub const INT: SyntaxKind = SyntaxKind::Int;
     pub const FLOAT: SyntaxKind = SyntaxKind::Float;
+    pub const STRING: SyntaxKind = SyntaxKind::String;
     pub const WHITESPACE: SyntaxKind = SyntaxKind::Whitespace;
     pub const COMMENT_LINE: SyntaxKind = SyntaxKind::CommentLine;
     pub const COMMENT_BLOCK: SyntaxKind = SyntaxKind::CommentBlock;

@@ -5,6 +5,10 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
 
+pub fn permutation_matrix_size(degree: usize) -> usize {
+    degree * degree
+}
+
 fn to_rational(expr: &Expr) -> Option<BigRational> {
     match expr {
         Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
@@ -445,5 +449,10 @@ mod tests {
             }
             other => panic!("expected Matrix, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn permutation_matrix_size_is_degree_squared() {
+        assert_eq!(crate::permutation_matrix_size(4), 16);
     }
 }

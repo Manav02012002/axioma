@@ -139,3 +139,48 @@ fn latex_matrix() {
         latex
     );
 }
+
+#[test]
+fn renders_young_diagram_ascii() {
+    assert_eq!(render_young_diagram_ascii(&[2, 1]), "[][]\n[]");
+}
+
+#[test]
+fn renders_young_diagram_unicode() {
+    assert_eq!(render_young_diagram_unicode(&[2, 1]), "□ □\n□");
+}
+
+#[test]
+fn renders_tableau_slot_map_ascii() {
+    assert_eq!(
+        render_tableau_slot_map_ascii(&[2, 1], &[0, 1, 2]),
+        "[0][1]\n[2]"
+    );
+}
+
+#[test]
+fn renders_tensor_symmetry_summary() {
+    let sym = TensorSymmetry {
+        tableaux: vec![TableauAttachment {
+            shape: vec![2, 1],
+            slot_map: vec![0, 1, 2],
+            multiplicity_numer: 1,
+            multiplicity_denom: 1,
+            duality: DualityKind::None,
+            restricted_mode: RestrictedSymmetryMode::FullYoung,
+            trace_free: false,
+            dimension_guard: None,
+            source: SymmetrySource::Declared,
+            label: None,
+        }],
+        inherits_under_derivative: false,
+        inherits_under_tensor_product: false,
+        inherits_under_contraction: false,
+        preserves_trace_free_under_projection: false,
+    };
+
+    let summary = render_tensor_symmetry_summary(&sym);
+    assert!(summary.contains("tableau[0]:"));
+    assert!(summary.contains("shape=[2, 1]"));
+    assert!(summary.contains("slots=[0, 1, 2]"));
+}

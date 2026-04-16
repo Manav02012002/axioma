@@ -104,14 +104,8 @@ fn try_apply_rule_compare(
 }
 
 pub fn apply_rule(rule: &RewriteRule, expr: &Expr, interner: &Interner) -> Option<Expr> {
-    try_apply_rule_compare(
-        rule,
-        expr,
-        empty_props(),
-        empty_index_to_family(),
-        interner,
-    )
-    .map(|(rewritten, _)| rewritten)
+    try_apply_rule_compare(rule, expr, empty_props(), empty_index_to_family(), interner)
+        .map(|(rewritten, _)| rewritten)
 }
 
 pub fn apply_rule_traced(
@@ -120,13 +114,8 @@ pub fn apply_rule_traced(
     interner: &Interner,
     trace: &mut RewriteTrace,
 ) -> Option<Expr> {
-    let (after, binds) = try_apply_rule_compare(
-        rule,
-        expr,
-        empty_props(),
-        empty_index_to_family(),
-        interner,
-    )?;
+    let (after, binds) =
+        try_apply_rule_compare(rule, expr, empty_props(), empty_index_to_family(), interner)?;
     trace.steps.push(RewriteStep {
         rule_name: rule.name.clone(),
         trust_level: rule.trust_level,
@@ -193,7 +182,9 @@ pub fn rewrite_once(rules: &[RewriteRule], expr: &Expr, interner: &Interner) -> 
             Box::new(rewrite_once(rules, base, interner)),
             indices.clone(),
         ),
-        Expr::Group(inner, rel) => Expr::Group(Box::new(rewrite_once(rules, inner, interner)), *rel),
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(rewrite_once(rules, inner, interner)), *rel)
+        }
         Expr::Let(name, val, body) => Expr::Let(
             *name,
             Box::new(rewrite_once(rules, val, interner)),
@@ -324,6 +315,79 @@ pub fn rewrite_once_traced(
     }
 
     recursed
+}
+
+/// Returns whether a rewrite preserves tensor symmetry on a purely syntactic path.
+///
+/// This only checks whether both expressions are indexed tensor symbols with the
+/// same base symbol and the same arity. It is not a semantic proof that the
+/// rewrite preserves the full structured symmetry object.
+pub fn rewrite_preserves_tensor_symmetry(before: &ax_ir::Expr, after: &ax_ir::Expr) -> bool {
+    match (before, after) {
+        (Expr::Indexed(before_base, before_indices), Expr::Indexed(after_base, after_indices)) => {
+            matches!(
+                (before_base.as_ref(), after_base.as_ref()),
+                (Expr::Sym(before_sym), Expr::Sym(after_sym))
+                    if before_sym == after_sym && before_indices.len() == after_indices.len()
+            )
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tensor_symmetry_tests {
+    use super::*;
+
+    #[test]
+    fn same_indexed_symbol_and_arity_preserves_tensor_symmetry() {
+        let interner = Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let before = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                ax_ir::Index {
+                    name: a,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+                ax_ir::Index {
+                    name: b,
+                    variance: ax_ir::Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+        let after = before.clone();
+        assert!(rewrite_preserves_tensor_symmetry(&before, &after));
+    }
+
+    #[test]
+    fn different_symbol_does_not_preserve_tensor_symmetry() {
+        let interner = Interner::new();
+        let t = interner.get_or_intern("T");
+        let u = interner.get_or_intern("U");
+        let a = interner.get_or_intern("a");
+        let before = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![ax_ir::Index {
+                name: a,
+                variance: ax_ir::Variance::Down,
+                index_type: None,
+            }],
+        );
+        let after = Expr::Indexed(
+            Box::new(Expr::Sym(u)),
+            vec![ax_ir::Index {
+                name: a,
+                variance: ax_ir::Variance::Down,
+                index_type: None,
+            }],
+        );
+        assert!(!rewrite_preserves_tensor_symmetry(&before, &after));
+    }
 }
 
 pub fn rewrite_fixed_point(

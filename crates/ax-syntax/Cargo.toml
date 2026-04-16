@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ax-ir = { path = "../ax-ir" }
 logos = "0.15.1"
 once_cell = "1.21.3"
 rowan = "0.16.1"
@@ -13,3 +14,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 smallvec = "1.15.1"
 thiserror.workspace = true
+
+[dev-dependencies]
+ax-render = { path = "../ax-render" }

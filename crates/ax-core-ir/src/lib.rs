@@ -1,7 +1,13 @@
 #![forbid(unsafe_code)]
 
+pub mod symmetry;
+
 use ax_ir::{Assumption, Condition, Expr, Index, Interner, Variance};
 use std::ops::Range;
+
+pub use symmetry::{
+    lower_tensor_symmetry, CoreSymmetryLowerError, CoreTableauAttachment, CoreTensorSymmetry,
+};
 
 #[derive(Debug, Clone)]
 pub struct LowerResult {

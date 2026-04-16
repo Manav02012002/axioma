@@ -188,6 +188,14 @@ impl Default for GradedSymbolTable {
     }
 }
 
+pub fn graded_sign_for_slot_swap(left_parity_odd: bool, right_parity_odd: bool) -> i32 {
+    if left_parity_odd && right_parity_odd {
+        -1
+    } else {
+        1
+    }
+}
+
 pub fn graded_multiply(
     factors: &[Expr],
     table: &GradedSymbolTable,
@@ -317,10 +325,9 @@ fn graded_simplify_once(
             Box::new(graded_simplify(base, table, interner)),
             indices.clone(),
         ),
-        Expr::Group(inner, rel) => Expr::Group(
-            Box::new(graded_simplify(inner, table, interner)),
-            *rel,
-        ),
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(graded_simplify(inner, table, interner)), *rel)
+        }
         Expr::List(items) => Expr::List(
             items
                 .iter()
@@ -540,5 +547,11 @@ mod tests {
         table.declare(eta, Grading::fermionic());
         let out = graded_commutator(&Expr::Sym(theta), &Expr::Sym(eta), &table, &interner);
         assert_eq!(out, Expr::zero());
+    }
+
+    #[test]
+    fn graded_slot_swap_sign_matches_parity_rule() {
+        assert_eq!(graded_sign_for_slot_swap(true, true), -1);
+        assert_eq!(graded_sign_for_slot_swap(true, false), 1);
     }
 }

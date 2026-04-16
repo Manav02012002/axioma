@@ -1,4 +1,7 @@
-use ax_ir::{Expr, Index, IndexFamily, TensorProperty, Variance};
+use ax_ir::{
+    Expr, Index, IndexFamily, SymmetrySource, TableauAttachment, TensorProperty, TensorSymmetry,
+    Variance,
+};
 use num_traits::ToPrimitive;
 use std::collections::{HashMap, HashSet};
 
@@ -147,10 +150,100 @@ impl PropertyStore {
             .collect()
     }
 
+    pub fn try_get_tensor_symmetry(
+        &self,
+        name: lasso::Spur,
+        indices: &[Index],
+        index_families: &HashMap<lasso::Spur, lasso::Spur>,
+    ) -> Result<Option<TensorSymmetry>, ax_ir::SymmetryValidationError> {
+        let matching = self
+            .get(name, indices, index_families)
+            .into_iter()
+            .map(|property| property.clone())
+            .collect::<Vec<_>>();
+
+        if matching.is_empty() {
+            return Ok(None);
+        }
+
+        let matching = ax_tensor::structured_curvature_properties_from_legacy(&matching)
+            .0
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        if matching.is_empty() {
+            return Ok(None);
+        }
+
+        let mut merged = TensorSymmetry {
+            tableaux: Vec::new(),
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        };
+
+        for symmetry in matching {
+            merged.tableaux.extend(symmetry.tableaux);
+            merged.inherits_under_derivative |= symmetry.inherits_under_derivative;
+            merged.inherits_under_tensor_product |= symmetry.inherits_under_tensor_product;
+            merged.inherits_under_contraction |= symmetry.inherits_under_contraction;
+            merged.preserves_trace_free_under_projection |=
+                symmetry.preserves_trace_free_under_projection;
+        }
+
+        merged.validate()?;
+        Ok(Some(merged))
+    }
+
+    pub fn get_tensor_symmetry(
+        &self,
+        name: lasso::Spur,
+        indices: &[Index],
+        index_families: &HashMap<lasso::Spur, lasso::Spur>,
+    ) -> Option<TensorSymmetry> {
+        self.try_get_tensor_symmetry(name, indices, index_families)
+            .ok()
+            .flatten()
+    }
+
+    pub fn try_get_tensor_identities(
+        &self,
+        name: lasso::Spur,
+        indices: &[Index],
+        index_families: &HashMap<lasso::Spur, lasso::Spur>,
+    ) -> anyhow::Result<ax_ir::TensorIdentitySet> {
+        let matching = self
+            .get(name, indices, index_families)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let (_, legacy_identities) =
+            ax_tensor::structured_curvature_properties_from_legacy(&matching);
+        let mut identities = ax_ir::TensorIdentitySet::empty();
+
+        for property in &matching {
+            if let TensorProperty::TensorIdentities(explicit) = property {
+                for identity in &explicit.multiterm {
+                    if !identities.multiterm.contains(identity) {
+                        identities.multiterm.push(identity.clone());
+                    }
+                }
+            }
+        }
+        for identity in legacy_identities.multiterm {
+            if !identities.multiterm.contains(&identity) {
+                identities.multiterm.push(identity);
+            }
+        }
+
+        Ok(identities)
+    }
+
     pub fn inherits_tableau(&self, name: lasso::Spur) -> bool {
         self.get_all(name)
             .into_iter()
-            .any(|prop| matches!(prop, TensorProperty::TableauInherit))
+            .any(|prop| matches!(prop, TensorProperty::TableauSymmetry(_)))
     }
 
     pub fn has_property(
@@ -362,6 +455,69 @@ fn tableau_inherit_enabled(props: &[TensorProperty]) -> bool {
     })
 }
 
+fn inherited_tensor_symmetry_property(
+    symmetry: &TensorSymmetry,
+    offset: usize,
+    composite_rank: usize,
+) -> Option<TensorProperty> {
+    let tableaux = symmetry
+        .tableaux
+        .iter()
+        .filter_map(|attachment| {
+            let slot_map = attachment
+                .slot_map
+                .iter()
+                .map(|slot| slot + offset)
+                .collect::<Vec<_>>();
+            if slot_map.iter().any(|slot| *slot >= composite_rank) {
+                return None;
+            }
+            Some(TableauAttachment {
+                shape: attachment.shape.clone(),
+                slot_map,
+                multiplicity_numer: attachment.multiplicity_numer,
+                multiplicity_denom: attachment.multiplicity_denom,
+                duality: attachment.duality.clone(),
+                restricted_mode: attachment.restricted_mode.clone(),
+                trace_free: attachment.trace_free,
+                dimension_guard: attachment.dimension_guard.clone(),
+                source: SymmetrySource::Inherited,
+                label: attachment.label.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if tableaux.is_empty() {
+        return None;
+    }
+
+    let inherited = TensorSymmetry {
+        tableaux,
+        inherits_under_derivative: symmetry.inherits_under_derivative,
+        inherits_under_tensor_product: symmetry.inherits_under_tensor_product,
+        inherits_under_contraction: symmetry.inherits_under_contraction,
+        preserves_trace_free_under_projection: symmetry.preserves_trace_free_under_projection,
+    };
+
+    if inherited.validate().is_ok() {
+        Some(TensorProperty::TableauSymmetry(inherited))
+    } else {
+        None
+    }
+}
+
+fn derived_riemann_tensor_symmetry(offset: usize) -> TensorProperty {
+    let mut symmetry = ax_tensor::riemann_tensor_symmetry();
+    for attachment in &mut symmetry.tableaux {
+        attachment.slot_map = attachment
+            .slot_map
+            .iter()
+            .map(|slot| slot + offset)
+            .collect();
+    }
+    TensorProperty::TableauSymmetry(symmetry)
+}
+
 fn has_explicit_riemann_tensor_properties(props: &[TensorProperty], n_indices: usize) -> bool {
     n_indices >= 4
         && props
@@ -406,13 +562,31 @@ fn shifted_tableau_inherited_properties(
 
     for prop in props {
         match prop {
-            TensorProperty::TableauSymmetry { shape, indices } => {
-                let shifted = indices.iter().map(|slot| slot + offset).collect::<Vec<_>>();
-                if shifted.iter().all(|slot| *slot < composite_rank) {
-                    inherited.push(TensorProperty::TableauSymmetry {
-                        shape: shape.clone(),
-                        indices: shifted,
-                    });
+            TensorProperty::TableauSymmetry(symmetry) => {
+                if let Some(shifted) =
+                    inherited_tensor_symmetry_property(symmetry, offset, composite_rank)
+                {
+                    inherited.push(shifted);
+                }
+            }
+            TensorProperty::TensorIdentities(identities) => {
+                let mut shifted = ax_ir::TensorIdentitySet::empty();
+                for identity in &identities.multiterm {
+                    match identity {
+                        ax_ir::TensorMultitermIdentity::FirstBianchi { cyclic_slots } => {
+                            let slots = cyclic_slots.map(|slot| slot + offset);
+                            if slots.iter().all(|slot| *slot < composite_rank) {
+                                shifted.multiterm.push(
+                                    ax_ir::TensorMultitermIdentity::FirstBianchi {
+                                        cyclic_slots: slots,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                if !shifted.is_empty() {
+                    inherited.push(TensorProperty::TensorIdentities(shifted));
                 }
             }
             TensorProperty::SatisfiesBianchi { slots } => {
@@ -430,21 +604,25 @@ fn shifted_tableau_inherited_properties(
             TensorProperty::WeylTensor => {
                 inherited.push(TensorProperty::Traceless);
                 if offset + 4 <= composite_rank {
-                    inherited.push(TensorProperty::TableauSymmetry {
-                        shape: vec![2, 2],
-                        indices: vec![offset, offset + 1, offset + 2, offset + 3],
-                    });
-                    inherited.push(TensorProperty::SatisfiesBianchi {
-                        slots: vec![offset, offset + 1, offset + 2, offset + 3],
-                    });
+                    let mut symmetry = ax_tensor::weyl_tensor_symmetry();
+                    for attachment in &mut symmetry.tableaux {
+                        attachment.slot_map = attachment
+                            .slot_map
+                            .iter()
+                            .map(|slot| slot + offset)
+                            .collect();
+                    }
+                    inherited.push(TensorProperty::TableauSymmetry(symmetry));
+                    inherited.push(TensorProperty::TensorIdentities(ax_ir::TensorIdentitySet {
+                        multiterm: vec![ax_ir::TensorMultitermIdentity::FirstBianchi {
+                            cyclic_slots: [offset + 1, offset + 2, offset + 3],
+                        }],
+                    }));
                 }
             }
             TensorProperty::RiemannSymmetry => {
                 if has_bianchi && offset + 4 <= composite_rank {
-                    inherited.push(TensorProperty::TableauSymmetry {
-                        shape: vec![2, 2],
-                        indices: vec![offset, offset + 1, offset + 2, offset + 3],
-                    });
+                    inherited.push(derived_riemann_tensor_symmetry(offset));
                 }
             }
             _ => {}
@@ -515,5 +693,137 @@ impl ax_tensor::PropertyLookup for PropertyStore {
 
     fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
         Some(&self.index_families)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ax_ir::{
+        DualityKind, Index, RestrictedSymmetryMode, SymmetrySource, TableauAttachment,
+        TensorSymmetry,
+    };
+
+    fn simple_symmetry(slot_map: Vec<usize>) -> TensorSymmetry {
+        TensorSymmetry {
+            tableaux: vec![TableauAttachment {
+                shape: vec![2],
+                slot_map,
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: DualityKind::None,
+                restricted_mode: RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        }
+    }
+
+    fn down_index(name: lasso::Spur) -> Index {
+        Index {
+            name,
+            variance: Variance::Down,
+            index_type: None,
+        }
+    }
+
+    #[test]
+    fn single_structured_symmetry_retrieval() {
+        let interner = ax_ir::Interner::new();
+        let tensor = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let mut store = PropertyStore::new();
+        store.declare_simple(
+            tensor,
+            TensorProperty::TableauSymmetry(simple_symmetry(vec![0, 1])),
+        );
+
+        let symmetry = store
+            .get_tensor_symmetry(tensor, &[down_index(a), down_index(b)], &HashMap::new())
+            .expect("expected symmetry");
+        assert_eq!(symmetry.tableaux.len(), 1);
+        assert_eq!(symmetry.tableaux[0].slot_map, vec![0, 1]);
+    }
+
+    #[test]
+    fn two_matching_attachments_merge() {
+        let interner = ax_ir::Interner::new();
+        let tensor = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let mut store = PropertyStore::new();
+        store.declare_simple(
+            tensor,
+            TensorProperty::TableauSymmetry(simple_symmetry(vec![0, 1])),
+        );
+        store.declare_simple(
+            tensor,
+            TensorProperty::TableauSymmetry(TensorSymmetry {
+                tableaux: vec![TableauAttachment {
+                    shape: vec![1, 1],
+                    slot_map: vec![0, 1],
+                    multiplicity_numer: 1,
+                    multiplicity_denom: 1,
+                    duality: DualityKind::None,
+                    restricted_mode: RestrictedSymmetryMode::FullYoung,
+                    trace_free: true,
+                    dimension_guard: None,
+                    source: SymmetrySource::Declared,
+                    label: Some("extra".to_string()),
+                }],
+                inherits_under_derivative: true,
+                inherits_under_tensor_product: false,
+                inherits_under_contraction: false,
+                preserves_trace_free_under_projection: true,
+            }),
+        );
+
+        let symmetry = store
+            .try_get_tensor_symmetry(tensor, &[down_index(a), down_index(b)], &HashMap::new())
+            .expect("validation should succeed")
+            .expect("expected symmetry");
+        assert_eq!(symmetry.tableaux.len(), 2);
+        assert!(symmetry.inherits_under_derivative);
+        assert!(symmetry.preserves_trace_free_under_projection);
+    }
+
+    #[test]
+    fn no_structured_symmetry_returns_none() {
+        let interner = ax_ir::Interner::new();
+        let tensor = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+
+        let store = PropertyStore::new();
+        assert_eq!(
+            store.get_tensor_symmetry(tensor, &[down_index(a), down_index(b)], &HashMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn inherits_tableau_requires_structured_symmetry_property() {
+        let interner = ax_ir::Interner::new();
+        let t_only_inherit = interner.get_or_intern("T_only_inherit");
+        let t_with_symmetry = interner.get_or_intern("T_with_symmetry");
+
+        let mut store = PropertyStore::new();
+        store.declare_simple(t_only_inherit, TensorProperty::TableauInherit);
+        store.declare_simple(
+            t_with_symmetry,
+            TensorProperty::TableauSymmetry(simple_symmetry(vec![0, 1])),
+        );
+
+        assert!(!store.inherits_tableau(t_only_inherit));
+        assert!(store.inherits_tableau(t_with_symmetry));
     }
 }

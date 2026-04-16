@@ -9,6 +9,14 @@ use num_rational::BigRational;
 use num_traits::{ToPrimitive, Zero};
 use std::collections::BTreeMap;
 
+pub fn perturbation_tensor_rank_from_symmetry(sym: &ax_ir::TensorSymmetry) -> usize {
+    sym.tableaux
+        .iter()
+        .map(|tableau| tableau.slot_map.len())
+        .max()
+        .unwrap_or(0)
+}
+
 #[derive(Clone, Debug)]
 pub struct PerturbationSetup {
     pub full_field: lasso::Spur,
@@ -986,5 +994,28 @@ mod tests {
         assert_eq!(expanded.orders[0].order, 0);
         assert_eq!(expanded.orders[1].order, 1);
         assert_eq!(expanded.orders[2].order, 2);
+    }
+
+    #[test]
+    fn perturbation_rank_is_inferred_from_longest_slot_map() {
+        let symmetry = ax_ir::TensorSymmetry {
+            tableaux: vec![ax_ir::TableauAttachment {
+                shape: vec![2, 1],
+                slot_map: vec![0, 1, 2],
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: ax_ir::DualityKind::None,
+                restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: ax_ir::SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        };
+        assert_eq!(perturbation_tensor_rank_from_symmetry(&symmetry), 3);
     }
 }

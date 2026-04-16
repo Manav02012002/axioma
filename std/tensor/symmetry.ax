@@ -2,6 +2,10 @@
 // symmetric(tensor, [index_positions])
 // antisymmetric(tensor, [index_positions])
 // riemann_symmetry(tensor)
+// tableau_symmetry(tensor, [shape], [slot_positions]) lowers to the
+// structured internal tensor-symmetry model with a single tableau attachment.
+// tableau_symmetry([[2,1],[1]], slots=[[0,1,2],[0,1]], labels=["main","aux"], trace_free=[true,false])
+// lowers to the same structured model with one attachment per shape/slot entry.
 // Example:
 // symmetric(g, [0, 1])         — metric is symmetric
 // antisymmetric(F, [0, 1])     — field strength is antisymmetric

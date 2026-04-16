@@ -270,7 +270,7 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> Value {
 }
 
 fn tool_definitions() -> Vec<Value> {
-    ax_eval::callable_entries()
+    let mut tools = ax_eval::callable_entries()
         .iter()
         .map(|entry| {
             let properties: Map<String, Value> = entry
@@ -300,7 +300,9 @@ fn tool_definitions() -> Vec<Value> {
                 }
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    tools.push(symmetry_summary_tool_definition());
+    tools
 }
 
 fn make_result_response(id: Value, result: Value) -> Value {
@@ -330,6 +332,24 @@ fn tools_list_result() -> Value {
     json!({ "tools": tool_definitions() })
 }
 
+fn symmetry_summary_tool_definition() -> Value {
+    json!({
+        "name": "tensor.symmetry_summary",
+        "category": "diagnostics",
+        "description": "Parse a structured tableau symmetry expression and return a machine-readable summary with an ASCII render.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "tableau_symmetry(...) expression to summarize"
+                }
+            },
+            "required": ["expression"]
+        }
+    })
+}
+
 fn error_value(error: ToolError) -> Value {
     json!({
         "status": "error",
@@ -353,6 +373,16 @@ fn handle_tools_call_safe(
     arguments: &Value,
     timeout_secs: u64,
 ) -> Value {
+    if tool_name == "tensor.symmetry_summary" {
+        return match handle_tensor_symmetry_summary(arguments) {
+            Ok(value) => value,
+            Err(message) => error_value(ToolError::Failed {
+                tool: tool_name.to_string(),
+                message,
+            }),
+        };
+    }
+
     #[cfg(test)]
     if tool_name == "axioma_test_panic" {
         let result = std::panic::catch_unwind(|| panic!("test panic"));
@@ -485,6 +515,30 @@ fn handle_tools_call_safe(
     }
     state.deadline = None;
     response
+}
+
+fn handle_tensor_symmetry_summary(arguments: &Value) -> Result<Value, String> {
+    let expression = arguments
+        .get("expression")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing expression".to_string())?;
+    let symmetry = ax_syntax::parse_tableau_symmetry(expression)
+        .map_err(|diagnostics| format_syntax_diagnostics(&diagnostics))?;
+    let summary = ax_ai_proto::TensorSymmetrySummary::from(&symmetry);
+    let summary_json = serde_json::to_string(&summary).map_err(|err| err.to_string())?;
+    Ok(json!({
+        "status": "ok",
+        "summary_json": summary_json,
+        "rendered_ascii": ax_render::render_tensor_symmetry_summary(&symmetry),
+    }))
+}
+
+fn format_syntax_diagnostics(diagnostics: &[ax_syntax::Diagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(|diag| diag.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn handle_request(
@@ -1695,6 +1749,54 @@ mod tests {
                 .to_lowercase()
                 .contains("access-control-allow-origin"),
             "{response}"
+        );
+    }
+
+    #[test]
+    fn tensor_symmetry_summary_tool_returns_summary() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "tensor.symmetry_summary",
+            &json!({"expression": "tableau_symmetry([[2,1]], slots=[[0,1,2]])"}),
+            5,
+        );
+        assert_eq!(result["status"], "ok", "{result:?}");
+        let rendered = result["rendered_ascii"].as_str().unwrap_or("");
+        assert!(
+            rendered.contains("tableau[0]")
+                || result["summary_json"].as_str().unwrap_or("").contains("\"tableaux\""),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn tensor_symmetry_summary_tool_rejects_invalid_input() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "tensor.symmetry_summary",
+            &json!({"expression": "tableau_symmetry([], slots=[])"}),
+            5,
+        );
+        assert_eq!(result["status"], "error", "{result:?}");
+    }
+
+    #[test]
+    fn tensor_symmetry_summary_tool_returns_structured_payload_exactly() {
+        let payload = handle_tensor_symmetry_summary(
+            &json!({"expression": "tableau_symmetry([[2,1]], slots=[[0,1,2]])"}),
+        )
+        .expect("summary payload");
+
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(
+            payload["rendered_ascii"],
+            "tableau[0]: shape=[2, 1], slots=[0, 1, 2], trace_free=false, duality=None"
+        );
+        assert_eq!(
+            payload["summary_json"],
+            "{\"tableaux\":[{\"shape\":[2,1],\"slots\":[0,1,2],\"label\":null,\"trace_free\":false,\"duality\":\"none\"}]}"
         );
     }
 }

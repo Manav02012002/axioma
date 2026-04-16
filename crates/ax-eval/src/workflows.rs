@@ -128,6 +128,45 @@ pub static WORKFLOWS: LazyLock<Vec<Workflow>> = LazyLock::new(|| {
             "Weyl needs the metric, Riemann tensor, and Ricci contraction data from the same background.",
         ),
         workflow(
+            "compute_killing_equations",
+            "Compute Killing equations for a metric.",
+            vec![
+                step("axioma_define_metric", json!({"name": "<metric_name>", "components": "<metric_matrix>", "coordinates": "<coordinate_list>"}), "Define the metric.", "metric_id"),
+                step("axioma_christoffel", json!({"metric_id": "<from_step_1>"}), "Compute the Christoffel symbols.", "christoffel_id"),
+                step("axioma_killing_equations", json!({"gamma": "<from_step_2>", "coords": "<coordinate_list_expr>", "field_prefix": "xi"}), "Generate the Killing-equation system for the unknown covector components.", "expr_id"),
+            ],
+            "This workflow stops at equation generation; it does not attempt to solve the resulting PDE system.",
+        ),
+        workflow(
+            "compute_adm_decomposition",
+            "Compute ADM 3+1 decomposition for a metric.",
+            vec![
+                step("axioma_define_metric", json!({"name": "<metric_name>", "components": "<metric_matrix>", "coordinates": "<coordinate_list>"}), "Define the metric.", "metric_id"),
+                step("axioma_christoffel", json!({"metric_id": "<from_step_1>"}), "Compute the spacetime Christoffel symbols for the background metric.", "christoffel_id"),
+                step("axioma_adm_decompose", json!({"metric": "<from_step_1>", "coords": "<coordinate_list_expr>", "time_coord": 0}), "Decompose the metric into lapse, shift, spatial metric, extrinsic curvature, and ADM constraints.", "expr_id"),
+            ],
+            "Choose `time_coord` to match the coordinate slot used as time in the metric declaration.",
+        ),
+        workflow(
+            "integrate_geodesic_numerically",
+            "Integrate geodesics numerically from a numeric Christoffel callback.",
+            vec![
+                step(
+                    "axioma_eval",
+                    json!({"code": "<native_gamma_callback_reference>"}),
+                    "Obtain or register the native Christoffel callback handle in the hosting application layer.",
+                    "gamma_callback",
+                ),
+                step(
+                    "axioma_integrate_geodesic",
+                    json!({"gamma_numeric": "<from_step_1>", "initial_position": "<numeric_position_array>", "initial_velocity": "<numeric_velocity_array>", "tau_range": "<numeric_tau_interval>", "steps": 1000}),
+                    "Run the library-level numerical geodesic integrator with the native Christoffel callback.",
+                    "result",
+                ),
+            ],
+            "This workflow is library/native-callback oriented: ordinary Axioma source syntax does not currently encode numeric Christoffel callbacks.",
+        ),
+        workflow(
             "simplify_tensor_expression",
             "Run the standard tensor simplification pipeline on an indexed expression.",
             vec![
@@ -340,5 +379,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn killing_workflow_exists_and_final_tool_is_killing_equations() {
+        let wf = lookup_workflow("compute_killing_equations").expect("killing workflow");
+        assert_eq!(wf.goal, "compute_killing_equations");
+        assert_eq!(wf.description, "Compute Killing equations for a metric.");
+        let final_step = wf.steps.last().expect("workflow step");
+        assert_eq!(final_step.tool, "axioma_killing_equations");
+    }
+
+    #[test]
+    fn adm_workflow_exists_and_final_tool_is_adm_decompose() {
+        let wf = lookup_workflow("compute_adm_decomposition").expect("adm workflow");
+        assert_eq!(wf.goal, "compute_adm_decomposition");
+        assert_eq!(
+            wf.description,
+            "Compute ADM 3+1 decomposition for a metric."
+        );
+        let final_step = wf.steps.last().expect("workflow step");
+        assert_eq!(final_step.tool, "axioma_adm_decompose");
+    }
+
+    #[test]
+    fn numerical_geodesic_workflow_exists_and_final_tool_is_integrate_geodesic() {
+        let wf =
+            lookup_workflow("integrate_geodesic_numerically").expect("numerical geodesic workflow");
+        assert_eq!(wf.goal, "integrate_geodesic_numerically");
+        assert_eq!(
+            wf.description,
+            "Integrate geodesics numerically from a numeric Christoffel callback."
+        );
+        let final_step = wf.steps.last().expect("workflow step");
+        assert_eq!(final_step.tool, "axioma_integrate_geodesic");
     }
 }

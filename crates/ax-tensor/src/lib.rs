@@ -16,6 +16,7 @@ mod adm;
 mod cartan;
 mod conformal;
 mod contracted_bianchi;
+mod curvature_symmetry;
 mod dimension_reduce;
 pub mod index_classifier;
 mod killing;
@@ -43,7 +44,13 @@ pub use conformal::{
     ConformalError,
 };
 pub use contracted_bianchi::{contracted_bianchi_reduce, ContractedBianchiError};
-pub use dimension_reduce::{reduce_expr_by_dimension, tensor_annihilates_from_properties, DimensionReduceError};
+pub use curvature_symmetry::{
+    first_bianchi_sum, riemann_tensor_identities, riemann_tensor_symmetry,
+    structured_curvature_properties_from_legacy, weyl_tensor_identities, weyl_tensor_symmetry,
+};
+pub use dimension_reduce::{
+    reduce_expr_by_dimension, tensor_annihilates_from_properties, DimensionReduceError,
+};
 use index_classifier::{classify_indices, IndexClassification};
 pub use killing::{killing_equations, KillingError, KillingSystem};
 pub use newman_penrose::{
@@ -57,9 +64,7 @@ pub use numerical_gr::{integrate_geodesic, parallel_transport, NumericalGRError}
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use symmetry_bridge::{
-    realized_tableaux_from_properties, realized_tableaux_from_symmetry, RealizedTableau,
-};
+use symmetry_bridge::{realized_tableaux_from_symmetry, RealizedTableau};
 pub use weyl::{
     bach_from_curvature, cotton_from_curvature, weyl_from_curvature, ConformalCurvatureError,
     WeylError,
@@ -445,6 +450,12 @@ pub fn build_generating_set(
     let mut generators = Vec::new();
 
     for factor in factors {
+        let synthesized_curvature = uses_synthesized_curvature_symmetry(&factor.properties);
+        let saw_structured = factor
+            .properties
+            .iter()
+            .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauSymmetry(_)))
+            && !synthesized_curvature;
         for prop in &factor.properties {
             match prop {
                 ax_ir::TensorProperty::Symmetric(positions) => {
@@ -472,6 +483,9 @@ pub fn build_generating_set(
                     );
                 }
                 ax_ir::TensorProperty::RiemannSymmetry => {
+                    if saw_structured {
+                        continue;
+                    }
                     if default_riemann_slots(factor.n_indices).is_some() {
                         let s = factor.start_position;
 
@@ -492,6 +506,9 @@ pub fn build_generating_set(
                     }
                 }
                 ax_ir::TensorProperty::WeylTensor => {
+                    if saw_structured {
+                        continue;
+                    }
                     if default_riemann_slots(factor.n_indices).is_some() {
                         let s = factor.start_position;
 
@@ -540,6 +557,9 @@ pub fn build_generating_set(
                     );
                 }
                 ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
+                    if synthesized_curvature {
+                        continue;
+                    }
                     if let Ok(realized) = realized_tableaux_from_symmetry(symmetry) {
                         for tableau in realized {
                             if tableau
@@ -628,7 +648,9 @@ pub fn extract_factor_info(
     for factor in factors {
         if let ax_ir::Expr::Indexed(base, indices) = factor {
             if let Some(name) = expr_head_symbol(base) {
-                let props = tensor_properties.get_properties_with_indices(name, indices, None);
+                let props = canonicalize_curvature_properties(
+                    &tensor_properties.get_properties_with_indices(name, indices, None),
+                );
                 result.push(TensorFactorInfo {
                     name,
                     indices: indices.clone(),
@@ -642,6 +664,25 @@ pub fn extract_factor_info(
     }
 
     result
+}
+
+fn canonicalize_curvature_properties(
+    properties: &[ax_ir::TensorProperty],
+) -> Vec<ax_ir::TensorProperty> {
+    let mut out = properties.to_vec();
+    let (symmetry, identities) = structured_curvature_properties_from_legacy(properties);
+    if let Some(symmetry) = symmetry {
+        if !out
+            .iter()
+            .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauSymmetry(_)))
+        {
+            out.push(ax_ir::TensorProperty::TableauSymmetry(symmetry));
+        }
+    }
+    if !identities.is_empty() {
+        out.push(ax_ir::TensorProperty::TensorIdentities(identities));
+    }
+    out
 }
 
 fn factor_exchange_sign(lhs: &TensorFactorInfo, rhs: &TensorFactorInfo) -> bool {
@@ -954,11 +995,10 @@ fn riemann_to_ricci_contraction(expr: &Expr, properties: &dyn PropertyLookup) ->
     if indices.len() != 4 {
         return None;
     }
-    let factor_props = properties.get_properties_with_indices(sym, indices, None);
-    if !factor_props
-        .iter()
-        .any(|prop| matches!(prop, ax_ir::TensorProperty::RiemannSymmetry))
-    {
+    let factor_props = canonicalize_curvature_properties(
+        &properties.get_properties_with_indices(sym, indices, None),
+    );
+    if effective_tensor_symmetry(&factor_props).is_none() {
         return None;
     }
 
@@ -2292,47 +2332,121 @@ fn tableau_inherit_enabled(props: &[ax_ir::TensorProperty]) -> bool {
     })
 }
 
-fn normalised_bianchi_slots(slots: &[usize], n_indices: usize) -> Option<Vec<usize>> {
-    if !(slots.len() == 3 || slots.len() == 4) {
-        return None;
-    }
-    let mut uniq = HashSet::new();
-    let valid = slots
-        .iter()
-        .copied()
-        .all(|slot| slot < n_indices && uniq.insert(slot));
-    valid.then(|| slots.to_vec())
+fn effective_tensor_symmetry(props: &[ax_ir::TensorProperty]) -> Option<ax_ir::TensorSymmetry> {
+    structured_curvature_properties_from_legacy(props).0
 }
 
-fn bianchi_slots_for_property(
-    prop: &ax_ir::TensorProperty,
+fn effective_tensor_identities(props: &[ax_ir::TensorProperty]) -> ax_ir::TensorIdentitySet {
+    structured_curvature_properties_from_legacy(props).1
+}
+
+fn push_unique_bianchi_slots(target: &mut Vec<Vec<usize>>, slots: Vec<usize>, n_indices: usize) {
+    if slots.iter().all(|slot| *slot < n_indices) && !target.contains(&slots) {
+        target.push(slots);
+    }
+}
+
+fn first_bianchi_slot_sets_for_properties(
+    props: &[ax_ir::TensorProperty],
     n_indices: usize,
-) -> Option<Vec<usize>> {
-    match prop {
-        ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
-            normalised_bianchi_slots(slots, n_indices)
+) -> Vec<Vec<usize>> {
+    let mut slot_sets = Vec::new();
+
+    for prop in props {
+        if let ax_ir::TensorProperty::SatisfiesBianchi { slots } = prop {
+            push_unique_bianchi_slots(&mut slot_sets, slots.clone(), n_indices);
         }
-        ax_ir::TensorProperty::WeylTensor => {
-            default_riemann_slots(n_indices).map(|slots| slots.into_iter().collect())
-        }
-        _ => None,
     }
+
+    let identities = effective_tensor_identities(props);
+    let has_structured_symmetry = effective_tensor_symmetry(props).is_some();
+    for identity in identities.multiterm {
+        match identity {
+            ax_ir::TensorMultitermIdentity::FirstBianchi { cyclic_slots } => {
+                if has_structured_symmetry && cyclic_slots == [1, 2, 3] && n_indices >= 4 {
+                    push_unique_bianchi_slots(&mut slot_sets, vec![0, 1, 2, 3], n_indices);
+                }
+                push_unique_bianchi_slots(&mut slot_sets, cyclic_slots.to_vec(), n_indices);
+            }
+        }
+    }
+
+    slot_sets
 }
 
-fn has_riemann_monoterm_property(props: &[ax_ir::TensorProperty], n_indices: usize) -> bool {
+fn has_curvature_monoterm_projection(props: &[ax_ir::TensorProperty], n_indices: usize) -> bool {
     default_riemann_slots(n_indices).is_some()
-        && props.iter().any(|prop| {
-            matches!(
-                prop,
-                ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor
-            )
+        && has_bianchi_property(props, n_indices)
+        && uses_synthesized_curvature_symmetry(props)
+}
+
+fn uses_synthesized_curvature_symmetry(props: &[ax_ir::TensorProperty]) -> bool {
+    effective_tensor_symmetry(props).is_some_and(|symmetry| {
+        symmetry.tableaux.iter().any(|attachment| {
+            attachment.shape == vec![2, 2]
+                && matches!(attachment.label.as_deref(), Some("riemann") | Some("weyl"))
+        })
+    })
+}
+
+fn should_use_generic_structured_projection(props: &[ax_ir::TensorProperty]) -> bool {
+    effective_tensor_symmetry(props).is_some() && !uses_synthesized_curvature_symmetry(props)
+}
+
+fn first_bianchi_sum_on_slots(
+    tensor_symbol: lasso::Spur,
+    slots: &[ax_ir::Index],
+    cyclic_slots: [usize; 3],
+) -> Expr {
+    let [a, b, c] = cyclic_slots;
+    let orderings = [[a, b, c], [b, c, a], [c, a, b]];
+    Expr::add(
+        orderings
+            .into_iter()
+            .map(|[s1, s2, s3]| {
+                let mut rewritten = slots.to_vec();
+                rewritten[a] = slots[s1].clone();
+                rewritten[b] = slots[s2].clone();
+                rewritten[c] = slots[s3].clone();
+                Expr::Indexed(Box::new(Expr::Sym(tensor_symbol)), rewritten)
+            })
+            .collect(),
+    )
+}
+
+pub fn apply_first_bianchi_if_applicable(
+    expr: &ax_ir::Expr,
+    properties_for_symbol: &dyn Fn(lasso::Spur) -> Vec<ax_ir::TensorProperty>,
+) -> Option<ax_ir::Expr> {
+    let Expr::Indexed(base, slots) = expr else {
+        return None;
+    };
+    let Expr::Sym(symbol) = base.as_ref() else {
+        return None;
+    };
+    let properties = canonicalize_curvature_properties(&properties_for_symbol(*symbol));
+    effective_tensor_identities(&properties)
+        .multiterm
+        .into_iter()
+        .find_map(|identity| match identity {
+            ax_ir::TensorMultitermIdentity::FirstBianchi { cyclic_slots } => {
+                if cyclic_slots == [1, 2, 3] && slots.len() >= 4 {
+                    Some(first_bianchi_sum(*symbol, slots))
+                } else if cyclic_slots.iter().all(|slot| *slot < slots.len()) {
+                    Some(first_bianchi_sum_on_slots(*symbol, slots, cyclic_slots))
+                } else {
+                    None
+                }
+            }
         })
 }
 
+fn has_riemann_monoterm_property(props: &[ax_ir::TensorProperty], n_indices: usize) -> bool {
+    default_riemann_slots(n_indices).is_some() && effective_tensor_symmetry(props).is_some()
+}
+
 fn has_bianchi_property(props: &[ax_ir::TensorProperty], n_indices: usize) -> bool {
-    props
-        .iter()
-        .any(|prop| bianchi_slots_for_property(prop, n_indices).is_some())
+    !first_bianchi_slot_sets_for_properties(props, n_indices).is_empty()
 }
 
 fn has_explicit_riemann_tensor_properties(
@@ -2343,9 +2457,7 @@ fn has_explicit_riemann_tensor_properties(
         && props
             .iter()
             .any(|prop| matches!(prop, ax_ir::TensorProperty::RiemannSymmetry))
-        && props
-            .iter()
-            .any(|prop| matches!(prop, ax_ir::TensorProperty::SatisfiesBianchi { .. }))
+        && has_bianchi_property(props, n_indices)
 }
 
 fn differential_bianchi_inherited_properties(
@@ -2419,24 +2531,38 @@ fn inherited_tensor_symmetry_property(
 }
 
 fn derived_riemann_tensor_symmetry(offset: usize) -> ax_ir::TensorProperty {
-    ax_ir::TensorProperty::TableauSymmetry(ax_ir::TensorSymmetry {
-        tableaux: vec![ax_ir::TableauAttachment {
-            shape: vec![2, 2],
-            slot_map: vec![offset, offset + 1, offset + 2, offset + 3],
-            multiplicity_numer: 1,
-            multiplicity_denom: 1,
-            duality: ax_ir::DualityKind::None,
-            restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
-            trace_free: false,
-            dimension_guard: None,
-            source: ax_ir::SymmetrySource::Derived,
-            label: Some("riemann".to_string()),
-        }],
-        inherits_under_derivative: false,
-        inherits_under_tensor_product: false,
-        inherits_under_contraction: false,
-        preserves_trace_free_under_projection: false,
-    })
+    let mut symmetry = riemann_tensor_symmetry();
+    for attachment in &mut symmetry.tableaux {
+        attachment.slot_map = attachment
+            .slot_map
+            .iter()
+            .map(|slot| slot + offset)
+            .collect();
+    }
+    ax_ir::TensorProperty::TableauSymmetry(symmetry)
+}
+
+fn shifted_identity_property(
+    identities: &ax_ir::TensorIdentitySet,
+    offset: usize,
+    composite_rank: usize,
+) -> Option<ax_ir::TensorProperty> {
+    let mut shifted = ax_ir::TensorIdentitySet::empty();
+    for identity in &identities.multiterm {
+        match identity {
+            ax_ir::TensorMultitermIdentity::FirstBianchi { cyclic_slots } => {
+                let slots = cyclic_slots.map(|slot| slot + offset);
+                if slots.iter().all(|slot| *slot < composite_rank) {
+                    shifted
+                        .multiterm
+                        .push(ax_ir::TensorMultitermIdentity::FirstBianchi {
+                            cyclic_slots: slots,
+                        });
+                }
+            }
+        }
+    }
+    (!shifted.is_empty()).then_some(ax_ir::TensorProperty::TensorIdentities(shifted))
 }
 
 fn shifted_tableau_inherited_properties(
@@ -2457,6 +2583,12 @@ fn shifted_tableau_inherited_properties(
                     inherited.push(shifted);
                 }
             }
+            ax_ir::TensorProperty::TensorIdentities(identities) => {
+                if let Some(shifted) = shifted_identity_property(identities, offset, composite_rank)
+                {
+                    inherited.push(shifted);
+                }
+            }
             ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
                 let shifted = slots.iter().map(|slot| slot + offset).collect::<Vec<_>>();
                 if shifted.iter().all(|slot| *slot < composite_rank) {
@@ -2472,10 +2604,22 @@ fn shifted_tableau_inherited_properties(
             ax_ir::TensorProperty::WeylTensor => {
                 inherited.push(ax_ir::TensorProperty::Traceless);
                 if offset + 4 <= composite_rank {
-                    inherited.push(derived_riemann_tensor_symmetry(offset));
-                    inherited.push(ax_ir::TensorProperty::SatisfiesBianchi {
-                        slots: vec![offset, offset + 1, offset + 2, offset + 3],
-                    });
+                    let mut symmetry = weyl_tensor_symmetry();
+                    for attachment in &mut symmetry.tableaux {
+                        attachment.slot_map = attachment
+                            .slot_map
+                            .iter()
+                            .map(|slot| slot + offset)
+                            .collect();
+                    }
+                    inherited.push(ax_ir::TensorProperty::TableauSymmetry(symmetry));
+                    inherited.push(ax_ir::TensorProperty::TensorIdentities(
+                        ax_ir::TensorIdentitySet {
+                            multiterm: vec![ax_ir::TensorMultitermIdentity::FirstBianchi {
+                                cyclic_slots: [offset + 1, offset + 2, offset + 3],
+                            }],
+                        },
+                    ));
                 }
             }
             ax_ir::TensorProperty::RiemannSymmetry => {
@@ -2521,6 +2665,7 @@ fn inherited_tableau_factor_infos(
                     matches!(
                         prop,
                         ax_ir::TensorProperty::TableauSymmetry(_)
+                            | ax_ir::TensorProperty::TensorIdentities(_)
                             | ax_ir::TensorProperty::SatisfiesBianchi { .. }
                             | ax_ir::TensorProperty::DimensionDependentIdentity
                             | ax_ir::TensorProperty::Traceless
@@ -2539,18 +2684,24 @@ fn inherited_tableau_factor_infos(
 }
 
 fn has_weyl_property(props: &[ax_ir::TensorProperty]) -> bool {
-    props
-        .iter()
-        .any(|prop| matches!(prop, ax_ir::TensorProperty::WeylTensor))
+    effective_tensor_symmetry(props).is_some_and(|symmetry| {
+        symmetry
+            .tableaux
+            .iter()
+            .any(|attachment| attachment.trace_free)
+    })
 }
 
 fn has_traceless_property(props: &[ax_ir::TensorProperty]) -> bool {
-    props.iter().any(|prop| {
-        matches!(
-            prop,
-            ax_ir::TensorProperty::Traceless | ax_ir::TensorProperty::WeylTensor
-        )
-    })
+    props
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::Traceless))
+        || effective_tensor_symmetry(props).is_some_and(|symmetry| {
+            symmetry
+                .tableaux
+                .iter()
+                .any(|attachment| attachment.trace_free)
+        })
 }
 
 fn has_dimension_dependent_identity_property(props: &[ax_ir::TensorProperty]) -> bool {
@@ -2630,76 +2781,56 @@ fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjecti
     let mut result = Vec::new();
     let mut seen_tableaux: HashSet<(Vec<Vec<usize>>, Vec<Vec<usize>>)> = HashSet::new();
     let mut seen_projectors: HashSet<String> = HashSet::new();
-    let saw_structured = info
-        .properties
-        .iter()
-        .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauSymmetry(_)));
+    let structured = should_use_generic_structured_projection(&info.properties)
+        .then(|| effective_tensor_symmetry(&info.properties))
+        .flatten();
+
+    if let Some(ref symmetry) = structured {
+        if let Ok(realized) = realized_tableaux_from_symmetry(symmetry) {
+            for tableau in &realized {
+                let info_tableau =
+                    adjform::TableauInfo::from_realized(tableau, info.start_position);
+                let key = (info_tableau.rows.clone(), info_tableau.columns.clone());
+                if seen_tableaux.insert(key) {
+                    result.push(TensorProjectionOp::Structured(vec![tableau.clone()]));
+                }
+            }
+        }
+    }
+
+    if structured.is_none() && default_riemann_slots(info.n_indices).is_some() {
+        let key = format!("riemann:{:?}", info.start_position);
+        if seen_projectors.insert(key) {
+            result.push(riemann_monoterm_projector(info.start_position));
+        }
+    }
+    if has_curvature_monoterm_projection(&info.properties, info.n_indices) {
+        let key = format!("riemann-opt:{:?}", info.start_position);
+        if seen_projectors.insert(key) {
+            result.push(riemann_monoterm_projector(info.start_position));
+        }
+    }
+
+    for slots in first_bianchi_slot_sets_for_properties(&info.properties, info.n_indices) {
+        let abs = slots
+            .iter()
+            .map(|slot| info.start_position + slot)
+            .collect::<Vec<_>>();
+        let key = format!("bianchi:{abs:?}");
+        if seen_projectors.insert(key) {
+            if let Some(op) = bianchi_projection_op(&abs) {
+                result.push(op);
+            }
+        }
+    }
 
     for prop in &info.properties {
         match prop {
-            ax_ir::TensorProperty::RiemannSymmetry => {
-                if saw_structured {
-                    continue;
-                }
-                if default_riemann_slots(info.n_indices).is_some() {
-                    let key = format!("riemann:{:?}", info.start_position);
-                    if seen_projectors.insert(key) {
-                        result.push(riemann_monoterm_projector(info.start_position));
-                    }
-                }
-            }
-            ax_ir::TensorProperty::SatisfiesBianchi { .. } => {
-                if saw_structured {
-                    continue;
-                }
-                if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
-                    let abs = slots
-                        .iter()
-                        .map(|slot| info.start_position + slot)
-                        .collect::<Vec<_>>();
-                    let key = format!("bianchi:{abs:?}");
-                    if seen_projectors.insert(key) {
-                        if let Some(op) = bianchi_projection_op(&abs) {
-                            result.push(op);
-                        }
-                    }
-                }
-            }
-            ax_ir::TensorProperty::WeylTensor => {
-                if saw_structured {
-                    continue;
-                }
-                if default_riemann_slots(info.n_indices).is_some() {
-                    let key = format!("weyl-riemann:{:?}", info.start_position);
-                    if seen_projectors.insert(key) {
-                        result.push(riemann_monoterm_projector(info.start_position));
-                    }
-                }
-                if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
-                    let abs = slots
-                        .iter()
-                        .map(|slot| info.start_position + slot)
-                        .collect::<Vec<_>>();
-                    let key = format!("weyl-bianchi:{abs:?}");
-                    if seen_projectors.insert(key) {
-                        if let Some(op) = bianchi_projection_op(&abs) {
-                            result.push(op);
-                        }
-                    }
-                }
-            }
-            ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
-                if let Ok(realized) = realized_tableaux_from_symmetry(symmetry) {
-                    for tableau in &realized {
-                        let info_tableau =
-                            adjform::TableauInfo::from_realized(tableau, info.start_position);
-                        let key = (info_tableau.rows.clone(), info_tableau.columns.clone());
-                        if seen_tableaux.insert(key) {
-                            result.push(TensorProjectionOp::Structured(vec![tableau.clone()]));
-                        }
-                    }
-                }
-            }
+            ax_ir::TensorProperty::TableauSymmetry(_) => {}
+            ax_ir::TensorProperty::TensorIdentities(_) => {}
+            ax_ir::TensorProperty::RiemannSymmetry
+            | ax_ir::TensorProperty::SatisfiesBianchi { .. }
+            | ax_ir::TensorProperty::WeylTensor => {}
             _ => {}
         }
     }
@@ -2710,47 +2841,36 @@ fn meld_projection_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjecti
 fn young_project_ops_for_factor(info: &TensorFactorInfo) -> Vec<TensorProjectionOp> {
     let mut result = Vec::new();
     let mut seen_projectors: HashSet<String> = HashSet::new();
-    let saw_structured = info
-        .properties
-        .iter()
-        .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauSymmetry(_)));
 
-    for prop in &info.properties {
-        match prop {
-            ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor => {
-                if saw_structured {
-                    continue;
-                }
-                if default_riemann_slots(info.n_indices).is_some() {
-                    let key = format!("expr-riemann:{:?}", info.start_position);
-                    if seen_projectors.insert(key) {
-                        result.push(riemann_monoterm_projector(info.start_position));
-                    }
-                }
+    if should_use_generic_structured_projection(&info.properties) {
+        if let Some(symmetry) = effective_tensor_symmetry(&info.properties) {
+            if let Ok(realized) = realized_tableaux_from_symmetry(&symmetry) {
+                result.push(TensorProjectionOp::Structured(realized));
             }
-            ax_ir::TensorProperty::SatisfiesBianchi { .. } => {
-                if saw_structured {
-                    continue;
-                }
-                if let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) {
-                    let abs = slots
-                        .iter()
-                        .map(|slot| info.start_position + slot)
-                        .collect::<Vec<_>>();
-                    let key = format!("expr-bianchi:{abs:?}");
-                    if seen_projectors.insert(key) {
-                        if let Some(op) = bianchi_projection_op(&abs) {
-                            result.push(op);
-                        }
-                    }
-                }
+        }
+    } else if default_riemann_slots(info.n_indices).is_some() {
+        let key = format!("expr-riemann:{:?}", info.start_position);
+        if seen_projectors.insert(key) {
+            result.push(riemann_monoterm_projector(info.start_position));
+        }
+    }
+    if has_curvature_monoterm_projection(&info.properties, info.n_indices) {
+        let key = format!("expr-riemann-opt:{:?}", info.start_position);
+        if seen_projectors.insert(key) {
+            result.push(riemann_monoterm_projector(info.start_position));
+        }
+    }
+
+    for slots in first_bianchi_slot_sets_for_properties(&info.properties, info.n_indices) {
+        let abs = slots
+            .iter()
+            .map(|slot| info.start_position + slot)
+            .collect::<Vec<_>>();
+        let key = format!("expr-bianchi:{abs:?}");
+        if seen_projectors.insert(key) {
+            if let Some(op) = bianchi_projection_op(&abs) {
+                result.push(op);
             }
-            ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
-                if let Ok(realized) = realized_tableaux_from_symmetry(symmetry) {
-                    result.push(TensorProjectionOp::Structured(realized));
-                }
-            }
-            _ => {}
         }
     }
 
@@ -2765,13 +2885,13 @@ pub fn symmetry_tableaux_from_properties(
 
     for info in factor_info {
         let props = properties.get_properties(info.name);
-        if let Ok(realized) = realized_tableaux_from_properties(&props) {
-            result.extend(
-                realized.iter().map(|tableau| {
+        if let Some(symmetry) = effective_tensor_symmetry(&props) {
+            if let Ok(realized) = realized_tableaux_from_symmetry(&symmetry) {
+                result.extend(realized.iter().map(|tableau| {
                     adjform::TableauInfo::from_realized(tableau, info.start_position)
-                }),
-            );
-            continue;
+                }));
+                continue;
+            }
         }
 
         for prop in props {
@@ -2832,7 +2952,12 @@ pub fn symmetry_tableaux_from_properties(
                         });
                     }
                 }
-                ax_ir::TensorProperty::TableauSymmetry(_) => {}
+                ax_ir::TensorProperty::TableauSymmetry(_)
+                | ax_ir::TensorProperty::TensorIdentities(_)
+                | ax_ir::TensorProperty::RiemannSymmetry
+                | ax_ir::TensorProperty::SatisfiesBianchi { .. }
+                | ax_ir::TensorProperty::WeylTensor
+                | ax_ir::TensorProperty::Traceless => {}
                 _ => {}
             }
         }
@@ -2843,14 +2968,13 @@ pub fn symmetry_tableaux_from_properties(
 
 fn projectable_factor_key(info: &TensorFactorInfo) -> Option<YoungProjectFactorKey> {
     let mut projector_mask = 0u8;
-    for prop in &info.properties {
-        match prop {
-            ax_ir::TensorProperty::TableauSymmetry(_) => projector_mask |= 1,
-            ax_ir::TensorProperty::RiemannSymmetry => projector_mask |= 1 << 1,
-            ax_ir::TensorProperty::SatisfiesBianchi { .. } => projector_mask |= 1 << 2,
-            ax_ir::TensorProperty::WeylTensor => projector_mask |= 1 << 3,
-            _ => {}
-        }
+    if effective_tensor_symmetry(&info.properties).is_some() {
+        projector_mask |= 1;
+    } else if has_riemann_monoterm_property(&info.properties, info.n_indices) {
+        projector_mask |= 1 << 1;
+    }
+    if has_bianchi_property(&info.properties, info.n_indices) {
+        projector_mask |= 1 << 2;
     }
 
     if projector_mask == 0 {
@@ -3156,10 +3280,7 @@ fn cancel_explicit_bianchi_terms(
         let mut cancelled = false;
 
         'ops: for info in &factor_info {
-            for prop in &info.properties {
-                let Some(slots) = bianchi_slots_for_property(prop, info.n_indices) else {
-                    continue;
-                };
+            for slots in first_bianchi_slot_sets_for_properties(&info.properties, info.n_indices) {
                 let Some(perms) = bianchi_cycle_permutations(slots.len()) else {
                     continue;
                 };
@@ -4739,11 +4860,15 @@ fn canonicalize_indexed_slots(
     properties: Vec<ax_ir::TensorProperty>,
     interner: &Interner,
 ) -> (Vec<ax_ir::Index>, i32) {
+    let properties = canonicalize_curvature_properties(&properties);
     if indices.len() < 2 || properties.is_empty() {
         return (indices.to_vec(), 1);
     }
 
     let mut signed_groups: Vec<Vec<usize>> = Vec::new();
+    let saw_structured = properties
+        .iter()
+        .any(|prop| matches!(prop, ax_ir::TensorProperty::TableauSymmetry(_)));
     for prop in &properties {
         if ax_ir::check_deadline().is_err() {
             return (indices.to_vec(), i32::MIN);
@@ -4753,6 +4878,9 @@ fn canonicalize_indexed_slots(
                 signed_groups.push(positions.clone());
             }
             ax_ir::TensorProperty::RiemannSymmetry => {
+                if saw_structured {
+                    continue;
+                }
                 signed_groups.push(vec![0, 1]);
                 signed_groups.push(vec![2, 3]);
             }
@@ -9616,8 +9744,7 @@ fn inferred_rank_from_properties(
     name: lasso::Spur,
     properties: &dyn PropertyLookup,
 ) -> Option<usize> {
-    properties
-        .get_properties(name)
+    canonicalize_curvature_properties(&properties.get_properties(name))
         .into_iter()
         .filter_map(|prop| match prop {
             ax_ir::TensorProperty::Symmetric(positions)
@@ -9638,10 +9765,18 @@ fn inferred_rank_from_properties(
                         .or(Some(attachment.shape.iter().sum()))
                 })
                 .max(),
-            ax_ir::TensorProperty::RiemannSymmetry | ax_ir::TensorProperty::WeylTensor => Some(4),
             ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
                 Some(slots.iter().max().copied().unwrap_or(3) + 1)
             }
+            ax_ir::TensorProperty::TensorIdentities(identities) => identities
+                .multiterm
+                .iter()
+                .filter_map(|identity| match identity {
+                    ax_ir::TensorMultitermIdentity::FirstBianchi { cyclic_slots } => {
+                        Some(cyclic_slots.iter().max().copied().unwrap_or(0) + 1)
+                    }
+                })
+                .max(),
             ax_ir::TensorProperty::Metric
             | ax_ir::TensorProperty::InverseMetric
             | ax_ir::TensorProperty::KroneckerDelta => Some(2),
@@ -10530,7 +10665,11 @@ pub fn littlewood_richardson(
         .terms
         .into_iter()
         .filter(|(shape, _)| shape_fits_dim(&shape.rows, dim))
-        .filter_map(|(shape, coeff)| coeff.to_usize().map(|multiplicity| (shape.rows, multiplicity)))
+        .filter_map(|(shape, coeff)| {
+            coeff
+                .to_usize()
+                .map(|multiplicity| (shape.rows, multiplicity))
+        })
         .collect::<Vec<_>>();
     out.sort_by(|(shape_a, mult_a), (shape_b, mult_b)| {
         shape_b.cmp(shape_a).then_with(|| mult_a.cmp(mult_b))
@@ -10727,9 +10866,24 @@ pub fn decompose_product(
     if let Some(timeout) = deadline_timeout_expr(interner) {
         return timeout;
     }
-    let factors = match expr {
+    let expr = match reduce_expr_by_dimension(
+        expr,
+        &|symbol| properties.get_properties(symbol),
+        Some(dim),
+    ) {
+        Ok(reduced) => reduced,
+        Err(DimensionReduceError::MissingAmbientDimension) => {
+            return decompose_product_failure("missing_dimension", expr, interner);
+        }
+        Err(DimensionReduceError::UnsupportedExpr) => expr.clone(),
+    };
+    if expr == Expr::zero() {
+        return Expr::zero();
+    }
+
+    let factors = match &expr {
         Expr::Mul(fs) => fs.clone(),
-        _ => return expr.clone(),
+        _ => return expr,
     };
 
     let indexed: Vec<&Expr> = factors
@@ -10737,7 +10891,7 @@ pub fn decompose_product(
         .filter(|factor| matches!(factor, Expr::Indexed(_, _)))
         .collect();
     if indexed.len() < 2 {
-        return decompose_product_failure("needs_indexed_product", expr, interner);
+        return decompose_product_failure("needs_indexed_product", &expr, interner);
     }
 
     let mut shapes = Vec::with_capacity(indexed.len());
@@ -10746,7 +10900,7 @@ pub fn decompose_product(
             return timeout;
         }
         let Some(shape) = inferred_shape_for_factor(factor, properties) else {
-            return decompose_product_failure("unsupported_shape", expr, interner);
+            return decompose_product_failure("unsupported_shape", &expr, interner);
         };
         shapes.push(shape);
     }
@@ -10756,7 +10910,7 @@ pub fn decompose_product(
         return Expr::zero();
     }
 
-    let total_indices = classify_indices(expr).total;
+    let total_indices = classify_indices(&expr).total;
     let mut projected_terms: Vec<(Expr, usize)> = Vec::new();
     for (shape, multiplicity) in decomposition {
         if let Some(timeout) = deadline_timeout_expr(interner) {
@@ -10768,7 +10922,7 @@ pub fn decompose_product(
         let Some(tableau) = standard_tableau_for_shape(&shape) else {
             continue;
         };
-        let projected = young_project(expr, &tableau, interner);
+        let projected = young_project(&expr, &tableau, interner);
         let projected = canonicalise(&projected, properties, interner);
         if projected != Expr::zero() {
             add_projected_term(&mut projected_terms, projected, multiplicity);
@@ -17540,6 +17694,70 @@ mod tests {
             lr_product_decomposition(&[vec![1], vec![1], vec![1]], 4),
             vec![(vec![3], 1), (vec![2, 1], 2), (vec![1, 1, 1], 1)]
         );
+    }
+
+    #[test]
+    fn decompose_product_uses_dimension_reduction_for_annihilating_form() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let f = interner.get_or_intern("F");
+        let expr = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(f)),
+                vec![
+                    Index {
+                        name: a,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: c,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            ),
+            Expr::Indexed(
+                Box::new(Expr::Sym(interner.get_or_intern("V"))),
+                vec![Index {
+                    name: interner.get_or_intern("d"),
+                    variance: Variance::Down,
+                    index_type: None,
+                }],
+            ),
+        ]);
+        let props = HashMap::from([(
+            f,
+            vec![ax_ir::TensorProperty::TableauSymmetry(
+                ax_ir::TensorSymmetry {
+                    tableaux: vec![ax_ir::TableauAttachment {
+                        shape: vec![1, 1, 1],
+                        slot_map: vec![0, 1, 2],
+                        multiplicity_numer: 1,
+                        multiplicity_denom: 1,
+                        duality: ax_ir::DualityKind::None,
+                        restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
+                        trace_free: false,
+                        dimension_guard: None,
+                        source: ax_ir::SymmetrySource::Declared,
+                        label: None,
+                    }],
+                    inherits_under_derivative: false,
+                    inherits_under_tensor_product: false,
+                    inherits_under_contraction: false,
+                    preserves_trace_free_under_projection: false,
+                },
+            )],
+        )]);
+
+        assert_eq!(decompose_product(&expr, 2, &props, &interner), Expr::zero());
     }
 
     #[test]

@@ -34,6 +34,10 @@ enum RawTok {
     KwIn,
     #[token("indexset")]
     KwIndexset,
+    #[token("true")]
+    KwTrue,
+    #[token("false")]
+    KwFalse,
 
     #[regex(r"[A-Za-z][A-Za-z0-9_]*")]
     Ident,
@@ -43,6 +47,9 @@ enum RawTok {
 
     #[regex(r"[0-9]+")]
     Int,
+
+    #[regex(r#""([^"\\]|\\.)*""#)]
+    String,
 
     #[token("+")]
     Plus,
@@ -94,10 +101,13 @@ fn map_kind(t: RawTok) -> SyntaxKind {
         RawTok::KwLet => SyntaxKind::KwLet,
         RawTok::KwIn => SyntaxKind::KwIn,
         RawTok::KwIndexset => SyntaxKind::KwIndexset,
+        RawTok::KwTrue => SyntaxKind::KwTrue,
+        RawTok::KwFalse => SyntaxKind::KwFalse,
 
         RawTok::Ident => SyntaxKind::Ident,
         RawTok::Int => SyntaxKind::Int,
         RawTok::Float => SyntaxKind::Float,
+        RawTok::String => SyntaxKind::String,
 
         RawTok::Plus => SyntaxKind::Plus,
         RawTok::Minus => SyntaxKind::Minus,

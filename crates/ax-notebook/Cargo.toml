@@ -9,6 +9,7 @@ rust-version.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+ax-ai-proto = { path = "../ax-ai-proto" }
 ax-ir = { path = "../ax-ir" }
 ax-core-ir = { path = "../ax-core-ir" }
 ax-eval = { path = "../ax-eval" }

@@ -32,6 +32,9 @@ pub struct AxiomaConfig {
     /// `[plugins.<id>]` tables
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginConfig>,
+
+    #[serde(default)]
+    pub symmetry: SymmetryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,6 +69,30 @@ pub struct PluginConfig {
     pub wasm: String,
     #[serde(default)]
     pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SymmetryConfig {
+    #[serde(default)]
+    pub default_dimension: Option<usize>,
+    #[serde(default = "default_projector_max_terms")]
+    pub projector_max_terms: usize,
+    #[serde(default)]
+    pub render_unicode: bool,
+}
+
+impl Default for SymmetryConfig {
+    fn default() -> Self {
+        Self {
+            default_dimension: None,
+            projector_max_terms: default_projector_max_terms(),
+            render_unicode: false,
+        }
+    }
+}
+
+fn default_projector_max_terms() -> usize {
+    256
 }
 
 pub fn load_project_paths(root_override: Option<&str>) -> Result<ProjectPaths> {
@@ -234,6 +261,18 @@ gr-utils = { version = "0.2" }
     }
 
     #[test]
+    fn symmetry_config_preserves_projector_max_terms() {
+        let toml_str = r#"
+[symmetry]
+projector_max_terms = 4096
+render_unicode = true
+"#;
+        let cfg: AxiomaConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.symmetry.projector_max_terms, 4096);
+        assert!(cfg.symmetry.render_unicode);
+    }
+
+    #[test]
     fn default_import_search_paths_includes_current_dir() {
         let paths = build_import_search_paths(&ImportSearchPathConfig {
             working_dir: Some(std::env::current_dir().expect("cwd")),
@@ -275,23 +314,37 @@ gr-utils = { version = "0.2" }
             executable: Some(bin_dir.join("axioma-jupyter")),
         });
 
-        assert_eq!(paths[0], std::fs::canonicalize(&env_dir).expect("env canonical"));
-        assert_eq!(paths[1], std::fs::canonicalize(&cwd_dir).expect("cwd canonical"));
-        assert_eq!(paths[2], std::fs::canonicalize(&bin_dir).expect("bin canonical"));
-        assert_eq!(paths[3], std::fs::canonicalize(&bin_std).expect("bin/std canonical"));
-        assert_eq!(paths[4], std::fs::canonicalize(&exe_root).expect("root canonical"));
-        assert_eq!(paths[5], std::fs::canonicalize(&root_std).expect("root/std canonical"));
+        assert_eq!(
+            paths[0],
+            std::fs::canonicalize(&env_dir).expect("env canonical")
+        );
+        assert_eq!(
+            paths[1],
+            std::fs::canonicalize(&cwd_dir).expect("cwd canonical")
+        );
+        assert_eq!(
+            paths[2],
+            std::fs::canonicalize(&bin_dir).expect("bin canonical")
+        );
+        assert_eq!(
+            paths[3],
+            std::fs::canonicalize(&bin_std).expect("bin/std canonical")
+        );
+        assert_eq!(
+            paths[4],
+            std::fs::canonicalize(&exe_root).expect("root canonical")
+        );
+        assert_eq!(
+            paths[5],
+            std::fs::canonicalize(&root_std).expect("root/std canonical")
+        );
     }
 
     #[test]
     fn import_search_paths_split_env_and_dedup() {
         let shared = temp_dir("shared");
-        let env = std::env::join_paths([
-            shared.clone(),
-            shared.clone(),
-            shared.clone().join("."),
-        ])
-        .expect("join paths");
+        let env = std::env::join_paths([shared.clone(), shared.clone(), shared.clone().join(".")])
+            .expect("join paths");
 
         let paths = build_import_search_paths(&ImportSearchPathConfig {
             env_std_path: Some(env),
@@ -311,7 +364,10 @@ gr-utils = { version = "0.2" }
         let second_rendered = format!("- {}", second.display());
         let first_index = rendered.find(&first_rendered).expect("first");
         let second_index = rendered.find(&second_rendered).expect("second");
-        assert!(first_index < second_index, "expected precedence order in {rendered}");
+        assert!(
+            first_index < second_index,
+            "expected precedence order in {rendered}"
+        );
     }
 
     fn write_module(root: &Path, module: &str, source: &str) -> PathBuf {

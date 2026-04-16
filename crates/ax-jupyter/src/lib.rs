@@ -7,7 +7,7 @@ use ax_notebook::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Sha256;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
@@ -18,6 +18,16 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
+
+pub fn symmetry_summary_mime_bundle(
+    summary: &ax_ai_proto::SymmetryExplainResponse,
+) -> BTreeMap<String, String> {
+    let mut bundle = BTreeMap::new();
+    bundle.insert("text/plain".to_string(), summary.rendered_ascii.clone());
+    let json = serde_json::to_string(&summary.summary).unwrap_or_else(|_| "{}".to_string());
+    bundle.insert("application/json".to_string(), json);
+    bundle
+}
 
 #[derive(Deserialize)]
 pub struct ConnectionInfo {
@@ -3363,5 +3373,70 @@ mod tests {
         assert_eq!(execute_reply["status"], "error");
         assert_eq!(execute_reply["ename"], "Interrupted");
         assert!(finish.shutdown, "shutdown should trigger after idle is restored");
+    }
+
+    #[test]
+    fn symmetry_mime_bundle_has_required_keys() {
+        let summary = ax_ai_proto::SymmetryExplainResponse {
+            summary: ax_ai_proto::TensorSymmetrySummary {
+                tableaux: vec![ax_ai_proto::TensorSymmetryEntry {
+                    shape: vec![2],
+                    slots: vec![0, 1],
+                    label: None,
+                    trace_free: false,
+                    duality: "none".to_string(),
+                }],
+            },
+            rendered_ascii: "[][]".to_string(),
+        };
+
+        let bundle = symmetry_summary_mime_bundle(&summary);
+        assert!(bundle.contains_key("text/plain"));
+        assert!(bundle.contains_key("application/json"));
+    }
+
+    #[test]
+    fn notebook_and_jupyter_helpers_consume_the_same_summary_object_exactly() {
+        let summary = ax_ai_proto::SymmetryExplainResponse {
+            summary: ax_ai_proto::TensorSymmetrySummary {
+                tableaux: vec![
+                    ax_ai_proto::TensorSymmetryEntry {
+                        shape: vec![2, 1],
+                        slots: vec![0, 1, 2],
+                        label: Some("main".to_string()),
+                        trace_free: false,
+                        duality: "none".to_string(),
+                    },
+                    ax_ai_proto::TensorSymmetryEntry {
+                        shape: vec![1, 1],
+                        slots: vec![1, 2],
+                        label: Some("alt".to_string()),
+                        trace_free: true,
+                        duality: "none".to_string(),
+                    },
+                ],
+            },
+            rendered_ascii: concat!(
+                "tableau[0]: shape=[2, 1], slots=[0, 1, 2], trace_free=false, duality=None, label=\"main\"\n",
+                "tableau[1]: shape=[1, 1], slots=[1, 2], trace_free=true, duality=None, label=\"alt\""
+            )
+            .to_string(),
+        };
+
+        let bundle = symmetry_summary_mime_bundle(&summary);
+        assert_eq!(bundle.get("text/plain").map(String::as_str), Some(summary.rendered_ascii.as_str()));
+        assert_eq!(
+            bundle.get("application/json").map(String::as_str),
+            Some(
+                "{\"tableaux\":[{\"shape\":[2,1],\"slots\":[0,1,2],\"label\":\"main\",\"trace_free\":false,\"duality\":\"none\"},{\"shape\":[1,1],\"slots\":[1,2],\"label\":\"alt\",\"trace_free\":true,\"duality\":\"none\"}]}"
+            )
+        );
+        assert_eq!(
+            ax_notebook::render_symmetry_cell(&summary.summary),
+            concat!(
+                "### tableau[0]\nshape=[2, 1]\nslots=[0, 1, 2]\ntrace_free=false\nduality=none\n\n",
+                "### tableau[1]\nshape=[1, 1]\nslots=[1, 2]\ntrace_free=true\nduality=none"
+            )
+        );
     }
 }

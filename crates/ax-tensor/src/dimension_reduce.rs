@@ -43,7 +43,8 @@ fn reduce(
 ) -> Result<Expr, DimensionReduceError> {
     match expr {
         Expr::Add(terms) => Ok(Expr::add(
-            terms.iter()
+            terms
+                .iter()
                 .map(|term| reduce(term, properties_for_symbol, dim))
                 .collect::<Result<Vec<_>, _>>()?,
         )),

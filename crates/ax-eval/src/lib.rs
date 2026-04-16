@@ -44,6 +44,15 @@ pub use registry::{
     SyntaxRule,
 };
 
+fn find_tensor_symmetry(
+    env: &Env,
+    sym: lasso::Spur,
+    indices: &[ax_ir::Index],
+) -> Option<ax_ir::TensorSymmetry> {
+    env.property_store
+        .get_tensor_symmetry(sym, indices, &env.index_to_family)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub bindings: HashMap<lasso::Spur, Expr>,
@@ -1895,7 +1904,31 @@ pub fn apply_property_declaration(
             if prop_args.len() == 2 {
                 let shape = parse_usize_list(&prop_args[0])?;
                 let indices = parse_usize_list(&prop_args[1])?;
-                add_property(ax_ir::TensorProperty::TableauSymmetry { shape, indices });
+                let symmetry = ax_ir::TensorSymmetry {
+                    tableaux: vec![ax_ir::TableauAttachment {
+                        shape,
+                        slot_map: indices,
+                        multiplicity_numer: 1,
+                        multiplicity_denom: 1,
+                        duality: ax_ir::DualityKind::None,
+                        restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
+                        trace_free: false,
+                        dimension_guard: None,
+                        source: ax_ir::SymmetrySource::Declared,
+                        label: None,
+                    }],
+                    inherits_under_derivative: false,
+                    inherits_under_tensor_product: false,
+                    inherits_under_contraction: false,
+                    preserves_trace_free_under_projection: false,
+                };
+                if symmetry.validate().is_err() {
+                    return None;
+                }
+                add_property(ax_ir::TensorProperty::TableauSymmetry(symmetry));
+                if let Expr::Indexed(_, declared_indices) = target {
+                    find_tensor_symmetry(env, tensor, declared_indices)?;
+                }
                 Some(format!(
                     "attached property tableau_symmetry to {}",
                     interner.resolve(tensor)
@@ -5129,7 +5162,7 @@ fn builtin_call(
                         .and_then(|arg| parse_bool_like_expr(arg, interner))
                         .unwrap_or(true),
                 };
-                ax_tensor::tensor_reduce(&target, &env.tensor_properties, interner, &opts)
+                ax_tensor::tensor_reduce(&target, &env.property_store, interner, &opts)
             } else {
                 Expr::Call(f, args)
             }
@@ -7904,16 +7937,7 @@ fn parse_young_tableau_expr(expr: &Expr) -> Option<ax_young::YoungTableau> {
         parsed_rows.push(parsed_cells);
     }
 
-    let shape: Vec<usize> = parsed_rows.iter().map(Vec::len).collect();
-    if shape.windows(2).any(|window| window[0] < window[1]) {
-        return None;
-    }
-
-    Some(ax_young::YoungTableau {
-        rows: parsed_rows,
-        multiplicity: num_rational::BigRational::one(),
-        selfdual_column: 0,
-    })
+    ax_young::YoungTableau::with_metadata(parsed_rows, num_rational::BigRational::one(), 0).ok()
 }
 
 pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
@@ -10403,9 +10427,13 @@ mod tests {
             .expr
             .expect("young project expr");
         let result = eval(&expr, &env, &interner);
-        let expected = ax_core_ir::lower("2*T[a-,b-];", &interner)
-            .expr
-            .expect("expected expr");
+        let expected = ax_tensor::young_project_tensor(
+            &ax_core_ir::lower("T[a-,b-];", &interner)
+                .expr
+                .expect("base expr"),
+            &env.property_store,
+            &interner,
+        );
         assert_eq!(result, expected, "got {:?}", result);
     }
 
@@ -10427,9 +10455,18 @@ mod tests {
                 .expr
                 .expect("young project expr");
         let reduced = eval(&reduced_expr, &env, &interner);
-        let expected = ax_core_ir::lower("2*T[a-,b-];", &interner)
-            .expr
-            .expect("expected expr");
+        let expected = ax_tensor::young_project_tensor_with_options(
+            &ax_core_ir::lower("T[b-,a-];", &interner)
+                .expr
+                .expect("base expr"),
+            &env.property_store,
+            &interner,
+            &ax_tensor::YoungProjectTensorOptions {
+                modulo_monoterm: true,
+                canonicalize_after: true,
+                rename_dummies_after: true,
+            },
+        );
         assert_eq!(reduced, expected, "got {:?}", reduced);
 
         let expanded_expr =
@@ -10437,9 +10474,19 @@ mod tests {
                 .expr
                 .expect("young project expr");
         let expanded = eval(&expanded_expr, &env, &interner);
-        let rendered = ax_ir::pretty_print(&expanded, &interner);
-        assert!(rendered.contains("T[b-, a-]"), "got {rendered}");
-        assert!(rendered.contains("T[a-, b-]"), "got {rendered}");
+        let expected = ax_tensor::young_project_tensor_with_options(
+            &ax_core_ir::lower("T[b-,a-];", &interner)
+                .expr
+                .expect("base expr"),
+            &env.property_store,
+            &interner,
+            &ax_tensor::YoungProjectTensorOptions {
+                modulo_monoterm: false,
+                canonicalize_after: false,
+                rename_dummies_after: false,
+            },
+        );
+        assert_eq!(expanded, expected, "got {:?}", expanded);
     }
 
     #[test]
@@ -10476,9 +10523,13 @@ mod tests {
             .expr
             .expect("young project tensor expr");
         let result = eval(&expr, &env, &interner);
-        let expected = ax_core_ir::lower("2*T[a-,b-];", &interner)
-            .expr
-            .expect("expected expr");
+        let expected = ax_tensor::young_project_tensor(
+            &ax_core_ir::lower("T[a-,b-];", &interner)
+                .expr
+                .expect("base expr"),
+            &env.property_store,
+            &interner,
+        );
         assert_eq!(result, expected, "got {:?}", result);
     }
 

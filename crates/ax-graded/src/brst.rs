@@ -119,10 +119,9 @@ pub fn apply_brst(
             Box::new(apply_brst(base, setup, table, interner)),
             indices.clone(),
         ),
-        Expr::Group(inner, rel) => Expr::Group(
-            Box::new(apply_brst(inner, setup, table, interner)),
-            *rel,
-        ),
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(apply_brst(inner, setup, table, interner)), *rel)
+        }
         Expr::List(items) => Expr::List(
             items
                 .iter()

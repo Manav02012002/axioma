@@ -97,3 +97,10 @@ fn wedge_degree() {
     let ab = wedge(&a, &b, &interner);
     assert_eq!(ab.degree, 3, "1-form ∧ 2-form should be 3-form");
 }
+
+#[test]
+fn k_form_tableau_has_column_shape() {
+    let symmetry = k_form_tableau(3);
+    assert_eq!(symmetry.tableaux[0].shape, vec![1, 1, 1]);
+    assert_eq!(symmetry.tableaux[0].slot_map, vec![0, 1, 2]);
+}

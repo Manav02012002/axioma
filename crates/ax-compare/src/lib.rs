@@ -219,6 +219,96 @@ fn is_legacy_wildcard(sym: Sym, interner: &Interner) -> bool {
     interner.resolve(sym).ends_with('_')
 }
 
+pub fn compare_tensor_symmetry(
+    a: &ax_ir::TensorSymmetry,
+    b: &ax_ir::TensorSymmetry,
+) -> std::cmp::Ordering {
+    let count_cmp = a.tableaux.len().cmp(&b.tableaux.len());
+    if count_cmp != Ordering::Equal {
+        return count_cmp;
+    }
+
+    for (lhs, rhs) in a.tableaux.iter().zip(&b.tableaux) {
+        let cmp = lhs.shape.cmp(&rhs.shape);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+
+        let cmp = lhs.slot_map.cmp(&rhs.slot_map);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+
+        let cmp = duality_rank(&lhs.duality).cmp(&duality_rank(&rhs.duality));
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+
+        let cmp = lhs.trace_free.cmp(&rhs.trace_free);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+
+        let cmp = lhs.label.cmp(&rhs.label);
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+    }
+
+    Ordering::Equal
+}
+
+fn duality_rank(duality: &ax_ir::DualityKind) -> u8 {
+    match duality {
+        ax_ir::DualityKind::None => 0,
+        ax_ir::DualityKind::SelfDual => 1,
+        ax_ir::DualityKind::AntiSelfDual => 2,
+    }
+}
+
+#[cfg(test)]
+mod tensor_symmetry_tests {
+    use super::*;
+    use ax_ir::{
+        DualityKind, RestrictedSymmetryMode, SymmetrySource, TableauAttachment, TensorSymmetry,
+    };
+
+    fn symmetry(shape: Vec<usize>, slots: Vec<usize>) -> TensorSymmetry {
+        TensorSymmetry {
+            tableaux: vec![TableauAttachment {
+                shape,
+                slot_map: slots,
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: DualityKind::None,
+                restricted_mode: RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        }
+    }
+
+    #[test]
+    fn identical_symmetries_compare_equal() {
+        let a = symmetry(vec![2], vec![0, 1]);
+        let b = symmetry(vec![2], vec![0, 1]);
+        assert_eq!(compare_tensor_symmetry(&a, &b), Ordering::Equal);
+    }
+
+    #[test]
+    fn ordering_matches_implemented_shape_comparison() {
+        let a = symmetry(vec![2], vec![0, 1]);
+        let b = symmetry(vec![1, 1], vec![0, 1]);
+        assert_eq!(compare_tensor_symmetry(&a, &b), vec![2].cmp(&vec![1, 1]));
+    }
+}
+
 fn is_single_wildcard(sym: Sym, interner: &Interner) -> bool {
     let name = interner.resolve(sym);
     name.ends_with('?') && !name.ends_with("??")

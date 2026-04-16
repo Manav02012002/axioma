@@ -224,8 +224,11 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
                 .map(|s| interner.resolve(*s).to_string())
                 .collect::<Vec<_>>()
         ),
-        ax_ir::TensorProperty::TableauSymmetry { shape, indices } => {
-            format!("TableauSymmetry(shape={shape:?}, indices={indices:?})")
+        ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
+            format!("TableauSymmetry(tableaux={:?})", symmetry.tableaux)
+        }
+        ax_ir::TensorProperty::TensorIdentities(identities) => {
+            format!("TensorIdentities(multiterm={:?})", identities.multiterm)
         }
         ax_ir::TensorProperty::SatisfiesBianchi { slots } => {
             format!("SatisfiesBianchi(slots={slots:?})")

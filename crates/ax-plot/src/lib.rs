@@ -13,6 +13,14 @@ const PLOT_TOP: f64 = 30.0;
 const PLOT_BOTTOM: f64 = 460.0;
 const SAMPLE_COUNT: usize = 500;
 
+pub fn tableau_row_lengths(shape: &[usize]) -> Vec<(usize, usize)> {
+    shape
+        .iter()
+        .copied()
+        .enumerate()
+        .collect()
+}
+
 fn eval_numeric(
     expr: &Expr,
     bindings: &HashMap<lasso::Spur, f64>,
@@ -396,6 +404,17 @@ pub fn plot_data(points: &[(f64, f64)], title: &str) -> String {
     svg
 }
 
+pub fn projector_trace_points(trace: &ax_trace::ProjectorBuildTrace) -> Vec<(String, usize)> {
+    vec![
+        ("row_generators".to_string(), trace.row_generator_count),
+        (
+            "column_generators".to_string(),
+            trace.column_generator_count,
+        ),
+        ("expanded_terms".to_string(), trace.expanded_term_count),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +437,29 @@ mod tests {
         let expr = Expr::pow(Expr::Sym(x), Expr::Int((-1).into()));
         let svg = plot_2d(&expr, x, -5.0, 5.0, &interner);
         assert!(svg.contains("<svg"));
+    }
+
+    #[test]
+    fn tableau_row_lengths_are_plot_ready_points() {
+        assert_eq!(tableau_row_lengths(&[3, 1]), vec![(0, 3), (1, 1)]);
+    }
+
+    #[test]
+    fn projector_trace_points_have_exact_labels_and_order() {
+        let trace = ax_trace::ProjectorBuildTrace {
+            shape: vec![2, 1],
+            degree: 3,
+            row_generator_count: 2,
+            column_generator_count: 1,
+            expanded_term_count: 4,
+        };
+        assert_eq!(
+            projector_trace_points(&trace),
+            vec![
+                ("row_generators".to_string(), 2),
+                ("column_generators".to_string(), 1),
+                ("expanded_terms".to_string(), 4),
+            ]
+        );
     }
 }

@@ -9,6 +9,12 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+ax-ai-proto = { path = "../ax-ai-proto" }
 ax-plugin-api = { path = "../ax-plugin-api" }
+ax-render = { path = "../ax-render" }
+ax-syntax = { path = "../ax-syntax" }
 
 wasmtime = "19.0"
+
+[dev-dependencies]
+axp-echo = { path = "../../plugins/axp-echo" }

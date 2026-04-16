@@ -144,6 +144,59 @@ fn wildcard_pattern_matches_any_indices() {
 }
 
 #[test]
+fn tensor_identities_are_derived_from_legacy_bianchi_properties() {
+    let interner = Interner::new();
+    let r = interner.get_or_intern("R");
+    let a = interner.get_or_intern("a");
+    let b = interner.get_or_intern("b");
+    let c = interner.get_or_intern("c");
+    let d = interner.get_or_intern("d");
+    let mut store = PropertyStore::new();
+    store.declare_simple(
+        r,
+        TensorProperty::SatisfiesBianchi {
+            slots: vec![0, 1, 2, 3],
+        },
+    );
+
+    let identities = store
+        .try_get_tensor_identities(
+            r,
+            &[
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: c,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: d,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+            &HashMap::new(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        identities.multiterm,
+        vec![TensorMultitermIdentity::FirstBianchi {
+            cyclic_slots: [1, 2, 3]
+        }]
+    );
+}
+
+#[test]
 fn weight_inheritance_additive() {
     let interner = Interner::new();
     let phi = interner.get_or_intern("phi");

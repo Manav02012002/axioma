@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use anyhow::Context;
 use ax_ir::Expr;
 use num_traits::ToPrimitive;
 
@@ -232,6 +233,56 @@ pub fn to_cpp(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> String {
                 .join(", ")
         ),
         _ => format!("/* unsupported: {:?} */", expr),
+    }
+}
+
+pub fn emit_tensor_symmetry_json(sym: &ax_ir::TensorSymmetry) -> anyhow::Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "tableaux": sym.tableaux.iter().map(|tableau| serde_json::json!({
+            "shape": tableau.shape,
+            "slot_map": tableau.slot_map,
+            "label": tableau.label,
+            "trace_free": tableau.trace_free,
+            "duality": format!("{:?}", tableau.duality),
+        })).collect::<Vec<_>>(),
+        "inherits_under_derivative": sym.inherits_under_derivative,
+        "inherits_under_tensor_product": sym.inherits_under_tensor_product,
+        "inherits_under_contraction": sym.inherits_under_contraction,
+        "preserves_trace_free_under_projection": sym.preserves_trace_free_under_projection,
+    }))
+    .context("failed to serialize tensor symmetry to JSON")
+}
+
+#[cfg(test)]
+mod symmetry_tests {
+    use super::*;
+    use ax_ir::{
+        DualityKind, RestrictedSymmetryMode, SymmetrySource, TableauAttachment, TensorSymmetry,
+    };
+
+    #[test]
+    fn emits_tensor_symmetry_json_with_tableaux_key() {
+        let symmetry = TensorSymmetry {
+            tableaux: vec![TableauAttachment {
+                shape: vec![2],
+                slot_map: vec![0, 1],
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: DualityKind::None,
+                restricted_mode: RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        };
+
+        let json = emit_tensor_symmetry_json(&symmetry).unwrap();
+        assert!(json.contains("\"tableaux\""), "{json}");
     }
 }
 

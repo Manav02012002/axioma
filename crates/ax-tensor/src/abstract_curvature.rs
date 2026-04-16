@@ -1,5 +1,5 @@
 use crate::PropertyLookup;
-use ax_ir::{Expr, Index, Interner, TensorProperty, Variance};
+use ax_ir::{Expr, Index, Interner, Variance};
 use lasso::Spur;
 use std::collections::HashMap;
 
@@ -33,16 +33,9 @@ fn indexed_symbol_and_indices(expr: &Expr) -> Option<(Spur, &[Index])> {
 
 fn is_riemann_like(sym: Spur, indices: &[Index], properties: &dyn PropertyLookup) -> bool {
     let factor_props = properties.get_properties_with_indices(sym, indices, None);
-    let has_riemann = factor_props
-        .iter()
-        .any(|prop| matches!(prop, TensorProperty::RiemannSymmetry));
-    let has_weyl = factor_props
-        .iter()
-        .any(|prop| matches!(prop, TensorProperty::WeylTensor));
-    let has_bianchi = factor_props
-        .iter()
-        .any(|prop| matches!(prop, TensorProperty::SatisfiesBianchi { .. }));
-    has_riemann || has_weyl || (has_riemann && has_bianchi)
+    crate::structured_curvature_properties_from_legacy(&factor_props)
+        .0
+        .is_some()
 }
 
 fn validate_repeated_indices(

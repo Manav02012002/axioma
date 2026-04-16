@@ -6,6 +6,10 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
+pub fn can_solve_componentwise_by_symmetry(sym: &ax_ir::TensorSymmetry) -> bool {
+    !sym.tableaux.is_empty()
+}
+
 fn to_rational(expr: &Expr) -> Option<BigRational> {
     match expr {
         Expr::Int(n) => Some(BigRational::from_integer(n.clone())),
@@ -916,5 +920,37 @@ mod tests {
         } else {
             panic!("expected List, got {:?}", result);
         }
+    }
+
+    #[test]
+    fn componentwise_solve_requires_nonempty_tableaux() {
+        let empty = ax_ir::TensorSymmetry {
+            tableaux: Vec::new(),
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        };
+        let nonempty = ax_ir::TensorSymmetry {
+            tableaux: vec![ax_ir::TableauAttachment {
+                shape: vec![2],
+                slot_map: vec![0, 1],
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: ax_ir::DualityKind::None,
+                restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: ax_ir::SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        };
+
+        assert!(!crate::can_solve_componentwise_by_symmetry(&empty));
+        assert!(crate::can_solve_componentwise_by_symmetry(&nonempty));
     }
 }

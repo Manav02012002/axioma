@@ -3,28 +3,16 @@ use ax_ir::Expr;
 use std::path::{Path, PathBuf};
 
 pub fn default_search_paths(current_file: Option<&Path>) -> Vec<PathBuf> {
-    let mut search_paths = Vec::new();
-
-    if let Ok(cwd) = std::env::current_dir() {
-        search_paths.push(cwd);
-    }
+    let mut search_paths =
+        ax_context::build_import_search_paths(&ax_context::ImportSearchPathConfig {
+            env_std_path: std::env::var_os("AXIOMA_STD_PATH"),
+            working_dir: std::env::current_dir().ok(),
+            executable: std::env::current_exe().ok(),
+        });
 
     if let Some(dir) = current_file.and_then(|path| path.parent()) {
-        search_paths.push(dir.to_path_buf());
-    }
-
-    if let Ok(std_path) = std::env::var("AXIOMA_STD_PATH") {
-        search_paths.push(PathBuf::from(std_path));
-    }
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            search_paths.push(dir.to_path_buf());
-            search_paths.push(dir.join("std"));
-            if let Some(parent) = dir.parent() {
-                search_paths.push(parent.to_path_buf());
-                search_paths.push(parent.join("std"));
-            }
+        if !search_paths.iter().any(|existing| existing == dir) {
+            search_paths.insert(0, dir.to_path_buf());
         }
     }
 
@@ -279,4 +267,169 @@ pub fn run(file: &Path) -> Result<i32> {
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ax_eval::registry::{
+        algorithm_entries, builtin_entries, property_entries, std_modules, syntax_rules,
+    };
+
+    fn sweep_search_paths() -> Vec<PathBuf> {
+        let mut search_paths = default_search_paths(None);
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf)
+            .expect("ax-cli manifest should live under crates/ax-cli");
+        if !search_paths.iter().any(|existing| existing == &repo_root) {
+            search_paths.insert(0, repo_root);
+        }
+        search_paths
+    }
+
+    fn execute_code_block(
+        code: &str,
+        env: &mut ax_eval::Env,
+        interner: &ax_ir::Interner,
+        search_paths: &[PathBuf],
+    ) -> Result<()> {
+        let effective_code = if code.contains('\\') || code.contains("_{") || code.contains("^{") {
+            ax_core_ir::latex_to_axioma(code)
+        } else {
+            code.to_string()
+        };
+        let lowered = ax_core_ir::lower(&effective_code, interner);
+        if !lowered.errors.is_empty() {
+            let joined = lowered
+                .errors
+                .iter()
+                .map(|error| error.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(anyhow!("lowering failed: {joined}"));
+        }
+
+        for expr in lowered.exprs {
+            execute_expr(&expr, env, interner, search_paths)?;
+        }
+
+        Ok(())
+    }
+
+    fn assert_examples_execute(
+        label: &str,
+        examples: impl IntoIterator<Item = (&'static str, &'static str)>,
+    ) {
+        let interner = ax_ir::Interner::new();
+        let search_paths = sweep_search_paths();
+        let mut failures = Vec::new();
+
+        for (name, code) in examples {
+            let mut env = ax_eval::Env::new();
+            if let Err(error) = execute_code_block(code, &mut env, &interner, &search_paths) {
+                failures.push(format!("{name}: {error} | code: {code}"));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{label} failures:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn builtin_examples_execute_end_to_end() {
+        assert_examples_execute(
+            "builtin examples",
+            builtin_entries()
+                .into_iter()
+                .map(|entry| (entry.name, entry.example)),
+        );
+    }
+
+    #[test]
+    fn algorithm_examples_execute_end_to_end() {
+        assert_examples_execute(
+            "algorithm examples",
+            algorithm_entries()
+                .into_iter()
+                .map(|entry| (entry.name, entry.example)),
+        );
+    }
+
+    #[test]
+    fn property_examples_execute_end_to_end() {
+        assert_examples_execute(
+            "property examples",
+            property_entries()
+                .into_iter()
+                .map(|entry| (entry.name, entry.example)),
+        );
+    }
+
+    #[test]
+    fn syntax_rule_examples_execute_end_to_end() {
+        assert_examples_execute(
+            "syntax rule examples",
+            syntax_rules()
+                .into_iter()
+                .filter(|entry| !matches!(entry.pattern, "// comment" | "/* comment */"))
+                .map(|entry| (entry.pattern, entry.example)),
+        );
+    }
+
+    #[test]
+    fn std_module_imports_execute_end_to_end() {
+        let interner = ax_ir::Interner::new();
+        let search_paths = sweep_search_paths();
+        let mut failures = Vec::new();
+
+        for module in std_modules() {
+            let mut env = ax_eval::Env::new();
+            let code = format!("import std.{}", module.path.replace('/', "."));
+            let lowered = ax_core_ir::lower(&code, &interner);
+            if !lowered.errors.is_empty() {
+                let joined = lowered
+                    .errors
+                    .iter()
+                    .map(|error| error.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                failures.push(format!(
+                    "{}: lowering failed: {joined} | code: {code}",
+                    module.path
+                ));
+                continue;
+            }
+            let mut import_ok = false;
+            for expr in lowered.exprs {
+                match execute_expr(&expr, &mut env, &interner, &search_paths) {
+                    Ok(Some(message)) if message.starts_with("imported ") => {
+                        import_ok = true;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        failures.push(format!("{}: {error} | code: {code}", module.path));
+                        import_ok = false;
+                        break;
+                    }
+                }
+            }
+            if !import_ok {
+                failures.push(format!(
+                    "{}: import did not execute as an import command | code: {code}",
+                    module.path
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "std module import failures:\n{}",
+            failures.join("\n")
+        );
+    }
 }
