@@ -1,8 +1,9 @@
 pub mod symmetry_trace;
 
 pub use symmetry_trace::{
-    CanonicalizationTrace, DecompositionTrace, MultiplicityBasisTrace, ProjectorBuildTrace,
-    SparseProjectorTrace, TableauProjectionTrace,
+    CanonicalizationTrace, CurvatureDecompositionTrace, DecompositionTrace,
+    DummyCanonicalizationTrace, MultiplicityBasisTrace, MultitermReductionTrace, OracleCaseTrace,
+    ProjectorBuildTrace, SparseProjectorTrace, TableauProjectionTrace,
 };
 
 use serde::{Deserialize, Serialize};
@@ -143,5 +144,73 @@ mod tests {
         assert_eq!(trace.left_associated_basis.len(), 2);
         assert_eq!(trace.right_associated_basis.len(), 2);
         assert_eq!(trace.change_of_basis_matrix.len(), 2);
+    }
+
+    #[test]
+    fn dummy_canonicalization_trace_round_trips_fields() {
+        let trace = DummyCanonicalizationTrace {
+            original_slot_labels: vec!["j".into(), "i".into(), "j".into(), "i".into()],
+            canonical_slot_labels: vec!["i".into(), "j".into(), "i".into(), "j".into()],
+            original_slot_permutation: vec![0, 1, 2, 3],
+            canonical_slot_permutation: vec![0, 1, 2, 3],
+            dummy_orbit_count: 2,
+            symmetry_orbit_count: 1,
+            sign: 1,
+        };
+
+        assert_eq!(trace.original_slot_labels.len(), 4);
+        assert_eq!(trace.canonical_slot_labels[0], "i");
+        assert_eq!(trace.dummy_orbit_count, 2);
+        assert_eq!(trace.sign, 1);
+    }
+
+    #[test]
+    fn multiterm_reduction_trace_round_trips_fields() {
+        let trace = MultitermReductionTrace {
+            original_slots: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            pivot_slots: vec!["a".into(), "d".into(), "b".into(), "c".into()],
+            reduced_term_count: 2,
+            identity_kind: "FirstBianchi".into(),
+        };
+
+        assert_eq!(trace.original_slots.len(), 4);
+        assert_eq!(trace.pivot_slots[1], "d");
+        assert_eq!(trace.reduced_term_count, 2);
+    }
+
+    #[test]
+    fn curvature_decomposition_trace_round_trips_fields() {
+        let trace = CurvatureDecompositionTrace {
+            dimension: 4,
+            input_kind: "riemann_rank4".into(),
+            output_kinds: vec![
+                "weyl_rank4".into(),
+                "metric_ricci_rank4".into(),
+                "metric_scalar_rank4".into(),
+            ],
+            coefficient_numerators: vec![1, 1, -1],
+            coefficient_denominators: vec![1, 2, 6],
+        };
+
+        assert_eq!(trace.dimension, 4);
+        assert_eq!(trace.input_kind, "riemann_rank4");
+        assert_eq!(trace.output_kinds.len(), 3);
+        assert_eq!(trace.coefficient_denominators[2], 6);
+    }
+
+    #[test]
+    fn oracle_case_trace_round_trips_fields() {
+        let trace = OracleCaseTrace {
+            case_name: "sym_rank2_canonicalize".into(),
+            kind: "canonicalize".into(),
+            expected: "T[a-, b-]".into(),
+            actual: "T[a-, b-]".into(),
+            passed: true,
+        };
+
+        assert_eq!(trace.case_name, "sym_rank2_canonicalize");
+        assert_eq!(trace.kind, "canonicalize");
+        assert_eq!(trace.expected, "T[a-, b-]");
+        assert!(trace.passed);
     }
 }

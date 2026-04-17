@@ -100,14 +100,14 @@ fn curvature_symmetry_builders_are_exact() {
 }
 
 #[test]
-fn first_bianchi_application_on_single_factor_yields_exact_cyclic_sum() {
+fn first_bianchi_application_on_single_factor_reduces_to_pivot_normal_form() {
     let interner = ax_ir::Interner::new();
     let r = interner.get_or_intern("R");
     let a = interner.get_or_intern("a");
     let b = interner.get_or_intern("b");
     let c = interner.get_or_intern("c");
     let d = interner.get_or_intern("d");
-    let expr = indexed(r, &[a, b, c, d]);
+    let expr = indexed(r, &[a, d, b, c]);
 
     let applied = apply_first_bianchi_if_applicable(&expr, &|symbol| {
         if symbol == r {
@@ -123,9 +123,8 @@ fn first_bianchi_application_on_single_factor_yields_exact_cyclic_sum() {
     assert_eq!(
         applied,
         Expr::add(vec![
-            indexed(r, &[a, b, c, d]),
-            indexed(r, &[a, c, d, b]),
-            indexed(r, &[a, d, b, c]),
+            Expr::neg(indexed(r, &[a, b, c, d])),
+            Expr::neg(indexed(r, &[a, c, d, b])),
         ])
     );
 }
@@ -172,16 +171,15 @@ fn explicit_structured_symmetry_and_legacy_bianchi_coexist() {
         ])
     );
 
-    let bianchi = apply_first_bianchi_if_applicable(&indexed(t, &[a, b, c]), &|symbol| {
+    let bianchi = apply_first_bianchi_if_applicable(&indexed(t, &[c, a, b]), &|symbol| {
         props.get(&symbol).cloned().unwrap_or_default()
     })
     .expect("legacy Bianchi should still be available");
     assert_eq!(
         bianchi,
         Expr::add(vec![
-            indexed(t, &[a, b, c]),
-            indexed(t, &[b, c, a]),
-            indexed(t, &[c, a, b]),
+            Expr::neg(indexed(t, &[a, b, c])),
+            Expr::neg(indexed(t, &[b, c, a])),
         ])
     );
 }

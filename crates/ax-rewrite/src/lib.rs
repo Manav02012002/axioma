@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use anyhow::Context;
 use ax_ir::{Expr, Interner};
 use std::collections::HashMap;
 
@@ -642,6 +643,20 @@ pub fn rewrite_fixed_point_with_compare(
     current
 }
 
+pub fn rewrite_using_tensor_identities(
+    expr: &ax_ir::Expr,
+    identities: &ax_ir::TensorIdentitySet,
+) -> anyhow::Result<Option<ax_ir::Expr>> {
+    match ax_tensor::reduce_indexed_factor_modulo_identities(expr, identities) {
+        Ok(result) => Ok(result.map(|reduction| reduction.expr)),
+        Err(
+            ax_tensor::MultitermError::UnsupportedExpr
+            | ax_tensor::MultitermError::NoApplicableIdentity,
+        ) => Ok(None),
+        Err(err) => Err(err).context("failed to rewrite expression using tensor identities"),
+    }
+}
+
 pub fn pattern_to_expr(pattern: &Pattern) -> Expr {
     pattern_to_expr_with_wildcard(pattern, lasso::Spur::default())
 }
@@ -823,5 +838,35 @@ mod tests {
         let expr = Expr::group(Expr::Call(sin_sym, vec![Expr::Sym(x)]));
         let result = rewrite_once(&[rule], &expr, &interner);
         assert_eq!(result, Expr::group(Expr::Call(cos_sym, vec![Expr::Sym(x)])));
+    }
+
+    #[test]
+    fn rewrite_using_tensor_identities_returns_some_for_applicable_factor() {
+        let interner = Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let idx = |name| ax_ir::Index {
+            name,
+            variance: ax_ir::Variance::Down,
+            index_type: None,
+        };
+        let expr = Expr::Indexed(Box::new(Expr::Sym(t)), vec![idx(c), idx(a), idx(b)]);
+        let identities = ax_ir::TensorIdentitySet {
+            multiterm: vec![ax_ir::TensorMultitermIdentity::CyclicSum {
+                slots: vec![0, 1, 2],
+            }],
+        };
+        assert!(rewrite_using_tensor_identities(&expr, &identities)
+            .ok()
+            .flatten()
+            .is_some());
+        assert_eq!(
+            rewrite_using_tensor_identities(&Expr::Sym(t), &identities)
+                .ok()
+                .flatten(),
+            None
+        );
     }
 }

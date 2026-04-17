@@ -9,6 +9,7 @@ rust-version.workspace = true
 anyhow = { workspace = true }
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
+ax-tensor = { path = "../ax-tensor" }
 ax-young = { path = "../ax-young" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }

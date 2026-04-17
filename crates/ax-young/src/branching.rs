@@ -102,6 +102,9 @@ mod tests {
             branch_s_n_to_s_n_minus_1(&yd(vec![2, 1])).unwrap(),
             vec![yd(vec![1, 1]), yd(vec![2])]
         );
-        assert_eq!(branch_s_n_to_s_n_minus_1(&yd(vec![3])).unwrap(), vec![yd(vec![2])]);
+        assert_eq!(
+            branch_s_n_to_s_n_minus_1(&yd(vec![3])).unwrap(),
+            vec![yd(vec![2])]
+        );
     }
 }

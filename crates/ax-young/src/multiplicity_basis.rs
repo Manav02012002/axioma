@@ -48,7 +48,11 @@ pub fn canonical_multiplicity_basis(
         lhs.iter()
             .map(|shape| shape.rows.clone())
             .collect::<Vec<_>>()
-            .cmp(&rhs.iter().map(|shape| shape.rows.clone()).collect::<Vec<_>>())
+            .cmp(
+                &rhs.iter()
+                    .map(|shape| shape.rows.clone())
+                    .collect::<Vec<_>>(),
+            )
     });
 
     Ok(MultiplicityBasis {
@@ -78,7 +82,8 @@ pub fn basis_change_matrix_between_associations(
     }
     ensure_supported_regime(factors, target, multiplicity)?;
 
-    let left = canonical_multiplicity_basis(factors, target, AssociationConvention::LeftAssociated)?;
+    let left =
+        canonical_multiplicity_basis(factors, target, AssociationConvention::LeftAssociated)?;
     let right =
         canonical_multiplicity_basis(factors, target, AssociationConvention::RightAssociated)?;
     validate_same_vector_count(left.vectors.len(), right.vectors.len())?;
@@ -106,7 +111,8 @@ pub fn multiplicity_basis_trace(
     factors: &[YoungDiagram],
     target: &YoungDiagram,
 ) -> Result<ax_trace::MultiplicityBasisTrace, YoungError> {
-    let left = canonical_multiplicity_basis(factors, target, AssociationConvention::LeftAssociated)?;
+    let left =
+        canonical_multiplicity_basis(factors, target, AssociationConvention::LeftAssociated)?;
     let right =
         canonical_multiplicity_basis(factors, target, AssociationConvention::RightAssociated)?;
     validate_same_vector_count(left.vectors.len(), right.vectors.len())?;
@@ -116,8 +122,16 @@ pub fn multiplicity_basis_trace(
     Ok(ax_trace::MultiplicityBasisTrace {
         factors: factors.iter().map(|shape| shape.rows.clone()).collect(),
         target: target.rows.clone(),
-        left_associated_basis: left.vectors.into_iter().map(|vector| vector.label).collect(),
-        right_associated_basis: right.vectors.into_iter().map(|vector| vector.label).collect(),
+        left_associated_basis: left
+            .vectors
+            .into_iter()
+            .map(|vector| vector.label)
+            .collect(),
+        right_associated_basis: right
+            .vectors
+            .into_iter()
+            .map(|vector| vector.label)
+            .collect(),
         change_of_basis_matrix: matrix,
     })
 }
@@ -139,7 +153,10 @@ fn ensure_supported_regime(
     })
 }
 
-fn target_multiplicity(factors: &[YoungDiagram], target: &YoungDiagram) -> Result<usize, YoungError> {
+fn target_multiplicity(
+    factors: &[YoungDiagram],
+    target: &YoungDiagram,
+) -> Result<usize, YoungError> {
     if factors.is_empty() {
         return Ok(0);
     }
@@ -147,30 +164,35 @@ fn target_multiplicity(factors: &[YoungDiagram], target: &YoungDiagram) -> Resul
     for factor in &factors[1..] {
         current = multiply_schur_expansions(&current, &SchurExpansion::from_shape(factor.clone()))?;
     }
-    Ok(current
-        .coefficient(target)
-        .to_usize()
-        .unwrap_or(0usize))
+    Ok(current.coefficient(target).to_usize().unwrap_or(0usize))
 }
 
 fn left_associated_paths(target: &YoungDiagram) -> Vec<Vec<YoungDiagram>> {
     match target.rows.as_slice() {
         [3] => vec![vec![
-            YoungDiagram::try_new(vec![2]).ok().unwrap_or_else(|| unreachable!()),
+            YoungDiagram::try_new(vec![2])
+                .ok()
+                .unwrap_or_else(|| unreachable!()),
             target.clone(),
         ]],
         [2, 1] => vec![
             vec![
-                YoungDiagram::try_new(vec![1, 1]).ok().unwrap_or_else(|| unreachable!()),
+                YoungDiagram::try_new(vec![1, 1])
+                    .ok()
+                    .unwrap_or_else(|| unreachable!()),
                 target.clone(),
             ],
             vec![
-                YoungDiagram::try_new(vec![2]).ok().unwrap_or_else(|| unreachable!()),
+                YoungDiagram::try_new(vec![2])
+                    .ok()
+                    .unwrap_or_else(|| unreachable!()),
                 target.clone(),
             ],
         ],
         [1, 1, 1] => vec![vec![
-            YoungDiagram::try_new(vec![1, 1]).ok().unwrap_or_else(|| unreachable!()),
+            YoungDiagram::try_new(vec![1, 1])
+                .ok()
+                .unwrap_or_else(|| unreachable!()),
             target.clone(),
         ]],
         _ => Vec::new(),
@@ -222,7 +244,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            basis.vectors
+            basis
+                .vectors
                 .iter()
                 .map(|vector| vector.label.clone())
                 .collect::<Vec<_>>(),
@@ -240,7 +263,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            basis.vectors
+            basis
+                .vectors
                 .iter()
                 .map(|vector| vector.label.clone())
                 .collect::<Vec<_>>(),
@@ -257,7 +281,13 @@ mod tests {
         assert_eq!(matrix.len(), 2);
         assert!(matrix.iter().all(|row| row.len() == 2));
         assert!(matrix.iter().flatten().any(|entry| !entry.is_zero()));
-        assert_ne!(matrix, vec![vec![BigRational::one(), BigRational::zero()], vec![BigRational::zero(), BigRational::one()]]);
+        assert_ne!(
+            matrix,
+            vec![
+                vec![BigRational::one(), BigRational::zero()],
+                vec![BigRational::zero(), BigRational::one()]
+            ]
+        );
     }
 
     #[test]

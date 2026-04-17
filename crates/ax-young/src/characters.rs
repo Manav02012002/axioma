@@ -39,10 +39,7 @@ pub fn frobenius_characteristic(shape: &YoungDiagram) -> Result<PowerSumExpansio
             continue;
         }
         let centralizer = cycle_type_centralizer_size(&cycle_partition.rows)?;
-        terms.insert(
-            cycle_partition,
-            BigRational::new(character, centralizer),
-        );
+        terms.insert(cycle_partition, BigRational::new(character, centralizer));
     }
     Ok(PowerSumExpansion { terms })
 }
@@ -144,7 +141,11 @@ fn border_strip_height(outer: &[usize], inner: &[usize]) -> Option<usize> {
     if has_two_by_two(&cells) || !is_connected(&cells) {
         return None;
     }
-    let row_count = cells.iter().map(|(row, _)| *row).collect::<BTreeSet<_>>().len();
+    let row_count = cells
+        .iter()
+        .map(|(row, _)| *row)
+        .collect::<BTreeSet<_>>()
+        .len();
     Some(row_count.saturating_sub(1))
 }
 

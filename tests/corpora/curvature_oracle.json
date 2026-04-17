@@ -1,0 +1,30 @@
+[
+  {
+    "name": "riemann_dim4",
+    "dimension": 4,
+    "input_kind": "riemann_rank4",
+    "expected_terms": [
+      { "kind": "weyl_rank4", "numer": 1, "denom": 1 },
+      { "kind": "metric_ricci_rank4", "numer": 1, "denom": 2 },
+      { "kind": "metric_scalar_rank4", "numer": -1, "denom": 6 }
+    ]
+  },
+  {
+    "name": "schouten_dim4",
+    "dimension": 4,
+    "input_kind": "schouten_from_ricci",
+    "expected_terms": [
+      { "kind": "ricci_rank2", "numer": 1, "denom": 2 },
+      { "kind": "scalar_metric_rank2", "numer": -1, "denom": 12 }
+    ]
+  },
+  {
+    "name": "symmetric_rank2_dim4",
+    "dimension": 4,
+    "input_kind": "symmetric_rank2",
+    "expected_terms": [
+      { "kind": "traceless_rank2", "numer": 1, "denom": 1 },
+      { "kind": "metric_trace_rank2", "numer": 1, "denom": 4 }
+    ]
+  }
+]

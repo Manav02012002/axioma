@@ -1,0 +1,33 @@
+{
+  "canonicalization_cases": [
+    {
+      "name": "sym_rank2_canonicalization",
+      "repetitions": 5,
+      "payload": {
+        "shape": [2],
+        "slot_map": [0, 1],
+        "slots": ["b", "a"]
+      }
+    }
+  ],
+  "projection_cases": [
+    {
+      "name": "shape_21_projector",
+      "repetitions": 5,
+      "payload": {
+        "shape": [2, 1],
+        "slots": [2, 0, 1],
+        "max_terms": 16
+      }
+    }
+  ],
+  "decomposition_cases": [
+    {
+      "name": "triple_vector_lr",
+      "repetitions": 5,
+      "payload": {
+        "factors": [[1], [1], [1]]
+      }
+    }
+  ]
+}

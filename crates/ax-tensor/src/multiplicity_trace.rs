@@ -22,14 +22,15 @@ mod tests {
 
     #[test]
     fn tensor_product_multiplicity_trace_succeeds_for_three_vectors_and_two_one() {
-        let trace = tensor_product_multiplicity_trace(&[vec![1], vec![1], vec![1]], &[2, 1]).unwrap();
+        let trace =
+            tensor_product_multiplicity_trace(&[vec![1], vec![1], vec![1]], &[2, 1]).unwrap();
         assert_eq!(trace.target, vec![2, 1]);
     }
 
     #[test]
     fn tensor_product_multiplicity_trace_contextualizes_invalid_input() {
-        let error = tensor_product_multiplicity_trace(&[vec![], vec![1], vec![1]], &[2, 1])
-            .unwrap_err();
+        let error =
+            tensor_product_multiplicity_trace(&[vec![], vec![1], vec![1]], &[2, 1]).unwrap_err();
         assert!(error
             .to_string()
             .contains("failed to compute tensor-product multiplicity trace"));

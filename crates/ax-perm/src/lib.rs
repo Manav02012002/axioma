@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod dummy_group;
+
 use rayon::prelude::*;
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};

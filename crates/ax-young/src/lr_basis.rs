@@ -91,9 +91,8 @@ fn validate_lr_target(
 }
 
 fn shape_contains(outer: &YoungDiagram, inner: &YoungDiagram) -> bool {
-    (0..outer.n_rows().max(inner.n_rows())).all(|row| {
-        outer.row_len(row).unwrap_or(0) >= inner.row_len(row).unwrap_or(0)
-    })
+    (0..outer.n_rows().max(inner.n_rows()))
+        .all(|row| outer.row_len(row).unwrap_or(0) >= inner.row_len(row).unwrap_or(0))
 }
 
 fn enumerate_partitions(total: usize) -> Vec<YoungDiagram> {
@@ -139,13 +138,11 @@ mod tests {
             BigInt::from(1usize)
         );
         assert_eq!(
-            littlewood_richardson_coefficient(&yd(vec![1]), &yd(vec![1]), &yd(vec![1, 1]))
-                .unwrap(),
+            littlewood_richardson_coefficient(&yd(vec![1]), &yd(vec![1]), &yd(vec![1, 1])).unwrap(),
             BigInt::from(1usize)
         );
         assert_eq!(
-            littlewood_richardson_coefficient(&yd(vec![2]), &yd(vec![1]), &yd(vec![2, 1]))
-                .unwrap(),
+            littlewood_richardson_coefficient(&yd(vec![2]), &yd(vec![1]), &yd(vec![2, 1])).unwrap(),
             BigInt::from(1usize)
         );
         assert_eq!(

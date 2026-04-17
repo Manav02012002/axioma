@@ -4,8 +4,8 @@ pub mod brst;
 pub mod d_algebra;
 pub mod superspace;
 
-use ax_ir::Expr;
 use anyhow::Context;
+use ax_ir::Expr;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Zero};
@@ -202,8 +202,10 @@ pub fn graded_column_symmetry(
     let mut parity = vec![0u8; rank];
     for &slot in odd_slots {
         if slot >= rank {
-            return Err(anyhow::anyhow!("odd slot {slot} is out of bounds for rank {rank}"))
-                .context("failed to build graded column symmetry");
+            return Err(anyhow::anyhow!(
+                "odd slot {slot} is out of bounds for rank {rank}"
+            ))
+            .context("failed to build graded column symmetry");
         }
         parity[slot] = 1;
     }

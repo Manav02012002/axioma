@@ -6,8 +6,10 @@
     clippy::too_many_arguments
 )]
 
+use anyhow::Context;
 use ax_ir::{Expr, Index, IndexFamily, Interner, TensorProperty, Variance};
 use ax_tensor::PropertyLookup;
+use lasso::Key;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Zero};
@@ -2722,6 +2724,147 @@ fn compare_index_type(
     }
 }
 
+pub fn compare_exprs_modulo_dummies_and_symmetry(
+    left: &ax_ir::Expr,
+    right: &ax_ir::Expr,
+    properties_for_symbol: &dyn Fn(lasso::Spur) -> Vec<ax_ir::TensorProperty>,
+) -> anyhow::Result<std::cmp::Ordering> {
+    if ax_tensor::alpha_equivalent_modulo_dummies_and_symmetry(left, right, properties_for_symbol)
+        .context("failed to compare expressions modulo dummies and symmetry")?
+    {
+        return Ok(Ordering::Equal);
+    }
+    let lhs = ax_tensor::canonicalize_indices_full(left, properties_for_symbol)
+        .context("failed to compare expressions modulo dummies and symmetry")?;
+    let rhs = ax_tensor::canonicalize_indices_full(right, properties_for_symbol)
+        .context("failed to compare expressions modulo dummies and symmetry")?;
+    Ok(expr_canonical_order_without_interner(&lhs, &rhs))
+}
+
+fn expr_canonical_order_without_interner(a: &Expr, b: &Expr) -> Ordering {
+    let rank_cmp = expr_kind_rank(a).cmp(&expr_kind_rank(b));
+    if rank_cmp != Ordering::Equal {
+        return rank_cmp;
+    }
+
+    match (a, b) {
+        (Expr::Int(lhs), Expr::Int(rhs)) => lhs.cmp(rhs),
+        (Expr::Rational(lhs), Expr::Rational(rhs)) => lhs.cmp(rhs),
+        (Expr::Float(lhs), Expr::Float(rhs)) => lhs.total_cmp(rhs),
+        (Expr::Sym(lhs), Expr::Sym(rhs)) => lhs.into_usize().cmp(&rhs.into_usize()),
+        (Expr::Add(lhs), Expr::Add(rhs))
+        | (Expr::Mul(lhs), Expr::Mul(rhs))
+        | (Expr::List(lhs), Expr::List(rhs)) => compare_expr_slices_without_interner(lhs, rhs),
+        (Expr::Pow(lhs_base, lhs_exp), Expr::Pow(rhs_base, rhs_exp))
+        | (Expr::Complex(lhs_base, lhs_exp), Expr::Complex(rhs_base, rhs_exp)) => {
+            expr_canonical_order_without_interner(lhs_base, rhs_base)
+                .then_with(|| expr_canonical_order_without_interner(lhs_exp, rhs_exp))
+        }
+        (Expr::Neg(lhs), Expr::Neg(rhs)) => expr_canonical_order_without_interner(lhs, rhs),
+        (Expr::Call(lhs_f, lhs_args), Expr::Call(rhs_f, rhs_args)) => lhs_f
+            .into_usize()
+            .cmp(&rhs_f.into_usize())
+            .then_with(|| compare_expr_slices_without_interner(lhs_args, rhs_args)),
+        (Expr::Indexed(lhs_base, lhs_indices), Expr::Indexed(rhs_base, rhs_indices)) => {
+            expr_canonical_order_without_interner(lhs_base, rhs_base)
+                .then_with(|| compare_indices_without_interner(lhs_indices, rhs_indices))
+        }
+        (Expr::Matrix(lhs_rows), Expr::Matrix(rhs_rows)) => {
+            lhs_rows.len().cmp(&rhs_rows.len()).then_with(|| {
+                for (lhs_row, rhs_row) in lhs_rows.iter().zip(rhs_rows) {
+                    let cmp = compare_expr_slices_without_interner(lhs_row, rhs_row);
+                    if cmp != Ordering::Equal {
+                        return cmp;
+                    }
+                }
+                Ordering::Equal
+            })
+        }
+        (
+            Expr::FnDef(lhs_name, lhs_params, lhs_body),
+            Expr::FnDef(rhs_name, rhs_params, rhs_body),
+        ) => lhs_name
+            .into_usize()
+            .cmp(&rhs_name.into_usize())
+            .then_with(|| {
+                lhs_params
+                    .iter()
+                    .map(|sym| sym.into_usize())
+                    .cmp(rhs_params.iter().map(|sym| sym.into_usize()))
+            })
+            .then_with(|| expr_canonical_order_without_interner(lhs_body, rhs_body)),
+        (Expr::Rule(lhs_l, lhs_r, lhs_t), Expr::Rule(rhs_l, rhs_r, rhs_t)) => format!("{lhs_t:?}")
+            .cmp(&format!("{rhs_t:?}"))
+            .then_with(|| expr_canonical_order_without_interner(lhs_l, rhs_l))
+            .then_with(|| expr_canonical_order_without_interner(lhs_r, rhs_r)),
+        (Expr::Import(lhs), Expr::Import(rhs)) => lhs
+            .iter()
+            .map(|sym| sym.into_usize())
+            .cmp(rhs.iter().map(|sym| sym.into_usize())),
+        (Expr::Assume(lhs_sym, lhs_assumptions), Expr::Assume(rhs_sym, rhs_assumptions)) => lhs_sym
+            .into_usize()
+            .cmp(&rhs_sym.into_usize())
+            .then_with(|| format!("{lhs_assumptions:?}").cmp(&format!("{rhs_assumptions:?}"))),
+        (Expr::SetConvention(lhs_f, lhs_v), Expr::SetConvention(rhs_f, rhs_v)) => {
+            lhs_f.cmp(rhs_f).then_with(|| lhs_v.cmp(rhs_v))
+        }
+        (Expr::Piecewise(lhs), Expr::Piecewise(rhs)) => lhs.len().cmp(&rhs.len()).then_with(|| {
+            for ((lhs_value, lhs_condition), (rhs_value, rhs_condition)) in lhs.iter().zip(rhs) {
+                let cmp = expr_canonical_order_without_interner(lhs_value, rhs_value)
+                    .then_with(|| format!("{lhs_condition:?}").cmp(&format!("{rhs_condition:?}")));
+                if cmp != Ordering::Equal {
+                    return cmp;
+                }
+            }
+            Ordering::Equal
+        }),
+        (Expr::Let(lhs_name, lhs_value, lhs_body), Expr::Let(rhs_name, rhs_value, rhs_body)) => {
+            lhs_name
+                .into_usize()
+                .cmp(&rhs_name.into_usize())
+                .then_with(|| expr_canonical_order_without_interner(lhs_value, rhs_value))
+                .then_with(|| expr_canonical_order_without_interner(lhs_body, rhs_body))
+        }
+        _ => Ordering::Equal,
+    }
+}
+
+fn compare_expr_slices_without_interner(lhs: &[Expr], rhs: &[Expr]) -> Ordering {
+    lhs.len().cmp(&rhs.len()).then_with(|| {
+        for (lhs_item, rhs_item) in lhs.iter().zip(rhs) {
+            let cmp = expr_canonical_order_without_interner(lhs_item, rhs_item);
+            if cmp != Ordering::Equal {
+                return cmp;
+            }
+        }
+        Ordering::Equal
+    })
+}
+
+fn compare_indices_without_interner(lhs: &[Index], rhs: &[Index]) -> Ordering {
+    lhs.len().cmp(&rhs.len()).then_with(|| {
+        for (lhs_idx, rhs_idx) in lhs.iter().zip(rhs) {
+            let cmp = lhs_idx
+                .name
+                .into_usize()
+                .cmp(&rhs_idx.name.into_usize())
+                .then_with(|| {
+                    variance_rank(&lhs_idx.variance).cmp(&variance_rank(&rhs_idx.variance))
+                })
+                .then_with(|| {
+                    lhs_idx
+                        .index_type
+                        .map(|sym| sym.into_usize())
+                        .cmp(&rhs_idx.index_type.map(|sym| sym.into_usize()))
+                });
+            if cmp != Ordering::Equal {
+                return cmp;
+            }
+        }
+        Ordering::Equal
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3043,6 +3186,39 @@ mod tests {
         assert_eq!(
             substitute_full(&expr, &rule, &TestProps::default(), &interner, true).unwrap(),
             Expr::mul(vec![Expr::Sym(c), Expr::Sym(d)])
+        );
+    }
+
+    #[test]
+    fn compare_alpha_equivalent_products_returns_equal() {
+        let interner = Interner::new();
+        let f = interner.get_or_intern("F");
+        let g = interner.get_or_intern("G");
+        let a = interner.get_or_intern("a");
+        let i = interner.get_or_intern("i");
+        let j = interner.get_or_intern("j");
+
+        let left = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(f)),
+                vec![idx(i, Variance::Down, None), idx(a, Variance::Down, None)],
+            ),
+            Expr::Indexed(Box::new(Expr::Sym(g)), vec![idx(i, Variance::Up, None)]),
+        ]);
+        let right = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(f)),
+                vec![idx(j, Variance::Down, None), idx(a, Variance::Down, None)],
+            ),
+            Expr::Indexed(Box::new(Expr::Sym(g)), vec![idx(j, Variance::Up, None)]),
+        ]);
+
+        let props = |_sym| Vec::<TensorProperty>::new();
+        assert_eq!(
+            compare_exprs_modulo_dummies_and_symmetry(&left, &right, &props)
+                .ok()
+                .as_ref(),
+            Some(&Ordering::Equal)
         );
     }
 }

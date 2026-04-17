@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
 lasso = { workspace = true, features = ["multi-threaded"] }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }

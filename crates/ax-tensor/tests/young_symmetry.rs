@@ -51,8 +51,14 @@ fn symmetric_rank_two_factor_canonicalizes_all_index_orders() {
     let opts = YoungProjectTensorOptions::default();
 
     let expected = Expr::Indexed(Box::new(Expr::Sym(t)), vec![index(a), index(b)]);
-    assert_eq!(young_project_tensor_with_options(&ab, &props, &interner, &opts), expected);
-    assert_eq!(young_project_tensor_with_options(&ba, &props, &interner, &opts), expected);
+    assert_eq!(
+        young_project_tensor_with_options(&ab, &props, &interner, &opts),
+        expected
+    );
+    assert_eq!(
+        young_project_tensor_with_options(&ba, &props, &interner, &opts),
+        expected
+    );
 }
 
 #[test]

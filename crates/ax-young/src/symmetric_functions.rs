@@ -1,7 +1,5 @@
 use crate::{
-    characters::frobenius_characteristic,
-    kostka_number_exact,
-    rep_ring::SchurExpansion,
+    characters::frobenius_characteristic, kostka_number_exact, rep_ring::SchurExpansion,
     YoungDiagram, YoungError,
 };
 use num_bigint::BigInt;
@@ -140,7 +138,10 @@ fn partition_from_exponents(exponents: &[usize]) -> Result<Partition, YoungError
     partition_from_parts(parts)
 }
 
-fn monomial_symmetric_polynomial(partition: &Partition, n_vars: usize) -> BTreeMap<Vec<usize>, BigInt> {
+fn monomial_symmetric_polynomial(
+    partition: &Partition,
+    n_vars: usize,
+) -> BTreeMap<Vec<usize>, BigInt> {
     distinct_padded_permutations(&partition.rows, n_vars)
         .into_iter()
         .map(|exp| (exp, BigInt::one()))
@@ -175,12 +176,7 @@ fn distinct_padded_permutations(parts: &[usize], n_vars: usize) -> BTreeSet<Vec<
 }
 
 fn enumerate_partitions_of_size(total: usize) -> Vec<Partition> {
-    fn rec(
-        remaining: usize,
-        max_part: usize,
-        current: &mut Vec<usize>,
-        out: &mut Vec<Partition>,
-    ) {
+    fn rec(remaining: usize, max_part: usize, current: &mut Vec<usize>, out: &mut Vec<Partition>) {
         if remaining == 0 {
             if let Ok(partition) = partition_from_parts(current.clone()) {
                 out.push(partition);
@@ -248,7 +244,10 @@ mod tests {
         };
         let product = multiply_monomial(&left, &right).unwrap();
 
-        assert_eq!(product.terms.get(&yd(&[2])).cloned().unwrap(), BigInt::one());
+        assert_eq!(
+            product.terms.get(&yd(&[2])).cloned().unwrap(),
+            BigInt::one()
+        );
         assert_eq!(
             product.terms.get(&yd(&[1, 1])).cloned().unwrap(),
             BigInt::from(2usize)

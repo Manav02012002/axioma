@@ -282,6 +282,11 @@ impl TensorSymmetry {
         self.tableaux.is_empty()
     }
 
+    /// Return whether any attached tableau explicitly enforces trace-freeness.
+    pub fn any_trace_free(&self) -> bool {
+        self.tableaux.iter().any(|attachment| attachment.trace_free)
+    }
+
     /// Validate this tensor symmetry.
     pub fn validate(&self) -> Result<(), SymmetryValidationError> {
         validate_tensor_symmetry(self)
@@ -455,6 +460,21 @@ mod tests {
         };
 
         assert_eq!(sym.total_slots(), 3);
+    }
+
+    #[test]
+    fn any_trace_free_detects_attachment_flag() {
+        let mut trace_free_attachment = base_attachment();
+        trace_free_attachment.trace_free = true;
+        let sym = TensorSymmetry {
+            tableaux: vec![base_attachment(), trace_free_attachment],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        };
+
+        assert!(sym.any_trace_free());
     }
 
     #[test]

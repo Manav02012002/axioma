@@ -19,7 +19,10 @@ pub fn summarize_mixed_tensor_symmetry(
     };
 
     for tableau in &sym.tableaux {
-        let has_tensor = tableau.slots.iter().any(|slot| slot.kind == SlotKind::Tensor);
+        let has_tensor = tableau
+            .slots
+            .iter()
+            .any(|slot| slot.kind == SlotKind::Tensor);
         let has_undotted = tableau
             .slots
             .iter()
@@ -61,10 +64,14 @@ pub fn decompose_small_mixed_product(
     ensure_supported_regime(right, &right_summary)?;
 
     let tensor = decompose_sector(&left_summary.tensor_shapes, &right_summary.tensor_shapes)?;
-    let undotted =
-        decompose_sector(&left_summary.undotted_spinor_shapes, &right_summary.undotted_spinor_shapes)?;
-    let dotted =
-        decompose_sector(&left_summary.dotted_spinor_shapes, &right_summary.dotted_spinor_shapes)?;
+    let undotted = decompose_sector(
+        &left_summary.undotted_spinor_shapes,
+        &right_summary.undotted_spinor_shapes,
+    )?;
+    let dotted = decompose_sector(
+        &left_summary.dotted_spinor_shapes,
+        &right_summary.dotted_spinor_shapes,
+    )?;
 
     let mut out = Vec::new();
     for tensor_shapes in &tensor {
@@ -145,8 +152,8 @@ mod tests {
 
     #[test]
     fn summarize_bispinor_duplicates_shape_into_both_spinor_sectors() {
-        let summary = summarize_mixed_tensor_symmetry(&ax_spinor::vector_as_bispinor_symmetry())
-            .unwrap();
+        let summary =
+            summarize_mixed_tensor_symmetry(&ax_spinor::vector_as_bispinor_symmetry()).unwrap();
         assert_eq!(summary.tensor_shapes, Vec::<Vec<usize>>::new());
         assert_eq!(summary.undotted_spinor_shapes, vec![vec![1, 1]]);
         assert_eq!(summary.dotted_spinor_shapes, vec![vec![1, 1]]);

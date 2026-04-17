@@ -68,9 +68,7 @@ pub fn apply_sparse_plan_to_slots(
         if !merged.contains_key(&permuted) && merged.len() >= max_terms {
             return Err(SparseProjectorError::BudgetExceeded { max_terms });
         }
-        let entry = merged
-            .entry(permuted)
-            .or_insert_with(BigRational::zero);
+        let entry = merged.entry(permuted).or_insert_with(BigRational::zero);
         *entry += term.coefficient.clone();
     }
 
@@ -133,10 +131,7 @@ mod tests {
 
         assert_eq!(
             terms,
-            vec![
-                (vec![3, 9], rational(1, 2)),
-                (vec![9, 3], rational(1, 2)),
-            ]
+            vec![(vec![3, 9], rational(1, 2)), (vec![9, 3], rational(1, 2)),]
         );
         assert_eq!(trace.explored_permutation_count, 2);
         assert_eq!(trace.emitted_term_count, 2);
@@ -154,10 +149,7 @@ mod tests {
 
         assert_eq!(
             terms,
-            vec![
-                (vec![3, 9], rational(-1, 2)),
-                (vec![9, 3], rational(1, 2)),
-            ]
+            vec![(vec![3, 9], rational(-1, 2)), (vec![9, 3], rational(1, 2)),]
         );
         assert_eq!(trace.explored_permutation_count, 2);
         assert_eq!(trace.emitted_term_count, 2);

@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::redundant_closure)]
 
+pub mod oracle;
 pub mod tableau;
 pub mod unicode;
 
@@ -8,6 +9,7 @@ use ax_ir::{Assumption, Condition, Expr, Index, Variance};
 use num_rational::BigRational;
 use num_traits::Signed;
 
+pub use oracle::render_oracle_trace;
 pub use tableau::{
     render_tableau_slot_map_ascii, render_tensor_symmetry_summary, render_young_diagram_ascii,
     render_young_diagram_unicode,
@@ -48,7 +50,32 @@ pub fn render_mixed_tensor_symmetry_summary(sym: &ax_ir::MixedTensorSymmetry) ->
         .join("\n")
 }
 
-pub fn render_power_sum_expansion(exp: &ax_young::symmetric_functions::PowerSumExpansion) -> String {
+pub fn render_delta_pairing_terms(terms: &[ax_tensor::epsilon_engine::DeltaPairingTerm]) -> String {
+    terms
+        .iter()
+        .map(|term| format!("coeff={}; pairs={:?}", term.coefficient, term.pairings))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render_linear_decomposition_terms(
+    terms: &[ax_tensor::curvature_decompose::LinearDecompositionTerm],
+) -> String {
+    terms
+        .iter()
+        .map(|term| {
+            format!(
+                "kind={}; coeff={}/{}",
+                term.kind, term.coefficient_numer, term.coefficient_denom
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render_power_sum_expansion(
+    exp: &ax_young::symmetric_functions::PowerSumExpansion,
+) -> String {
     exp.terms
         .iter()
         .map(|(partition, coeff)| format!("{coeff} * p_{:?}", partition.rows))
@@ -724,9 +751,7 @@ mod tests {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
         let expr = result.expr.expect("expected expression");
-        let env = ax_eval::Env::new();
-        let evaled = ax_eval::eval(&expr, &env, &interner);
-        to_latex(&evaled, &interner)
+        to_latex(&expr, &interner)
     }
 
     #[test]
@@ -804,5 +829,24 @@ mod tests {
         assert!(rendered.contains("mixed_tableau[0]:"));
         assert!(rendered.contains("shape=[2]"));
         assert!(rendered.contains("UndottedSpinor"));
+    }
+
+    #[test]
+    fn delta_pairing_terms_render_rank_two_lines() {
+        let rendered = render_delta_pairing_terms(
+            &ax_tensor::epsilon_engine::epsilon_epsilon_to_delta_terms(2).unwrap(),
+        );
+        assert!(rendered.contains("coeff=1; pairs=[(0, 0), (1, 1)]"));
+        assert!(rendered.contains("coeff=-1; pairs=[(0, 1), (1, 0)]"));
+    }
+
+    #[test]
+    fn linear_decomposition_render_contains_riemann_terms() {
+        let rendered = render_linear_decomposition_terms(
+            &ax_tensor::curvature_decompose::riemann_to_weyl_ricci_scalar_coefficients(4).unwrap(),
+        );
+        assert!(rendered.contains("kind=weyl_rank4; coeff=1/1"));
+        assert!(rendered.contains("kind=metric_ricci_rank4; coeff=1/2"));
+        assert!(rendered.contains("kind=metric_scalar_rank4; coeff=-1/6"));
     }
 }

@@ -40,6 +40,7 @@ ax-ir = { path = "../ax-ir" }
 ax-core-ir = { path = "../ax-core-ir" }
 ax-eval = { path = "../ax-eval" }
 ax-render = { path = "../ax-render" }
+ax-tensor = { path = "../ax-tensor" }
 ax-young = { path = "../ax-young" }
 rustyline = { version = "15", features = ["derive"] }
 toml = "0.8"

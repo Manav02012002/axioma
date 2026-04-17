@@ -1,6 +1,4 @@
-use crate::{
-    kostka_number_exact, partition::YoungDiagram, tableau::FilledTableau, YoungError,
-};
+use crate::{kostka_number_exact, partition::YoungDiagram, tableau::FilledTableau, YoungError};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::One;

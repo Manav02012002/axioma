@@ -14,11 +14,7 @@ const PLOT_BOTTOM: f64 = 460.0;
 const SAMPLE_COUNT: usize = 500;
 
 pub fn tableau_row_lengths(shape: &[usize]) -> Vec<(usize, usize)> {
-    shape
-        .iter()
-        .copied()
-        .enumerate()
-        .collect()
+    shape.iter().copied().enumerate().collect()
 }
 
 fn eval_numeric(

@@ -605,6 +605,15 @@ pub fn resize_form(form: &DiffForm, dim: usize) -> DiffForm {
     }
 }
 
+pub fn epsilon_pairing_rank(
+    rank: usize,
+) -> anyhow::Result<Vec<ax_tensor::epsilon_engine::DeltaPairingTerm>> {
+    use anyhow::Context;
+
+    ax_tensor::epsilon_engine::epsilon_epsilon_to_delta_terms(rank)
+        .context("failed to compute epsilon pairing rank expansion")
+}
+
 pub fn interior_product(vector: &[Expr], form: &DiffForm, interner: &ax_ir::Interner) -> DiffForm {
     assert_eq!(vector.len(), form.dim);
     if form.degree == 0 {
@@ -881,6 +890,23 @@ mod tests {
         assert_eq!(
             form_to_expr(&result),
             Expr::List(vec![Expr::one(), Expr::zero()])
+        );
+    }
+
+    #[test]
+    fn epsilon_pairing_rank_two_matches_tensor_engine() {
+        assert_eq!(
+            epsilon_pairing_rank(2).unwrap(),
+            vec![
+                ax_tensor::epsilon_engine::DeltaPairingTerm {
+                    pairings: vec![(0, 0), (1, 1)],
+                    coefficient: 1,
+                },
+                ax_tensor::epsilon_engine::DeltaPairingTerm {
+                    pairings: vec![(0, 1), (1, 0)],
+                    coefficient: -1,
+                },
+            ]
         );
     }
 }

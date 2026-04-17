@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use anyhow::Context;
 use ax_ir::Expr;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -14,8 +15,43 @@ pub enum EquivResult {
     Unknown,
 }
 
-pub fn equivalent_under_tensor_symmetry(a: &ax_ir::TensorSymmetry, b: &ax_ir::TensorSymmetry) -> bool {
+pub fn equivalent_under_tensor_symmetry(
+    a: &ax_ir::TensorSymmetry,
+    b: &ax_ir::TensorSymmetry,
+) -> bool {
     ax_compare::compare_tensor_symmetry(a, b) == Ordering::Equal
+}
+
+pub fn equivalent_modulo_dummies_and_symmetry(
+    left: &ax_ir::Expr,
+    right: &ax_ir::Expr,
+    properties_for_symbol: &dyn Fn(lasso::Spur) -> Vec<ax_ir::TensorProperty>,
+) -> anyhow::Result<bool> {
+    ax_tensor::alpha_equivalent_modulo_dummies_and_symmetry(left, right, properties_for_symbol)
+        .context("failed to test equivalence modulo dummies and symmetry")
+}
+
+pub fn equivalent_modulo_tensor_identities(
+    left: &ax_ir::Expr,
+    right: &ax_ir::Expr,
+    identities: &ax_ir::TensorIdentitySet,
+) -> anyhow::Result<bool> {
+    let reduce_fixed_point = |expr: &ax_ir::Expr| -> anyhow::Result<ax_ir::Expr> {
+        let mut current = expr.clone();
+        loop {
+            let Some(next) = ax_rewrite::rewrite_using_tensor_identities(&current, identities)
+                .context("failed to test equivalence modulo tensor identities")?
+            else {
+                break Ok(current);
+            };
+            if next == current {
+                break Ok(current);
+            }
+            current = next;
+        }
+    };
+
+    Ok(reduce_fixed_point(left)? == reduce_fixed_point(right)?)
 }
 
 fn numeric_eval_expr(expr: &Expr, env: &ax_eval::Env, interner: &ax_ir::Interner) -> Option<f64> {
@@ -410,5 +446,94 @@ mod tests {
             result,
             EquivResult::Equal | EquivResult::EqualUnderAssumptions(_)
         ));
+    }
+
+    #[test]
+    fn equivalent_modulo_dummies_and_symmetry_handles_true_and_false_cases() {
+        let interner = ax_ir::Interner::new();
+        let f = interner.get_or_intern("F");
+        let g = interner.get_or_intern("G");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let i = interner.get_or_intern("i");
+        let j = interner.get_or_intern("j");
+
+        let idx = |name, variance| ax_ir::Index {
+            name,
+            variance,
+            index_type: None,
+        };
+        let lhs = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(f)),
+                vec![idx(i, ax_ir::Variance::Down), idx(a, ax_ir::Variance::Down)],
+            ),
+            Expr::Indexed(Box::new(Expr::Sym(g)), vec![idx(i, ax_ir::Variance::Up)]),
+        ]);
+        let rhs = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(f)),
+                vec![idx(j, ax_ir::Variance::Down), idx(a, ax_ir::Variance::Down)],
+            ),
+            Expr::Indexed(Box::new(Expr::Sym(g)), vec![idx(j, ax_ir::Variance::Up)]),
+        ]);
+        let different = Expr::mul(vec![
+            Expr::Indexed(
+                Box::new(Expr::Sym(f)),
+                vec![idx(j, ax_ir::Variance::Down), idx(b, ax_ir::Variance::Down)],
+            ),
+            Expr::Indexed(Box::new(Expr::Sym(g)), vec![idx(j, ax_ir::Variance::Up)]),
+        ]);
+
+        let props = |_sym| Vec::<ax_ir::TensorProperty>::new();
+        assert_eq!(
+            equivalent_modulo_dummies_and_symmetry(&lhs, &rhs, &props)
+                .ok()
+                .as_ref(),
+            Some(&true)
+        );
+        assert_eq!(
+            equivalent_modulo_dummies_and_symmetry(&lhs, &different, &props)
+                .ok()
+                .as_ref(),
+            Some(&false)
+        );
+    }
+
+    #[test]
+    fn first_bianchi_related_factors_are_equivalent_modulo_tensor_identities() {
+        let interner = ax_ir::Interner::new();
+        let r = interner.get_or_intern("R");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let c = interner.get_or_intern("c");
+        let d = interner.get_or_intern("d");
+        let idx = |name| ax_ir::Index {
+            name,
+            variance: ax_ir::Variance::Down,
+            index_type: None,
+        };
+        let lhs = Expr::Indexed(Box::new(Expr::Sym(r)), vec![idx(a), idx(d), idx(b), idx(c)]);
+        let rhs = Expr::add(vec![
+            Expr::neg(Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![idx(a), idx(b), idx(c), idx(d)],
+            )),
+            Expr::neg(Expr::Indexed(
+                Box::new(Expr::Sym(r)),
+                vec![idx(a), idx(c), idx(d), idx(b)],
+            )),
+        ]);
+        let identities = ax_ir::TensorIdentitySet {
+            multiterm: vec![ax_ir::TensorMultitermIdentity::FirstBianchi {
+                cyclic_slots: [1, 2, 3],
+            }],
+        };
+        assert_eq!(
+            equivalent_modulo_tensor_identities(&lhs, &rhs, &identities)
+                .ok()
+                .as_ref(),
+            Some(&true)
+        );
     }
 }

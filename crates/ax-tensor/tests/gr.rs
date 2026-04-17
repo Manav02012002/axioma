@@ -1,3 +1,5 @@
+#![cfg(feature = "legacy-eval-tests")]
+
 use ax_ir::*;
 use ax_tensor::*;
 

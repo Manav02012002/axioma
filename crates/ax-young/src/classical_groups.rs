@@ -1,8 +1,4 @@
-use crate::{
-    littlewood_richardson_coefficient,
-    partition::YoungDiagram,
-    YoungError,
-};
+use crate::{littlewood_richardson_coefficient, partition::YoungDiagram, YoungError};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Zero};
@@ -69,8 +65,10 @@ pub fn dimension_so_odd(shape: &YoungDiagram, rank: usize) -> Result<BigInt, You
         .collect::<Vec<_>>();
     let shifted = (0..rank)
         .map(|index| {
-            RationalRoot::integer(i64::try_from(shape.rows.get(index).copied().unwrap_or(0)).unwrap_or(0))
-                .add(&rho[index])
+            RationalRoot::integer(
+                i64::try_from(shape.rows.get(index).copied().unwrap_or(0)).unwrap_or(0),
+            )
+            .add(&rho[index])
         })
         .collect::<Vec<_>>();
     let mut dimension = BigRational::one();
@@ -107,8 +105,10 @@ pub fn dimension_so_even(shape: &YoungDiagram, rank: usize) -> Result<BigInt, Yo
         .collect::<Vec<_>>();
     let shifted = (0..rank)
         .map(|index| {
-            RationalRoot::integer(i64::try_from(shape.rows.get(index).copied().unwrap_or(0)).unwrap_or(0))
-                .add(&rho[index])
+            RationalRoot::integer(
+                i64::try_from(shape.rows.get(index).copied().unwrap_or(0)).unwrap_or(0),
+            )
+            .add(&rho[index])
         })
         .collect::<Vec<_>>();
     let mut dimension = BigRational::one();
@@ -135,8 +135,10 @@ pub fn dimension_sp(shape: &YoungDiagram, rank: usize) -> Result<BigInt, YoungEr
         .collect::<Vec<_>>();
     let shifted = (0..rank)
         .map(|index| {
-            RationalRoot::integer(i64::try_from(shape.rows.get(index).copied().unwrap_or(0)).unwrap_or(0))
-                .add(&rho[index])
+            RationalRoot::integer(
+                i64::try_from(shape.rows.get(index).copied().unwrap_or(0)).unwrap_or(0),
+            )
+            .add(&rho[index])
         })
         .collect::<Vec<_>>();
     let mut dimension = BigRational::one();
@@ -301,7 +303,11 @@ fn even_row_diagrams(total_cells: usize) -> Result<Vec<YoungDiagram>, YoungError
         if row1 > row0 {
             continue;
         }
-        let rows = if row1 == 0 { vec![row0] } else { vec![row0, row1] };
+        let rows = if row1 == 0 {
+            vec![row0]
+        } else {
+            vec![row0, row1]
+        };
         out.push(YoungDiagram::try_new(rows)?);
     }
     out.sort_by(|lhs, rhs| lhs.rows.cmp(&rhs.rows));
@@ -453,12 +459,18 @@ mod tests {
 
     #[test]
     fn so_odd_vector_dimension_is_exact() {
-        assert_eq!(dimension_so_odd(&yd(&[1]), 2).unwrap(), BigInt::from(5usize));
+        assert_eq!(
+            dimension_so_odd(&yd(&[1]), 2).unwrap(),
+            BigInt::from(5usize)
+        );
     }
 
     #[test]
     fn so_even_vector_dimension_is_exact() {
-        assert_eq!(dimension_so_even(&yd(&[1]), 3).unwrap(), BigInt::from(6usize));
+        assert_eq!(
+            dimension_so_even(&yd(&[1]), 3).unwrap(),
+            BigInt::from(6usize)
+        );
     }
 
     #[test]

@@ -192,6 +192,7 @@ dependencies = [
 name = "ax-compare"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ax-ir",
  "ax-tensor",
  "lasso",
@@ -231,6 +232,7 @@ dependencies = [
 name = "ax-equiv"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ax-compare",
  "ax-core-ir",
  "ax-eval",
@@ -286,6 +288,7 @@ dependencies = [
  "ax-core-ir",
  "ax-ir",
  "ax-linalg",
+ "ax-tensor",
  "ax-young",
  "lasso",
  "num-bigint",
@@ -310,6 +313,7 @@ dependencies = [
 name = "ax-ir"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "lasso",
  "num-bigint",
  "num-integer",
@@ -412,6 +416,7 @@ name = "ax-perm"
 version = "0.1.0"
 dependencies = [
  "rayon",
+ "thiserror",
 ]
 
 [[package]]
@@ -481,9 +486,9 @@ name = "ax-render"
 version = "0.1.0"
 dependencies = [
  "ax-core-ir",
- "ax-eval",
  "ax-ir",
  "ax-spinor",
+ "ax-tensor",
  "ax-trace",
  "ax-young",
  "lasso",
@@ -496,6 +501,7 @@ dependencies = [
 name = "ax-rewrite"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "ax-compare",
  "ax-core-ir",
  "ax-eval",
@@ -553,8 +559,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ax-core-ir",
- "ax-eval",
- "ax-forms",
  "ax-ir",
  "ax-linalg",
  "ax-ode",
@@ -567,6 +571,8 @@ dependencies = [
  "num-rational",
  "num-traits",
  "rayon",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -635,6 +641,7 @@ dependencies = [
  "ax-plugin-host",
  "ax-render",
  "ax-syntax",
+ "ax-tensor",
  "ax-trace",
  "ax-young",
  "blake3",

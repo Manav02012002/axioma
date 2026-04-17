@@ -98,7 +98,10 @@ mod tests {
 
     #[test]
     fn antisymmetric_two_undotted_has_column_shape() {
-        assert_eq!(antisymmetric_two_undotted_spinors().tableaux[0].shape, vec![1, 1]);
+        assert_eq!(
+            antisymmetric_two_undotted_spinors().tableaux[0].shape,
+            vec![1, 1]
+        );
     }
 
     #[test]

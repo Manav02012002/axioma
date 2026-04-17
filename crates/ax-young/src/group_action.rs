@@ -2,8 +2,8 @@ use crate::{
     projector::{column_antisymmetrizer_generators, row_symmetrizer_generators, PermutationTerm},
     YoungDiagram, YoungError, YoungTableau,
 };
-use ax_trace::{CanonicalizationTrace, ProjectorBuildTrace};
 use ax_perm::{all_orbits, enumerate_subgroup, identity, product, schreier_sims, sign, Perm, SGS};
+use ax_trace::{CanonicalizationTrace, ProjectorBuildTrace};
 use num_rational::BigRational;
 use num_traits::{One, Zero};
 use thiserror::Error;
@@ -414,7 +414,10 @@ mod tests {
                 .unwrap();
         assert_eq!(trace.shape, vec![2, 1]);
         assert_eq!(trace.degree, 3);
-        assert_eq!(trace.row_generator_count, projector.row_group.generators.len());
+        assert_eq!(
+            trace.row_generator_count,
+            projector.row_group.generators.len()
+        );
         assert_eq!(
             trace.column_generator_count,
             projector.column_group.generators.len()

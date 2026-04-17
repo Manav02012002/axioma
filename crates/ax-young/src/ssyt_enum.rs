@@ -170,7 +170,12 @@ mod tests {
         let tableaux =
             enumerate_semistandard_with_content(&YoungDiagram::try_new(vec![2]).unwrap(), &[1, 1])
                 .unwrap();
-        assert_eq!(tableaux, vec![SemistandardTableau { rows: vec![vec![1, 2]] }]);
+        assert_eq!(
+            tableaux,
+            vec![SemistandardTableau {
+                rows: vec![vec![1, 2]]
+            }]
+        );
     }
 
     #[test]

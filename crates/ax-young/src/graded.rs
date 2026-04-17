@@ -100,7 +100,11 @@ pub fn expand_group_backed_projector_graded(
             let graded_sign = permutation_graded_sign(&term.images, parity)?;
             let total_sign = bosonic_sign * graded_sign;
             let magnitude = term.coefficient.abs();
-            let coefficient = if total_sign < 0 { -magnitude } else { magnitude };
+            let coefficient = if total_sign < 0 {
+                -magnitude
+            } else {
+                magnitude
+            };
             Ok(GradedPermutationTerm {
                 images: term.images,
                 bosonic_sign,

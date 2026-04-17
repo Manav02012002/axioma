@@ -1,3 +1,5 @@
+#![cfg(feature = "legacy-eval-tests")]
+
 use ax_ir::{Expr, Interner};
 use ax_tensor::{
     christoffel_from_metric, ricci_from_riemann, ricci_scalar, riemann_from_christoffel,

@@ -29,12 +29,17 @@ pub enum YoungError {
     #[error("Littlewood-Richardson skew tableau placement is invalid")]
     InvalidLrSkewPlacement,
     #[error("Skew diagram inner shape {inner:?} is not contained in outer shape {outer:?}")]
-    InnerDiagramNotContained { outer: Vec<usize>, inner: Vec<usize> },
+    InnerDiagramNotContained {
+        outer: Vec<usize>,
+        inner: Vec<usize>,
+    },
     #[error("Skew diagram cell ({row}, {col}) is out of bounds")]
     SkewCellOutOfBounds { row: usize, col: usize },
     #[error("Reading word is not Littlewood-Richardson lattice/Yamanouchi")]
     InvalidReadingWord,
-    #[error("Content multiplicities sum to {actual_total}, but tableau requires {expected_cells} cells")]
+    #[error(
+        "Content multiplicities sum to {actual_total}, but tableau requires {expected_cells} cells"
+    )]
     ContentLengthMismatch {
         expected_cells: usize,
         actual_total: usize,
@@ -48,7 +53,10 @@ pub enum YoungError {
         target_cells: usize,
     },
     #[error("Littlewood-Richardson target shape {target:?} does not contain left shape {left:?}")]
-    TargetDoesNotContainLeftShape { left: Vec<usize>, target: Vec<usize> },
+    TargetDoesNotContainLeftShape {
+        left: Vec<usize>,
+        target: Vec<usize>,
+    },
     #[error("Schur expansion cannot be empty")]
     EmptySchurExpansion,
     #[error("Plethysm outer expansion must be expressed in the Schur basis")]
@@ -87,7 +95,9 @@ pub enum YoungError {
         shape: Vec<usize>,
         rank: usize,
     },
-    #[error("Classical-group branching unsupported for family {family}, shape {shape:?}, rank {rank}")]
+    #[error(
+        "Classical-group branching unsupported for family {family}, shape {shape:?}, rank {rank}"
+    )]
     ClassicalBranchingUnsupported {
         family: &'static str,
         shape: Vec<usize>,
@@ -95,10 +105,18 @@ pub enum YoungError {
     },
     #[error("Invalid cycle type {cycle_type:?}")]
     InvalidCycleType { cycle_type: Vec<usize> },
-    #[error("Character evaluation size mismatch: shape size {shape_size}, cycle size {cycle_size}")]
-    CharacterSizeMismatch { shape_size: usize, cycle_size: usize },
+    #[error(
+        "Character evaluation size mismatch: shape size {shape_size}, cycle size {cycle_size}"
+    )]
+    CharacterSizeMismatch {
+        shape_size: usize,
+        cycle_size: usize,
+    },
     #[error("Symmetric-function basis conversion unsupported from {from} to {to}")]
-    BasisConversionUnsupported { from: &'static str, to: &'static str },
+    BasisConversionUnsupported {
+        from: &'static str,
+        to: &'static str,
+    },
     #[error("Invalid partition content {parts:?}")]
     InvalidPartitionContent { parts: Vec<usize> },
     #[error("Monomial multiplication unsupported for total degree {total_degree}")]

@@ -312,9 +312,10 @@ mod tests {
         let r = lasso::Spur::try_from_usize(20).unwrap();
         let expr = Expr::Indexed(
             Box::new(Expr::Sym(r)),
-            (0..4)
+            [30usize, 33usize, 31usize, 32usize]
+                .into_iter()
                 .map(|index| Index {
-                    name: lasso::Spur::try_from_usize(30 + index).unwrap(),
+                    name: lasso::Spur::try_from_usize(index).unwrap(),
                     variance: ax_ir::Variance::Down,
                     index_type: None,
                 })

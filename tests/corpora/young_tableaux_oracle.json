@@ -1,0 +1,62 @@
+[
+  {
+    "name": "sym_rank2_canonicalize",
+    "kind": "canonicalize",
+  "input": {
+    "shape": [2],
+    "slot_map": [0, 1],
+    "slots": ["a", "b"]
+  },
+  "expected": {
+    "canonical": "T[a-, b-]",
+    "sign": "1"
+  }
+},
+  {
+    "name": "antisym_rank2_canonicalize",
+    "kind": "canonicalize",
+  "input": {
+    "shape": [1, 1],
+    "slot_map": [1, 0],
+    "slots": ["a", "b"]
+  },
+  "expected": {
+    "canonical": "T[b-, a-]",
+    "sign": "-1"
+  }
+},
+  {
+    "name": "shape_111_triple_product",
+    "kind": "lr_decompose",
+    "input": {
+      "factors": [[1], [1], [1]]
+    },
+    "expected": {
+      "shapes": [[1, 1, 1], [2, 1], [3]],
+      "multiplicities": [1, 2, 1]
+    }
+  },
+  {
+    "name": "s21_character_21",
+    "kind": "character",
+    "input": {
+      "shape": [2, 1],
+      "cycle": [2, 1]
+    },
+    "expected": {
+      "character": "0"
+    }
+  },
+  {
+    "name": "riemann_first_bianchi",
+    "kind": "multiterm_reduce",
+    "input": {
+      "symbol": "R",
+      "identity": "first_bianchi",
+      "slots": ["a", "d", "b", "c"]
+    },
+    "expected": {
+      "reduced": "-R[a-, b-, c-, d-] - R[a-, c-, d-, b-]"
+    }
+  }
+]

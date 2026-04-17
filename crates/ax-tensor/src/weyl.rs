@@ -1,4 +1,4 @@
-use crate::{diff_component, simplify_expr};
+use crate::{curvature_decompose, diff_component, simplify_expr};
 use ax_ir::Expr;
 use num_rational::BigRational;
 
@@ -75,6 +75,18 @@ fn validate_gamma_shape(gamma: &[Vec<Vec<Expr>>], n: usize) -> bool {
 
 fn zero_rank3(dim: usize) -> Vec<Vec<Vec<Expr>>> {
     vec![vec![vec![Expr::zero(); dim]; dim]; dim]
+}
+
+fn coefficient_expr(
+    terms: &[curvature_decompose::LinearDecompositionTerm],
+    kind: &str,
+) -> Option<Expr> {
+    terms.iter().find(|term| term.kind == kind).map(|term| {
+        Expr::Rational(BigRational::new(
+            term.coefficient_numer.into(),
+            term.coefficient_denom.into(),
+        ))
+    })
 }
 
 fn lower_first_index_of_mixed_rank4(
@@ -267,11 +279,14 @@ pub fn weyl_from_curvature(
         })
         .collect::<Vec<_>>();
 
-    let ricci_coeff = Expr::Rational(BigRational::new(1.into(), (metric_dim as i64 - 2).into()));
-    let scalar_coeff = Expr::Rational(BigRational::new(
-        1.into(),
-        (((metric_dim - 1) * (metric_dim - 2)) as i64).into(),
-    ));
+    let coefficients = curvature_decompose::riemann_to_weyl_ricci_scalar_coefficients(metric_dim)
+        .map_err(|_| WeylError::InvalidRiemannShape)?;
+    let Some(ricci_coeff) = coefficient_expr(&coefficients, "metric_ricci_rank4") else {
+        return Err(WeylError::InvalidRiemannShape);
+    };
+    let Some(scalar_coeff) = coefficient_expr(&coefficients, "metric_scalar_rank4") else {
+        return Err(WeylError::InvalidRiemannShape);
+    };
     let mut weyl = zero_weyl(metric_dim);
 
     for a in 0..metric_dim {
@@ -297,7 +312,11 @@ pub fn weyl_from_curvature(
                         Expr::add(vec![
                             riemann[a][b][c][d].clone(),
                             Expr::neg(Expr::mul(vec![ricci_coeff.clone(), ricci_piece])),
-                            Expr::mul(vec![scalar_coeff.clone(), scalar.clone(), scalar_piece]),
+                            Expr::neg(Expr::mul(vec![
+                                scalar_coeff.clone(),
+                                scalar.clone(),
+                                scalar_piece,
+                            ])),
                         ]),
                         interner,
                     );

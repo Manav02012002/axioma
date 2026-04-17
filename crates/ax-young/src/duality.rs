@@ -15,10 +15,9 @@ pub fn selfdual_eigenspace_dimension(rank: usize, dim: usize) -> Result<(u64, u6
         return Err(YoungError::InvalidSelfDualDimension { rank, dim });
     }
 
-    let total = binomial(dim, rank).to_u64().ok_or(YoungError::InvalidSelfDualDimension {
-        rank,
-        dim,
-    })?;
+    let total = binomial(dim, rank)
+        .to_u64()
+        .ok_or(YoungError::InvalidSelfDualDimension { rank, dim })?;
     let half = total / 2;
     Ok((half, half))
 }

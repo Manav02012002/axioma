@@ -33,9 +33,9 @@ pub fn decompose_gl_shape_to_classical(
     let mut multiplicities = Vec::new();
     let mut scalar_multiplicity = 0usize;
     for (target, multiplicity) in decomposition {
-        let multiplicity = multiplicity.to_usize().ok_or_else(|| {
-            anyhow!("classical branching multiplicity does not fit in usize")
-        })?;
+        let multiplicity = multiplicity
+            .to_usize()
+            .ok_or_else(|| anyhow!("classical branching multiplicity does not fit in usize"))?;
         match target {
             ax_young::classical_groups::ClassicalBranchTarget::Scalar => {
                 scalar_multiplicity = multiplicity;

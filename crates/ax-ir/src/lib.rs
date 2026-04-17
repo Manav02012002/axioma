@@ -19,7 +19,10 @@ pub use expr::{
     IndexPosition, LeviCivitaNorm, MetricSignature, ParentRel, RicciContraction, RiemannSign,
     TensorProperty, TrustLevel, Variance,
 };
-pub use identities::{riemann_identity_set, TensorIdentitySet, TensorMultitermIdentity};
+pub use identities::{
+    identity_permutation_terms, riemann_identity_set, PermutedCoefficientTerm, TensorIdentitySet,
+    TensorMultitermIdentity,
+};
 pub use intern::Interner;
 pub use mixed_symmetry::{
     validate_mixed_tensor_symmetry, MixedSlot, MixedSymmetryError, MixedTableauAttachment,

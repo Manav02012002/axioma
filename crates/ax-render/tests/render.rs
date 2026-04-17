@@ -194,9 +194,9 @@ fn renders_power_sum_expansion_lines() {
 
 #[test]
 fn renders_monomial_expansion_lines() {
-    let monomial = ax_young::schur_to_monomial(
-        &ax_young::SchurExpansion::from_shape(ax_young::YoungDiagram::try_new(vec![2, 1]).unwrap()),
-    )
+    let monomial = ax_young::schur_to_monomial(&ax_young::SchurExpansion::from_shape(
+        ax_young::YoungDiagram::try_new(vec![2, 1]).unwrap(),
+    ))
     .unwrap();
     let rendered = render_monomial_expansion(&monomial);
     assert!(rendered.contains("m_[1, 1, 1]"));

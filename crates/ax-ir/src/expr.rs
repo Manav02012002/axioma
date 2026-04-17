@@ -1,4 +1,6 @@
-use crate::{identities::TensorIdentitySet, mixed_symmetry::MixedTensorSymmetry, symmetry::TensorSymmetry};
+use crate::{
+    identities::TensorIdentitySet, mixed_symmetry::MixedTensorSymmetry, symmetry::TensorSymmetry,
+};
 use lasso::Key;
 use num_bigint::BigInt;
 use num_integer::Integer;

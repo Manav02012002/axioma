@@ -583,6 +583,35 @@ fn shifted_tableau_inherited_properties(
                                 );
                             }
                         }
+                        ax_ir::TensorMultitermIdentity::CyclicSum { slots } => {
+                            let shifted_slots =
+                                slots.iter().map(|slot| slot + offset).collect::<Vec<_>>();
+                            if shifted_slots.iter().all(|slot| *slot < composite_rank) {
+                                shifted
+                                    .multiterm
+                                    .push(ax_ir::TensorMultitermIdentity::CyclicSum {
+                                        slots: shifted_slots,
+                                    });
+                            }
+                        }
+                        ax_ir::TensorMultitermIdentity::AlternatingSum { slots } => {
+                            let shifted_slots =
+                                slots.iter().map(|slot| slot + offset).collect::<Vec<_>>();
+                            if shifted_slots.iter().all(|slot| *slot < composite_rank) {
+                                shifted.multiterm.push(
+                                    ax_ir::TensorMultitermIdentity::AlternatingSum {
+                                        slots: shifted_slots,
+                                    },
+                                );
+                            }
+                        }
+                        ax_ir::TensorMultitermIdentity::LinearCombination { terms } => {
+                            shifted.multiterm.push(
+                                ax_ir::TensorMultitermIdentity::LinearCombination {
+                                    terms: terms.clone(),
+                                },
+                            );
+                        }
                     }
                 }
                 if !shifted.is_empty() {

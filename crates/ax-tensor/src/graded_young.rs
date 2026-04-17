@@ -22,11 +22,8 @@ pub fn canonicalize_factor_slots_with_graded_projector(
         Expr::Indexed(_, indices) => slot_ranking(indices),
         _ => return Err(GradedYoungError::UnsupportedExpr),
     };
-    let (canonical_ranking, sign) = ax_young::graded::canonicalize_slots_under_graded_projector(
-        projector,
-        &ranking,
-        parity,
-    )?;
+    let (canonical_ranking, sign) =
+        ax_young::graded::canonicalize_slots_under_graded_projector(projector, &ranking, parity)?;
 
     let mut canonical_slots = Vec::with_capacity(canonical_ranking.len());
     for label in canonical_ranking {
@@ -58,7 +55,10 @@ pub(crate) fn first_realized_tableau(
 ) -> Option<crate::symmetry_bridge::RealizedTableau> {
     properties.iter().find_map(|property| match property {
         ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
-            realized_tableaux_from_symmetry(symmetry).ok()?.into_iter().next()
+            realized_tableaux_from_symmetry(symmetry)
+                .ok()?
+                .into_iter()
+                .next()
         }
         _ => None,
     })

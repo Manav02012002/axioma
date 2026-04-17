@@ -1,6 +1,8 @@
 #![allow(clippy::manual_contains, clippy::too_many_arguments)]
 
-use ax_ir::{DualityKind, RestrictedSymmetryMode, SymmetrySource, TableauAttachment, TensorSymmetry};
+use ax_ir::{
+    DualityKind, RestrictedSymmetryMode, SymmetrySource, TableauAttachment, TensorSymmetry,
+};
 use num_rational::BigRational;
 use num_traits::{One, Zero};
 use std::collections::HashMap;

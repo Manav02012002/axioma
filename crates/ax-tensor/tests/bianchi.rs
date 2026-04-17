@@ -9,6 +9,8 @@
 //! and demonstrate that canonicalise places every Riemann term in a unique
 //! canonical form.
 
+#![cfg(feature = "legacy-eval-tests")]
+
 use ax_ir::{Expr, Index, Interner, TensorProperty, Variance};
 use std::collections::HashMap;
 

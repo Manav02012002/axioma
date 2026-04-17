@@ -42,9 +42,7 @@ pub enum MixedSymmetryError {
     InvalidMixedTensorProduct,
 }
 
-pub fn validate_mixed_tensor_symmetry(
-    sym: &MixedTensorSymmetry,
-) -> Result<(), MixedSymmetryError> {
+pub fn validate_mixed_tensor_symmetry(sym: &MixedTensorSymmetry) -> Result<(), MixedSymmetryError> {
     for tableau in &sym.tableaux {
         if tableau.shape.is_empty() {
             return Err(MixedSymmetryError::EmptyMixedShape);

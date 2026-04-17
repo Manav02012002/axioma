@@ -1765,7 +1765,10 @@ mod tests {
         let rendered = result["rendered_ascii"].as_str().unwrap_or("");
         assert!(
             rendered.contains("tableau[0]")
-                || result["summary_json"].as_str().unwrap_or("").contains("\"tableaux\""),
+                || result["summary_json"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("\"tableaux\""),
             "{result:?}"
         );
     }

@@ -5,8 +5,8 @@ use crate::{
     },
 };
 use ax_ir::{Expr, Index, TensorProperty, Variance};
-use ax_trace::SparseProjectorTrace;
 use ax_perm::{enumerate_subgroup, product, sign};
+use ax_trace::SparseProjectorTrace;
 use ax_young::{
     build_group_backed_projector,
     group_action::GroupBackedProjector,
@@ -262,7 +262,9 @@ fn canonical_ranking_and_sign(
 mod tests {
     use super::*;
     use ax_ir::{Index, TensorSymmetry, Variance};
-    use ax_young::{build_group_backed_projector, ProjectorNormalization, YoungDiagram, YoungTableau};
+    use ax_young::{
+        build_group_backed_projector, ProjectorNormalization, YoungDiagram, YoungTableau,
+    };
     use std::collections::HashMap;
 
     fn declared_tableau_symmetry(shape: Vec<usize>, slot_map: Vec<usize>) -> TensorProperty {

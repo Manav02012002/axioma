@@ -1,6 +1,7 @@
 use ax_young::{
-    build_group_backed_projector, canonicalize_slots_under_both_groups, dimension_gl, kostka_number,
-    lr_shapes, expand_projector_group_algebra, ProjectorNormalization, YoungDiagram, YoungTableau,
+    build_group_backed_projector, canonicalize_slots_under_both_groups, dimension_gl,
+    expand_projector_group_algebra, kostka_number, lr_shapes, ProjectorNormalization, YoungDiagram,
+    YoungTableau,
 };
 use num_bigint::BigInt;
 

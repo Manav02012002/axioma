@@ -8,6 +8,7 @@ pub mod cmd_docgen;
 pub mod cmd_export;
 mod cmd_fix;
 mod cmd_install;
+mod cmd_oracle;
 mod cmd_parse;
 mod cmd_render;
 mod cmd_repl;
@@ -96,6 +97,18 @@ enum TableauCmd {
 }
 
 #[derive(Debug, Subcommand)]
+enum OracleCmd {
+    Run {
+        #[arg(long)]
+        corpus: std::path::PathBuf,
+    },
+    Bench {
+        #[arg(long)]
+        manifest: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 
 enum Command {
     Ai {
@@ -124,6 +137,10 @@ enum Command {
     Tableau {
         #[command(subcommand)]
         cmd: TableauCmd,
+    },
+    Oracle {
+        #[command(subcommand)]
+        cmd: OracleCmd,
     },
     Export {
         file: std::path::PathBuf,
@@ -387,6 +404,27 @@ fn real_main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Oracle { cmd } => {
+            match cmd {
+                OracleCmd::Run { corpus } => {
+                    let traces = cmd_oracle::run_oracle_corpus(&corpus)?;
+                    let rendered = traces
+                        .iter()
+                        .map(ax_render::render_oracle_trace)
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+                    if !rendered.is_empty() {
+                        println!("{rendered}");
+                    }
+                }
+                OracleCmd::Bench { manifest } => {
+                    for (name, repetitions) in cmd_oracle::run_benchmark_manifest(&manifest)? {
+                        println!("case={name}; repetitions={repetitions}");
+                    }
+                }
+            }
+            Ok(())
+        }
         Command::Export {
             file,
             format,
@@ -621,6 +659,20 @@ mod tests {
             vec!["axioma", "tableau", "render", "--shape", "2,1"],
             vec![
                 "axioma",
+                "oracle",
+                "run",
+                "--corpus",
+                "tests/corpora/young_tableaux_oracle.json",
+            ],
+            vec![
+                "axioma",
+                "oracle",
+                "bench",
+                "--manifest",
+                "tests/corpora/benchmark_manifest.json",
+            ],
+            vec![
+                "axioma",
                 "tableau",
                 "summary",
                 "--expr",
@@ -653,6 +705,7 @@ mod tests {
                 | Command::Parse { .. }
                 | Command::Render { .. }
                 | Command::Tableau { .. }
+                | Command::Oracle { .. }
                 | Command::Export { .. }
                 | Command::Codegen { .. }
                 | Command::Docgen { .. }

@@ -68,7 +68,11 @@ fn schur_polynomial_monomials(shape: &YoungDiagram, var_count: usize) -> Result<
     Ok(out)
 }
 
-fn complete_symmetric_plethysm(inner_poly: &Poly, var_count: usize, max_degree: usize) -> Vec<Poly> {
+fn complete_symmetric_plethysm(
+    inner_poly: &Poly,
+    var_count: usize,
+    max_degree: usize,
+) -> Vec<Poly> {
     let mut complete = vec![BTreeMap::new(); max_degree + 1];
     complete[0].insert(vec![0; var_count], BigInt::one());
 
@@ -142,7 +146,10 @@ fn schur_from_symmetric_polynomial(
     Ok(SchurExpansion { terms: coeffs }.normalized())
 }
 
-fn monomial_symmetric_coefficients(polynomial: &Poly, var_count: usize) -> BTreeMap<YoungDiagram, BigInt> {
+fn monomial_symmetric_coefficients(
+    polynomial: &Poly,
+    var_count: usize,
+) -> BTreeMap<YoungDiagram, BigInt> {
     let mut totals: BTreeMap<YoungDiagram, BigInt> = BTreeMap::new();
     for (monomial, coeff) in polynomial {
         let mut parts = monomial.clone();
@@ -207,7 +214,15 @@ fn determinant_poly(matrix: &[Vec<Poly>], var_count: usize) -> Poly {
 
     let mut out = BTreeMap::new();
     let mut used = vec![false; matrix.len()];
-    rec(matrix, 0, &mut used, &unit_poly(var_count), 1, &mut out, var_count);
+    rec(
+        matrix,
+        0,
+        &mut used,
+        &unit_poly(var_count),
+        1,
+        &mut out,
+        var_count,
+    );
     normalize_poly(&mut out);
     out
 }
