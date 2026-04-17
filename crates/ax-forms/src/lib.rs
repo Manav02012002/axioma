@@ -605,13 +605,65 @@ pub fn resize_form(form: &DiffForm, dim: usize) -> DiffForm {
     }
 }
 
-pub fn epsilon_pairing_rank(
-    rank: usize,
-) -> anyhow::Result<Vec<ax_tensor::epsilon_engine::DeltaPairingTerm>> {
-    use anyhow::Context;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeltaPairingTerm {
+    pub pairings: Vec<(usize, usize)>,
+    pub coefficient: i64,
+}
 
-    ax_tensor::epsilon_engine::epsilon_epsilon_to_delta_terms(rank)
-        .context("failed to compute epsilon pairing rank expansion")
+fn permutation_parity(perm: &[usize]) -> i64 {
+    let mut inversions = 0usize;
+    for i in 0..perm.len() {
+        for j in (i + 1)..perm.len() {
+            if perm[i] > perm[j] {
+                inversions += 1;
+            }
+        }
+    }
+    if inversions % 2 == 0 { 1 } else { -1 }
+}
+
+fn next_permutation(values: &mut [usize]) -> bool {
+    if values.len() < 2 {
+        return false;
+    }
+    let mut pivot = values.len() - 2;
+    while values[pivot] >= values[pivot + 1] {
+        if pivot == 0 {
+            return false;
+        }
+        pivot -= 1;
+    }
+    let mut swap_with = values.len() - 1;
+    while values[swap_with] <= values[pivot] {
+        swap_with -= 1;
+    }
+    values.swap(pivot, swap_with);
+    values[pivot + 1..].reverse();
+    true
+}
+
+pub fn epsilon_pairing_rank(rank: usize) -> anyhow::Result<Vec<DeltaPairingTerm>> {
+    if rank == 0 {
+        return Ok(vec![DeltaPairingTerm {
+            pairings: Vec::new(),
+            coefficient: 1,
+        }]);
+    }
+
+    let mut permutation: Vec<usize> = (0..rank).collect();
+    let mut terms = Vec::new();
+    loop {
+        terms.push(DeltaPairingTerm {
+            pairings: (0..rank).map(|slot| (slot, permutation[slot])).collect(),
+            coefficient: permutation_parity(&permutation),
+        });
+        if !next_permutation(&mut permutation) {
+            break;
+        }
+    }
+    terms.sort_by(|left, right| left.pairings.cmp(&right.pairings));
+    Ok(terms)
 }
 
 pub fn interior_product(vector: &[Expr], form: &DiffForm, interner: &ax_ir::Interner) -> DiffForm {
@@ -898,11 +950,11 @@ mod tests {
         assert_eq!(
             epsilon_pairing_rank(2).unwrap(),
             vec![
-                ax_tensor::epsilon_engine::DeltaPairingTerm {
+                DeltaPairingTerm {
                     pairings: vec![(0, 0), (1, 1)],
                     coefficient: 1,
                 },
-                ax_tensor::epsilon_engine::DeltaPairingTerm {
+                DeltaPairingTerm {
                     pairings: vec![(0, 1), (1, 0)],
                     coefficient: -1,
                 },

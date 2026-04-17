@@ -13,7 +13,6 @@
 mod abstract_curvature;
 pub mod adjform;
 mod adm;
-#[cfg(feature = "cartan")]
 mod cartan;
 pub mod classical_irreps;
 mod conformal;
@@ -45,7 +44,6 @@ pub use adm::{
 };
 use ax_ir::{Expr, Index, Interner};
 use ax_perm::{Perm, SGS};
-#[cfg(feature = "cartan")]
 pub use cartan::{
     connection_with_torsion, contorsion_tensor, first_cartan_structure, second_cartan_structure,
     spin_connection, CartanError,

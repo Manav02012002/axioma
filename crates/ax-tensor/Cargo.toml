@@ -5,13 +5,9 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
-[features]
-default = []
-cartan = []
-legacy-eval-tests = []
-
 [dependencies]
 anyhow = { workspace = true }
+ax-forms = { path = "../ax-forms" }
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
 ax-ode = { path = "../ax-ode" }
@@ -27,6 +23,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }
+ax-eval = { path = "../ax-eval" }
 ax-spinor = { path = "../ax-spinor" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

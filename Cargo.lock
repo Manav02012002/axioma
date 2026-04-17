@@ -288,7 +288,6 @@ dependencies = [
  "ax-core-ir",
  "ax-ir",
  "ax-linalg",
- "ax-tensor",
  "ax-young",
  "lasso",
  "num-bigint",
@@ -559,6 +558,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ax-core-ir",
+ "ax-eval",
+ "ax-forms",
  "ax-ir",
  "ax-linalg",
  "ax-ode",
