@@ -83,6 +83,16 @@ enum TableauCmd {
         #[arg(long)]
         expr: String,
     },
+    Character {
+        #[arg(long)]
+        shape: String,
+        #[arg(long)]
+        cycle: String,
+    },
+    Frobenius {
+        #[arg(long)]
+        shape: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -367,6 +377,12 @@ fn real_main() -> Result<()> {
                 }
                 TableauCmd::Summary { expr } => {
                     print!("{}", cmd_tableau::summary(&expr)?);
+                }
+                TableauCmd::Character { shape, cycle } => {
+                    print!("{}", cmd_tableau::character(&shape, &cycle)?);
+                }
+                TableauCmd::Frobenius { shape } => {
+                    print!("{}", cmd_tableau::frobenius(&shape)?);
                 }
             }
             Ok(())

@@ -135,3 +135,33 @@ fn tableau_summary_command_renders_trace_free_curvature_attachment_exactly() {
         "tableau[0]: shape=[2, 2], slots=[0, 1, 2, 3], trace_free=true, duality=None, label=\"weyl\"\n"
     );
 }
+
+#[test]
+fn tableau_character_command_matches_exact_output() {
+    let out = bin()
+        .args(["tableau", "character", "--shape", "2,1", "--cycle", "2,1"])
+        .output()
+        .expect("run tableau character");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "character=0\n");
+}
+
+#[test]
+fn tableau_frobenius_command_contains_power_sum_term() {
+    let out = bin()
+        .args(["tableau", "frobenius", "--shape", "2"])
+        .output()
+        .expect("run tableau frobenius");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("p_[2]"));
+}

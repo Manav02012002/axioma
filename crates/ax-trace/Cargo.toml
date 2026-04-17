@@ -7,5 +7,7 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
+num-bigint = { workspace = true, features = ["serde"] }
+num-rational = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

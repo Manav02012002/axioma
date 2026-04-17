@@ -12,6 +12,7 @@ ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
 ax-ode = { path = "../ax-ode" }
 ax-perm = { path = "../ax-perm" }
+ax-trace = { path = "../ax-trace" }
 ax-young = { path = "../ax-young" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
@@ -23,3 +24,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }
 ax-eval = { path = "../ax-eval" }
+ax-spinor = { path = "../ax-spinor" }

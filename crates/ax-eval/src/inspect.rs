@@ -227,6 +227,10 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
         ax_ir::TensorProperty::TableauSymmetry(symmetry) => {
             format!("TableauSymmetry(tableaux={:?})", symmetry.tableaux)
         }
+        ax_ir::TensorProperty::MixedTableauSymmetry(symmetry) => {
+            format!("MixedTableauSymmetry(tableaux={:?})", symmetry.tableaux)
+        }
+        ax_ir::TensorProperty::GradedParity(values) => format!("GradedParity({values:?})"),
         ax_ir::TensorProperty::TensorIdentities(identities) => {
             format!("TensorIdentities(multiterm={:?})", identities.multiterm)
         }

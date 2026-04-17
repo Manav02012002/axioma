@@ -63,4 +63,53 @@ pub enum YoungError {
     InvalidSelfDualDimension { rank: usize, dim: usize },
     #[error("Permutation degree mismatch: expected {expected}, got {actual}")]
     PermutationDegreeMismatch { expected: usize, actual: usize },
+    #[error("Graded slot parity length mismatch: expected {expected}, got {actual}")]
+    ParityLengthMismatch { expected: usize, actual: usize },
+    #[error("Graded slot parity at index {index} must be 0 or 1, got {value}")]
+    InvalidParityValue { index: usize, value: i8 },
+    #[error("Graded projector degree mismatch: expected {expected}, got {actual}")]
+    GradedProjectorDegreeMismatch { expected: usize, actual: usize },
+    #[error("Requested super-tableau operation is not supported on this path")]
+    UnsupportedSuperTableauOperation,
+    #[error("Orthogonal group rank must be at least 1, got {n}")]
+    InvalidOrthogonalRank { n: usize },
+    #[error("Symplectic group rank must be at least 1, got {n}")]
+    InvalidSymplecticRank { n: usize },
+    #[error("Symplectic ambient dimension must be even, got {dim}")]
+    InvalidSymplecticDimension { dim: usize },
+    #[error("Orthogonal highest weight {shape:?} has length exceeding rank {rank}")]
+    HighestWeightTooLongForOrthogonal { shape: Vec<usize>, rank: usize },
+    #[error("Symplectic highest weight {shape:?} has length exceeding rank {rank}")]
+    HighestWeightTooLongForSymplectic { shape: Vec<usize>, rank: usize },
+    #[error("Classical-group dimension formula unsupported for family {family}, shape {shape:?}, rank {rank}")]
+    ClassicalGroupDimensionUnsupported {
+        family: &'static str,
+        shape: Vec<usize>,
+        rank: usize,
+    },
+    #[error("Classical-group branching unsupported for family {family}, shape {shape:?}, rank {rank}")]
+    ClassicalBranchingUnsupported {
+        family: &'static str,
+        shape: Vec<usize>,
+        rank: usize,
+    },
+    #[error("Invalid cycle type {cycle_type:?}")]
+    InvalidCycleType { cycle_type: Vec<usize> },
+    #[error("Character evaluation size mismatch: shape size {shape_size}, cycle size {cycle_size}")]
+    CharacterSizeMismatch { shape_size: usize, cycle_size: usize },
+    #[error("Symmetric-function basis conversion unsupported from {from} to {to}")]
+    BasisConversionUnsupported { from: &'static str, to: &'static str },
+    #[error("Invalid partition content {parts:?}")]
+    InvalidPartitionContent { parts: Vec<usize> },
+    #[error("Monomial multiplication unsupported for total degree {total_degree}")]
+    MonomialMultiplicationUnsupported { total_degree: usize },
+    #[error("Multiplicity basis unsupported for factors {factors:?} and target {target:?}")]
+    MultiplicityBasisUnsupported {
+        factors: Vec<Vec<usize>>,
+        target: Vec<usize>,
+    },
+    #[error("Basis-change matrix must be square, got {rows}x{cols}")]
+    BasisMatrixNotSquare { rows: usize, cols: usize },
+    #[error("Multiplicity basis vector count mismatch: expected {expected}, got {actual}")]
+    BasisVectorCountMismatch { expected: usize, actual: usize },
 }

@@ -1,4 +1,4 @@
-use crate::{identities::TensorIdentitySet, symmetry::TensorSymmetry};
+use crate::{identities::TensorIdentitySet, mixed_symmetry::MixedTensorSymmetry, symmetry::TensorSymmetry};
 use lasso::Key;
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -86,6 +86,9 @@ pub enum TensorProperty {
     SortOrder(Vec<Sym>),
     /// Canonical structured tableau-based symmetry metadata.
     TableauSymmetry(TensorSymmetry),
+    MixedTableauSymmetry(MixedTensorSymmetry),
+    /// defines slotwise Grassmann parity for parity-aware tensor symmetry and projector signs
+    GradedParity(Vec<u8>),
     /// Canonical multiterm-identity carrier used for Young/curvature identities.
     TensorIdentities(TensorIdentitySet),
     SatisfiesBianchi {

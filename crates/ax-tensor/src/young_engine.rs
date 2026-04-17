@@ -43,7 +43,7 @@ pub fn canonicalize_factor_slots_with_projector(
                 actual: slots.len(),
             }
         })?;
-    permute_factor_indices(expr, &canonical)
+    rewrite_indexed_factor_by_slots(expr, &canonical)
 }
 
 pub fn apply_realized_tableaux_to_factor(
@@ -117,7 +117,7 @@ fn canonicalize_factor_with_realized_tableau(
     }
 }
 
-fn permute_factor_indices(
+pub(crate) fn rewrite_indexed_factor_by_slots(
     expr: &Expr,
     canonical_slots: &[usize],
 ) -> Result<Expr, YoungEngineError> {

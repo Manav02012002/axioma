@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 ax-ir = { path = "../ax-ir" }
+ax-trace = { path = "../ax-trace" }
+ax-young = { path = "../ax-young" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }
@@ -15,3 +17,4 @@ num-traits = { workspace = true }
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }
 ax-eval = { path = "../ax-eval" }
+ax-spinor = { path = "../ax-spinor" }

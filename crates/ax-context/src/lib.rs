@@ -77,6 +77,8 @@ pub struct SymmetryConfig {
     pub default_dimension: Option<usize>,
     #[serde(default = "default_projector_max_terms")]
     pub projector_max_terms: usize,
+    #[serde(default = "default_sparse_projector_cache_capacity")]
+    pub sparse_projector_cache_capacity: usize,
     #[serde(default)]
     pub render_unicode: bool,
 }
@@ -86,6 +88,7 @@ impl Default for SymmetryConfig {
         Self {
             default_dimension: None,
             projector_max_terms: default_projector_max_terms(),
+            sparse_projector_cache_capacity: default_sparse_projector_cache_capacity(),
             render_unicode: false,
         }
     }
@@ -93,6 +96,10 @@ impl Default for SymmetryConfig {
 
 fn default_projector_max_terms() -> usize {
     256
+}
+
+fn default_sparse_projector_cache_capacity() -> usize {
+    128
 }
 
 pub fn load_project_paths(root_override: Option<&str>) -> Result<ProjectPaths> {
@@ -265,10 +272,12 @@ gr-utils = { version = "0.2" }
         let toml_str = r#"
 [symmetry]
 projector_max_terms = 4096
+sparse_projector_cache_capacity = 32
 render_unicode = true
 "#;
         let cfg: AxiomaConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.symmetry.projector_max_terms, 4096);
+        assert_eq!(cfg.symmetry.sparse_projector_cache_capacity, 32);
         assert!(cfg.symmetry.render_unicode);
     }
 

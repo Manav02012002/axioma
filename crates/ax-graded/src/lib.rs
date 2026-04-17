@@ -5,6 +5,7 @@ pub mod d_algebra;
 pub mod superspace;
 
 use ax_ir::Expr;
+use anyhow::Context;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Zero};
@@ -188,12 +189,51 @@ impl Default for GradedSymbolTable {
     }
 }
 
-pub fn graded_sign_for_slot_swap(left_parity_odd: bool, right_parity_odd: bool) -> i32 {
-    if left_parity_odd && right_parity_odd {
-        -1
-    } else {
-        1
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GradedTensorSymmetry {
+    pub symmetry: ax_ir::TensorSymmetry,
+    pub parity: ax_young::graded::SlotParity,
+}
+
+pub fn graded_column_symmetry(
+    rank: usize,
+    odd_slots: &[usize],
+) -> Result<GradedTensorSymmetry, anyhow::Error> {
+    let mut parity = vec![0u8; rank];
+    for &slot in odd_slots {
+        if slot >= rank {
+            return Err(anyhow::anyhow!("odd slot {slot} is out of bounds for rank {rank}"))
+                .context("failed to build graded column symmetry");
+        }
+        parity[slot] = 1;
     }
+
+    Ok(GradedTensorSymmetry {
+        symmetry: ax_ir::TensorSymmetry {
+            tableaux: vec![ax_ir::TableauAttachment {
+                shape: vec![1; rank],
+                slot_map: (0..rank).collect(),
+                multiplicity_numer: 1,
+                multiplicity_denom: 1,
+                duality: ax_ir::DualityKind::None,
+                restricted_mode: ax_ir::RestrictedSymmetryMode::FullYoung,
+                trace_free: false,
+                dimension_guard: None,
+                source: ax_ir::SymmetrySource::Declared,
+                label: None,
+            }],
+            inherits_under_derivative: false,
+            inherits_under_tensor_product: false,
+            inherits_under_contraction: false,
+            preserves_trace_free_under_projection: false,
+        },
+        parity: ax_young::graded::SlotParity::try_new(parity)
+            .context("failed to build graded column symmetry")?,
+    })
+}
+
+pub fn graded_sign_for_slot_swap(left_parity_odd: bool, right_parity_odd: bool) -> i32 {
+    ax_young::graded::graded_swap_sign(u8::from(left_parity_odd), u8::from(right_parity_odd))
 }
 
 pub fn graded_multiply(
@@ -553,5 +593,21 @@ mod tests {
     fn graded_slot_swap_sign_matches_parity_rule() {
         assert_eq!(graded_sign_for_slot_swap(true, true), -1);
         assert_eq!(graded_sign_for_slot_swap(true, false), 1);
+    }
+
+    #[test]
+    fn graded_column_symmetry_builds_column_tableau_and_parity() {
+        let symmetry = graded_column_symmetry(3, &[1]).unwrap();
+        assert_eq!(symmetry.symmetry.tableaux[0].shape, vec![1, 1, 1]);
+        assert_eq!(symmetry.symmetry.tableaux[0].slot_map, vec![0, 1, 2]);
+        assert_eq!(symmetry.parity.values, vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn graded_column_symmetry_reports_bounds_errors_with_context() {
+        let error = graded_column_symmetry(3, &[3]).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("failed to build graded column symmetry"));
     }
 }

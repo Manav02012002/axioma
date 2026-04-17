@@ -184,3 +184,37 @@ fn renders_tensor_symmetry_summary() {
     assert!(summary.contains("shape=[2, 1]"));
     assert!(summary.contains("slots=[0, 1, 2]"));
 }
+
+#[test]
+fn renders_power_sum_expansion_lines() {
+    let shape = ax_young::YoungDiagram::try_new(vec![2]).unwrap();
+    let rendered = render_power_sum_expansion(&ax_young::frobenius_characteristic(&shape).unwrap());
+    assert!(rendered.contains("p_[2]"));
+}
+
+#[test]
+fn renders_monomial_expansion_lines() {
+    let monomial = ax_young::schur_to_monomial(
+        &ax_young::SchurExpansion::from_shape(ax_young::YoungDiagram::try_new(vec![2, 1]).unwrap()),
+    )
+    .unwrap();
+    let rendered = render_monomial_expansion(&monomial);
+    assert!(rendered.contains("m_[1, 1, 1]"));
+}
+
+#[test]
+fn renders_multiplicity_basis_trace_lines() {
+    let trace = ax_young::multiplicity_basis_trace(
+        &[
+            ax_young::YoungDiagram::try_new(vec![1]).unwrap(),
+            ax_young::YoungDiagram::try_new(vec![1]).unwrap(),
+            ax_young::YoungDiagram::try_new(vec![1]).unwrap(),
+        ],
+        &ax_young::YoungDiagram::try_new(vec![2, 1]).unwrap(),
+    )
+    .unwrap();
+    let rendered = render_multiplicity_basis_trace(&trace);
+    assert!(rendered.contains("target=[2, 1]"));
+    assert!(rendered.contains("left_basis="));
+    assert!(rendered.contains("right_basis="));
+}

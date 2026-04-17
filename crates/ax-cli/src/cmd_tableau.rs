@@ -20,6 +20,22 @@ pub fn summary(expr: &str) -> Result<String> {
     ))
 }
 
+pub fn character(shape: &str, cycle: &str) -> Result<String> {
+    let rows = parse_csv_usize(shape)?;
+    let cycle_type = parse_csv_usize(cycle)?;
+    let diagram = ax_young::YoungDiagram::try_new(rows)?;
+    let value = ax_young::symmetric_group_character(&diagram, &cycle_type)?;
+    Ok(format!("character={value}\n"))
+}
+
+pub fn frobenius(shape: &str) -> Result<String> {
+    let rows = parse_csv_usize(shape)?;
+    let diagram = ax_young::YoungDiagram::try_new(rows)?;
+    let rendered =
+        ax_render::render_power_sum_expansion(&ax_young::frobenius_characteristic(&diagram)?);
+    Ok(format!("{rendered}\n"))
+}
+
 pub fn trace(shape: &str) -> Result<String> {
     let rows = parse_csv_usize(shape)?;
     let diagram = ax_young::YoungDiagram::try_new(rows)?;
@@ -81,4 +97,20 @@ fn format_diags(diags: &[ax_syntax::Diagnostic]) -> String {
         .map(|diag| diag.message.as_str())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tableau_character_command_renders_exact_stdout() {
+        assert_eq!(character("2,1", "2,1").unwrap(), "character=0\n");
+    }
+
+    #[test]
+    fn tableau_frobenius_command_contains_power_sum_term() {
+        let stdout = frobenius("2").unwrap();
+        assert!(stdout.contains("p_[2]"));
+    }
 }

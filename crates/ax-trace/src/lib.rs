@@ -1,7 +1,8 @@
 pub mod symmetry_trace;
 
 pub use symmetry_trace::{
-    CanonicalizationTrace, DecompositionTrace, ProjectorBuildTrace, TableauProjectionTrace,
+    CanonicalizationTrace, DecompositionTrace, MultiplicityBasisTrace, ProjectorBuildTrace,
+    SparseProjectorTrace, TableauProjectionTrace,
 };
 
 use serde::{Deserialize, Serialize};
@@ -100,5 +101,47 @@ mod tests {
         assert_eq!(trace.input_slots, vec![9, 3]);
         assert_eq!(trace.candidate_count, 2);
         assert_eq!(trace.canonical_slots, vec![3, 9]);
+    }
+
+    #[test]
+    fn sparse_projector_trace_round_trips_fields() {
+        let trace = SparseProjectorTrace {
+            input_term_count: 1,
+            explored_permutation_count: 4,
+            emitted_term_count: 2,
+            merged_term_count: 2,
+            dropped_due_to_budget: false,
+        };
+
+        assert_eq!(trace.input_term_count, 1);
+        assert_eq!(trace.explored_permutation_count, 4);
+        assert_eq!(trace.emitted_term_count, 2);
+        assert_eq!(trace.merged_term_count, 2);
+        assert!(!trace.dropped_due_to_budget);
+    }
+
+    #[test]
+    fn multiplicity_basis_trace_round_trips_fields() {
+        let trace = MultiplicityBasisTrace {
+            factors: vec![vec![1], vec![1], vec![1]],
+            target: vec![2, 1],
+            left_associated_basis: vec!["m0".to_string(), "m1".to_string()],
+            right_associated_basis: vec!["m0".to_string(), "m1".to_string()],
+            change_of_basis_matrix: vec![
+                vec![
+                    num_rational::BigRational::new(1.into(), 2.into()),
+                    num_rational::BigRational::new((-1).into(), 2.into()),
+                ],
+                vec![
+                    num_rational::BigRational::new(3.into(), 2.into()),
+                    num_rational::BigRational::new(1.into(), 2.into()),
+                ],
+            ],
+        };
+
+        assert_eq!(trace.target, vec![2, 1]);
+        assert_eq!(trace.left_associated_basis.len(), 2);
+        assert_eq!(trace.right_associated_basis.len(), 2);
+        assert_eq!(trace.change_of_basis_matrix.len(), 2);
     }
 }

@@ -7,7 +7,13 @@ pub mod dimension_identities;
 mod dimension;
 mod error;
 mod garnir;
+pub mod classical_groups;
+pub mod graded;
 pub mod group_action;
+pub mod sparse_projector;
+pub mod symmetric_functions;
+pub mod characters;
+pub mod multiplicity_basis;
 mod branching;
 pub mod duality;
 mod lr;
@@ -37,7 +43,31 @@ pub use duality::{
     selfdual_eigenspace_dimension,
 };
 pub use error::YoungError;
+pub use graded::{
+    canonicalize_slots_under_graded_projector, expand_group_backed_projector_graded,
+    graded_swap_sign, permutation_graded_sign, GradedPermutationTerm,
+    GradedProjectorExpansion, SlotParity,
+};
+pub use sparse_projector::{
+    apply_sparse_plan_to_slots, build_sparse_projector_plan, sparse_plan_cache_key,
+    SparseProjectorError, SparseProjectorPlan,
+};
 pub use branching::{branch_gl_n_to_gl_n_minus_1, branch_s_n_to_s_n_minus_1};
+pub use characters::{
+    cycle_type_centralizer_size, frobenius_characteristic, is_valid_cycle_type,
+    symmetric_group_character,
+};
+pub use multiplicity_basis::{
+    basis_change_matrix_between_associations, canonical_multiplicity_basis,
+    multiplicity_basis_trace, AssociationConvention, MultiplicityBasis,
+    MultiplicityBasisVector,
+};
+pub use classical_groups::{
+    branch_gl_to_so, branch_gl_to_sp, dimension_so_even, dimension_so_odd, dimension_sp,
+    summarize_classical_irrep, validate_orthogonal_highest_weight,
+    validate_symplectic_highest_weight, ClassicalBranchTarget, ClassicalGroupFamily,
+    ClassicalIrrepSummary,
+};
 pub use garnir::standardize_garnir;
 pub use group_action::{
     build_group_backed_projector, build_projector_with_trace, build_stabilizer_group,
@@ -62,6 +92,10 @@ pub use rep_ring::{
     RepExpansion, SchurExpansion, TensorProductDecomposition,
 };
 pub use schur::{schur_basis_shape, schur_tensor_product};
+pub use symmetric_functions::{
+    multiply_monomial, multiply_power_sum, partition_from_parts, schur_to_monomial,
+    schur_to_power_sum, MonomialExpansion, Partition, PowerSumExpansion,
+};
 pub use semistandard::{kostka_number, SemistandardTableau};
 pub use skew::SkewDiagram;
 pub use ssyt_enum::{

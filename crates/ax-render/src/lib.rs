@@ -14,6 +14,74 @@ pub use tableau::{
 };
 pub use unicode::to_unicode;
 
+pub fn render_classical_irrep_summary(
+    summary: &ax_young::classical_groups::ClassicalIrrepSummary,
+) -> String {
+    format!(
+        "family={:?} rank={} shape={:?} dimension={}",
+        summary.family, summary.rank, summary.highest_weight.rows, summary.dimension
+    )
+}
+
+pub fn render_mixed_tensor_symmetry_summary(sym: &ax_ir::MixedTensorSymmetry) -> String {
+    sym.tableaux
+        .iter()
+        .enumerate()
+        .map(|(index, tableau)| {
+            let slots = tableau
+                .slots
+                .iter()
+                .map(|slot| format!("({},{:?})", slot.index, slot.kind))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let label = tableau
+                .label
+                .as_ref()
+                .map(|label| format!(" label={label}"))
+                .unwrap_or_default();
+            format!(
+                "mixed_tableau[{index}]: shape={:?} slots=[{}]{}",
+                tableau.shape, slots, label
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render_power_sum_expansion(exp: &ax_young::symmetric_functions::PowerSumExpansion) -> String {
+    exp.terms
+        .iter()
+        .map(|(partition, coeff)| format!("{coeff} * p_{:?}", partition.rows))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render_monomial_expansion(exp: &ax_young::symmetric_functions::MonomialExpansion) -> String {
+    exp.terms
+        .iter()
+        .map(|(partition, coeff)| format!("{coeff} * m_{:?}", partition.rows))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render_multiplicity_basis_trace(trace: &ax_trace::MultiplicityBasisTrace) -> String {
+    let mut lines = vec![
+        format!("target={:?}", trace.target),
+        format!("left_basis={:?}", trace.left_associated_basis),
+        format!("right_basis={:?}", trace.right_associated_basis),
+    ];
+    lines.extend(trace.change_of_basis_matrix.iter().map(|row| {
+        format!(
+            "[{}]",
+            row.iter()
+                .map(|entry| entry.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }));
+    lines.join("\n")
+}
+
 const PREC_TOP: u8 = 0;
 const PREC_ADD_SUB: u8 = 50;
 const PREC_MUL_DIV: u8 = 60;
@@ -711,5 +779,30 @@ mod tests {
         let expr = Expr::Call(sinh_sym, vec![Expr::Sym(x)]);
         let latex = to_latex(&expr, &interner);
         assert!(latex.contains("\\sinh"), "expected \\sinh, got: {}", latex);
+    }
+
+    #[test]
+    fn classical_irrep_summary_render_contains_required_fields() {
+        let shape = ax_young::YoungDiagram::try_new(vec![1]).unwrap();
+        let summary = ax_young::classical_groups::summarize_classical_irrep(
+            ax_young::classical_groups::ClassicalGroupFamily::Symplectic,
+            2,
+            &shape,
+        )
+        .unwrap();
+        let rendered = render_classical_irrep_summary(&summary);
+        assert!(rendered.contains("family=Symplectic"));
+        assert!(rendered.contains("rank=2"));
+        assert!(rendered.contains("shape=[1]"));
+        assert!(rendered.contains("dimension=4"));
+    }
+
+    #[test]
+    fn mixed_tensor_summary_render_contains_required_fields() {
+        let rendered =
+            render_mixed_tensor_symmetry_summary(&ax_spinor::symmetric_two_undotted_spinors());
+        assert!(rendered.contains("mixed_tableau[0]:"));
+        assert!(rendered.contains("shape=[2]"));
+        assert!(rendered.contains("UndottedSpinor"));
     }
 }

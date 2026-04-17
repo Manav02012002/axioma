@@ -14,15 +14,20 @@ mod abstract_curvature;
 pub mod adjform;
 mod adm;
 mod cartan;
+pub mod classical_irreps;
 mod conformal;
 mod contracted_bianchi;
 mod curvature_symmetry;
 mod dimension_reduce;
+pub mod graded_young;
 pub mod index_classifier;
 mod killing;
+pub mod mixed_decompose;
+pub mod multiplicity_trace;
 mod newman_penrose;
 mod numerical_gr;
 pub mod pooled_canon;
+pub mod sparse_apply;
 pub mod symmetry_bridge;
 mod weyl;
 pub mod young_engine;
@@ -242,6 +247,36 @@ pub struct IrreducibleProductSummary {
     pub shapes: Vec<Vec<usize>>,
     pub multiplicities: Vec<usize>,
     pub basis_labels: Vec<Vec<String>>,
+}
+
+pub fn decompose_product_with_basis_trace(
+    shapes: &[Vec<usize>],
+) -> anyhow::Result<(IrreducibleProductSummary, Vec<ax_trace::MultiplicityBasisTrace>)> {
+    use anyhow::Context;
+
+    let summary = decompose_product_irreps(shapes)
+        .context("failed to decompose product with multiplicity basis trace")?;
+    let mut traces = Vec::new();
+    if shapes.len() == 3 {
+        for (shape, multiplicity) in summary.shapes.iter().zip(summary.multiplicities.iter()) {
+            if *multiplicity <= 1 {
+                continue;
+            }
+            match multiplicity_trace::tensor_product_multiplicity_trace(shapes, shape) {
+                Ok(trace) => traces.push(trace),
+                Err(error) => {
+                    if !error
+                        .to_string()
+                        .contains("Multiplicity basis unsupported")
+                    {
+                        return Err(error)
+                            .context("failed to decompose product with multiplicity basis trace");
+                    }
+                }
+            }
+        }
+    }
+    Ok((summary, traces))
 }
 
 #[derive(Clone, Debug)]
@@ -2296,6 +2331,71 @@ fn multiply_expr_by_rational(expr: Expr, coeff: BigRational) -> Expr {
         return expr;
     }
     Expr::mul(vec![Expr::Rational(coeff), expr])
+}
+
+pub fn graded_young_project_tensor(
+    expr: &ax_ir::Expr,
+    properties_for_symbol: &dyn Fn(lasso::Spur) -> Vec<ax_ir::TensorProperty>,
+) -> anyhow::Result<(ax_ir::Expr, i32)> {
+    use anyhow::Context;
+
+    let Expr::Indexed(base, _) = expr else {
+        return Ok((expr.clone(), 1));
+    };
+    let Expr::Sym(symbol) = base.as_ref() else {
+        return Ok((expr.clone(), 1));
+    };
+
+    let properties = properties_for_symbol(*symbol);
+    let Some(realized) = graded_young::first_realized_tableau(&properties) else {
+        return Ok((expr.clone(), 1));
+    };
+    let Some(parity) = graded_young::try_extract_slot_parity_from_properties(&properties) else {
+        return Ok((expr.clone(), 1));
+    };
+
+    graded_young::canonicalize_factor_slots_with_graded_projector(
+        expr,
+        &realized.projector,
+        &parity,
+    )
+    .context("failed to graded-project tensor expression")
+}
+
+pub fn project_tensor_preferring_sparse(
+    expr: &ax_ir::Expr,
+    properties_for_symbol: &dyn Fn(lasso::Spur) -> Vec<ax_ir::TensorProperty>,
+    max_terms: usize,
+) -> anyhow::Result<ax_ir::Expr> {
+    use anyhow::Context;
+
+    match sparse_apply::sparse_project_tensor_with_options(expr, properties_for_symbol, max_terms)
+        .context("failed to project tensor expression with sparse preference")?
+    {
+        Some(result) => {
+            if result.exprs.is_empty() {
+                Ok(ax_ir::Expr::zero())
+            } else if result.exprs.len() == 1 {
+                let (projected, coefficient) = &result.exprs[0];
+                if *coefficient == BigRational::from_integer(1.into()) {
+                    Ok(projected.clone())
+                } else {
+                    Ok(multiply_expr_by_rational(projected.clone(), coefficient.clone()))
+                }
+            } else {
+                Ok(ax_ir::Expr::add(
+                    result
+                        .exprs
+                        .into_iter()
+                        .map(|(projected, coefficient)| {
+                            multiply_expr_by_rational(projected, coefficient)
+                        })
+                        .collect(),
+                ))
+            }
+        }
+        None => Ok(expr.clone()),
+    }
 }
 
 fn extract_factor_info_from_term(
@@ -14677,6 +14777,154 @@ mod tests {
                 actual: 2
             })
         ));
+    }
+
+    #[test]
+    fn graded_young_project_tensor_odd_antisymmetric_pair_canonicalizes_with_positive_sign() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let props = HashMap::from([(
+            t,
+            vec![
+                declared_tableau_symmetry(vec![1, 1], vec![0, 1]),
+                ax_ir::TensorProperty::GradedParity(vec![1, 1]),
+            ],
+        )]);
+
+        let (projected, sign) = graded_young_project_tensor(&expr, &|symbol| {
+            props.get(&symbol).cloned().unwrap_or_default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            projected,
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![
+                    Index {
+                        name: a,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            )
+        );
+        assert_eq!(sign, 1);
+    }
+
+    #[test]
+    fn graded_young_project_tensor_mixed_antisymmetric_pair_canonicalizes_with_negative_sign() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let props = HashMap::from([(
+            t,
+            vec![
+                declared_tableau_symmetry(vec![1, 1], vec![0, 1]),
+                ax_ir::TensorProperty::GradedParity(vec![1, 0]),
+            ],
+        )]);
+
+        let (projected, sign) = graded_young_project_tensor(&expr, &|symbol| {
+            props.get(&symbol).cloned().unwrap_or_default()
+        })
+        .unwrap();
+
+        assert_eq!(
+            projected,
+            Expr::Indexed(
+                Box::new(Expr::Sym(t)),
+                vec![
+                    Index {
+                        name: a,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                    Index {
+                        name: b,
+                        variance: Variance::Down,
+                        index_type: None,
+                    },
+                ],
+            )
+        );
+        assert_eq!(sign, -1);
+    }
+
+    #[test]
+    fn graded_young_project_tensor_without_parity_returns_identity() {
+        let interner = ax_ir::Interner::new();
+        let t = interner.get_or_intern("T");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let expr = Expr::Indexed(
+            Box::new(Expr::Sym(t)),
+            vec![
+                Index {
+                    name: b,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+                Index {
+                    name: a,
+                    variance: Variance::Down,
+                    index_type: None,
+                },
+            ],
+        );
+
+        let props = HashMap::from([(
+            t,
+            vec![declared_tableau_symmetry(vec![1, 1], vec![0, 1])],
+        )]);
+
+        let (projected, sign) = graded_young_project_tensor(&expr, &|symbol| {
+            props.get(&symbol).cloned().unwrap_or_default()
+        })
+        .unwrap();
+
+        assert_eq!(projected, expr);
+        assert_eq!(sign, 1);
     }
 
     #[test]

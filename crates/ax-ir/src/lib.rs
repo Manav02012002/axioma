@@ -1,6 +1,7 @@
 pub mod expr;
 pub mod identities;
 pub mod intern;
+pub mod mixed_symmetry;
 pub mod pool;
 pub mod pretty;
 pub mod symmetry;
@@ -20,6 +21,10 @@ pub use expr::{
 };
 pub use identities::{riemann_identity_set, TensorIdentitySet, TensorMultitermIdentity};
 pub use intern::Interner;
+pub use mixed_symmetry::{
+    validate_mixed_tensor_symmetry, MixedSlot, MixedSymmetryError, MixedTableauAttachment,
+    MixedTensorSymmetry, SlotKind,
+};
 pub use pool::{ExprBuilder, ExprId, ExprPool, PooledExpr};
 pub use pretty::pretty_print;
 pub use symmetry::{

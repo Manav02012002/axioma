@@ -2935,6 +2935,10 @@ pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::In
         TensorProperty::TableauSymmetry(symmetry) => {
             format!("TableauSymmetry(tableaux: {:?})", symmetry.tableaux)
         }
+        TensorProperty::MixedTableauSymmetry(symmetry) => {
+            format!("MixedTableauSymmetry(tableaux: {:?})", symmetry.tableaux)
+        }
+        TensorProperty::GradedParity(values) => format!("GradedParity({values:?})"),
         TensorProperty::TensorIdentities(identities) => {
             format!("TensorIdentities(multiterm: {:?})", identities.multiterm)
         }

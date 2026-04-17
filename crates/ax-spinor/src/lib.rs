@@ -5,7 +5,13 @@ use num_rational::BigRational;
 use num_traits::{One, Zero};
 use std::collections::HashMap;
 
+pub mod mixed;
 pub mod twistor;
+
+pub use mixed::{
+    antisymmetric_two_undotted_spinors, symmetric_rank2_tensor_plus_spinor,
+    symmetric_two_undotted_spinors, vector_as_bispinor_symmetry,
+};
 
 /// Particle label used by spinor-helicity expressions.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Copy)]

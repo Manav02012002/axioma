@@ -139,9 +139,27 @@ pub fn tensor_product_decomposition(
                 .coefficient(&shape)
                 .to_usize()
                 .ok_or(YoungError::NegativeMultiplicity)?;
-            let basis_labels = (0..multiplicity)
-                .map(|index| format!("m{index}"))
-                .collect::<Vec<_>>();
+            let basis_labels = if factors.len() == 3 {
+                match crate::multiplicity_basis::canonical_multiplicity_basis(
+                    factors,
+                    &shape,
+                    crate::multiplicity_basis::AssociationConvention::LeftAssociated,
+                ) {
+                    Ok(basis) => basis
+                        .vectors
+                        .into_iter()
+                        .map(|vector| vector.label)
+                        .collect::<Vec<_>>(),
+                    Err(YoungError::MultiplicityBasisUnsupported { .. }) => (0..multiplicity)
+                        .map(|index| format!("m{index}"))
+                        .collect::<Vec<_>>(),
+                    Err(error) => return Err(error),
+                }
+            } else {
+                (0..multiplicity)
+                    .map(|index| format!("m{index}"))
+                    .collect::<Vec<_>>()
+            };
             Ok(MultiplicitySpace {
                 shape,
                 multiplicity,

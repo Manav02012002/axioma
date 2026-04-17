@@ -86,3 +86,28 @@ pub struct AiEditResult {
     pub output_hash_blake3_hex: String,
     pub output_text: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CharacterEvaluationResponse {
+    pub shape: Vec<usize>,
+    pub cycle_type: Vec<usize>,
+    pub character: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn character_evaluation_response_round_trips() {
+        let payload = CharacterEvaluationResponse {
+            shape: vec![2, 1],
+            cycle_type: vec![2, 1],
+            character: "0".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: CharacterEvaluationResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+}
