@@ -1,3 +1,5 @@
+use crate::domain::{FrwBackgroundSpec, NamedExpr, SvtModeNames, TimeCoordinate};
+use crate::error::CosmologyError;
 use ax_ir::{Expr, Index, Interner, Variance};
 use lasso::Spur;
 use num_bigint::BigInt;
@@ -47,27 +49,47 @@ pub struct ReggeWheelerDecomposition {
     pub odd_parity: Vec<(Spur, Expr)>,
 }
 
-pub fn svt_decompose_perturbation(spatial_dim: usize, interner: &Interner) -> SVTDecomposition {
-    assert!(
-        spatial_dim > 0,
-        "SVT decomposition requires at least one spatial dimension"
-    );
+/// Returns the canonical standard names for the FRW scalar/vector/tensor mode fields.
+pub fn standard_svt_mode_names(interner: &Interner) -> SvtModeNames {
+    SvtModeNames {
+        phi: interner.get_or_intern("Phi"),
+        psi: interner.get_or_intern("Psi"),
+        b: interner.get_or_intern("B"),
+        e: interner.get_or_intern("E"),
+        s: interner.get_or_intern("S"),
+        f: interner.get_or_intern("F"),
+        h_tt: interner.get_or_intern("h_TT"),
+    }
+}
+
+pub fn svt_decompose_perturbation(
+    spatial_dim: usize,
+    interner: &Interner,
+) -> Result<SVTDecomposition, CosmologyError> {
+    if spatial_dim == 0 {
+        return Err(CosmologyError::InvalidSpatialDimension { got: 0 });
+    }
+    if spatial_dim > 16 {
+        return Err(CosmologyError::UnsupportedSpatialDimension { got: spatial_dim });
+    }
+
+    let names = standard_svt_mode_names(interner);
 
     let scalar_modes = vec![
         ScalarMode {
-            name: interner.get_or_intern("Phi"),
+            name: names.phi,
             component: SVTComponent::Phi,
         },
         ScalarMode {
-            name: interner.get_or_intern("Psi"),
+            name: names.psi,
             component: SVTComponent::Psi,
         },
         ScalarMode {
-            name: interner.get_or_intern("B"),
+            name: names.b,
             component: SVTComponent::B,
         },
         ScalarMode {
-            name: interner.get_or_intern("E"),
+            name: names.e,
             component: SVTComponent::E,
         },
     ];
@@ -75,11 +97,11 @@ pub fn svt_decompose_perturbation(spatial_dim: usize, interner: &Interner) -> SV
     let vector_modes = if spatial_dim >= 2 {
         vec![
             VectorMode {
-                name: interner.get_or_intern("S"),
+                name: names.s,
                 component: VectorSVT::Si,
             },
             VectorMode {
-                name: interner.get_or_intern("F"),
+                name: names.f,
                 component: VectorSVT::Fi,
             },
         ]
@@ -88,33 +110,57 @@ pub fn svt_decompose_perturbation(spatial_dim: usize, interner: &Interner) -> SV
     };
 
     let tensor_modes = if spatial_dim >= 2 {
-        vec![TensorMode {
-            name: interner.get_or_intern("h_TT"),
-        }]
+        vec![TensorMode { name: names.h_tt }]
     } else {
         Vec::new()
     };
 
-    SVTDecomposition {
+    Ok(SVTDecomposition {
         scalar_modes,
         vector_modes,
         tensor_modes,
-    }
+    })
 }
 
 pub fn bardeen_variables(
     decomp: &SVTDecomposition,
-    scale_factor: Spur,
-    conformal_time: Spur,
+    bg: &FrwBackgroundSpec,
     interner: &Interner,
-) -> Vec<(Spur, Expr)> {
-    let phi = scalar_mode(decomp, SVTComponent::Phi);
-    let psi = scalar_mode(decomp, SVTComponent::Psi);
-    let b = scalar_mode(decomp, SVTComponent::B);
-    let e = scalar_mode(decomp, SVTComponent::E);
+) -> Result<Vec<NamedExpr>, CosmologyError> {
+    let (phi_b, psi_b) = bardeen_expressions(decomp, bg, interner)?;
 
-    let a = Expr::Sym(scale_factor);
-    let eta = Expr::Sym(conformal_time);
+    Ok(vec![
+        NamedExpr {
+            name: interner.get_or_intern("Phi_B"),
+            expr: phi_b,
+        },
+        NamedExpr {
+            name: interner.get_or_intern("Psi_B"),
+            expr: psi_b,
+        },
+    ])
+}
+
+/// Builds the symbolic Bardeen-potential expressions `(Phi_B, Psi_B)`.
+pub(crate) fn bardeen_expressions(
+    decomp: &SVTDecomposition,
+    bg: &FrwBackgroundSpec,
+    interner: &Interner,
+) -> Result<(ax_ir::Expr, ax_ir::Expr), crate::error::CosmologyError> {
+    if bg.time_coordinate != TimeCoordinate::Conformal {
+        return Err(CosmologyError::IncompatibleTimeCoordinate {
+            time_coordinate: bg.time_coordinate,
+            operation: "Bardeen variables".to_string(),
+        });
+    }
+
+    let phi = scalar_mode(decomp, SVTComponent::Phi)?;
+    let psi = scalar_mode(decomp, SVTComponent::Psi)?;
+    let b = scalar_mode(decomp, SVTComponent::B)?;
+    let e = scalar_mode(decomp, SVTComponent::E)?;
+
+    let a = Expr::Sym(bg.scale_factor);
+    let eta = Expr::Sym(bg.conformal_time);
     let e_prime = diff(Expr::Sym(e), eta.clone(), interner);
     let shear = Expr::add(vec![Expr::Sym(b), Expr::neg(e_prime)]);
     let a_shear = Expr::mul(vec![a.clone(), shear.clone()]);
@@ -134,10 +180,7 @@ pub fn bardeen_variables(
         ])),
     ]);
 
-    vec![
-        (interner.get_or_intern("Phi_B"), phi_b),
-        (interner.get_or_intern("Psi_B"), psi_b),
-    ]
+    Ok((phi_b, psi_b))
 }
 
 pub fn regge_wheeler_decompose(l: usize, interner: &Interner) -> ReggeWheelerDecomposition {
@@ -265,13 +308,15 @@ pub fn regge_wheeler_equation(l: usize, mass: Spur, interner: &Interner) -> Expr
     master_equation(psi, r_star, omega, potential, interner)
 }
 
-fn scalar_mode(decomp: &SVTDecomposition, component: SVTComponent) -> Spur {
+fn scalar_mode(decomp: &SVTDecomposition, component: SVTComponent) -> Result<Spur, CosmologyError> {
     decomp
         .scalar_modes
         .iter()
         .find(|mode| same_scalar_component(&mode.component, &component))
         .map(|mode| mode.name)
-        .expect("SVT decomposition is missing a standard scalar mode")
+        .ok_or_else(|| CosmologyError::MissingScalarMode {
+            name: scalar_component_name(&component).to_string(),
+        })
 }
 
 fn same_scalar_component(lhs: &SVTComponent, rhs: &SVTComponent) -> bool {
@@ -282,6 +327,15 @@ fn same_scalar_component(lhs: &SVTComponent, rhs: &SVTComponent) -> bool {
             | (SVTComponent::B, SVTComponent::B)
             | (SVTComponent::E, SVTComponent::E)
     )
+}
+
+fn scalar_component_name(component: &SVTComponent) -> &'static str {
+    match component {
+        SVTComponent::Phi => "Phi",
+        SVTComponent::Psi => "Psi",
+        SVTComponent::B => "B",
+        SVTComponent::E => "E",
+    }
 }
 
 fn spherical_harmonic(l: usize, theta: Spur, phi: Spur, interner: &Interner) -> Expr {
@@ -347,20 +401,75 @@ mod tests {
     #[test]
     fn svt_has_standard_modes() {
         let interner = Interner::new();
-        let decomp = svt_decompose_perturbation(3, &interner);
+        let decomp = svt_decompose_perturbation(3, &interner).unwrap();
         assert_eq!(decomp.scalar_modes.len(), 4);
         assert_eq!(decomp.vector_modes.len(), 2);
         assert_eq!(decomp.tensor_modes.len(), 1);
     }
 
     #[test]
-    fn bardeen_builds_two_variables() {
+    fn svt_decomposition_rejects_zero_spatial_dimension() {
         let interner = Interner::new();
-        let decomp = svt_decompose_perturbation(3, &interner);
-        let a = interner.get_or_intern("a");
-        let eta = interner.get_or_intern("eta");
-        let vars = bardeen_variables(&decomp, a, eta, &interner);
+        let result = svt_decompose_perturbation(0, &interner);
+        assert!(matches!(
+            result,
+            Err(CosmologyError::InvalidSpatialDimension { got: 0 })
+        ));
+    }
+
+    #[test]
+    fn svt_decomposition_in_one_spatial_dimension_has_only_scalar_modes() {
+        let interner = Interner::new();
+        let decomp = svt_decompose_perturbation(1, &interner).unwrap();
+        assert_eq!(decomp.scalar_modes.len(), 4);
+        assert_eq!(decomp.vector_modes.len(), 0);
+        assert_eq!(decomp.tensor_modes.len(), 0);
+    }
+
+    #[test]
+    fn bardeen_builds_two_variables_on_default_flat_conformal_background() {
+        let interner = Interner::new();
+        let decomp = svt_decompose_perturbation(3, &interner).unwrap();
+        let bg = FrwBackgroundSpec::default_flat_conformal(&interner);
+        let vars = bardeen_variables(&decomp, &bg, &interner);
+        assert!(vars.is_ok());
+        let vars = vars.unwrap();
         assert_eq!(vars.len(), 2);
+        assert_eq!(interner.resolve(vars[0].name), "Phi_B");
+        assert_eq!(interner.resolve(vars[1].name), "Psi_B");
+    }
+
+    #[test]
+    fn bardeen_rejects_cosmic_time_background() {
+        let interner = Interner::new();
+        let decomp = svt_decompose_perturbation(3, &interner).unwrap();
+        let bg = FrwBackgroundSpec::default_flat_cosmic(&interner);
+        let result = bardeen_variables(&decomp, &bg, &interner);
+        match result {
+            Err(CosmologyError::IncompatibleTimeCoordinate {
+                time_coordinate,
+                operation,
+            }) => {
+                assert_eq!(time_coordinate, TimeCoordinate::Cosmic);
+                assert_eq!(operation, "Bardeen variables");
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bardeen_variables_and_bardeen_variations_are_consistent() {
+        let interner = Interner::new();
+        let decomp = svt_decompose_perturbation(3, &interner).unwrap();
+        let bg = FrwBackgroundSpec::default_flat_conformal(&interner);
+        let vars = bardeen_variables(&decomp, &bg, &interner).unwrap();
+        let generator = crate::default_scalar_gauge_generator(&interner);
+        let variations = crate::bardeen_variations(&bg, &generator, &interner).unwrap();
+
+        assert_eq!(interner.resolve(vars[0].name), "Phi_B");
+        assert_eq!(interner.resolve(vars[1].name), "Psi_B");
+        assert_eq!(interner.resolve(variations[0].name), "Phi_B");
+        assert_eq!(interner.resolve(variations[1].name), "Psi_B");
     }
 
     #[test]

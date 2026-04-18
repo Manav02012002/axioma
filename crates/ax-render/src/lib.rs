@@ -14,7 +14,6 @@ pub use tableau::{
     render_tableau_slot_map_ascii, render_tensor_symmetry_summary, render_young_diagram_ascii,
     render_young_diagram_unicode,
 };
-pub use unicode::to_unicode;
 
 pub fn render_classical_irrep_summary(
     summary: &ax_young::classical_groups::ClassicalIrrepSummary,
@@ -107,6 +106,114 @@ pub fn render_multiplicity_basis_trace(trace: &ax_trace::MultiplicityBasisTrace)
         )
     }));
     lines.join("\n")
+}
+
+pub fn is_labelled_equation_list(expr: &ax_ir::Expr) -> bool {
+    match expr {
+        Expr::List(items) => items.iter().all(|item| match item {
+            Expr::List(pair) if pair.len() == 2 => matches!(pair.first(), Some(Expr::Sym(_))),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
+pub fn render_labelled_equation_list_unicode(
+    expr: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let mut lines = Vec::with_capacity(items.len());
+    for item in items {
+        let Expr::List(pair) = item else {
+            return None;
+        };
+        let [Expr::Sym(label), value] = pair.as_slice() else {
+            return None;
+        };
+        lines.push(format!(
+            "{}: {}",
+            interner.resolve(*label),
+            unicode::to_unicode(value, interner)
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+pub fn render_labelled_equation_list_latex(
+    expr: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let mut lines = Vec::with_capacity(items.len());
+    for item in items {
+        let Expr::List(pair) = item else {
+            return None;
+        };
+        let [Expr::Sym(label), value] = pair.as_slice() else {
+            return None;
+        };
+        lines.push(format!(
+            "\\text{{{}}} &: {}",
+            interner.resolve(*label),
+            render(value, PREC_TOP, interner)
+        ));
+    }
+    Some(format!(
+        "\\begin{{aligned}}{}\\end{{aligned}}",
+        lines.join(" \\\\ ")
+    ))
+}
+
+pub fn render_cpt_spec_unicode(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Option<String> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let [Expr::Sym(tag), Expr::Sym(kind), rest @ ..] = items.as_slice() else {
+        return None;
+    };
+    if interner.resolve(*tag) != "__cpt_spec__" {
+        return None;
+    }
+    match interner.resolve(*kind) {
+        "background" => {
+            let [Expr::Sym(_scale_factor), Expr::Sym(_conformal_hubble), Expr::Sym(_cosmic_hubble), Expr::Sym(_conformal_time), Expr::Sym(_cosmic_time), Expr::Int(spatial_dim), Expr::Sym(curvature), Expr::Sym(time)] =
+                rest
+            else {
+                return None;
+            };
+            Some(format!(
+                "FRWBackground(time={}, curvature={}, spatial_dim={})",
+                interner.resolve(*time),
+                interner.resolve(*curvature),
+                spatial_dim
+            ))
+        }
+        "gauge" => {
+            let [Expr::Sym(name)] = rest else {
+                return None;
+            };
+            Some(format!("Gauge({})", interner.resolve(*name)))
+        }
+        "matter" => match rest {
+            [Expr::Sym(name)] => Some(format!("Matter({})", interner.resolve(*name))),
+            [Expr::Sym(name), Expr::Int(fields)]
+                if interner.resolve(*name) == "multi_canonical_scalar" =>
+            {
+                Some(format!(
+                    "Matter({}, fields={})",
+                    interner.resolve(*name),
+                    fields
+                ))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 const PREC_TOP: u8 = 0;
@@ -740,7 +847,23 @@ fn render(expr: &Expr, parent_prec: u8, interner: &ax_ir::Interner) -> String {
 }
 
 pub fn to_latex(expr: &Expr, interner: &ax_ir::Interner) -> String {
+    if let Some(rendered) = render_labelled_equation_list_latex(expr, interner) {
+        return rendered;
+    }
+    if let Some(rendered) = render_cpt_spec_unicode(expr, interner) {
+        return rendered;
+    }
     render(expr, PREC_TOP, interner)
+}
+
+pub fn to_unicode(expr: &Expr, interner: &ax_ir::Interner) -> String {
+    if let Some(rendered) = render_labelled_equation_list_unicode(expr, interner) {
+        return rendered;
+    }
+    if let Some(rendered) = render_cpt_spec_unicode(expr, interner) {
+        return rendered;
+    }
+    unicode::to_unicode(expr, interner)
 }
 
 #[cfg(test)]
@@ -848,5 +971,73 @@ mod tests {
         assert!(rendered.contains("kind=weyl_rank4; coeff=1/1"));
         assert!(rendered.contains("kind=metric_ricci_rank4; coeff=1/2"));
         assert!(rendered.contains("kind=metric_scalar_rank4; coeff=-1/6"));
+    }
+
+    #[test]
+    fn labelled_equation_list_unicode_renderer_formats_labels_linewise() {
+        let interner = ax_ir::Interner::new();
+        let eq0 = interner.get_or_intern("eq0");
+        let x = interner.get_or_intern("x");
+        let expr = Expr::List(vec![Expr::List(vec![Expr::Sym(eq0), Expr::Sym(x)])]);
+
+        let rendered = render_labelled_equation_list_unicode(&expr, &interner);
+
+        assert_eq!(rendered.as_deref(), Some("eq0: x"));
+    }
+
+    #[test]
+    fn labelled_equation_list_latex_renderer_uses_aligned_environment() {
+        let interner = ax_ir::Interner::new();
+        let eq0 = interner.get_or_intern("eq0");
+        let x = interner.get_or_intern("x");
+        let expr = Expr::List(vec![Expr::List(vec![Expr::Sym(eq0), Expr::Sym(x)])]);
+
+        let rendered = render_labelled_equation_list_latex(&expr, &interner).unwrap_or_default();
+
+        assert!(rendered.starts_with("\\begin{aligned}"));
+        assert!(rendered.contains("\\text{eq0} &: x"));
+        assert!(rendered.ends_with("\\end{aligned}"));
+    }
+
+    #[test]
+    fn cpt_spec_unicode_renderer_formats_background_gauge_and_matter_specs() {
+        let interner = ax_ir::Interner::new();
+        let tag = interner.get_or_intern("__cpt_spec__");
+        let background = Expr::List(vec![
+            Expr::Sym(tag),
+            Expr::Sym(interner.get_or_intern("background")),
+            Expr::Sym(interner.get_or_intern("a")),
+            Expr::Sym(interner.get_or_intern("H")),
+            Expr::Sym(interner.get_or_intern("H_cosmic")),
+            Expr::Sym(interner.get_or_intern("eta")),
+            Expr::Sym(interner.get_or_intern("t")),
+            Expr::Int(3.into()),
+            Expr::Sym(interner.get_or_intern("flat")),
+            Expr::Sym(interner.get_or_intern("conformal")),
+        ]);
+        let gauge = Expr::List(vec![
+            Expr::Sym(tag),
+            Expr::Sym(interner.get_or_intern("gauge")),
+            Expr::Sym(interner.get_or_intern("newtonian")),
+        ]);
+        let matter = Expr::List(vec![
+            Expr::Sym(tag),
+            Expr::Sym(interner.get_or_intern("matter")),
+            Expr::Sym(interner.get_or_intern("multi_canonical_scalar")),
+            Expr::Int(2.into()),
+        ]);
+
+        assert_eq!(
+            render_cpt_spec_unicode(&background, &interner).as_deref(),
+            Some("FRWBackground(time=conformal, curvature=flat, spatial_dim=3)")
+        );
+        assert_eq!(
+            render_cpt_spec_unicode(&gauge, &interner).as_deref(),
+            Some("Gauge(newtonian)")
+        );
+        assert_eq!(
+            render_cpt_spec_unicode(&matter, &interner).as_deref(),
+            Some("Matter(multi_canonical_scalar, fields=2)")
+        );
     }
 }

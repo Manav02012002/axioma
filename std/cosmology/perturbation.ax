@@ -5,8 +5,15 @@ let bardeen_potentials = bardeen()
 let linear_einstein = linearized_einstein(1)
 let second_order_einstein = linearized_einstein(2)
 let ms_equation = mukhanov_sasaki()
+let bg = frw_background_spec(conformal, flat, 3)
+let g = cpt_gauge(newtonian)
+let m = cpt_matter(canonical_scalar)
+let eqs1 = cpt_linearized_einstein(1, bg, g, cpt_matter(symbolic))
+let fluid = cpt_fluid_equations(bg)
+let ms = cpt_mukhanov_sasaki(bg, m)
+let ms1 = cpt_mukhanov_sasaki_first_order(bg, m)
 let scalar_power_spectrum = power_spectrum()
 let scalar_spectral_index = spectral_index()
 let tensor_to_scalar_ratio = tensor_scalar_ratio()
 
-[scalar_modes, bardeen_potentials, linear_einstein, second_order_einstein, ms_equation, scalar_power_spectrum, scalar_spectral_index, tensor_to_scalar_ratio]
+[scalar_modes, bardeen_potentials, linear_einstein, second_order_einstein, ms_equation, bg, g, m, eqs1, fluid, ms, ms1, scalar_power_spectrum, scalar_spectral_index, tensor_to_scalar_ratio]

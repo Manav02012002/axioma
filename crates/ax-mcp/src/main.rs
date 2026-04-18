@@ -302,6 +302,7 @@ fn tool_definitions() -> Vec<Value> {
         })
         .collect::<Vec<_>>();
     tools.push(symmetry_summary_tool_definition());
+    tools.extend(cpt_tool_definitions());
     tools
 }
 
@@ -350,6 +351,87 @@ fn symmetry_summary_tool_definition() -> Value {
     })
 }
 
+fn cpt_tool_definitions() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "cpt.background",
+            "category": "cosmology",
+            "description": "Build and render a compact CPT FRW background spec.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "time": {"type": "string"},
+                    "curvature": {"type": "string"},
+                    "spatial_dim": {"type": "integer"}
+                },
+                "required": ["time", "curvature", "spatial_dim"]
+            }
+        }),
+        json!({
+            "name": "cpt.linearized_einstein",
+            "category": "cosmology",
+            "description": "Return labelled CPT Einstein equations as structured JSON.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "order": {"type": "integer"},
+                    "time": {"type": "string"},
+                    "curvature": {"type": "string"},
+                    "spatial_dim": {"type": "integer"},
+                    "gauge": {"type": "string"},
+                    "matter": {"type": "string"}
+                },
+                "required": ["order", "time", "curvature", "spatial_dim", "gauge", "matter"]
+            }
+        }),
+        json!({
+            "name": "cpt.fluid_equations",
+            "category": "cosmology",
+            "description": "Return labelled CPT perfect-fluid conservation equations as structured JSON.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "time": {"type": "string"},
+                    "curvature": {"type": "string"},
+                    "spatial_dim": {"type": "integer"}
+                },
+                "required": ["time", "curvature", "spatial_dim"]
+            }
+        }),
+        json!({
+            "name": "cpt.mukhanov_sasaki",
+            "category": "cosmology",
+            "description": "Return the CPT Mukhanov-Sasaki equation renderings.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "time": {"type": "string"},
+                    "curvature": {"type": "string"},
+                    "spatial_dim": {"type": "integer"},
+                    "matter": {"type": "string"}
+                },
+                "required": ["time", "curvature", "spatial_dim", "matter"]
+            }
+        }),
+        json!({
+            "name": "cpt.export_mode_rhs",
+            "category": "cosmology",
+            "description": "Return exported CPT mode RHS code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"},
+                    "time": {"type": "string"},
+                    "curvature": {"type": "string"},
+                    "spatial_dim": {"type": "integer"},
+                    "matter": {"type": "string"}
+                },
+                "required": ["target", "time", "curvature", "spatial_dim", "matter"]
+            }
+        }),
+    ]
+}
+
 fn error_value(error: ToolError) -> Value {
     json!({
         "status": "error",
@@ -373,6 +455,9 @@ fn handle_tools_call_safe(
     arguments: &Value,
     timeout_secs: u64,
 ) -> Value {
+    if let Some(result) = handle_cpt_tool_call(state, tool_name, arguments) {
+        return result;
+    }
     if tool_name == "tensor.symmetry_summary" {
         return match handle_tensor_symmetry_summary(arguments) {
             Ok(value) => value,
@@ -515,6 +600,104 @@ fn handle_tools_call_safe(
     }
     state.deadline = None;
     response
+}
+
+fn eval_cpt_source(state: &mut McpState, source: &str) -> Result<Expr, String> {
+    state.parse_code(source)
+}
+
+fn cpt_labelled_equations_json(expr: &Expr, interner: &ax_ir::Interner) -> Option<Value> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let mut equations = Vec::with_capacity(items.len());
+    for item in items {
+        let Expr::List(pair) = item else {
+            return None;
+        };
+        let [Expr::Sym(label), value] = pair.as_slice() else {
+            return None;
+        };
+        equations.push(json!({
+            "label": interner.resolve(*label),
+            "unicode": ax_render::to_unicode(value, interner),
+            "latex": ax_render::to_latex(value, interner),
+        }));
+    }
+    Some(json!({ "status": "ok", "equations": equations }))
+}
+
+fn background_source(arguments: &Value) -> Result<String, String> {
+    let time = arguments
+        .get("time")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing time".to_string())?;
+    let curvature = arguments
+        .get("curvature")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing curvature".to_string())?;
+    let spatial_dim = arguments
+        .get("spatial_dim")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "missing spatial_dim".to_string())?;
+    Ok(format!(
+        "frw_background_spec({time}, {curvature}, {spatial_dim})"
+    ))
+}
+
+fn handle_cpt_tool_call(state: &mut McpState, tool_name: &str, arguments: &Value) -> Option<Value> {
+    let result = match tool_name {
+        "cpt.background" => {
+            let source = background_source(arguments).ok()?;
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "unicode": ax_render::to_unicode(&expr, &state.interner),
+                "latex": ax_render::to_latex(&expr, &state.interner),
+            }))
+        }
+        "cpt.linearized_einstein" => {
+            let order = arguments.get("order").and_then(Value::as_i64)?;
+            let gauge = arguments.get("gauge").and_then(Value::as_str)?;
+            let matter = arguments.get("matter").and_then(Value::as_str)?;
+            let bg = background_source(arguments).ok()?;
+            let source = format!(
+                "cpt_linearized_einstein({order}, {bg}, cpt_gauge({gauge}), cpt_matter({matter}))"
+            );
+            let expr = eval_cpt_source(state, &source).ok()?;
+            cpt_labelled_equations_json(&expr, &state.interner)
+        }
+        "cpt.fluid_equations" => {
+            let bg = background_source(arguments).ok()?;
+            let source = format!("cpt_fluid_equations({bg})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            cpt_labelled_equations_json(&expr, &state.interner)
+        }
+        "cpt.mukhanov_sasaki" => {
+            let matter = arguments.get("matter").and_then(Value::as_str)?;
+            let bg = background_source(arguments).ok()?;
+            let source = format!("cpt_mukhanov_sasaki({bg}, cpt_matter({matter}))");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "unicode": ax_render::to_unicode(&expr, &state.interner),
+                "latex": ax_render::to_latex(&expr, &state.interner),
+            }))
+        }
+        "cpt.export_mode_rhs" => {
+            let target = arguments.get("target").and_then(Value::as_str)?;
+            let matter = arguments.get("matter").and_then(Value::as_str)?;
+            let bg = background_source(arguments).ok()?;
+            let source = format!("cpt_export_mode_rhs({target}, {bg}, cpt_matter({matter}))");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "code": ax_render::to_unicode(&expr, &state.interner),
+            }))
+        }
+        _ => None,
+    };
+    result
 }
 
 fn handle_tensor_symmetry_summary(arguments: &Value) -> Result<Value, String> {
@@ -1801,5 +1984,70 @@ mod tests {
             payload["summary_json"],
             "{\"tableaux\":[{\"shape\":[2,1],\"slots\":[0,1,2],\"label\":null,\"trace_free\":false,\"duality\":\"none\"}]}"
         );
+    }
+
+    #[test]
+    fn cpt_linearized_einstein_tool_returns_four_labels() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.linearized_einstein",
+            &json!({
+                "order": 1,
+                "time": "conformal",
+                "curvature": "flat",
+                "spatial_dim": 3,
+                "gauge": "newtonian",
+                "matter": "symbolic"
+            }),
+            5,
+        );
+        let labels = result["equations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("label").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert_eq!(labels.len(), 4, "{result:?}");
+        assert!(labels.contains(&"00_constraint"), "{result:?}");
+        assert!(labels.contains(&"ij_traceless"), "{result:?}");
+    }
+
+    #[test]
+    fn cpt_mukhanov_sasaki_returns_nonempty_unicode_string_containing_k() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.mukhanov_sasaki",
+            &json!({
+                "time": "conformal",
+                "curvature": "flat",
+                "spatial_dim": 3,
+                "matter": "canonical_scalar"
+            }),
+            5,
+        );
+        let unicode = result["unicode"].as_str().unwrap_or("");
+        assert!(!unicode.is_empty(), "{result:?}");
+        assert!(unicode.contains("k"), "{result:?}");
+    }
+
+    #[test]
+    fn cpt_export_mode_rhs_tool_returns_code() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.export_mode_rhs",
+            &json!({
+                "target": "python",
+                "time": "conformal",
+                "curvature": "flat",
+                "spatial_dim": 3,
+                "matter": "canonical_scalar"
+            }),
+            5,
+        );
+        let code = result["code"].as_str().unwrap_or("");
+        assert!(code.contains("def ms_rhs("), "{result:?}");
     }
 }

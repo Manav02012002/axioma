@@ -599,11 +599,274 @@ fn expanded_to_expr_list(expanded: ax_perturb::ExpandedExpression, max_order: us
     Expr::List(by_order)
 }
 
-fn labelled_exprs_to_list(items: Vec<(String, Expr)>, interner: &ax_ir::Interner) -> Expr {
+fn labelled_exprs_to_list(
+    items: Vec<ax_perturb::NamedEquation>,
+    interner: &ax_ir::Interner,
+) -> Expr {
     Expr::List(
         items
             .into_iter()
-            .map(|(label, expr)| Expr::List(vec![Expr::Sym(interner.get_or_intern(&label)), expr]))
+            .map(|item| {
+                Expr::List(vec![
+                    Expr::Sym(interner.get_or_intern(&item.label)),
+                    item.expr,
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn cpt_spec_tag(interner: &ax_ir::Interner) -> lasso::Spur {
+    interner.get_or_intern("__cpt_spec__")
+}
+
+fn make_background_spec_expr(
+    bg: &ax_perturb::FrwBackgroundSpec,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let curvature = match bg.spatial_curvature {
+        ax_perturb::SpatialCurvature::Flat => "flat",
+        ax_perturb::SpatialCurvature::Closed => "closed",
+        ax_perturb::SpatialCurvature::Open => "open",
+    };
+    let time = match bg.time_coordinate {
+        ax_perturb::TimeCoordinate::Conformal => "conformal",
+        ax_perturb::TimeCoordinate::Cosmic => "cosmic",
+    };
+    Expr::List(vec![
+        Expr::Sym(cpt_spec_tag(interner)),
+        Expr::Sym(interner.get_or_intern("background")),
+        Expr::Sym(bg.scale_factor),
+        Expr::Sym(bg.conformal_hubble),
+        Expr::Sym(bg.cosmic_hubble),
+        Expr::Sym(bg.conformal_time),
+        Expr::Sym(bg.cosmic_time),
+        Expr::Int(BigInt::from(bg.spatial_dim)),
+        Expr::Sym(interner.get_or_intern(curvature)),
+        Expr::Sym(interner.get_or_intern(time)),
+    ])
+}
+
+fn parse_background_spec_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_perturb::FrwBackgroundSpec> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let [Expr::Sym(tag), Expr::Sym(kind), Expr::Sym(scale_factor), Expr::Sym(conformal_hubble), Expr::Sym(cosmic_hubble), Expr::Sym(conformal_time), Expr::Sym(cosmic_time), Expr::Int(spatial_dim), Expr::Sym(curvature), Expr::Sym(time)] =
+        items.as_slice()
+    else {
+        return None;
+    };
+    if *tag != cpt_spec_tag(interner) || interner.resolve(*kind) != "background" {
+        return None;
+    }
+    let spatial_curvature = match interner.resolve(*curvature) {
+        "flat" => ax_perturb::SpatialCurvature::Flat,
+        "closed" => ax_perturb::SpatialCurvature::Closed,
+        "open" => ax_perturb::SpatialCurvature::Open,
+        _ => return None,
+    };
+    let time_coordinate = match interner.resolve(*time) {
+        "conformal" => ax_perturb::TimeCoordinate::Conformal,
+        "cosmic" => ax_perturb::TimeCoordinate::Cosmic,
+        _ => return None,
+    };
+    ax_perturb::FrwBackgroundSpec::new(
+        *scale_factor,
+        *conformal_hubble,
+        *cosmic_hubble,
+        *conformal_time,
+        *cosmic_time,
+        spatial_dim.to_usize()?,
+        spatial_curvature,
+        time_coordinate,
+    )
+    .ok()
+}
+
+fn make_gauge_spec_expr(kind: ax_perturb::GaugeKind, interner: &ax_ir::Interner) -> Expr {
+    let kind_name = match kind {
+        ax_perturb::GaugeKind::Newtonian => "newtonian",
+        ax_perturb::GaugeKind::Synchronous => "synchronous",
+        ax_perturb::GaugeKind::Comoving => "comoving",
+        ax_perturb::GaugeKind::Flat => "flat",
+        ax_perturb::GaugeKind::UniformDensity => "uniform_density",
+        ax_perturb::GaugeKind::UniformCurvature => "uniform_curvature",
+        ax_perturb::GaugeKind::Poisson => "poisson",
+    };
+    Expr::List(vec![
+        Expr::Sym(cpt_spec_tag(interner)),
+        Expr::Sym(interner.get_or_intern("gauge")),
+        Expr::Sym(interner.get_or_intern(kind_name)),
+    ])
+}
+
+fn parse_gauge_spec_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<ax_perturb::GaugeKind> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let [Expr::Sym(tag), Expr::Sym(kind), Expr::Sym(name)] = items.as_slice() else {
+        return None;
+    };
+    if *tag != cpt_spec_tag(interner) || interner.resolve(*kind) != "gauge" {
+        return None;
+    }
+    match interner.resolve(*name) {
+        "newtonian" => Some(ax_perturb::GaugeKind::Newtonian),
+        "synchronous" => Some(ax_perturb::GaugeKind::Synchronous),
+        "comoving" => Some(ax_perturb::GaugeKind::Comoving),
+        "flat" => Some(ax_perturb::GaugeKind::Flat),
+        "uniform_density" => Some(ax_perturb::GaugeKind::UniformDensity),
+        "uniform_curvature" => Some(ax_perturb::GaugeKind::UniformCurvature),
+        "poisson" => Some(ax_perturb::GaugeKind::Poisson),
+        _ => None,
+    }
+}
+
+fn make_matter_spec_expr(kind: ax_perturb::MatterKind, interner: &ax_ir::Interner) -> Expr {
+    let mut items = vec![
+        Expr::Sym(cpt_spec_tag(interner)),
+        Expr::Sym(interner.get_or_intern("matter")),
+    ];
+    match kind {
+        ax_perturb::MatterKind::PerfectFluid => {
+            items.push(Expr::Sym(interner.get_or_intern("perfect_fluid")))
+        }
+        ax_perturb::MatterKind::ImperfectFluid => {
+            items.push(Expr::Sym(interner.get_or_intern("imperfect_fluid")))
+        }
+        ax_perturb::MatterKind::CanonicalScalar => {
+            items.push(Expr::Sym(interner.get_or_intern("canonical_scalar")))
+        }
+        ax_perturb::MatterKind::MultiCanonicalScalar { fields } => {
+            items.push(Expr::Sym(interner.get_or_intern("multi_canonical_scalar")));
+            items.push(Expr::Int(BigInt::from(fields)));
+        }
+        ax_perturb::MatterKind::Symbolic => {
+            items.push(Expr::Sym(interner.get_or_intern("symbolic")))
+        }
+    }
+    Expr::List(items)
+}
+
+fn parse_matter_spec_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_perturb::MatterKind> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let [Expr::Sym(tag), Expr::Sym(kind), rest @ ..] = items.as_slice() else {
+        return None;
+    };
+    if *tag != cpt_spec_tag(interner) || interner.resolve(*kind) != "matter" {
+        return None;
+    }
+    match rest {
+        [Expr::Sym(name)] => match interner.resolve(*name) {
+            "perfect_fluid" => Some(ax_perturb::MatterKind::PerfectFluid),
+            "imperfect_fluid" => Some(ax_perturb::MatterKind::ImperfectFluid),
+            "canonical_scalar" => Some(ax_perturb::MatterKind::CanonicalScalar),
+            "symbolic" => Some(ax_perturb::MatterKind::Symbolic),
+            _ => None,
+        },
+        [Expr::Sym(name), Expr::Int(fields)]
+            if interner.resolve(*name) == "multi_canonical_scalar" =>
+        {
+            Some(ax_perturb::MatterKind::MultiCanonicalScalar {
+                fields: fields.to_usize()?,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn substitute_symbol_expr(expr: &Expr, from: lasso::Spur, to: &Expr) -> Expr {
+    match expr {
+        Expr::Sym(sym) if *sym == from => to.clone(),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(substitute_symbol_expr(re, from, to)),
+            Box::new(substitute_symbol_expr(im, from, to)),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| substitute_symbol_expr(term, from, to))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| substitute_symbol_expr(factor, from, to))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            substitute_symbol_expr(base, from, to),
+            substitute_symbol_expr(exp, from, to),
+        ),
+        Expr::Neg(inner) => Expr::neg(substitute_symbol_expr(inner, from, to)),
+        Expr::Call(fun, args) => Expr::Call(
+            *fun,
+            args.iter()
+                .map(|arg| substitute_symbol_expr(arg, from, to))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(substitute_symbol_expr(body, from, to)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(substitute_symbol_expr(lhs, from, to)),
+            Box::new(substitute_symbol_expr(rhs, from, to)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (substitute_symbol_expr(value, from, to), condition.clone())
+                })
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(substitute_symbol_expr(base, from, to)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, relation) => {
+            Expr::Group(Box::new(substitute_symbol_expr(inner, from, to)), *relation)
+        }
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(substitute_symbol_expr(value, from, to)),
+            Box::new(substitute_symbol_expr(body, from, to)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| substitute_symbol_expr(item, from, to))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|item| substitute_symbol_expr(item, from, to))
+                        .collect()
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn named_exprs_to_list(items: Vec<ax_perturb::NamedExpr>) -> Expr {
+    Expr::List(
+        items
+            .into_iter()
+            .map(|item| Expr::List(vec![Expr::Sym(item.name), item.expr]))
             .collect(),
     )
 }
@@ -3959,7 +4222,10 @@ fn builtin_call(
             if args.len() == 1 {
                 if let Some(order) = usize_from_expr(&args[0]) {
                     let bg = ax_perturb::cosmology::frw_background(interner);
-                    let decomp = ax_perturb::gauge::svt_decompose_perturbation(3, interner);
+                    let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner)
+                    else {
+                        return Expr::Call(f, args);
+                    };
                     let equations = match order {
                         1 => ax_perturb::cosmology::linearized_einstein_scalar(
                             &bg, &decomp, interner,
@@ -3969,7 +4235,10 @@ fn builtin_call(
                         ),
                         _ => return Expr::Call(f, args),
                     };
-                    labelled_exprs_to_list(equations, interner)
+                    match equations {
+                        Ok(equations) => labelled_exprs_to_list(equations, interner),
+                        Err(_) => Expr::Call(f, args),
+                    }
                 } else {
                     Expr::Call(f, args)
                 }
@@ -3981,17 +4250,356 @@ fn builtin_call(
             if args.is_empty() {
                 let bg = ax_perturb::cosmology::frw_background(interner);
                 let eps = interner.get_or_intern("epsilon");
-                ax_perturb::cosmology::mukhanov_sasaki_equation(&bg, eps, interner)
+                match ax_perturb::cosmology::mukhanov_sasaki_equation(&bg, eps, interner) {
+                    Ok(expr) => expr,
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "frw_background_spec" => {
+            if args.len() == 3 {
+                let bg = match (
+                    name_from_expr(&args[0], interner),
+                    name_from_expr(&args[1], interner),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Some("conformal"), Some("flat"), Some(dim)) => {
+                        ax_perturb::FrwBackgroundSpec::new(
+                            interner.get_or_intern("a"),
+                            interner.get_or_intern("H"),
+                            interner.get_or_intern("H_cosmic"),
+                            interner.get_or_intern("eta"),
+                            interner.get_or_intern("t"),
+                            dim,
+                            ax_perturb::SpatialCurvature::Flat,
+                            ax_perturb::TimeCoordinate::Conformal,
+                        )
+                    }
+                    (Some("conformal"), Some("closed"), Some(dim)) => {
+                        ax_perturb::FrwBackgroundSpec::new(
+                            interner.get_or_intern("a"),
+                            interner.get_or_intern("H"),
+                            interner.get_or_intern("H_cosmic"),
+                            interner.get_or_intern("eta"),
+                            interner.get_or_intern("t"),
+                            dim,
+                            ax_perturb::SpatialCurvature::Closed,
+                            ax_perturb::TimeCoordinate::Conformal,
+                        )
+                    }
+                    (Some("conformal"), Some("open"), Some(dim)) => {
+                        ax_perturb::FrwBackgroundSpec::new(
+                            interner.get_or_intern("a"),
+                            interner.get_or_intern("H"),
+                            interner.get_or_intern("H_cosmic"),
+                            interner.get_or_intern("eta"),
+                            interner.get_or_intern("t"),
+                            dim,
+                            ax_perturb::SpatialCurvature::Open,
+                            ax_perturb::TimeCoordinate::Conformal,
+                        )
+                    }
+                    (Some("cosmic"), Some("flat"), Some(dim)) => {
+                        ax_perturb::FrwBackgroundSpec::new(
+                            interner.get_or_intern("a"),
+                            interner.get_or_intern("H"),
+                            interner.get_or_intern("H_cosmic"),
+                            interner.get_or_intern("eta"),
+                            interner.get_or_intern("t"),
+                            dim,
+                            ax_perturb::SpatialCurvature::Flat,
+                            ax_perturb::TimeCoordinate::Cosmic,
+                        )
+                    }
+                    (Some("cosmic"), Some("closed"), Some(dim)) => {
+                        ax_perturb::FrwBackgroundSpec::new(
+                            interner.get_or_intern("a"),
+                            interner.get_or_intern("H"),
+                            interner.get_or_intern("H_cosmic"),
+                            interner.get_or_intern("eta"),
+                            interner.get_or_intern("t"),
+                            dim,
+                            ax_perturb::SpatialCurvature::Closed,
+                            ax_perturb::TimeCoordinate::Cosmic,
+                        )
+                    }
+                    (Some("cosmic"), Some("open"), Some(dim)) => {
+                        ax_perturb::FrwBackgroundSpec::new(
+                            interner.get_or_intern("a"),
+                            interner.get_or_intern("H"),
+                            interner.get_or_intern("H_cosmic"),
+                            interner.get_or_intern("eta"),
+                            interner.get_or_intern("t"),
+                            dim,
+                            ax_perturb::SpatialCurvature::Open,
+                            ax_perturb::TimeCoordinate::Cosmic,
+                        )
+                    }
+                    _ => return Expr::Call(f, args),
+                };
+                bg.map(|bg| make_background_spec_expr(&bg, interner))
+                    .unwrap_or_else(|_| Expr::Call(f, args))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_gauge" => {
+            if args.len() == 1 {
+                match name_from_expr(&args[0], interner) {
+                    Some("newtonian") => {
+                        make_gauge_spec_expr(ax_perturb::GaugeKind::Newtonian, interner)
+                    }
+                    Some("synchronous") => {
+                        make_gauge_spec_expr(ax_perturb::GaugeKind::Synchronous, interner)
+                    }
+                    Some("comoving") => {
+                        make_gauge_spec_expr(ax_perturb::GaugeKind::Comoving, interner)
+                    }
+                    Some("flat") => make_gauge_spec_expr(ax_perturb::GaugeKind::Flat, interner),
+                    Some("uniform_density") => {
+                        make_gauge_spec_expr(ax_perturb::GaugeKind::UniformDensity, interner)
+                    }
+                    Some("uniform_curvature") => {
+                        make_gauge_spec_expr(ax_perturb::GaugeKind::UniformCurvature, interner)
+                    }
+                    Some("poisson") => {
+                        make_gauge_spec_expr(ax_perturb::GaugeKind::Poisson, interner)
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_matter" => match args.as_slice() {
+            [kind] => match name_from_expr(kind, interner) {
+                Some("perfect_fluid") => {
+                    make_matter_spec_expr(ax_perturb::MatterKind::PerfectFluid, interner)
+                }
+                Some("imperfect_fluid") => {
+                    make_matter_spec_expr(ax_perturb::MatterKind::ImperfectFluid, interner)
+                }
+                Some("canonical_scalar") => {
+                    make_matter_spec_expr(ax_perturb::MatterKind::CanonicalScalar, interner)
+                }
+                Some("symbolic") => {
+                    make_matter_spec_expr(ax_perturb::MatterKind::Symbolic, interner)
+                }
+                _ => Expr::Call(f, args),
+            },
+            [kind, nfields] => match (name_from_expr(kind, interner), usize_from_expr(nfields)) {
+                (Some("multi_canonical_scalar"), Some(fields)) => make_matter_spec_expr(
+                    ax_perturb::MatterKind::MultiCanonicalScalar { fields },
+                    interner,
+                ),
+                _ => Expr::Call(f, args),
+            },
+            _ => Expr::Call(f, args),
+        },
+        "cpt_linearized_einstein" => {
+            if args.len() == 4 {
+                let Some(order) = usize_from_expr(&args[0]) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(bg) = parse_background_spec_expr(&args[1], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(gauge) = parse_gauge_spec_expr(&args[2], interner) else {
+                    return Expr::Call(f, args);
+                };
+                if parse_matter_spec_expr(&args[3], interner).is_none()
+                    || gauge != ax_perturb::GaugeKind::Newtonian
+                {
+                    return Expr::Call(f, args);
+                }
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                let equations = match order {
+                    1 => ax_perturb::cosmology::linearized_einstein_scalar(&bg, &decomp, interner),
+                    2 => ax_perturb::cosmology::linearized_einstein_second_order(
+                        &bg, &decomp, interner,
+                    ),
+                    _ => return Expr::Call(f, args),
+                };
+                equations
+                    .map(|items| labelled_exprs_to_list(items, interner))
+                    .unwrap_or_else(|_| Expr::Call(f, args))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_fluid_equations" => {
+            if args.len() == 1 {
+                let Some(bg) = parse_background_spec_expr(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                ax_perturb::cosmology::perfect_fluid_linear_conservation(&bg, interner)
+                    .map(|items| labelled_exprs_to_list(items, interner))
+                    .unwrap_or_else(|_| Expr::Call(f, args))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_quadratic_action" => {
+            if args.len() == 2 {
+                let Some(bg) = parse_background_spec_expr(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                match parse_matter_spec_expr(&args[1], interner) {
+                    Some(ax_perturb::MatterKind::CanonicalScalar) => {
+                        let symbols = ax_perturb::standard_canonical_scalar_symbols(interner);
+                        ax_perturb::canonical_scalar_reduced_quadratic_action(
+                            &bg, &symbols, interner,
+                        )
+                        .map(|action| action.lagrangian_density)
+                        .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_mukhanov_sasaki" => {
+            if args.len() == 2 {
+                let Some(bg) = parse_background_spec_expr(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                match parse_matter_spec_expr(&args[1], interner) {
+                    Some(ax_perturb::MatterKind::CanonicalScalar) => {
+                        let symbols = ax_perturb::standard_canonical_scalar_symbols(interner);
+                        ax_perturb::derive_mukhanov_sasaki_from_action(&bg, &symbols, interner)
+                            .map(|derivation| derivation.fourier_space_equation)
+                            .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_mukhanov_sasaki_first_order" => {
+            if args.len() == 2 {
+                let Some(bg) = parse_background_spec_expr(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                match parse_matter_spec_expr(&args[1], interner) {
+                    Some(ax_perturb::MatterKind::CanonicalScalar) => {
+                        let symbols = ax_perturb::standard_canonical_scalar_symbols(interner);
+                        match ax_perturb::mukhanov_sasaki_first_order_system(
+                            &bg, &symbols, interner,
+                        ) {
+                            Ok(system) => Expr::List(
+                                system
+                                    .into_iter()
+                                    .map(|(lhs, rhs)| Expr::List(vec![lhs, rhs]))
+                                    .collect(),
+                            ),
+                            Err(_) => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_bardeen_invariance" => {
+            if args.len() == 1 {
+                let Some(bg) = parse_background_spec_expr(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let generator = ax_perturb::default_scalar_gauge_generator(interner);
+                match ax_perturb::bardeen_variations(&bg, &generator, interner) {
+                    Ok(items) => Expr::List(
+                        items
+                            .into_iter()
+                            .map(|item| {
+                                Expr::List(vec![
+                                    Expr::Sym(item.name),
+                                    item.variation,
+                                    Expr::Int(BigInt::from(if item.is_invariant { 1 } else { 0 })),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_export_mode_rhs" => {
+            if args.len() == 3 {
+                let Some(target) = name_from_expr(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(bg) = parse_background_spec_expr(&args[1], interner) else {
+                    return Expr::Call(f, args);
+                };
+                match parse_matter_spec_expr(&args[2], interner) {
+                    Some(ax_perturb::MatterKind::CanonicalScalar) => {
+                        let symbols = ax_perturb::standard_canonical_scalar_symbols(interner);
+                        let Ok(system) =
+                            ax_perturb::mukhanov_sasaki_first_order_system(&bg, &symbols, interner)
+                        else {
+                            return Expr::Call(f, args);
+                        };
+                        let Some((lhs_second, rhs_second)) = system.get(1) else {
+                            return Expr::Call(f, args);
+                        };
+                        let Expr::Sym(v1_source) = lhs_second else {
+                            return Expr::Call(f, args);
+                        };
+                        let v1 = interner.get_or_intern("v1");
+                        let rhs = substitute_symbol_expr(rhs_second, *v1_source, &Expr::Sym(v1));
+                        let function_args = vec![
+                            interner.get_or_intern("eta"),
+                            interner.get_or_intern("v"),
+                            v1,
+                            interner.get_or_intern("k"),
+                            interner.get_or_intern("c_s"),
+                            interner.get_or_intern("a"),
+                            interner.get_or_intern("epsilon"),
+                        ];
+                        let code = match target {
+                            "python" => ax_codegen::emit_python_function(
+                                "ms_rhs",
+                                &function_args,
+                                &rhs,
+                                interner,
+                            ),
+                            "rust" => ax_codegen::emit_rust_function(
+                                "ms_rhs",
+                                &function_args,
+                                &rhs,
+                                interner,
+                            ),
+                            "cpp" => ax_codegen::emit_cpp_function(
+                                "ms_rhs",
+                                &function_args,
+                                &rhs,
+                                interner,
+                            ),
+                            _ => return Expr::Call(f, args),
+                        };
+                        Expr::Sym(interner.get_or_intern(&code))
+                    }
+                    _ => Expr::Call(f, args),
+                }
             } else {
                 Expr::Call(f, args)
             }
         }
         "svt_decompose" => {
             if args.is_empty() {
-                svt_decomposition_to_expr(
-                    ax_perturb::gauge::svt_decompose_perturbation(3, interner),
-                    interner,
-                )
+                match ax_perturb::gauge::svt_decompose_perturbation(3, interner) {
+                    Ok(decomp) => svt_decomposition_to_expr(decomp, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
             } else {
                 Expr::Call(f, args)
             }
@@ -3999,18 +4607,13 @@ fn builtin_call(
         "bardeen" => {
             if args.is_empty() {
                 let bg = ax_perturb::cosmology::frw_background(interner);
-                let decomp = ax_perturb::gauge::svt_decompose_perturbation(3, interner);
-                let vars = ax_perturb::gauge::bardeen_variables(
-                    &decomp,
-                    bg.scale_factor,
-                    bg.conformal_time,
-                    interner,
-                );
-                Expr::List(
-                    vars.into_iter()
-                        .map(|(name, expr)| Expr::List(vec![Expr::Sym(name), expr]))
-                        .collect(),
-                )
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::gauge::bardeen_variables(&decomp, &bg, interner) {
+                    Ok(vars) => named_exprs_to_list(vars),
+                    Err(_) => Expr::Call(f, args),
+                }
             } else {
                 Expr::Call(f, args)
             }
@@ -11083,6 +11686,98 @@ mod tests {
             Expr::Sym(interner.get_or_intern("epsilon")),
         ]);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn cosmology_mukhanov_sasaki_still_evaluates_to_non_symbolic_expression() {
+        let (result, interner) = eval_src("mukhanov_sasaki();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+
+        assert!(
+            !rendered.contains("mukhanov_sasaki("),
+            "expected evaluated Mukhanov-Sasaki equation, got {rendered}"
+        );
+        assert!(rendered.contains("c_s"), "got {rendered}");
+        assert!(
+            rendered.contains("diff(diff(v, eta), eta)"),
+            "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn cpt_background_spec_round_trips_through_eval_helpers() {
+        let (result, interner) = eval_src("frw_background_spec(conformal, flat, 3);");
+        let reparsed = parse_background_spec_expr(&result, &interner);
+        assert!(reparsed.is_some());
+        assert_eq!(
+            make_background_spec_expr(
+                &reparsed.unwrap_or_else(|| ax_perturb::FrwBackgroundSpec::default_flat_conformal(
+                    &interner
+                )),
+                &interner
+            ),
+            result
+        );
+    }
+
+    #[test]
+    fn cpt_linearized_einstein_order1_returns_expected_labels() {
+        let (result, interner) = eval_src(
+            "cpt_linearized_einstein(1, frw_background_spec(conformal, flat, 3), cpt_gauge(newtonian), cpt_matter(symbolic));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("00_constraint"));
+        assert!(rendered.contains("ij_traceless"));
+    }
+
+    #[test]
+    fn cpt_fluid_equations_returns_two_labels() {
+        let (result, interner) =
+            eval_src("cpt_fluid_equations(frw_background_spec(conformal, flat, 3));");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("fluid_continuity"));
+        assert!(rendered.contains("fluid_euler"));
+    }
+
+    #[test]
+    fn cpt_quadratic_action_returns_non_symbolic_expr_for_canonical_scalar() {
+        let (result, interner) = eval_src(
+            "cpt_quadratic_action(frw_background_spec(conformal, flat, 3), cpt_matter(canonical_scalar));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("cpt_quadratic_action("));
+        assert!(rendered.contains("v_eta"));
+    }
+
+    #[test]
+    fn cpt_mukhanov_sasaki_first_order_returns_two_pairs() {
+        let (result, _) = eval_src(
+            "cpt_mukhanov_sasaki_first_order(frw_background_spec(conformal, flat, 3), cpt_matter(canonical_scalar));",
+        );
+        match result {
+            Expr::List(items) => assert_eq!(items.len(), 2),
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cpt_export_mode_rhs_python_returns_interned_code_string_containing_def() {
+        let (result, interner) = eval_src(
+            "cpt_export_mode_rhs(python, frw_background_spec(conformal, flat, 3), cpt_matter(canonical_scalar));",
+        );
+        let Expr::Sym(code) = result else {
+            panic!("expected interned code string");
+        };
+        assert!(interner.resolve(code).contains("def ms_rhs("));
+    }
+
+    #[test]
+    fn legacy_simple_cosmology_builtins_still_work() {
+        let (einstein, interner) = eval_src("linearized_einstein(1);");
+        assert!(ax_ir::pretty_print(&einstein, &interner).contains("00_constraint"));
+
+        let (ms, interner) = eval_src("mukhanov_sasaki();");
+        assert!(ax_ir::pretty_print(&ms, &interner).contains("c_s"));
     }
 
     #[test]

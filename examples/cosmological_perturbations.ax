@@ -1,13 +1,24 @@
 // Scalar perturbations in FRW cosmology
 let eqs = linearized_einstein(1)
+let bg = frw_background_spec(conformal, flat, 3)
+let g = cpt_gauge(newtonian)
+let m = cpt_matter(canonical_scalar)
+let structured_eqs = cpt_linearized_einstein(1, bg, g, cpt_matter(symbolic))
+let fluid = cpt_fluid_equations(bg)
+let ms_structured = cpt_mukhanov_sasaki(bg, m)
+let ms_first_order = cpt_mukhanov_sasaki_first_order(bg, m)
 // The four linearized Einstein equations:
 eqs
+structured_eqs
 // Gauge-invariant scalar potentials:
 bardeen()
 // Second-order scalar Einstein equations:
 linearized_einstein(2)
+fluid
 // Mukhanov-Sasaki equation for curvature perturbation:
 mukhanov_sasaki()
+ms_structured
+ms_first_order
 // Leading-order power spectrum:
 power_spectrum()
 // Spectral index:

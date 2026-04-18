@@ -54,6 +54,9 @@ impl MimeBundle {
     }
 
     pub fn from_expr(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Self {
+        if let Some(bundle) = cpt_mime_bundle(expr, interner) {
+            return bundle;
+        }
         Self::plain(ax_render::to_unicode(expr, interner))
             .with_latex(ax_render::to_latex(expr, interner))
     }
@@ -131,6 +134,23 @@ impl MimeBundle {
     }
 }
 
+pub fn cpt_mime_bundle(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Option<MimeBundle> {
+    if ax_render::is_labelled_equation_list(expr) {
+        return Some(
+            MimeBundle::plain(ax_render::render_labelled_equation_list_unicode(
+                expr, interner,
+            )?)
+            .with_latex(ax_render::render_labelled_equation_list_latex(
+                expr, interner,
+            )?),
+        );
+    }
+    if let Some(rendered) = ax_render::render_cpt_spec_unicode(expr, interner) {
+        return Some(MimeBundle::plain(rendered.clone()).with_latex(rendered));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +178,24 @@ mod tests {
                 "text/markdown",
                 "text/plain",
             ]
+        );
+    }
+
+    #[test]
+    fn cpt_mime_bundle_formats_labelled_equations() {
+        let interner = ax_ir::Interner::new();
+        let label = interner.get_or_intern("eq0");
+        let x = interner.get_or_intern("x");
+        let expr = ax_ir::Expr::List(vec![ax_ir::Expr::List(vec![
+            ax_ir::Expr::Sym(label),
+            ax_ir::Expr::Sym(x),
+        ])]);
+
+        let bundle = cpt_mime_bundle(&expr, &interner);
+
+        assert_eq!(
+            bundle.and_then(|b| b.text_plain().map(str::to_string)),
+            Some("eq0: x".to_string())
         );
     }
 }

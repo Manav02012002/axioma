@@ -115,6 +115,43 @@ pub const GREEK_LETTERS: &[(&str, &str)] = &[
     ("final_sigma", "ς"),
 ];
 
+pub const CPT_CALLABLE_DOCS: &[(&str, &str)] = &[
+    (
+        "frw_background_spec",
+        "Construct a compact FRW background CPT spec.",
+    ),
+    ("cpt_gauge", "Construct a compact CPT gauge spec."),
+    ("cpt_matter", "Construct a compact CPT matter spec."),
+    (
+        "cpt_linearized_einstein",
+        "Derive labelled linearized Einstein equations from CPT specs.",
+    ),
+    (
+        "cpt_fluid_equations",
+        "Return labelled perfect-fluid conservation equations.",
+    ),
+    (
+        "cpt_quadratic_action",
+        "Return the reduced quadratic action density for supported CPT matter.",
+    ),
+    (
+        "cpt_mukhanov_sasaki",
+        "Return the Mukhanov-Sasaki mode equation derived from the CPT action.",
+    ),
+    (
+        "cpt_mukhanov_sasaki_first_order",
+        "Return the Mukhanov-Sasaki first-order system.",
+    ),
+    (
+        "cpt_bardeen_invariance",
+        "Check Bardeen-potential gauge invariance in structured CPT form.",
+    ),
+    (
+        "cpt_export_mode_rhs",
+        "Export the Mukhanov-Sasaki mode RHS as target-language code.",
+    ),
+];
+
 pub fn greek_to_unicode(name: &str) -> Option<&'static str> {
     GREEK_LETTERS
         .iter()

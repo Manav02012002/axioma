@@ -2449,7 +2449,7 @@ pub fn std_modules() -> Vec<StdModule> {
         m("gr/abstract_tensor", "Abstract GR tensor algebra with declared Riemann tensors, covariant derivatives, and the finished reduction pipeline.", "indices spacetime [mu,nu,rho,sigma,lambda] dim=11, riemann_tensor(R), covariant_derivative(nabla), abstract_tensor_reduce(...)"),
         m("gr/perturbation", "Metric perturbation theory: expansion of inverse metric, Christoffel symbols, Riemann, Ricci, and Einstein tensors to arbitrary order in a perturbation parameter.", "perturb, perturb_inverse, perturb_christoffel, perturb_riemann, perturb_ricci, perturb_einstein"),
         m("gr/schwarzschild", "Builds the Schwarzschild metric, Christoffel symbols, Riemann tensor, and Ricci tensor.", "let g, let coords, let Gamma, let R, let Ric"),
-        m("cosmology/perturbation", "Cosmological perturbation theory: SVT decomposition, Bardeen variables, linearized Einstein equations, Mukhanov-Sasaki equation, power spectrum, spectral index.", "linearized_einstein, mukhanov_sasaki, svt_decompose, bardeen, power_spectrum, spectral_index, tensor_scalar_ratio"),
+        m("cosmology/perturbation", "Cosmological perturbation theory: SVT decomposition, Bardeen variables, structured CPT specs and workflows, linearized Einstein equations, Mukhanov-Sasaki equation, power spectrum, spectral index.", "linearized_einstein, mukhanov_sasaki, svt_decompose, bardeen, frw_background_spec, cpt_gauge, cpt_matter, cpt_linearized_einstein, cpt_fluid_equations, cpt_mukhanov_sasaki, cpt_mukhanov_sasaki_first_order, cpt_export_mode_rhs, power_spectrum, spectral_index, tensor_scalar_ratio"),
         m("gr/black_hole_perturbation", "Black hole perturbation theory: Regge-Wheeler and Zerilli master equations for Schwarzschild perturbations.", "regge_wheeler, zerilli, regge_wheeler_decompose"),
         m("physics/classical_mechanics", "Builds free-particle, harmonic-oscillator, and pendulum Lagrangians and computes their Euler-Lagrange equations.", "let L_free, let free_particle, let L_ho, let harmonic_oscillator, let L_pendulum, let pendulum"),
         m("physics/differential_forms", "Builds one-forms, wedge products, exterior derivatives, Hodge duals, codifferentials, and Lie derivatives of forms.", "coordinates [x, y], let A, let B, let F, let g, let A_wedge_B, let dA, let star_A, let delta_A, let lie_A"),
@@ -2949,6 +2949,37 @@ pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::In
         TensorProperty::WeylTensor => "WeylTensor".to_string(),
         TensorProperty::DifferentialFormDegree(d) => {
             format!("DifferentialForm(degree: {})", d)
+        }
+        TensorProperty::BackgroundClass(sym) => {
+            format!("BackgroundClass({})", interner.resolve(*sym))
+        }
+        TensorProperty::PerturbationFamily { family, order } => format!(
+            "PerturbationFamily(family: {}, order: {})",
+            interner.resolve(*family),
+            order
+        ),
+        TensorProperty::SectorTag(sym) => {
+            format!("SectorTag({})", interner.resolve(*sym))
+        }
+        TensorProperty::GaugeTag {
+            gauge,
+            invariant,
+            generator,
+        } => format!(
+            "GaugeTag(gauge: {}, invariant: {}, generator: {})",
+            interner.resolve(*gauge),
+            invariant,
+            generator
+        ),
+        TensorProperty::HarmonicTag { basis, wave_symbol } => format!(
+            "HarmonicTag(basis: {}, wave_symbol: {})",
+            interner.resolve(*basis),
+            wave_symbol
+                .map(|sym| interner.resolve(sym).to_string())
+                .unwrap_or_else(|| "None".to_string())
+        ),
+        TensorProperty::MatterTag(sym) => {
+            format!("MatterTag({})", interner.resolve(*sym))
         }
     }
 }
@@ -7655,6 +7686,180 @@ fn handle_mukhanov_sasaki_cosmology(
 ) -> Result<serde_json::Value, String> {
     handle_nullary_named("mukhanov_sasaki", state)
 }
+
+fn handle_frw_background_spec_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "frw_background_spec",
+            vec![
+                ax_ir::Expr::Sym(symbol_arg(args, 0, "time", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "curvature", state)?),
+                int_expr_arg(args, 2, "spatial_dim")?,
+            ],
+            state,
+        ),
+        "frw_background_spec",
+        state,
+    )
+}
+
+fn handle_cpt_gauge_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cpt_gauge",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "kind", state)?)],
+            state,
+        ),
+        "cpt_gauge",
+        state,
+    )
+}
+
+fn handle_cpt_matter_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mut call_args = vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "kind", state)?)];
+    if let Some(value) = args.get(1) {
+        if !value.is_null() {
+            call_args.push(int_expr_arg(args, 1, "nfields")?);
+        }
+    }
+    expr_or_struct_response_named(
+        call_named("cpt_matter", call_args, state),
+        "cpt_matter",
+        state,
+    )
+}
+
+fn handle_cpt_linearized_einstein_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cpt_linearized_einstein",
+            vec![
+                int_expr_arg(args, 0, "order")?,
+                expr_from_id(args, 1, "background", state)?,
+                expr_from_id(args, 2, "gauge", state)?,
+                expr_from_id(args, 3, "matter", state)?,
+            ],
+            state,
+        ),
+        "cpt_linearized_einstein",
+        state,
+    )
+}
+
+fn handle_cpt_fluid_equations_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cpt_fluid_equations",
+            vec![expr_from_id(args, 0, "background", state)?],
+            state,
+        ),
+        "cpt_fluid_equations",
+        state,
+    )
+}
+
+fn handle_cpt_quadratic_action_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cpt_quadratic_action",
+            vec![
+                expr_from_id(args, 0, "background", state)?,
+                expr_from_id(args, 1, "matter", state)?,
+            ],
+            state,
+        ),
+        "cpt_quadratic_action",
+        state,
+    )
+}
+
+fn handle_cpt_mukhanov_sasaki_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cpt_mukhanov_sasaki",
+            vec![
+                expr_from_id(args, 0, "background", state)?,
+                expr_from_id(args, 1, "matter", state)?,
+            ],
+            state,
+        ),
+        "cpt_mukhanov_sasaki",
+        state,
+    )
+}
+
+fn handle_cpt_mukhanov_sasaki_first_order_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cpt_mukhanov_sasaki_first_order",
+            vec![
+                expr_from_id(args, 0, "background", state)?,
+                expr_from_id(args, 1, "matter", state)?,
+            ],
+            state,
+        ),
+        "cpt_mukhanov_sasaki_first_order",
+        state,
+    )
+}
+
+fn handle_cpt_bardeen_invariance_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cpt_bardeen_invariance",
+            vec![expr_from_id(args, 0, "background", state)?],
+            state,
+        ),
+        "cpt_bardeen_invariance",
+        state,
+    )
+}
+
+fn handle_cpt_export_mode_rhs_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cpt_export_mode_rhs",
+            vec![
+                ax_ir::Expr::Sym(symbol_arg(args, 0, "target", state)?),
+                expr_from_id(args, 1, "background", state)?,
+                expr_from_id(args, 2, "matter", state)?,
+            ],
+            state,
+        ),
+        "cpt_export_mode_rhs",
+        state,
+    )
+}
 fn handle_svt_decompose_cosmology(
     _args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -8219,6 +8424,47 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("perturb_einstein", "Expand the Einstein tensor perturbatively.", ps(vec![pdef("field", ParamType::Symbol, true, "Full metric symbol."), pdef("background", ParamType::Symbol, true, "Background metric symbol."), pdef("background_inv", ParamType::Symbol, true, "Background inverse metric symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_einstein),
         centry("linearized_einstein", "Return first- or second-order scalar perturbation Einstein equations.", ps(vec![pdef("order", ParamType::Integer, true, "Perturbation order, currently 1 or 2.")]), handle_linearized_einstein_cosmology),
         centry("mukhanov_sasaki", "Return the Mukhanov-Sasaki equation.", ps(vec![]), handle_mukhanov_sasaki_cosmology),
+        centry("frw_background_spec", "Return a compact CPT background spec expression.", ps(vec![
+            pdef("time", ParamType::StringEnum(&["conformal", "cosmic"]), true, "Time coordinate choice."),
+            pdef("curvature", ParamType::StringEnum(&["flat", "closed", "open"]), true, "Spatial curvature choice."),
+            pdef("spatial_dim", ParamType::Integer, true, "Number of spatial dimensions."),
+        ]), handle_frw_background_spec_cosmology),
+        centry("cpt_gauge", "Return a compact CPT gauge spec expression.", ps(vec![
+            pdef("kind", ParamType::StringEnum(&["newtonian", "synchronous", "comoving", "flat", "uniform_density", "uniform_curvature", "poisson"]), true, "Gauge choice."),
+        ]), handle_cpt_gauge_cosmology),
+        centry("cpt_matter", "Return a compact CPT matter spec expression.", ps(vec![
+            pdef("kind", ParamType::StringEnum(&["perfect_fluid", "imperfect_fluid", "canonical_scalar", "symbolic", "multi_canonical_scalar"]), true, "Matter model choice."),
+            pdef("nfields", ParamType::Optional(Box::new(ParamType::Integer)), false, "Field count for multi_canonical_scalar."),
+        ]), handle_cpt_matter_cosmology),
+        centry("cpt_linearized_einstein", "Return the labelled CPT linearized Einstein equation list.", ps(vec![
+            pdef("order", ParamType::Integer, true, "Perturbation order, currently 1 or 2."),
+            pdef("background", ParamType::ExprId, true, "Stored FRW background spec expression id."),
+            pdef("gauge", ParamType::ExprId, true, "Stored gauge spec expression id."),
+            pdef("matter", ParamType::ExprId, true, "Stored matter spec expression id."),
+        ]), handle_cpt_linearized_einstein_cosmology),
+        centry("cpt_fluid_equations", "Return the labelled perfect-fluid conservation equation list.", ps(vec![
+            pdef("background", ParamType::ExprId, true, "Stored FRW background spec expression id."),
+        ]), handle_cpt_fluid_equations_cosmology),
+        centry("cpt_quadratic_action", "Return the CPT reduced quadratic action density expression.", ps(vec![
+            pdef("background", ParamType::ExprId, true, "Stored FRW background spec expression id."),
+            pdef("matter", ParamType::ExprId, true, "Stored matter spec expression id."),
+        ]), handle_cpt_quadratic_action_cosmology),
+        centry("cpt_mukhanov_sasaki", "Return the CPT Fourier-space Mukhanov-Sasaki equation.", ps(vec![
+            pdef("background", ParamType::ExprId, true, "Stored FRW background spec expression id."),
+            pdef("matter", ParamType::ExprId, true, "Stored matter spec expression id."),
+        ]), handle_cpt_mukhanov_sasaki_cosmology),
+        centry("cpt_mukhanov_sasaki_first_order", "Return the CPT Mukhanov-Sasaki first-order system as [[lhs, rhs], ...].", ps(vec![
+            pdef("background", ParamType::ExprId, true, "Stored FRW background spec expression id."),
+            pdef("matter", ParamType::ExprId, true, "Stored matter spec expression id."),
+        ]), handle_cpt_mukhanov_sasaki_first_order_cosmology),
+        centry("cpt_bardeen_invariance", "Return [name, variation, invariant_flag] entries for the Bardeen potentials.", ps(vec![
+            pdef("background", ParamType::ExprId, true, "Stored FRW background spec expression id."),
+        ]), handle_cpt_bardeen_invariance_cosmology),
+        centry("cpt_export_mode_rhs", "Return the exported CPT mode RHS code payload as an interned plain-text symbol string.", ps(vec![
+            pdef("target", ParamType::StringEnum(&["python", "rust", "cpp"]), true, "Code-generation target."),
+            pdef("background", ParamType::ExprId, true, "Stored FRW background spec expression id."),
+            pdef("matter", ParamType::ExprId, true, "Stored matter spec expression id."),
+        ]), handle_cpt_export_mode_rhs_cosmology),
         centry("svt_decompose", "Return the standard SVT decomposition modes.", ps(vec![]), handle_svt_decompose_cosmology),
         centry("bardeen", "Return the two Bardeen potentials.", ps(vec![]), handle_bardeen_cosmology),
         centry("regge_wheeler_decompose", "Return symbolic even- and odd-parity Schwarzschild perturbation sectors.", ps(vec![pdef("l", ParamType::Integer, true, "Angular momentum quantum number.")]), handle_regge_wheeler_decompose_gauge),

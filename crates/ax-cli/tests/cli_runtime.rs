@@ -373,6 +373,10 @@ fn run_cosmology_perturbation_example_executes_end_to_end() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("00_constraint"), "stdout:\n{stdout}");
     assert!(stdout.contains("ij_traceless"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("FRWBackground(time=conformal, curvature=flat, spatial_dim=3)"),
+        "stdout:\n{stdout}"
+    );
     assert!(stdout.contains("H_star"), "stdout:\n{stdout}");
     assert!(stdout.contains("eta_sr"), "stdout:\n{stdout}");
 }

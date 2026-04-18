@@ -94,6 +94,21 @@ pub struct CharacterEvaluationResponse {
     pub character: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CptEquationEntry {
+    pub label: String,
+    pub unicode: String,
+    pub latex: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CptDerivationPacket {
+    pub background: String,
+    pub gauge: String,
+    pub matter: String,
+    pub equations: Vec<CptEquationEntry>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +123,37 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         let reparsed: CharacterEvaluationResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn cpt_equation_entry_round_trips() {
+        let payload = CptEquationEntry {
+            label: "constraint".to_string(),
+            unicode: "constraint: x".to_string(),
+            latex: "\\text{constraint} &: x".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: CptEquationEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn cpt_derivation_packet_round_trips() {
+        let payload = CptDerivationPacket {
+            background: "FRWBackground(time=conformal, curvature=flat, spatial_dim=3)".to_string(),
+            gauge: "Gauge(newtonian)".to_string(),
+            matter: "Matter(symbolic)".to_string(),
+            equations: vec![CptEquationEntry {
+                label: "eq0".to_string(),
+                unicode: "eq0: x".to_string(),
+                latex: "\\text{eq0} &: x".to_string(),
+            }],
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: CptDerivationPacket = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed, payload);
     }
 }

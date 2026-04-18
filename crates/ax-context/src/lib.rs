@@ -35,6 +35,9 @@ pub struct AxiomaConfig {
 
     #[serde(default)]
     pub symmetry: SymmetryConfig,
+
+    #[serde(default)]
+    pub cosmology: CosmologyConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,6 +84,18 @@ pub struct SymmetryConfig {
     pub sparse_projector_cache_capacity: usize,
     #[serde(default)]
     pub render_unicode: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct CosmologyConfig {
+    #[serde(default)]
+    pub default_time_coordinate: Option<String>,
+    #[serde(default)]
+    pub default_spatial_curvature: Option<String>,
+    #[serde(default)]
+    pub default_gauge: Option<String>,
+    #[serde(default)]
+    pub default_matter: Option<String>,
 }
 
 impl Default for SymmetryConfig {
@@ -279,6 +294,37 @@ render_unicode = true
         assert_eq!(cfg.symmetry.projector_max_terms, 4096);
         assert_eq!(cfg.symmetry.sparse_projector_cache_capacity, 32);
         assert!(cfg.symmetry.render_unicode);
+    }
+
+    #[test]
+    fn full_cosmology_section_parses() {
+        let toml_str = r#"
+[cosmology]
+default_time_coordinate = "conformal"
+default_spatial_curvature = "flat"
+default_gauge = "newtonian"
+default_matter = "canonical_scalar"
+"#;
+        let cfg: AxiomaConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            cfg.cosmology.default_time_coordinate.as_deref(),
+            Some("conformal")
+        );
+        assert_eq!(
+            cfg.cosmology.default_spatial_curvature.as_deref(),
+            Some("flat")
+        );
+        assert_eq!(cfg.cosmology.default_gauge.as_deref(), Some("newtonian"));
+        assert_eq!(
+            cfg.cosmology.default_matter.as_deref(),
+            Some("canonical_scalar")
+        );
+    }
+
+    #[test]
+    fn missing_cosmology_section_defaults_to_empty_cosmology_config() {
+        let cfg: AxiomaConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.cosmology, CosmologyConfig::default());
     }
 
     #[test]

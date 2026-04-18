@@ -3073,6 +3073,73 @@ mod tests {
     }
 
     #[test]
+    fn notebook_and_kernel_render_cpt_linearized_einstein_with_identical_plain_labels() {
+        let source = "cpt_linearized_einstein(1, frw_background_spec(conformal, flat, 3), cpt_gauge(newtonian), cpt_matter(symbolic))";
+        let mut notebook_env = ax_eval::Env::new();
+        let notebook_interner = ax_ir::Interner::new();
+        let notebook_result = ax_notebook::handle_eval(
+            &format!(r#"{{"source": "{source}"}}"#),
+            &mut notebook_env,
+            &notebook_interner,
+            &[],
+        );
+
+        let kernel_result = evaluate_code_transactional(
+            source,
+            ax_eval::Env::new(),
+            Arc::new(ax_ir::Interner::new()),
+            &[],
+        )
+        .expect("kernel cpt result")
+        .0;
+        let kernel_plain = kernel_result.outputs.iter().find_map(|output| match output {
+            KernelOutput::ExecuteResult(bundle) => bundle.text_plain().map(str::to_string),
+            _ => None,
+        });
+
+        assert_eq!(notebook_result.unicode, kernel_plain);
+        assert!(
+            notebook_result
+                .unicode
+                .as_deref()
+                .unwrap_or("")
+                .contains("00_constraint")
+        );
+    }
+
+    #[test]
+    fn notebook_and_kernel_render_cpt_spec_identically() {
+        let source = "frw_background_spec(conformal, flat, 3)";
+        let mut notebook_env = ax_eval::Env::new();
+        let notebook_interner = ax_ir::Interner::new();
+        let notebook_result = ax_notebook::handle_eval(
+            &format!(r#"{{"source": "{source}"}}"#),
+            &mut notebook_env,
+            &notebook_interner,
+            &[],
+        );
+
+        let kernel_result = evaluate_code_transactional(
+            source,
+            ax_eval::Env::new(),
+            Arc::new(ax_ir::Interner::new()),
+            &[],
+        )
+        .expect("kernel cpt spec")
+        .0;
+        let kernel_plain = kernel_result.outputs.iter().find_map(|output| match output {
+            KernelOutput::ExecuteResult(bundle) => bundle.text_plain().map(str::to_string),
+            _ => None,
+        });
+
+        assert_eq!(notebook_result.unicode, kernel_plain);
+        assert_eq!(
+            notebook_result.unicode.as_deref(),
+            Some("FRWBackground(time=conformal, curvature=flat, spatial_dim=3)")
+        );
+    }
+
+    #[test]
     fn latex_bundle_emits_execute_result_with_plain_fallback() {
         let parent = DecodedMessage {
             identities: Vec::new(),

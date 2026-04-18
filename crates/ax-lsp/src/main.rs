@@ -8,8 +8,8 @@ use ax_eval::{
 };
 use ax_ir::{Expr, Interner, TensorProperty};
 use constants::{
-    convention_values, greek_to_unicode, property_documentation, GREEK_LETTERS, KEYWORDS,
-    PROPERTY_NAMES,
+    convention_values, greek_to_unicode, property_documentation, CPT_CALLABLE_DOCS, GREEK_LETTERS,
+    KEYWORDS, PROPERTY_NAMES,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -930,6 +930,17 @@ fn function_docs() -> Vec<FunctionDoc> {
         }
     }
 
+    for (name, description) in CPT_CALLABLE_DOCS {
+        if seen.insert(name) {
+            docs.push(FunctionDoc {
+                name,
+                signature: name,
+                description,
+                example: name,
+            });
+        }
+    }
+
     docs
 }
 
@@ -1175,6 +1186,32 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(labels.contains(&"let"));
         assert!(labels.contains(&"diff"));
+    }
+
+    #[test]
+    fn completion_includes_cpt_linearized_einstein() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "".into());
+        let response = handle_completion(&state, &completion_params("test.ax", 0, 0)).unwrap();
+        let labels = response
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"cpt_linearized_einstein"));
+    }
+
+    #[test]
+    fn hover_docs_include_frw_background_spec() {
+        let mut state = LspState::new();
+        state.upsert_document(
+            "test.ax".into(),
+            "frw_background_spec(conformal, flat, 3)".into(),
+        );
+        let response = handle_hover(&state, &hover_params("test.ax", 0, 3)).unwrap();
+        let value = response["contents"]["value"].as_str().unwrap();
+        assert!(value.contains("frw_background_spec"));
     }
 
     #[test]

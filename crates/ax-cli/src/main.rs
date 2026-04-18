@@ -4,6 +4,7 @@ mod cmd_ai_apply;
 mod cmd_ai_pack;
 
 mod cmd_codegen;
+mod cmd_cpt;
 pub mod cmd_docgen;
 pub mod cmd_export;
 mod cmd_fix;
@@ -167,6 +168,10 @@ enum Command {
         target: String,
         #[arg(long)]
         fn_name: Option<String>,
+    },
+    CptDemo,
+    CptExport {
+        target: String,
     },
     Docgen {
         #[arg(long, default_value = "share/axioma-llm-context.md")]
@@ -472,6 +477,14 @@ fn real_main() -> Result<()> {
             let code = cmd_codegen::run(&file, &target, fn_name.as_deref())?;
             std::process::exit(code);
         }
+        Command::CptDemo => {
+            cmd_cpt::run_demo()?;
+            Ok(())
+        }
+        Command::CptExport { target } => {
+            cmd_cpt::run_export(&target)?;
+            Ok(())
+        }
         Command::Docgen { output } => {
             cmd_docgen::run(&output)?;
             Ok(())
@@ -680,6 +693,8 @@ mod tests {
             ],
             vec!["axioma", "export", "examples/gr_tutorial.ax"],
             vec!["axioma", "codegen", "examples/gr_tutorial.ax"],
+            vec!["axioma", "cpt-demo"],
+            vec!["axioma", "cpt-export", "python"],
             vec!["axioma", "docgen"],
             vec!["axioma", "install", "demo"],
             vec!["axioma", "validate", "examples/aas/hello_world.json"],
@@ -708,6 +723,8 @@ mod tests {
                 | Command::Oracle { .. }
                 | Command::Export { .. }
                 | Command::Codegen { .. }
+                | Command::CptDemo
+                | Command::CptExport { .. }
                 | Command::Docgen { .. }
                 | Command::Install { .. }
                 | Command::Init

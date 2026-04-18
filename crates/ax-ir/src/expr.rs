@@ -99,6 +99,28 @@ pub enum TensorProperty {
     DimensionDependentIdentity,
     WeylTensor,
     DifferentialFormDegree(usize),
+    /// Generic marker for a background class or background geometry family.
+    BackgroundClass(Sym),
+    /// Generic perturbation-family metadata tagged by family symbol and order.
+    PerturbationFamily {
+        family: Sym,
+        order: usize,
+    },
+    /// Generic scalar/vector/tensor sector tag or related decomposition tag.
+    SectorTag(Sym),
+    /// Generic gauge metadata carrier, including invariance and generator status.
+    GaugeTag {
+        gauge: Sym,
+        invariant: bool,
+        generator: bool,
+    },
+    /// Generic harmonic-basis metadata carrier with an optional wave symbol.
+    HarmonicTag {
+        basis: Sym,
+        wave_symbol: Option<Sym>,
+    },
+    /// Generic matter-content metadata carrier.
+    MatterTag(Sym),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -727,5 +749,56 @@ mod tests {
         let x = Expr::Sym(sym);
         let expr = Expr::pow(Expr::neg(x.clone()), Expr::Int((-1).into()));
         assert_eq!(expr, Expr::neg(Expr::pow(x, Expr::Int((-1).into()))));
+    }
+
+    #[test]
+    fn tensor_property_cpt_variants_participate_in_equality() {
+        let background = lasso::Spur::default();
+        let family = lasso::Spur::try_from_usize(1).unwrap();
+        let gauge = lasso::Spur::try_from_usize(2).unwrap();
+
+        assert_eq!(
+            TensorProperty::BackgroundClass(background),
+            TensorProperty::BackgroundClass(background)
+        );
+        assert_eq!(
+            TensorProperty::PerturbationFamily { family, order: 2 },
+            TensorProperty::PerturbationFamily { family, order: 2 }
+        );
+        assert_eq!(
+            TensorProperty::GaugeTag {
+                gauge,
+                invariant: true,
+                generator: false,
+            },
+            TensorProperty::GaugeTag {
+                gauge,
+                invariant: true,
+                generator: false,
+            }
+        );
+    }
+
+    #[test]
+    fn tensor_property_cpt_variants_distinguish_different_payloads() {
+        let family = lasso::Spur::default();
+        let gauge = lasso::Spur::try_from_usize(1).unwrap();
+
+        assert_ne!(
+            TensorProperty::PerturbationFamily { family, order: 1 },
+            TensorProperty::PerturbationFamily { family, order: 2 }
+        );
+        assert_ne!(
+            TensorProperty::GaugeTag {
+                gauge,
+                invariant: true,
+                generator: false,
+            },
+            TensorProperty::GaugeTag {
+                gauge,
+                invariant: false,
+                generator: false,
+            }
+        );
     }
 }

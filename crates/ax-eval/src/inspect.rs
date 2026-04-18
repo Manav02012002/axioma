@@ -244,6 +244,36 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
         ax_ir::TensorProperty::DifferentialFormDegree(n) => {
             format!("DifferentialFormDegree({n})")
         }
+        ax_ir::TensorProperty::BackgroundClass(sym) => {
+            format!("BackgroundClass({})", interner.resolve(*sym))
+        }
+        ax_ir::TensorProperty::PerturbationFamily { family, order } => {
+            format!(
+                "PerturbationFamily(family={}, order={order})",
+                interner.resolve(*family)
+            )
+        }
+        ax_ir::TensorProperty::SectorTag(sym) => {
+            format!("SectorTag({})", interner.resolve(*sym))
+        }
+        ax_ir::TensorProperty::GaugeTag {
+            gauge,
+            invariant,
+            generator,
+        } => format!(
+            "GaugeTag(gauge={}, invariant={invariant}, generator={generator})",
+            interner.resolve(*gauge)
+        ),
+        ax_ir::TensorProperty::HarmonicTag { basis, wave_symbol } => format!(
+            "HarmonicTag(basis={}, wave_symbol={})",
+            interner.resolve(*basis),
+            wave_symbol
+                .map(|sym| interner.resolve(sym).to_string())
+                .unwrap_or_else(|| "None".to_string())
+        ),
+        ax_ir::TensorProperty::MatterTag(sym) => {
+            format!("MatterTag({})", interner.resolve(*sym))
+        }
     }
 }
 

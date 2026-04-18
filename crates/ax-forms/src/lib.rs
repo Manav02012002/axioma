@@ -620,7 +620,11 @@ fn permutation_parity(perm: &[usize]) -> i64 {
             }
         }
     }
-    if inversions % 2 == 0 { 1 } else { -1 }
+    if inversions % 2 == 0 {
+        1
+    } else {
+        -1
+    }
 }
 
 fn next_permutation(values: &mut [usize]) -> bool {

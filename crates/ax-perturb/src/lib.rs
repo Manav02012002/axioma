@@ -1,7 +1,55 @@
 #![allow(clippy::too_many_arguments)]
 
+pub mod action;
 pub mod cosmology;
+pub mod domain;
+pub mod error;
 pub mod gauge;
+pub mod gauge_transform;
+pub mod linearized;
+pub mod matter;
+pub mod metric_ansatz;
+pub mod second_order;
+
+pub use action::{
+    canonical_scalar_real_space_mukhanov_sasaki_equation,
+    canonical_scalar_reduced_quadratic_action, derive_mukhanov_sasaki_from_action,
+    fourier_reduce_mukhanov_sasaki, mukhanov_sasaki_first_order_system, MukhanovSasakiDerivation,
+    ReducedQuadraticAction,
+};
+pub use domain::{
+    FrwBackgroundSpec, GaugeGeneratorNames, GaugeKind, HarmonicBasisKind, MatterKind,
+    NamedEquation, NamedExpr, SectorKind, SpatialCurvature, SvtModeNames, TimeCoordinate,
+};
+pub use error::CosmologyError;
+pub use gauge_transform::{
+    bardeen_variations, default_scalar_gauge_generator, normalize_scalar_gauge_expr,
+    scalar_metric_gauge_variation, GaugeInvariantCheck, ScalarGaugeGenerator, ScalarGaugeVariation,
+};
+pub use linearized::{
+    count_perturbation_degree, derive_linearized_einstein_matrices,
+    derive_linearized_scalar_equations_newtonian, linearize_in_symbols,
+    linearized_scalar_equations_as_named, strip_common_mixed_gradient,
+    strip_common_single_gradient, LinearizedEinsteinMatrices, LinearizedScalarEquationSet,
+};
+pub use matter::{
+    perfect_fluid_linear_conservation_equations_newtonian, standard_canonical_scalar_symbols,
+    standard_perfect_fluid_symbols, CanonicalScalarSymbols, MatterEquationSet, PerfectFluidSymbols,
+};
+pub use metric_ansatz::{
+    background_metric_matrix, background_metric_rules, default_frw_chart,
+    default_frw_metric_ansatz, inverse_background_metric_rules, scalar_perturbed_metric_matrix,
+    scalar_perturbed_metric_rules, FrwCoordinateChart, FrwMetricAnsatz, ScalarMetricModes,
+    SpatialCoordinateNames, TensorMetricModes, VectorMetricModes,
+};
+pub use second_order::{
+    default_second_order_gauge_generator, default_second_order_scalar_modes,
+    derive_second_order_scalar_einstein_system, expand_expr_in_parameter,
+    expand_matrix_in_parameter, lie_derivative_covariant_rank2,
+    second_order_scalar_gauge_variation, SecondOrderEinsteinEquationSplit,
+    SecondOrderEinsteinSystem, SecondOrderGaugeGenerator, SecondOrderScalarGaugeVariation,
+    SecondOrderScalarModes,
+};
 
 use ax_ir::{Condition, Expr, Index, Variance};
 use num_bigint::BigInt;
@@ -440,7 +488,7 @@ fn substitute_field(expr: &Expr, setup: &PerturbationSetup, interner: &ax_ir::In
     }
 }
 
-fn expand_in_epsilon(
+pub(crate) fn expand_in_epsilon(
     expr: &Expr,
     epsilon: lasso::Spur,
     max_order: usize,
@@ -590,7 +638,7 @@ fn multinomial_expand(
     acc
 }
 
-fn collect_orders(terms: Vec<(usize, Expr)>, max_order: usize) -> ExpandedExpression {
+pub(crate) fn collect_orders(terms: Vec<(usize, Expr)>, max_order: usize) -> ExpandedExpression {
     let mut grouped: BTreeMap<usize, Vec<Expr>> = BTreeMap::new();
     for (order, expr) in terms {
         if order <= max_order && !is_zero_expr(&expr) {

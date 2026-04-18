@@ -423,11 +423,15 @@ name = "ax-perturb"
 version = "0.1.0"
 dependencies = [
  "ax-ir",
+ "ax-ode",
+ "ax-render",
  "ax-tensor",
+ "ax-variational",
  "lasso",
  "num-bigint",
  "num-rational",
  "num-traits",
+ "thiserror",
 ]
 
 [[package]]

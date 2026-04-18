@@ -236,6 +236,57 @@ pub fn to_cpp(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> String {
     }
 }
 
+pub fn emit_python_function(
+    name: &str,
+    args: &[lasso::Spur],
+    body: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> String {
+    format!(
+        "def {}({}):\n    return {}",
+        name,
+        args.iter()
+            .map(|sym| render_sym(*sym, interner))
+            .collect::<Vec<_>>()
+            .join(", "),
+        to_python(body, interner)
+    )
+}
+
+pub fn emit_rust_function(
+    name: &str,
+    args: &[lasso::Spur],
+    body: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> String {
+    format!(
+        "pub fn {}({}) -> f64 {{\n    {}\n}}",
+        name,
+        args.iter()
+            .map(|sym| format!("{}: f64", render_sym(*sym, interner)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        to_rust(body, interner)
+    )
+}
+
+pub fn emit_cpp_function(
+    name: &str,
+    args: &[lasso::Spur],
+    body: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> String {
+    format!(
+        "double {}({}) {{\n    return {};\n}}",
+        name,
+        args.iter()
+            .map(|sym| format!("double {}", render_sym(*sym, interner)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        to_cpp(body, interner)
+    )
+}
+
 pub fn emit_tensor_symmetry_json(sym: &ax_ir::TensorSymmetry) -> anyhow::Result<String> {
     serde_json::to_string(&serde_json::json!({
         "tableaux": sym.tableaux.iter().map(|tableau| serde_json::json!({
@@ -388,5 +439,38 @@ mod tests {
         );
         let code = to_cpp(&expr, &interner);
         assert!(code.contains("complex"), "got: {}", code);
+    }
+
+    #[test]
+    fn emit_python_function_wraps_to_python_body() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let body = ax_ir::Expr::Add(vec![ax_ir::Expr::Sym(x), ax_ir::Expr::one()]);
+
+        let code = emit_python_function("f", &[x], &body, &interner);
+
+        assert_eq!(code, "def f(x):\n    return x + 1");
+    }
+
+    #[test]
+    fn emit_rust_function_wraps_to_rust_body() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let body = ax_ir::Expr::Add(vec![ax_ir::Expr::Sym(x), ax_ir::Expr::one()]);
+
+        let code = emit_rust_function("f", &[x], &body, &interner);
+
+        assert_eq!(code, "pub fn f(x: f64) -> f64 {\n    x + 1i64\n}");
+    }
+
+    #[test]
+    fn emit_cpp_function_wraps_to_cpp_body() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let body = ax_ir::Expr::Add(vec![ax_ir::Expr::Sym(x), ax_ir::Expr::one()]);
+
+        let code = emit_cpp_function("f", &[x], &body, &interner);
+
+        assert_eq!(code, "double f(double x) {\n    return x + 1;\n}");
     }
 }

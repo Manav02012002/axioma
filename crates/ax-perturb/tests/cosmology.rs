@@ -69,8 +69,8 @@ fn tensor_to_scalar_value() {
 fn linearized_einstein_has_four_equations() {
     let interner = Interner::new();
     let bg = frw_background(&interner);
-    let decomp = svt_decompose_perturbation(3, &interner);
-    let eqs = linearized_einstein_scalar(&bg, &decomp, &interner);
+    let decomp = svt_decompose_perturbation(3, &interner).expect("svt decomposition");
+    let eqs = linearized_einstein_scalar(&bg, &decomp, &interner).expect("linearized equations");
     assert_eq!(
         eqs.len(),
         4,
@@ -82,10 +82,9 @@ fn linearized_einstein_has_four_equations() {
 #[test]
 fn bardeen_has_two_potentials() {
     let interner = Interner::new();
-    let decomp = svt_decompose_perturbation(3, &interner);
-    let a = interner.get_or_intern("a");
-    let eta = interner.get_or_intern("eta");
-    let vars = bardeen_variables(&decomp, a, eta, &interner);
+    let decomp = svt_decompose_perturbation(3, &interner).expect("svt decomposition");
+    let bg = frw_background(&interner);
+    let vars = bardeen_variables(&decomp, &bg, &interner).expect("bardeen variables");
     assert_eq!(
         vars.len(),
         2,
@@ -113,7 +112,7 @@ fn zerilli_equation_structure() {
 #[test]
 fn svt_decomposition_has_all_modes() {
     let interner = Interner::new();
-    let decomp = svt_decompose_perturbation(3, &interner);
+    let decomp = svt_decompose_perturbation(3, &interner).expect("svt decomposition");
     assert_eq!(decomp.scalar_modes.len(), 4, "should have 4 scalar modes");
     assert_eq!(decomp.vector_modes.len(), 2, "should have 2 vector modes");
     assert_eq!(decomp.tensor_modes.len(), 1, "should have 1 tensor mode");
