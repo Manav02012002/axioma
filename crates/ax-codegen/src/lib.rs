@@ -75,6 +75,10 @@ pub fn to_python(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> String {
                 "log" => format!("math.log({args_str})"),
                 "sqrt" => format!("math.sqrt({args_str})"),
                 "abs" => format!("abs({args_str})"),
+                "dagger" => format!("dagger({args_str})"),
+                "tensor_product" => format!("tensor_product({args_str})"),
+                "commutator" => format!("commutator({args_str})"),
+                "anticommutator" => format!("anticommutator({args_str})"),
                 _ => format!("{name}({args_str})"),
             }
         }
@@ -104,6 +108,23 @@ pub fn to_python(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> String {
         ),
         _ => format!("# unsupported: {:?}", expr),
     }
+}
+
+/// Return a Python NumPy prelude containing helper definitions for QM matrix operations.
+pub fn python_qm_prelude() -> &'static str {
+    "import numpy as np
+
+def dagger(x):
+    return np.conjugate(x).T
+
+def tensor_product(a, b):
+    return np.kron(a, b)
+
+def commutator(a, b):
+    return a @ b - b @ a
+
+def anticommutator(a, b):
+    return a @ b + b @ a"
 }
 
 pub fn to_rust(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> String {
@@ -244,6 +265,25 @@ pub fn emit_python_function(
 ) -> String {
     format!(
         "def {}({}):\n    return {}",
+        name,
+        args.iter()
+            .map(|sym| render_sym(*sym, interner))
+            .collect::<Vec<_>>()
+            .join(", "),
+        to_python(body, interner)
+    )
+}
+
+/// Emit a Python function together with the QM NumPy helper prelude it depends on.
+pub fn emit_python_qm_function(
+    name: &str,
+    args: &[lasso::Spur],
+    body: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> String {
+    format!(
+        "{}\n\ndef {}({}):\n    return {}",
+        python_qm_prelude(),
         name,
         args.iter()
             .map(|sym| render_sym(*sym, interner))
@@ -472,5 +512,50 @@ mod tests {
         let code = emit_cpp_function("f", &[x], &body, &interner);
 
         assert_eq!(code, "double f(double x) {\n    return x + 1;\n}");
+    }
+
+    #[test]
+    fn python_qm_prelude_contains_helpers() {
+        let prelude = python_qm_prelude();
+        assert!(prelude.contains("import numpy as np"));
+        assert!(prelude.contains("def dagger(x):"));
+        assert!(prelude.contains("def tensor_product(a, b):"));
+    }
+
+    #[test]
+    fn to_python_emits_tensor_product_helper_call() {
+        let interner = ax_ir::Interner::new();
+        let tensor_product = interner.get_or_intern("tensor_product");
+        let a = interner.get_or_intern("A");
+        let b = interner.get_or_intern("B");
+        let expr = ax_ir::Expr::Call(
+            tensor_product,
+            vec![ax_ir::Expr::Sym(a), ax_ir::Expr::Sym(b)],
+        );
+        let code = to_python(&expr, &interner);
+        assert!(code.contains("tensor_product(A, B)"));
+    }
+
+    #[test]
+    fn to_python_emits_dagger_helper_call() {
+        let interner = ax_ir::Interner::new();
+        let dagger = interner.get_or_intern("dagger");
+        let a = interner.get_or_intern("A");
+        let expr = ax_ir::Expr::Call(dagger, vec![ax_ir::Expr::Sym(a)]);
+        let code = to_python(&expr, &interner);
+        assert!(code.contains("dagger(A)"));
+    }
+
+    #[test]
+    fn emit_python_qm_function_includes_numpy_helpers() {
+        let interner = ax_ir::Interner::new();
+        let dagger = interner.get_or_intern("dagger");
+        let a = interner.get_or_intern("A");
+        let body = ax_ir::Expr::Call(dagger, vec![ax_ir::Expr::Sym(a)]);
+        let code = emit_python_qm_function("f", &[a], &body, &interner);
+        assert!(code.contains("import numpy as np"));
+        assert!(code.contains("def dagger(x):"));
+        assert!(code.contains("def tensor_product(a, b):"));
+        assert!(code.contains("dagger(A)"));
     }
 }

@@ -2,7 +2,10 @@
 
 use anyhow::{anyhow, Context, Result};
 use ax_ai_proto::TensorSymmetrySummary;
-use ax_plugin_api::{PluginRequest, PluginResponse, SymmetrySummaryResponse};
+use ax_plugin_api::{
+    PluginRequest, PluginResponse, SparseEigenRequest, SparseEigenResponse, SymmetrySummaryResponse,
+};
+use num_traits::ToPrimitive;
 use std::path::Path;
 use wasmtime::{Engine, Instance, Module, Store, TypedFunc};
 
@@ -104,4 +107,128 @@ fn diagnostics_to_message(diagnostics: &[ax_syntax::Diagnostic]) -> String {
         .map(|diag| diag.message.as_str())
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+fn expr_to_f64(expr: &ax_ir::Expr) -> Option<f64> {
+    match expr {
+        ax_ir::Expr::Int(n) => n.to_f64(),
+        ax_ir::Expr::Rational(r) => Some(r.numer().to_f64()? / r.denom().to_f64()?),
+        ax_ir::Expr::Float(f) => Some(*f),
+        _ => None,
+    }
+}
+
+fn numeric_matrix_error() -> anyhow::Error {
+    anyhow!("sparse_eigenpairs_via_plugin requires a purely numeric matrix")
+}
+
+fn plugin_diagnostics_error(diagnostics: &[ax_plugin_api::PluginDiag]) -> anyhow::Error {
+    anyhow!(
+        "{}",
+        diagnostics
+            .iter()
+            .map(|diag| diag.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
+}
+
+fn expr_to_complex_pair(expr: &ax_ir::Expr) -> anyhow::Result<(f64, f64)> {
+    match expr {
+        ax_ir::Expr::Int(n) => n
+            .to_f64()
+            .map(|value| (value, 0.0))
+            .ok_or_else(numeric_matrix_error),
+        ax_ir::Expr::Rational(r) => {
+            let re = r
+                .numer()
+                .to_f64()
+                .zip(r.denom().to_f64())
+                .map(|(numer, denom)| numer / denom);
+            re.map(|value| (value, 0.0))
+                .ok_or_else(numeric_matrix_error)
+        }
+        ax_ir::Expr::Float(f) => Ok((*f, 0.0)),
+        ax_ir::Expr::Complex(re, im) => {
+            let re = expr_to_f64(re).ok_or_else(numeric_matrix_error)?;
+            let im = expr_to_f64(im).ok_or_else(numeric_matrix_error)?;
+            Ok((re, im))
+        }
+        _ => Err(numeric_matrix_error()),
+    }
+}
+
+pub fn sparse_eigenpairs_via_plugin(
+    plugin: &WasmPlugin,
+    plugin_name: &str,
+    matrix: &[Vec<ax_ir::Expr>],
+    k: usize,
+    which: &str,
+) -> anyhow::Result<SparseEigenResponse> {
+    let rows = matrix.len();
+    let cols = matrix.first().map(|row| row.len()).unwrap_or(0);
+    if !matrix.iter().all(|row| row.len() == cols) || rows != cols {
+        return Err(anyhow!(
+            "sparse_eigenpairs_via_plugin expects a square matrix"
+        ));
+    }
+
+    let matrix = matrix
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(expr_to_complex_pair)
+                .collect::<anyhow::Result<Vec<_>>>()
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let req = PluginRequest {
+        plugin: plugin_name.to_string(),
+        op: "sparse_eigenpairs".to_string(),
+        args: serde_json::to_value(SparseEigenRequest {
+            matrix,
+            k,
+            which: which.to_string(),
+        })
+        .context("serialize SparseEigenRequest")?,
+    };
+
+    let response = plugin.call(&req)?;
+    if !response.ok {
+        return Err(plugin_diagnostics_error(&response.diagnostics));
+    }
+
+    serde_json::from_value(response.result).context("deserialize SparseEigenResponse")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expr_to_complex_pair_accepts_real_and_complex_numeric_exprs() {
+        assert_eq!(
+            expr_to_complex_pair(&ax_ir::Expr::Int(2.into())).unwrap(),
+            (2.0, 0.0)
+        );
+        assert_eq!(
+            expr_to_complex_pair(&ax_ir::Expr::Complex(
+                Box::new(ax_ir::Expr::Int(1.into())),
+                Box::new(ax_ir::Expr::Int((-1).into())),
+            ))
+            .unwrap(),
+            (1.0, -1.0)
+        );
+    }
+
+    #[test]
+    fn expr_to_complex_pair_rejects_symbolic_expr() {
+        let interner = ax_ir::Interner::new();
+        let x = interner.get_or_intern("x");
+        let err = expr_to_complex_pair(&ax_ir::Expr::Sym(x)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "sparse_eigenpairs_via_plugin requires a purely numeric matrix"
+        );
+    }
 }

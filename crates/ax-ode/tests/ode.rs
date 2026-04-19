@@ -1,8 +1,13 @@
 use ax_ir::*;
 use ax_ode::*;
+use num_rational::BigRational;
 
 fn int() -> Interner {
     Interner::new()
+}
+
+fn one_tenth() -> Expr {
+    Expr::Rational(BigRational::new(1.into(), 10.into()))
 }
 
 #[test]
@@ -75,5 +80,62 @@ fn classify_pde_laplace() {
         matches!(result, PdeType::Elliptic),
         "Laplace equation should be elliptic, got {:?}",
         result
+    );
+}
+
+#[test]
+fn lindblad_euler_zero_rhs_leaves_state_unchanged() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ];
+    let rho = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let jump_ops: Vec<Vec<Vec<Expr>>> = Vec::new();
+    let dt = one_tenth();
+    let next = lindblad_euler_step(&h, &rho, &jump_ops, &dt, &interner).unwrap();
+    assert_eq!(next, rho);
+}
+
+#[test]
+fn lindblad_rk4_zero_rhs_leaves_state_unchanged() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ];
+    let rho = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let jump_ops: Vec<Vec<Vec<Expr>>> = Vec::new();
+    let dt = one_tenth();
+    let next = lindblad_rk4_step(&h, &rho, &jump_ops, &dt, &interner).unwrap();
+    assert_eq!(next, rho);
+}
+
+#[test]
+fn lindblad_step_rejects_zero_dt() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ];
+    let rho = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let jump_ops: Vec<Vec<Vec<Expr>>> = Vec::new();
+
+    assert_eq!(
+        lindblad_euler_step(&h, &rho, &jump_ops, &Expr::zero(), &interner),
+        Err(QuantumOdeError::ZeroTimeStep)
+    );
+    assert_eq!(
+        lindblad_rk4_step(&h, &rho, &jump_ops, &Expr::zero(), &interner),
+        Err(QuantumOdeError::ZeroTimeStep)
     );
 }

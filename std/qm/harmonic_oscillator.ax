@@ -15,5 +15,7 @@ let h_toy = [[1, 0], [0, 2]]
 let rho_toy = [[1/2, 0], [0, 1/2]]
 let jumps = []
 let rho_dot = lindblad_rhs(h_toy, rho_toy, jumps)
+let rho_euler = lindblad_euler_step(h_toy, rho_toy, jumps, 1/10)
+let rho_rk4 = lindblad_rk4_step(h_toy, rho_toy, jumps, 1/10)
 
-[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered, rho_dot]
+[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered, rho_dot, rho_euler, rho_rk4]

@@ -10,9 +10,11 @@ path = "src/lib.rs"
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 ax-ai-proto = { path = "../ax-ai-proto" }
+ax-ir = { path = "../ax-ir" }
 ax-plugin-api = { path = "../ax-plugin-api" }
 ax-render = { path = "../ax-render" }
 ax-syntax = { path = "../ax-syntax" }
+num-traits = { workspace = true }
 
 wasmtime = "19.0"
 

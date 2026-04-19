@@ -16,6 +16,74 @@ fn zeros_rank3(dim: usize) -> Vec<Vec<Vec<f64>>> {
     vec![vec![vec![0.0; dim]; dim]; dim]
 }
 
+fn rk4_system_numeric_local(
+    f: &dyn Fn(f64, &[f64]) -> Vec<f64>,
+    x0: f64,
+    y0s: &[f64],
+    x_end: f64,
+    n_steps: usize,
+) -> Vec<Vec<f64>> {
+    if n_steps == 0 {
+        return Vec::new();
+    }
+
+    let n = y0s.len();
+    let h = (x_end - x0) / n_steps as f64;
+    let mut x = x0;
+    let mut ys = y0s.to_vec();
+    let mut out = Vec::with_capacity(n_steps + 1);
+    let mut row = Vec::with_capacity(n + 1);
+    row.push(x);
+    row.extend_from_slice(&ys);
+    out.push(row);
+
+    for _ in 0..n_steps {
+        let k1 = f(x, &ys);
+        if k1.len() != n {
+            return Vec::new();
+        }
+        let yk2 = ys
+            .iter()
+            .zip(k1.iter())
+            .map(|(y, k)| y + h * k / 2.0)
+            .collect::<Vec<_>>();
+        let k2 = f(x + h / 2.0, &yk2);
+        if k2.len() != n {
+            return Vec::new();
+        }
+        let yk3 = ys
+            .iter()
+            .zip(k2.iter())
+            .map(|(y, k)| y + h * k / 2.0)
+            .collect::<Vec<_>>();
+        let k3 = f(x + h / 2.0, &yk3);
+        if k3.len() != n {
+            return Vec::new();
+        }
+        let yk4 = ys
+            .iter()
+            .zip(k3.iter())
+            .map(|(y, k)| y + h * k)
+            .collect::<Vec<_>>();
+        let k4 = f(x + h, &yk4);
+        if k4.len() != n {
+            return Vec::new();
+        }
+
+        for i in 0..n {
+            ys[i] += h * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]) / 6.0;
+        }
+        x += h;
+
+        let mut row = Vec::with_capacity(n + 1);
+        row.push(x);
+        row.extend_from_slice(&ys);
+        out.push(row);
+    }
+
+    out
+}
+
 pub fn parallel_transport(
     initial_vector: &[f64],
     curve: &[Vec<f64>],
@@ -76,7 +144,7 @@ pub fn parallel_transport(
                 .collect::<Vec<_>>()
         };
 
-        let result = ax_ode::rk4_system_numeric(&system, 0.0, &current, 1.0, 1);
+        let result = rk4_system_numeric_local(&system, 0.0, &current, 1.0, 1);
         let next = result
             .last()
             .map(|row| row[1..].to_vec())
@@ -133,8 +201,7 @@ pub fn integrate_geodesic(
         derivative
     };
 
-    let raw =
-        ax_ode::rk4_system_numeric(&system, tau_range.0, &initial_state, tau_range.1, n_steps);
+    let raw = rk4_system_numeric_local(&system, tau_range.0, &initial_state, tau_range.1, n_steps);
     Ok(raw
         .into_iter()
         .map(|row| {

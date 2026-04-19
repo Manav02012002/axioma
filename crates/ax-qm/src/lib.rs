@@ -130,11 +130,27 @@ pub enum LindbladError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ObservableError {
+    #[error("operator not square: rows={rows}, cols={cols}")]
+    OperatorNotSquare { rows: usize, cols: usize },
+    #[error("state not square: rows={rows}, cols={cols}")]
+    StateNotSquare { rows: usize, cols: usize },
+    #[error("dimension mismatch: expected={expected}, actual={actual}")]
+    DimensionMismatch { expected: usize, actual: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CompositeSpaceError {
     #[error("empty factor list")]
     EmptyFactorList,
     #[error("invalid factor index {index} for factor count {factor_count}")]
     InvalidFactorIndex { index: usize, factor_count: usize },
+    #[error("invalid permutation length: expected={expected}, actual={actual}")]
+    InvalidPermutationLength { expected: usize, actual: usize },
+    #[error("invalid permutation entry {value} for factor count {factor_count}")]
+    InvalidPermutationEntry { value: usize, factor_count: usize },
+    #[error("duplicate permutation entry {value}")]
+    DuplicatePermutationEntry { value: usize },
     #[error("non-square matrix: rows={rows}, cols={cols}")]
     NonSquareMatrix { rows: usize, cols: usize },
     #[error("total dimension mismatch: expected={expected}, actual={actual}")]
@@ -1195,6 +1211,40 @@ fn validate_lindblad_jump_ops(
     Ok(())
 }
 
+fn validate_observable_inputs(
+    operator: &[Vec<Expr>],
+    rho: &[Vec<Expr>],
+) -> Result<usize, ObservableError> {
+    let (operator_rows, operator_cols) = matrix_shape(operator).unwrap_or((
+        operator.len(),
+        operator.first().map(|row| row.len()).unwrap_or(0),
+    ));
+    if operator_rows != operator_cols {
+        return Err(ObservableError::OperatorNotSquare {
+            rows: operator_rows,
+            cols: operator_cols,
+        });
+    }
+
+    let (state_rows, state_cols) =
+        matrix_shape(rho).unwrap_or((rho.len(), rho.first().map(|row| row.len()).unwrap_or(0)));
+    if state_rows != state_cols {
+        return Err(ObservableError::StateNotSquare {
+            rows: state_rows,
+            cols: state_cols,
+        });
+    }
+
+    if state_rows != operator_rows {
+        return Err(ObservableError::DimensionMismatch {
+            expected: operator_rows,
+            actual: state_rows,
+        });
+    }
+
+    Ok(operator_rows)
+}
+
 pub fn pauli_x(_interner: &ax_ir::Interner) -> Vec<Vec<ax_ir::Expr>> {
     vec![
         vec![Expr::zero(), Expr::one()],
@@ -1772,6 +1822,31 @@ pub fn measurement_probabilities(
         .collect())
 }
 
+/// Compute the expectation value `Tr(ρ O)` of an observable against a density operator.
+pub fn expectation_value(
+    operator: &[Vec<Expr>],
+    rho: &[Vec<Expr>],
+) -> Result<Expr, ObservableError> {
+    validate_observable_inputs(operator, rho)?;
+    let interner = ax_ir::Interner::new();
+    let product = ax_linalg::mat_mul(rho, operator, &interner);
+    Ok(simplify_expr(ax_linalg::trace(&product)))
+}
+
+/// Compute the variance `Tr(ρ O^2) - (Tr(ρ O))^2` of an observable against a density operator.
+pub fn variance(operator: &[Vec<Expr>], rho: &[Vec<Expr>]) -> Result<Expr, ObservableError> {
+    validate_observable_inputs(operator, rho)?;
+    let interner = ax_ir::Interner::new();
+    let operator_sq = ax_linalg::mat_mul(operator, operator, &interner);
+    let rho_operator_sq = ax_linalg::mat_mul(rho, &operator_sq, &interner);
+    let second_moment = simplify_expr(ax_linalg::trace(&rho_operator_sq));
+    let mean = expectation_value(operator, rho)?;
+    Ok(simplify_expr(Expr::add(vec![
+        second_moment,
+        Expr::neg(Expr::pow(mean, Expr::Int(2.into()))),
+    ])))
+}
+
 /// Compute the normalized post-measurement state `ρ_i = P_i ρ P_i / p_i`.
 pub fn post_measurement_state(
     projector: &[Vec<Expr>],
@@ -1869,23 +1944,12 @@ pub fn multi_index_from_linear(index: usize, dims: &[usize]) -> Vec<usize> {
     out
 }
 
-/// Trace out one tensor factor from a density matrix over an arbitrary ordered factorization.
-///
-/// The output preserves the original relative order of all remaining factors. When the input has
-/// a single factor, tracing that factor returns the `1x1` matrix whose only entry is `Tr(rho)`.
-pub fn try_partial_trace_factor(
+fn validate_composite_space_matrix(
     rho: &[Vec<Expr>],
     factor_dims: &[usize],
-    traced_factor: usize,
-) -> Result<Vec<Vec<Expr>>, CompositeSpaceError> {
+) -> Result<(), CompositeSpaceError> {
     if factor_dims.is_empty() {
         return Err(CompositeSpaceError::EmptyFactorList);
-    }
-    if traced_factor >= factor_dims.len() {
-        return Err(CompositeSpaceError::InvalidFactorIndex {
-            index: traced_factor,
-            factor_count: factor_dims.len(),
-        });
     }
 
     let rows = rho.len();
@@ -1901,6 +1965,61 @@ pub fn try_partial_trace_factor(
             actual: rows,
         });
     }
+
+    Ok(())
+}
+
+fn validate_factor_index(
+    factor_dims: &[usize],
+    factor_index: usize,
+) -> Result<(), CompositeSpaceError> {
+    if factor_index >= factor_dims.len() {
+        return Err(CompositeSpaceError::InvalidFactorIndex {
+            index: factor_index,
+            factor_count: factor_dims.len(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_permutation(
+    factor_dims: &[usize],
+    permutation: &[usize],
+) -> Result<(), CompositeSpaceError> {
+    if permutation.len() != factor_dims.len() {
+        return Err(CompositeSpaceError::InvalidPermutationLength {
+            expected: factor_dims.len(),
+            actual: permutation.len(),
+        });
+    }
+
+    let mut seen = vec![false; factor_dims.len()];
+    for &value in permutation {
+        if value >= factor_dims.len() {
+            return Err(CompositeSpaceError::InvalidPermutationEntry {
+                value,
+                factor_count: factor_dims.len(),
+            });
+        }
+        if std::mem::replace(&mut seen[value], true) {
+            return Err(CompositeSpaceError::DuplicatePermutationEntry { value });
+        }
+    }
+
+    Ok(())
+}
+
+/// Trace out one tensor factor from a density matrix over an arbitrary ordered factorization.
+///
+/// The output preserves the original relative order of all remaining factors. When the input has
+/// a single factor, tracing that factor returns the `1x1` matrix whose only entry is `Tr(rho)`.
+pub fn try_partial_trace_factor(
+    rho: &[Vec<Expr>],
+    factor_dims: &[usize],
+    traced_factor: usize,
+) -> Result<Vec<Vec<Expr>>, CompositeSpaceError> {
+    validate_composite_space_matrix(rho, factor_dims)?;
+    validate_factor_index(factor_dims, traced_factor)?;
 
     if factor_dims.len() == 1 {
         return Ok(vec![vec![simplify_expr(ax_linalg::trace(rho))]]);
@@ -1948,6 +2067,80 @@ pub fn try_partial_trace_factor(
     Ok(out)
 }
 
+/// Partially transpose one tensor factor of a density matrix in lexicographic product order.
+///
+/// The basis ordering is the row-major lexicographic order induced by `factor_dims`. Only the
+/// selected subsystem index is transposed, meaning that the chosen factor's bra and ket digits are
+/// swapped while every other subsystem index is left unchanged.
+pub fn try_partial_transpose_factor(
+    rho: &[Vec<Expr>],
+    factor_dims: &[usize],
+    transposed_factor: usize,
+) -> Result<Vec<Vec<Expr>>, CompositeSpaceError> {
+    validate_composite_space_matrix(rho, factor_dims)?;
+    validate_factor_index(factor_dims, transposed_factor)?;
+
+    let total_dim = factor_dims.iter().product::<usize>();
+    let mut out = vec![vec![Expr::zero(); total_dim]; total_dim];
+
+    for out_row in 0..total_dim {
+        let row_multi = multi_index_from_linear(out_row, factor_dims);
+        for out_col in 0..total_dim {
+            let col_multi = multi_index_from_linear(out_col, factor_dims);
+            let mut source_row = row_multi.clone();
+            let mut source_col = col_multi.clone();
+            source_row[transposed_factor] = col_multi[transposed_factor];
+            source_col[transposed_factor] = row_multi[transposed_factor];
+            let source_row_index = linear_index_from_multi(&source_row, factor_dims);
+            let source_col_index = linear_index_from_multi(&source_col, factor_dims);
+            out[out_row][out_col] = rho[source_row_index][source_col_index].clone();
+        }
+    }
+
+    Ok(out)
+}
+
+/// Permute tensor-product subsystems by exact basis relabeling in lexicographic product order.
+///
+/// The `permutation` slice specifies the new factor order: output factor `i` is input factor
+/// `permutation[i]`. Both row and column multi-indices are reordered by that same relabeling, and
+/// matrix entries are copied exactly without algebraic modification.
+pub fn try_permute_subsystems(
+    rho: &[Vec<Expr>],
+    factor_dims: &[usize],
+    permutation: &[usize],
+) -> Result<Vec<Vec<Expr>>, CompositeSpaceError> {
+    validate_composite_space_matrix(rho, factor_dims)?;
+    validate_permutation(factor_dims, permutation)?;
+
+    let permuted_dims = permutation
+        .iter()
+        .map(|&index| factor_dims[index])
+        .collect::<Vec<_>>();
+    let total_dim = factor_dims.iter().product::<usize>();
+    let mut out = vec![vec![Expr::zero(); total_dim]; total_dim];
+
+    for source_row in 0..total_dim {
+        let row_multi = multi_index_from_linear(source_row, factor_dims);
+        let permuted_row = permutation
+            .iter()
+            .map(|&index| row_multi[index])
+            .collect::<Vec<_>>();
+        let target_row = linear_index_from_multi(&permuted_row, &permuted_dims);
+        for source_col in 0..total_dim {
+            let col_multi = multi_index_from_linear(source_col, factor_dims);
+            let permuted_col = permutation
+                .iter()
+                .map(|&index| col_multi[index])
+                .collect::<Vec<_>>();
+            let target_col = linear_index_from_multi(&permuted_col, &permuted_dims);
+            out[target_row][target_col] = rho[source_row][source_col].clone();
+        }
+    }
+
+    Ok(out)
+}
+
 pub fn try_partial_trace(
     rho: &[Vec<Expr>],
     dims: BipartiteDims,
@@ -1960,6 +2153,11 @@ pub fn try_partial_trace(
     try_partial_trace_factor(rho, &[dims.dim_a, dims.dim_b], traced_factor).map_err(|err| match err
     {
         CompositeSpaceError::EmptyFactorList | CompositeSpaceError::InvalidFactorIndex { .. } => {
+            QmLinearAlgebraError::InvalidTraceTarget { target: '?' }
+        }
+        CompositeSpaceError::InvalidPermutationLength { .. }
+        | CompositeSpaceError::InvalidPermutationEntry { .. }
+        | CompositeSpaceError::DuplicatePermutationEntry { .. } => {
             QmLinearAlgebraError::InvalidTraceTarget { target: '?' }
         }
         CompositeSpaceError::NonSquareMatrix { rows, cols } => {

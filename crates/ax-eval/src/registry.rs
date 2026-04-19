@@ -1788,6 +1788,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "partial_trace_factor(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), [2, 2], 1)",
         ),
         b(
+            "partial_transpose_factor",
+            "quantum",
+            "partial_transpose_factor(rho, dims, factor_index)",
+            "Partial transpose on one factor of a general composite Hilbert space.",
+            "partial_transpose_factor(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), [2, 2], 1)",
+        ),
+        b(
+            "permute_subsystems",
+            "quantum",
+            "permute_subsystems(rho, dims, permutation)",
+            "Permute subsystem order by exact composite-basis relabeling.",
+            "permute_subsystems(density([0, 1, 0, 0]), [2, 2], [1, 0])",
+        ),
+        b(
             "partial_trace_space",
             "quantum",
             "partial_trace_space(rho, composite_space_symbol, factor_space_symbol)",
@@ -1807,6 +1821,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "measurement_probabilities(projectors, rho)",
             "Projective-measurement probabilities for a density matrix.",
             "measurement_probabilities([basis_projector(0, 2), basis_projector(1, 2)], [[1,0],[0,0]])",
+        ),
+        b(
+            "expectation_value",
+            "quantum",
+            "expectation_value(operator, rho)",
+            "Expectation value Tr(rho * operator) for a finite-dimensional observable.",
+            "expectation_value(pauli_z(), density_matrix([1, 0]))",
+        ),
+        b(
+            "variance",
+            "quantum",
+            "variance(operator, rho)",
+            "Variance Tr(rho * operator^2) - Tr(rho * operator)^2 for a finite-dimensional observable.",
+            "variance(pauli_z(), density_matrix([1, 0]))",
         ),
         b(
             "post_measurement_state",
@@ -1835,6 +1863,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "lindblad_rhs(H, rho, jumps)",
             "Construct the finite-dimensional Lindblad right-hand side for a density matrix.",
             "lindblad_rhs([[1,0],[0,2]], [[1/2,0],[0,1/2]], [])",
+        ),
+        b(
+            "lindblad_euler_step",
+            "quantum",
+            "lindblad_euler_step(H, rho, jumps, dt)",
+            "Take one explicit Euler step for finite-dimensional Lindblad evolution.",
+            "lindblad_euler_step([[1,0],[0,2]], [[1,0],[0,0]], [], 1/10)",
+        ),
+        b(
+            "lindblad_rk4_step",
+            "quantum",
+            "lindblad_rk4_step(H, rho, jumps, dt)",
+            "Take one classical RK4 step for finite-dimensional Lindblad evolution.",
+            "lindblad_rk4_step([[1,0],[0,2]], [[1,0],[0,0]], [], 1/10)",
         ),
         b(
             "creation",
@@ -2499,6 +2541,10 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("density_matrix", "qm", "density_matrix(state: &[Expr]) -> Vec<Vec<Expr>>", "Build the rank-one density matrix |psi><psi| from a state vector.", "The state should be given as a finite component vector.", "density([a, b])"),
         a("partial_trace", "qm", "partial_trace(rho: &[Vec<Expr>], dim_a: usize, dim_b: usize, trace_over: char, interner: &Interner) -> Vec<Vec<Expr>>", "Trace out subsystem A or B from a bipartite density matrix.", "rho must be arranged as a (dim_a*dim_b) square matrix, and trace_over must be 'A' or 'B'.", "partial_trace(rho, 2, 2, B)"),
         a("partial_trace_factor", "qm", "try_partial_trace_factor(rho: &[Vec<Expr>], factor_dims: &[usize], traced_factor: usize) -> Result<Vec<Vec<Expr>>, CompositeSpaceError>", "Trace out one factor from a general finite-dimensional tensor-product space while preserving the order of the remaining factors.", "rho must be square with dimension equal to the product of factor_dims, and traced_factor must be a valid factor index.", "partial_trace_factor(rho, [2, 2], 1)"),
+        a("partial_transpose_factor", "qm", "try_partial_transpose_factor(rho: &[Vec<Expr>], factor_dims: &[usize], transposed_factor: usize) -> Result<Vec<Vec<Expr>>, CompositeSpaceError>", "Partially transpose one subsystem by swapping the chosen factor's bra and ket indices in lexicographic tensor-product order.", "rho must be square with dimension equal to the product of factor_dims, and transposed_factor must be a valid factor index.", "partial_transpose_factor(rho, [2, 2], 1)"),
+        a("permute_subsystems", "qm", "try_permute_subsystems(rho: &[Vec<Expr>], factor_dims: &[usize], permutation: &[usize]) -> Result<Vec<Vec<Expr>>, CompositeSpaceError>", "Permute subsystem order by exact basis relabeling of both row and column tensor-product indices.", "rho must be square with dimension equal to the product of factor_dims, and permutation must contain each factor index exactly once.", "permute_subsystems(rho, [2, 2], [1, 0])"),
+        a("expectation_value", "qm", "expectation_value(operator: &[Vec<Expr>], rho: &[Vec<Expr>]) -> Result<Expr, ObservableError>", "Compute the observable expectation value Tr(rho * operator) for a finite-dimensional density matrix.", "Both operator and rho must be square matrices of the same dimension.", "expectation_value(pauli_z(), density_matrix([1, 0]))"),
+        a("variance", "qm", "variance(operator: &[Vec<Expr>], rho: &[Vec<Expr>]) -> Result<Expr, ObservableError>", "Compute the observable variance Tr(rho * operator^2) - Tr(rho * operator)^2 for a finite-dimensional density matrix.", "Both operator and rho must be square matrices of the same dimension.", "variance(pauli_z(), density_matrix([1, 0]))"),
         a("braket", "qm", "braket(bra: &[Expr], ket: &[Expr]) -> Expr", "Compute the inner product of a bra and ket by componentwise contraction.", "The two vectors should have the same length.", "braket([1, 0], [0, 1])"),
         a("wedge", "forms", "wedge(a: &DiffForm, b: &DiffForm, interner: &Interner) -> DiffForm", "Compute the antisymmetric wedge product of two differential forms.", "Both forms must have the same ambient dimension.", "wedge_1_1(A, B)"),
         a("exterior_derivative", "forms", "exterior_derivative(form: &DiffForm, coords: &[Spur], interner: &Interner) -> DiffForm", "Take the exterior derivative of a differential form by differentiating components and wedging in basis one-forms.", "form.dim must equal coords.len().", "exterior_d(A)"),
@@ -6724,6 +6770,11 @@ fn handle_partial_trace_factor_qm(
             ax_qm::CompositeSpaceError::InvalidFactorIndex { .. } => {
                 "partial_trace_factor factor index is out of range".to_string()
             }
+            ax_qm::CompositeSpaceError::InvalidPermutationLength { .. }
+            | ax_qm::CompositeSpaceError::InvalidPermutationEntry { .. }
+            | ax_qm::CompositeSpaceError::DuplicatePermutationEntry { .. } => {
+                "partial_trace_factor factor index is out of range".to_string()
+            }
             ax_qm::CompositeSpaceError::NonSquareMatrix { .. }
             | ax_qm::CompositeSpaceError::TotalDimensionMismatch { .. } => {
                 "partial_trace_factor matrix dimension does not match the factor dimensions"
@@ -6754,6 +6805,78 @@ fn handle_partial_trace_space_qm(
             ax_qm::CompositeSpaceError::EmptyFactorList
             | ax_qm::CompositeSpaceError::InvalidFactorIndex { .. } => {
                 "partial_trace_space requires a declared composite Hilbert space".to_string()
+            }
+            ax_qm::CompositeSpaceError::InvalidPermutationLength { .. }
+            | ax_qm::CompositeSpaceError::InvalidPermutationEntry { .. }
+            | ax_qm::CompositeSpaceError::DuplicatePermutationEntry { .. } => {
+                "partial_trace_space requires a declared composite Hilbert space".to_string()
+            }
+            ax_qm::CompositeSpaceError::NonSquareMatrix { .. }
+            | ax_qm::CompositeSpaceError::TotalDimensionMismatch { .. } => {
+                "partial_trace_factor matrix dimension does not match the factor dimensions"
+                    .to_string()
+            }
+        })?;
+    matrix_response(reduced, state)
+}
+
+fn handle_partial_transpose_factor_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let dims = factor_dimensions_arg(args, 1, "dims")
+        .map_err(|_| "partial_transpose_factor factor index is out of range".to_string())?;
+    let factor_index = usize::try_from(int_arg(args, 2, "factor_index")?)
+        .map_err(|_| "partial_transpose_factor factor index is out of range".to_string())?;
+    let reduced = ax_qm::try_partial_transpose_factor(&rho, &dims, factor_index).map_err(
+        |err| match err {
+            ax_qm::CompositeSpaceError::InvalidFactorIndex { .. }
+            | ax_qm::CompositeSpaceError::EmptyFactorList => {
+                "partial_transpose_factor factor index is out of range".to_string()
+            }
+            ax_qm::CompositeSpaceError::NonSquareMatrix { .. }
+            | ax_qm::CompositeSpaceError::TotalDimensionMismatch { .. } => {
+                "partial_trace_factor matrix dimension does not match the factor dimensions"
+                    .to_string()
+            }
+            ax_qm::CompositeSpaceError::InvalidPermutationLength { .. }
+            | ax_qm::CompositeSpaceError::InvalidPermutationEntry { .. }
+            | ax_qm::CompositeSpaceError::DuplicatePermutationEntry { .. } => {
+                "partial_transpose_factor factor index is out of range".to_string()
+            }
+        },
+    )?;
+    matrix_response(reduced, state)
+}
+
+fn handle_permute_subsystems_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let dims = factor_dimensions_arg(args, 1, "dims").map_err(|_| {
+        "permute_subsystems permutation length must match the number of factors".to_string()
+    })?;
+    let permutation = factor_dimensions_arg(args, 2, "permutation").map_err(|_| {
+        "permute_subsystems permutation must contain each factor index exactly once".to_string()
+    })?;
+    let reduced =
+        ax_qm::try_permute_subsystems(&rho, &dims, &permutation).map_err(|err| match err {
+            ax_qm::CompositeSpaceError::InvalidPermutationLength { .. } => {
+                "permute_subsystems permutation length must match the number of factors".to_string()
+            }
+            ax_qm::CompositeSpaceError::InvalidPermutationEntry { .. }
+            | ax_qm::CompositeSpaceError::DuplicatePermutationEntry { .. } => {
+                "permute_subsystems permutation must contain each factor index exactly once"
+                    .to_string()
+            }
+            ax_qm::CompositeSpaceError::EmptyFactorList => {
+                "permute_subsystems permutation length must match the number of factors".to_string()
+            }
+            ax_qm::CompositeSpaceError::InvalidFactorIndex { .. } => {
+                "permute_subsystems permutation must contain each factor index exactly once"
+                    .to_string()
             }
             ax_qm::CompositeSpaceError::NonSquareMatrix { .. }
             | ax_qm::CompositeSpaceError::TotalDimensionMismatch { .. } => {
@@ -6811,6 +6934,31 @@ fn handle_measurement_probabilities_qm(
             }
         })?;
     list_response(probabilities, state)
+}
+
+fn handle_expectation_value_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let operator = matrix_from_id(args, 0, "operator", state)?;
+    let rho = matrix_from_id(args, 1, "rho", state)?;
+    let value = ax_qm::expectation_value(&operator, &rho).map_err(|_| {
+        "expectation_value expects square operator and density matrices of the same dimension"
+            .to_string()
+    })?;
+    expr_or_struct_response_named(value, "expectation_value", state)
+}
+
+fn handle_variance_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let operator = matrix_from_id(args, 0, "operator", state)?;
+    let rho = matrix_from_id(args, 1, "rho", state)?;
+    let value = ax_qm::variance(&operator, &rho).map_err(|_| {
+        "variance expects square operator and density matrices of the same dimension".to_string()
+    })?;
+    expr_or_struct_response_named(value, "variance", state)
 }
 
 fn handle_post_measurement_state_qm(
@@ -6886,6 +7034,54 @@ fn handle_lindblad_rhs_qm(
             }
             ax_qm::LindbladError::DimensionMismatch { .. } => {
                 "lindblad_rhs operator dimensions do not agree".to_string()
+            }
+        })?;
+    matrix_response(result, state)
+}
+
+fn handle_lindblad_euler_step_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let rho = matrix_from_id(args, 1, "rho", state)?;
+    let jumps_expr = expr_from_id(args, 2, "jumps", state)?;
+    let jump_ops = expr_to_3d(&jumps_expr)
+        .ok_or_else(|| "argument 'jumps' must reference a rank-3 nested list".to_string())?;
+    let dt = expr_from_id(args, 3, "dt", state)?;
+    let result =
+        ax_ode::lindblad_euler_step(&h, &rho, &jump_ops, &dt, state.interner()).map_err(|err| {
+            match err {
+                ax_ode::QuantumOdeError::ZeroTimeStep => {
+                    "lindblad step expects a nonzero dt".to_string()
+                }
+                ax_ode::QuantumOdeError::Lindblad(_) => {
+                    "lindblad step expects square operators with matching dimensions".to_string()
+                }
+            }
+        })?;
+    matrix_response(result, state)
+}
+
+fn handle_lindblad_rk4_step_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let rho = matrix_from_id(args, 1, "rho", state)?;
+    let jumps_expr = expr_from_id(args, 2, "jumps", state)?;
+    let jump_ops = expr_to_3d(&jumps_expr)
+        .ok_or_else(|| "argument 'jumps' must reference a rank-3 nested list".to_string())?;
+    let dt = expr_from_id(args, 3, "dt", state)?;
+    let result =
+        ax_ode::lindblad_rk4_step(&h, &rho, &jump_ops, &dt, state.interner()).map_err(|err| {
+            match err {
+                ax_ode::QuantumOdeError::ZeroTimeStep => {
+                    "lindblad step expects a nonzero dt".to_string()
+                }
+                ax_ode::QuantumOdeError::Lindblad(_) => {
+                    "lindblad step expects square operators with matching dimensions".to_string()
+                }
             }
         })?;
     matrix_response(result, state)
@@ -10062,15 +10258,21 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("apply_operator", "Apply an abstract operator to a state.", ps(vec![pdef("op", ParamType::ExprId, true, "Stored operator expression id."), pdef("state", ParamType::ExprId, true, "Stored state expression id.")]), handle_apply_operator_qm),
         centry("partial_trace", "Take a subsystem partial trace.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix id."), pdef("dim_a", ParamType::Integer, true, "Subsystem A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem B dimension."), pdef("which", ParamType::StringEnum(&["A", "B"]), true, "Subsystem to trace out.")]), handle_partial_trace_qm),
         centry("partial_trace_factor", "Take a factor-based partial trace using explicit tensor-product dimensions.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix id."), pdef("dims", ParamType::Code, true, "JSON array of factor dimensions."), pdef("factor_index", ParamType::Integer, true, "Factor index to trace out.")]), handle_partial_trace_factor_qm),
+        centry("partial_transpose_factor", "Take a factor-based partial transpose using explicit tensor-product dimensions.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix id."), pdef("dims", ParamType::Code, true, "JSON array of factor dimensions."), pdef("factor_index", ParamType::Integer, true, "Factor index to transpose.")]), handle_partial_transpose_factor_qm),
+        centry("permute_subsystems", "Permute subsystem order using explicit tensor-product dimensions.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix id."), pdef("dims", ParamType::Code, true, "JSON array of factor dimensions."), pdef("permutation", ParamType::Code, true, "JSON array describing the new subsystem order.")]), handle_permute_subsystems_qm),
         centry("partial_trace_space", "Take a factor-based partial trace using declared composite-space metadata.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix id."), pdef("composite_space_symbol", ParamType::Symbol, true, "Declared composite Hilbert-space symbol."), pdef("factor_space_symbol", ParamType::Symbol, true, "Factor Hilbert-space symbol to trace out.")]), handle_partial_trace_space_qm),
         centry("braket", "Bra-ket inner product.", ps(vec![pdef("bra", ParamType::ExprId, true, "Stored bra/list expression id."), pdef("ket", ParamType::ExprId, true, "Stored ket/list expression id.")]), handle_braket_qm),
         centry("outer", "Outer-product operator.", ps(vec![pdef("left", ParamType::ExprId, true, "Stored vector id."), pdef("right", ParamType::ExprId, true, "Stored vector id.")]), handle_outer_qm),
         centry("basis_projector", "Projector onto a computational-basis state.", ps(vec![pdef("index", ParamType::Integer, true, "Basis-state index."), pdef("dim", ParamType::Integer, true, "Hilbert-space dimension.")]), handle_basis_projector_qm),
         centry("measurement_probabilities", "Projective-measurement probabilities for a density matrix.", ps(vec![pdef("projectors", ParamType::ExprId, true, "Stored rank-3 projector-list expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_measurement_probabilities_qm),
+        centry("expectation_value", "Expectation value Tr(rho * operator) for a density matrix.", ps(vec![pdef("operator", ParamType::ExprId, true, "Stored observable matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_expectation_value_qm),
+        centry("variance", "Observable variance for a density matrix.", ps(vec![pdef("operator", ParamType::ExprId, true, "Stored observable matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_variance_qm),
         centry("post_measurement_state", "Normalized post-measurement state for an outcome projector.", ps(vec![pdef("projector", ParamType::ExprId, true, "Stored projector matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("outcome_index", ParamType::Integer, true, "Outcome label used for diagnostics.")]), handle_post_measurement_state_qm),
         centry("identity_channel", "Construct a finite-dimensional identity Kraus channel.", ps(vec![pdef("dim", ParamType::Integer, true, "Hilbert-space dimension.")]), handle_identity_channel_qm),
         centry("apply_channel", "Apply a Kraus channel to a density matrix.", ps(vec![pdef("kraus", ParamType::ExprId, true, "Stored rank-3 Kraus-list expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_apply_channel_qm),
         centry("lindblad_rhs", "Construct the finite-dimensional Lindblad right-hand side.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindblad_rhs_qm),
+        centry("lindblad_euler_step", "Take one explicit Euler step for finite-dimensional Lindblad evolution.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("dt", ParamType::ExprId, true, "Stored scalar timestep expression id.")]), handle_lindblad_euler_step_qm),
+        centry("lindblad_rk4_step", "Take one classical RK4 step for finite-dimensional Lindblad evolution.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("dt", ParamType::ExprId, true, "Stored scalar timestep expression id.")]), handle_lindblad_rk4_step_qm),
         centry("normal_order", "Normal-order creation and annihilation operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_normal_order_qm),
         centry("wick_expand", "Apply Wick expansion.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_wick_expand_qm),
         centry("wick", "Apply Wick expansion.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_wick_expand_qm),

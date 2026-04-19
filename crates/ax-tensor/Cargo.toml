@@ -10,7 +10,6 @@ anyhow = { workspace = true }
 ax-forms = { path = "../ax-forms" }
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
-ax-ode = { path = "../ax-ode" }
 ax-perm = { path = "../ax-perm" }
 ax-trace = { path = "../ax-trace" }
 ax-young = { path = "../ax-young" }

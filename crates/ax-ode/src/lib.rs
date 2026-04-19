@@ -6,6 +6,14 @@ use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum QuantumOdeError {
+    #[error("time step must be non-zero")]
+    ZeroTimeStep,
+    #[error(transparent)]
+    Lindblad(#[from] ax_qm::LindbladError),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PdeType {
     Elliptic,
@@ -1185,6 +1193,92 @@ fn substitute_expr(expr: &Expr, target: &Expr, replacement: &Expr) -> Expr {
         ),
         other => other.clone(),
     }
+}
+
+fn is_zero_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int(n) => n.is_zero(),
+        Expr::Rational(r) => r.is_zero(),
+        Expr::Neg(inner) | Expr::Group(inner, _) => is_zero_expr(inner),
+        _ => false,
+    }
+}
+
+fn rational_expr(numer: i64, denom: i64) -> Expr {
+    Expr::Rational(BigRational::new(numer.into(), denom.into()))
+}
+
+/// Add two symbolic matrices entrywise.
+pub fn matrix_add(lhs: &[Vec<Expr>], rhs: &[Vec<Expr>]) -> Vec<Vec<Expr>> {
+    lhs.iter()
+        .zip(rhs.iter())
+        .map(|(lhs_row, rhs_row)| {
+            lhs_row
+                .iter()
+                .zip(rhs_row.iter())
+                .map(|(lhs_cell, rhs_cell)| Expr::add(vec![lhs_cell.clone(), rhs_cell.clone()]))
+                .collect()
+        })
+        .collect()
+}
+
+/// Scale every matrix entry by a symbolic timestep or coefficient.
+pub fn matrix_scale(dt: &Expr, mat: &[Vec<Expr>]) -> Vec<Vec<Expr>> {
+    mat.iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| Expr::mul(vec![dt.clone(), cell.clone()]))
+                .collect()
+        })
+        .collect()
+}
+
+/// Take one explicit Euler step for the finite-dimensional Lindblad equation.
+pub fn lindblad_euler_step(
+    h: &[Vec<Expr>],
+    rho: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    dt: &Expr,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, QuantumOdeError> {
+    if is_zero_expr(dt) {
+        return Err(QuantumOdeError::ZeroTimeStep);
+    }
+    let rhs = ax_qm::lindblad_rhs(h, rho, jump_ops, interner)?;
+    Ok(matrix_add(rho, &matrix_scale(dt, &rhs)))
+}
+
+/// Take one classical RK4 step for the finite-dimensional Lindblad equation.
+pub fn lindblad_rk4_step(
+    h: &[Vec<Expr>],
+    rho: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    dt: &Expr,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, QuantumOdeError> {
+    if is_zero_expr(dt) {
+        return Err(QuantumOdeError::ZeroTimeStep);
+    }
+
+    let half_dt = Expr::mul(vec![dt.clone(), rational_expr(1, 2)]);
+    let sixth_dt = Expr::mul(vec![dt.clone(), rational_expr(1, 6)]);
+    let two = Expr::Int(2.into());
+
+    let k1 = ax_qm::lindblad_rhs(h, rho, jump_ops, interner)?;
+    let rho_k2 = matrix_add(rho, &matrix_scale(&half_dt, &k1));
+    let k2 = ax_qm::lindblad_rhs(h, &rho_k2, jump_ops, interner)?;
+    let rho_k3 = matrix_add(rho, &matrix_scale(&half_dt, &k2));
+    let k3 = ax_qm::lindblad_rhs(h, &rho_k3, jump_ops, interner)?;
+    let rho_k4 = matrix_add(rho, &matrix_scale(dt, &k3));
+    let k4 = ax_qm::lindblad_rhs(h, &rho_k4, jump_ops, interner)?;
+
+    let k2_twice = matrix_scale(&two, &k2);
+    let k3_twice = matrix_scale(&two, &k3);
+    let sum12 = matrix_add(&k1, &k2_twice);
+    let sum123 = matrix_add(&sum12, &k3_twice);
+    let weighted_sum = matrix_add(&sum123, &k4);
+
+    Ok(matrix_add(rho, &matrix_scale(&sixth_dt, &weighted_sum)))
 }
 
 #[cfg(test)]

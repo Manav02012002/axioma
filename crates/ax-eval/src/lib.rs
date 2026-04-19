@@ -7650,6 +7650,40 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "partial_transpose_factor" => {
+            if args.len() == 3 {
+                match (&args[0], usize_list_from_expr(&args[1]), &args[2]) {
+                    (Expr::Matrix(rho), Some(dims), Expr::Int(factor_index)) => factor_index
+                        .to_usize()
+                        .and_then(|factor_index| {
+                            ax_qm::try_partial_transpose_factor(rho, &dims, factor_index).ok()
+                        })
+                        .map(Expr::Matrix)
+                        .unwrap_or_else(|| Expr::Call(f, args)),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "permute_subsystems" => {
+            if args.len() == 3 {
+                match (
+                    &args[0],
+                    usize_list_from_expr(&args[1]),
+                    usize_list_from_expr(&args[2]),
+                ) {
+                    (Expr::Matrix(rho), Some(dims), Some(permutation)) => {
+                        ax_qm::try_permute_subsystems(rho, &dims, &permutation)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "partial_trace_space" => {
             if args.len() == 3 {
                 match (&args[0], &args[1], &args[2]) {
@@ -9491,6 +9525,29 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "expectation_value" => {
+            if args.len() == 2 {
+                match (expr_to_matrix(&args[0]), expr_to_matrix(&args[1])) {
+                    (Some(operator), Some(rho)) => ax_qm::expectation_value(&operator, &rho)
+                        .unwrap_or_else(|_| Expr::Call(f, args)),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "variance" => {
+            if args.len() == 2 {
+                match (expr_to_matrix(&args[0]), expr_to_matrix(&args[1])) {
+                    (Some(operator), Some(rho)) => {
+                        ax_qm::variance(&operator, &rho).unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "post_measurement_state" => {
             if args.len() == 3 {
                 match (&args[0], expr_to_matrix(&args[1]), &args[2]) {
@@ -9539,6 +9596,42 @@ fn builtin_call(
                 ) {
                     (Some(h), Some(rho), Some(jump_ops)) => {
                         ax_qm::lindblad_rhs(&h, &rho, &jump_ops, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "lindblad_euler_step" => {
+            if args.len() == 4 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_matrix(&args[1]),
+                    expr_to_3d(&args[2]),
+                ) {
+                    (Some(h), Some(rho), Some(jump_ops)) => {
+                        ax_ode::lindblad_euler_step(&h, &rho, &jump_ops, &args[3], interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "lindblad_rk4_step" => {
+            if args.len() == 4 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_matrix(&args[1]),
+                    expr_to_3d(&args[2]),
+                ) {
+                    (Some(h), Some(rho), Some(jump_ops)) => {
+                        ax_ode::lindblad_rk4_step(&h, &rho, &jump_ops, &args[3], interner)
                             .map(Expr::Matrix)
                             .unwrap_or_else(|_| Expr::Call(f, args))
                     }
@@ -13452,6 +13545,30 @@ mod tests {
             "let rho = density([1/sqrt(2), 0, 0, 1/sqrt(2)]); partial_trace_factor(rho, [2, 2], 1);",
         );
         assert_eq!(space_result, factor_result);
+    }
+
+    #[test]
+    fn qm_lindblad_euler_step_with_zero_rhs_returns_input_matrix() {
+        let (result, _) = eval_src("lindblad_euler_step([[1,0],[0,2]], [[1,0],[0,0]], [], 1/10);");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::one(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero()],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_lindblad_rk4_step_with_zero_rhs_returns_input_matrix() {
+        let (result, _) = eval_src("lindblad_rk4_step([[1,0],[0,2]], [[1,0],[0,0]], [], 1/10);");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::one(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero()],
+            ])
+        );
     }
 
     #[test]

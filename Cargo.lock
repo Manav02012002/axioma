@@ -405,10 +405,12 @@ dependencies = [
  "ax-core-ir",
  "ax-eval",
  "ax-ir",
+ "ax-qm",
  "lasso",
  "num-bigint",
  "num-rational",
  "num-traits",
+ "thiserror",
 ]
 
 [[package]]
@@ -465,10 +467,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ax-ai-proto",
+ "ax-ir",
  "ax-plugin-api",
  "ax-render",
  "ax-syntax",
  "axp-echo",
+ "num-traits",
  "serde_json",
  "wasmtime",
 ]
@@ -574,7 +578,6 @@ dependencies = [
  "ax-forms",
  "ax-ir",
  "ax-linalg",
- "ax-ode",
  "ax-perm",
  "ax-spinor",
  "ax-trace",

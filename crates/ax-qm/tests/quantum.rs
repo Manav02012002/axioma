@@ -409,6 +409,82 @@ fn partial_trace_factor_rejects_bad_index() {
 }
 
 #[test]
+fn partial_transpose_moves_offdiagonal_block() {
+    let rho = vec![
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::one()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+    ];
+    let transposed = try_partial_transpose_factor(&rho, &[2, 2], 1).unwrap();
+    let expected = vec![
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(transposed, expected);
+}
+
+#[test]
+fn partial_transpose_of_diagonal_product_state_is_unchanged() {
+    let rho = vec![
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::one(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(try_partial_transpose_factor(&rho, &[2, 2], 0).unwrap(), rho);
+    assert_eq!(try_partial_transpose_factor(&rho, &[2, 2], 1).unwrap(), rho);
+}
+
+#[test]
+fn permute_subsystems_swaps_two_qubits() {
+    let rho = vec![
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::one(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+    ];
+    let permuted = try_permute_subsystems(&rho, &[2, 2], &[1, 0]).unwrap();
+    let expected = vec![
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(permuted, expected);
+}
+
+#[test]
+fn permute_subsystems_rejects_bad_permutation() {
+    let rho = vec![
+        vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(
+        try_permute_subsystems(&rho, &[2, 2], &[0]),
+        Err(CompositeSpaceError::InvalidPermutationLength {
+            expected: 2,
+            actual: 1,
+        })
+    );
+    assert_eq!(
+        try_permute_subsystems(&rho, &[2, 2], &[0, 2]),
+        Err(CompositeSpaceError::InvalidPermutationEntry {
+            value: 2,
+            factor_count: 2,
+        })
+    );
+    assert_eq!(
+        try_permute_subsystems(&rho, &[2, 2], &[0, 0]),
+        Err(CompositeSpaceError::DuplicatePermutationEntry { value: 0 })
+    );
+}
+
+#[test]
 fn partial_trace_rejects_non_square() {
     let rho = vec![
         vec![Expr::one(), Expr::zero(), Expr::zero()],
@@ -481,6 +557,59 @@ fn basis_projector_on_orthogonal_state_gives_probability_zero() {
     let projector = basis_projector(1, 2).unwrap();
     let probabilities = measurement_probabilities(&[projector], &rho).unwrap();
     assert_eq!(probabilities, vec![Expr::zero()]);
+}
+
+#[test]
+fn expectation_value_pauli_z_on_zero_state_is_one() {
+    let z = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::neg(Expr::one())],
+    ];
+    let rho0 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(expectation_value(&z, &rho0).unwrap(), Expr::one());
+}
+
+#[test]
+fn variance_pauli_z_on_zero_state_is_zero() {
+    let z = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::neg(Expr::one())],
+    ];
+    let rho0 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(variance(&z, &rho0).unwrap(), Expr::zero());
+}
+
+#[test]
+fn expectation_value_pauli_z_on_maximally_mixed_state_is_zero() {
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let z = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::neg(Expr::one())],
+    ];
+    let rho_mixed = vec![vec![half.clone(), Expr::zero()], vec![Expr::zero(), half]];
+    assert_eq!(expectation_value(&z, &rho_mixed).unwrap(), Expr::zero());
+}
+
+#[test]
+fn variance_rejects_dimension_mismatch() {
+    let z = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::neg(Expr::one())],
+    ];
+    let rho = vec![vec![Expr::one(), Expr::zero(), Expr::zero()]; 3];
+    assert_eq!(
+        variance(&z, &rho),
+        Err(ObservableError::DimensionMismatch {
+            expected: 2,
+            actual: 3,
+        })
+    );
 }
 
 #[test]

@@ -7,10 +7,12 @@ rust-version.workspace = true
 
 [dependencies]
 ax-ir = { path = "../ax-ir" }
+ax-qm = { path = "../ax-qm" }
 lasso = { workspace = true }
 num-bigint = { workspace = true }
 num-rational = { workspace = true }
 num-traits = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }

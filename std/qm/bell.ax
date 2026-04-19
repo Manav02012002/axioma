@@ -13,9 +13,11 @@ let rho = density(phi_plus)
 let rho_A = partial_trace(rho, 2, 2, A)
 let rho_A_space = partial_trace_space(rho, QAB, QB)
 let rho_B_space = partial_trace_space(rho, QAB, QA)
+let rho_pt = partial_transpose_factor(rho, [2, 2], 1)
 rho_A
 // Should be [[1/2, 0], [0, 1/2]]
 let id2 = identity_channel(2)
 let rho_A_after = apply_channel(id2, rho_A)
 rho_A_after
-[rho_A_space, rho_B_space]
+let rho_flip = permute_subsystems([[0, 0, 0, 1], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [2, 2], [1, 0])
+[rho_A_space, rho_B_space, rho_pt, rho_flip]
