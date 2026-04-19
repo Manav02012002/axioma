@@ -187,8 +187,38 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
                 .collect::<Vec<_>>()
         ),
         ax_ir::TensorProperty::Spinor => "Spinor".to_string(),
+        ax_ir::TensorProperty::SpinorMeta(metadata) => format!(
+            "SpinorMeta(class={:?}, dimension={:?}, chirality={:?}, index_family={:?})",
+            metadata.class,
+            metadata.dimension,
+            metadata.chirality,
+            metadata
+                .index_family
+                .map(|sym| interner.resolve(sym).to_string())
+        ),
         ax_ir::TensorProperty::DiracBar => "DiracBar".to_string(),
+        ax_ir::TensorProperty::DiracBarMeta(metadata) => format!(
+            "DiracBarMeta(gamma_symbol={:?}, spinor_family={:?}, reverse_gamma_order={})",
+            metadata
+                .gamma_symbol
+                .map(|sym| interner.resolve(sym).to_string()),
+            metadata
+                .spinor_family
+                .map(|sym| interner.resolve(sym).to_string()),
+            metadata.reverse_gamma_order
+        ),
         ax_ir::TensorProperty::GammaMatrixProp => "GammaMatrixProp".to_string(),
+        ax_ir::TensorProperty::GammaMatrixMeta(metadata) => format!(
+            "GammaMatrixMeta(dimension={:?}, metric_symbol={:?}, index_family={:?}, has_gamma5={})",
+            metadata.dimension,
+            metadata
+                .metric_symbol
+                .map(|sym| interner.resolve(sym).to_string()),
+            metadata
+                .index_family
+                .map(|sym| interner.resolve(sym).to_string()),
+            metadata.has_gamma5
+        ),
         ax_ir::TensorProperty::Commuting => "Commuting".to_string(),
         ax_ir::TensorProperty::AntiCommuting => "AntiCommuting".to_string(),
         ax_ir::TensorProperty::NonCommuting => "NonCommuting".to_string(),
@@ -244,6 +274,21 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
         ax_ir::TensorProperty::DifferentialFormDegree(n) => {
             format!("DifferentialFormDegree({n})")
         }
+        ax_ir::TensorProperty::HilbertSpaceMeta(metadata) => format!(
+            "HilbertSpaceMeta(dimension={}, factors=[{}])",
+            metadata.dimension,
+            metadata
+                .factors
+                .iter()
+                .map(|factor| format!("{}:{}", interner.resolve(factor.symbol), factor.dimension))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ax_ir::TensorProperty::QuantumObjectMeta(metadata) => format!(
+            "QuantumObjectMeta(kind={:?}, space_symbol={})",
+            metadata.kind,
+            interner.resolve(metadata.space_symbol)
+        ),
         ax_ir::TensorProperty::BackgroundClass(sym) => {
             format!("BackgroundClass({})", interner.resolve(*sym))
         }
@@ -274,6 +319,11 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
         ax_ir::TensorProperty::MatterTag(sym) => {
             format!("MatterTag({})", interner.resolve(*sym))
         }
+        ax_ir::TensorProperty::TraceSpaceMeta(metadata) => format!(
+            "TraceSpaceMeta(space_symbol={}, cyclic={})",
+            interner.resolve(metadata.space_symbol),
+            metadata.cyclic
+        ),
     }
 }
 

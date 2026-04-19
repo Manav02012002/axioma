@@ -6,3 +6,7 @@ let sigma_z = pauli_z()
 let comm_xy = commutator(sigma_x, sigma_y)
 // Should equal 2i * sigma_z
 comm_xy
+let rho0 = density([1, 0])
+let projectors = [basis_projector(0, 2), basis_projector(1, 2)]
+let probs = measurement_probabilities(projectors, rho0)
+probs

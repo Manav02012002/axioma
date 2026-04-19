@@ -54,6 +54,9 @@ impl MimeBundle {
     }
 
     pub fn from_expr(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Self {
+        if let Some(bundle) = qm_mime_bundle(expr, interner) {
+            return bundle;
+        }
         if let Some(bundle) = cpt_mime_bundle(expr, interner) {
             return bundle;
         }
@@ -134,6 +137,52 @@ impl MimeBundle {
     }
 }
 
+fn canonical_call<'a>(
+    expr: &'a ax_ir::Expr,
+    name: &str,
+    interner: &ax_ir::Interner,
+) -> Option<&'a [ax_ir::Expr]> {
+    let ax_ir::Expr::Call(sym, args) = expr else {
+        return None;
+    };
+    (interner.resolve(*sym) == name).then_some(args.as_slice())
+}
+
+fn qm_object_kind(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Option<&'static str> {
+    match expr {
+        ax_ir::Expr::Call(sym, args) => match (interner.resolve(*sym), args.as_slice()) {
+            ("ket", [_]) => Some("ket"),
+            ("bra", [_]) => Some("bra"),
+            ("dagger", [_]) => Some("dagger"),
+            ("tensor_product", [_, _]) => Some("tensor_product"),
+            ("braket", [lhs, rhs])
+                if matches!(canonical_call(lhs, "bra", interner), Some([_]))
+                    && matches!(canonical_call(rhs, "ket", interner), Some([_])) =>
+            {
+                Some("braket")
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn qm_mime_bundle(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Option<MimeBundle> {
+    let object_kind = qm_object_kind(expr, interner)?;
+    let unicode = ax_render::to_unicode(expr, interner);
+    let latex = ax_render::to_latex(expr, interner);
+    let packet = ax_ai_proto::QuantumDisplayPacket {
+        object_kind: object_kind.to_string(),
+        unicode: unicode.clone(),
+        latex: latex.clone(),
+        dimension: None,
+        subsystem_dims: Vec::new(),
+    };
+    let json = serde_json::to_value(packet).ok()?;
+
+    Some(MimeBundle::plain(unicode).with_latex(latex).with_json(json))
+}
+
 pub fn cpt_mime_bundle(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Option<MimeBundle> {
     if ax_render::is_labelled_equation_list(expr) {
         return Some(
@@ -197,5 +246,22 @@ mod tests {
             bundle.and_then(|b| b.text_plain().map(str::to_string)),
             Some("eq0: x".to_string())
         );
+    }
+
+    #[test]
+    fn qm_mime_bundle_for_ket_contains_json_and_latex() {
+        let interner = ax_ir::Interner::new();
+        let ket = interner.get_or_intern("ket");
+        let psi = interner.get_or_intern("psi");
+        let expr = ax_ir::Expr::Call(ket, vec![ax_ir::Expr::Sym(psi)]);
+
+        let bundle = qm_mime_bundle(&expr, &interner).expect("qm bundle");
+        assert_eq!(bundle.text_plain(), Some("|psi⟩"));
+        assert!(bundle
+            .text_latex()
+            .is_some_and(|latex| latex.contains("\\left|")));
+        let json = bundle.application_json().expect("json mime");
+        let encoded = serde_json::to_string(json).expect("json encoding");
+        assert!(encoded.contains("\"object_kind\":\"ket\""), "got {encoded}");
     }
 }

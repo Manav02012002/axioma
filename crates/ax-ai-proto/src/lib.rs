@@ -123,6 +123,28 @@ pub struct HierarchyExportPacket {
     pub payload: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumDisplayPacket {
+    pub object_kind: String,
+    pub unicode: String,
+    pub latex: String,
+    pub dimension: Option<usize>,
+    pub subsystem_dims: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumMeasurementPacket {
+    pub probabilities: Vec<String>,
+    pub post_states: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumChannelPacket {
+    pub kraus_count: usize,
+    pub dimension: usize,
+    pub trace_preserving: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +221,46 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         let reparsed: HierarchyExportPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_display_packet_round_trips() {
+        let payload = QuantumDisplayPacket {
+            object_kind: "density_matrix".to_string(),
+            unicode: "|psi⟩⟨psi|".to_string(),
+            latex: "\\left|\\psi\\right\\rangle\\!\\left\\langle \\psi\\right|".to_string(),
+            dimension: Some(4),
+            subsystem_dims: vec![2, 2],
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumDisplayPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_measurement_packet_round_trips() {
+        let payload = QuantumMeasurementPacket {
+            probabilities: vec!["1/2".to_string(), "1/2".to_string()],
+            post_states: vec!["|0⟩".to_string(), "|1⟩".to_string()],
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumMeasurementPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_channel_packet_round_trips() {
+        let payload = QuantumChannelPacket {
+            kraus_count: 2,
+            dimension: 2,
+            trace_preserving: true,
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumChannelPacket = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed, payload);
     }
 }

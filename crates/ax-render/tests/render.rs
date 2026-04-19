@@ -126,6 +126,66 @@ fn unicode_neg() {
 }
 
 #[test]
+fn unicode_ket_render() {
+    let interner = int();
+    let ket = interner.get_or_intern("ket");
+    let psi = interner.get_or_intern("psi");
+    let expr = Expr::Call(ket, vec![Expr::Sym(psi)]);
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains("|psi⟩"), "got {}", unicode);
+}
+
+#[test]
+fn unicode_bra_render() {
+    let interner = int();
+    let bra = interner.get_or_intern("bra");
+    let phi = interner.get_or_intern("phi");
+    let expr = Expr::Call(bra, vec![Expr::Sym(phi)]);
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains("⟨phi|"), "got {}", unicode);
+}
+
+#[test]
+fn unicode_braket_render() {
+    let interner = int();
+    let braket = interner.get_or_intern("braket");
+    let bra = interner.get_or_intern("bra");
+    let ket = interner.get_or_intern("ket");
+    let phi = interner.get_or_intern("phi");
+    let psi = interner.get_or_intern("psi");
+    let expr = Expr::Call(
+        braket,
+        vec![
+            Expr::Call(bra, vec![Expr::Sym(phi)]),
+            Expr::Call(ket, vec![Expr::Sym(psi)]),
+        ],
+    );
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains("⟨phi|psi⟩"), "got {}", unicode);
+}
+
+#[test]
+fn unicode_dagger_render() {
+    let interner = int();
+    let dagger = interner.get_or_intern("dagger");
+    let a = interner.get_or_intern("A");
+    let expr = Expr::Call(dagger, vec![Expr::Sym(a)]);
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains('†'), "got {}", unicode);
+}
+
+#[test]
+fn unicode_tensor_product_render() {
+    let interner = int();
+    let tensor_product = interner.get_or_intern("tensor_product");
+    let a = interner.get_or_intern("A");
+    let b = interner.get_or_intern("B");
+    let expr = Expr::Call(tensor_product, vec![Expr::Sym(a), Expr::Sym(b)]);
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains('⊗'), "got {}", unicode);
+}
+
+#[test]
 fn latex_matrix() {
     let interner = int();
     let expr = Expr::Matrix(vec![
@@ -138,6 +198,82 @@ fn latex_matrix() {
         "matrix should render as LaTeX matrix, got {}",
         latex
     );
+}
+
+#[test]
+fn latex_ket_render() {
+    let interner = int();
+    let ket = interner.get_or_intern("ket");
+    let psi = interner.get_or_intern("psi");
+    let expr = Expr::Call(ket, vec![Expr::Sym(psi)]);
+    let latex = to_latex(&expr, &interner);
+    assert!(latex.contains("\\left|"), "got {}", latex);
+    assert!(latex.contains("\\right\\rangle"), "got {}", latex);
+}
+
+#[test]
+fn latex_braket_render() {
+    let interner = int();
+    let braket = interner.get_or_intern("braket");
+    let bra = interner.get_or_intern("bra");
+    let ket = interner.get_or_intern("ket");
+    let phi = interner.get_or_intern("phi");
+    let psi = interner.get_or_intern("psi");
+    let expr = Expr::Call(
+        braket,
+        vec![
+            Expr::Call(bra, vec![Expr::Sym(phi)]),
+            Expr::Call(ket, vec![Expr::Sym(psi)]),
+        ],
+    );
+    let latex = to_latex(&expr, &interner);
+    assert!(latex.contains("\\left\\langle"), "got {}", latex);
+    assert!(
+        latex.contains("\\middle|") || latex.contains("\\mid"),
+        "got {}",
+        latex
+    );
+    assert!(latex.contains("\\right\\rangle"), "got {}", latex);
+}
+
+#[test]
+fn latex_dagger_render() {
+    let interner = int();
+    let dagger = interner.get_or_intern("dagger");
+    let a = interner.get_or_intern("A");
+    let expr = Expr::Call(dagger, vec![Expr::Sym(a)]);
+    let latex = to_latex(&expr, &interner);
+    assert!(latex.contains("\\dagger"), "got {}", latex);
+}
+
+#[test]
+fn latex_tensor_product_render() {
+    let interner = int();
+    let tensor_product = interner.get_or_intern("tensor_product");
+    let a = interner.get_or_intern("A");
+    let b = interner.get_or_intern("B");
+    let expr = Expr::Call(tensor_product, vec![Expr::Sym(a), Expr::Sym(b)]);
+    let latex = to_latex(&expr, &interner);
+    assert!(latex.contains("\\otimes"), "got {}", latex);
+}
+
+#[test]
+fn unicode_outer_bra_ket_render() {
+    let interner = int();
+    let outer = interner.get_or_intern("outer");
+    let ket = interner.get_or_intern("ket");
+    let bra = interner.get_or_intern("bra");
+    let a = interner.get_or_intern("a");
+    let b = interner.get_or_intern("b");
+    let expr = Expr::Call(
+        outer,
+        vec![
+            Expr::Call(ket, vec![Expr::Sym(a)]),
+            Expr::Call(bra, vec![Expr::Sym(b)]),
+        ],
+    );
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains("|a⟩⟨b|"), "got {}", unicode);
 }
 
 #[test]

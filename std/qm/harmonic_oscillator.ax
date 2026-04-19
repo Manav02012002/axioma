@@ -11,5 +11,9 @@ let lowered_two = apply_operator(a_op, two)
 let number_on_two = apply_operator(n_op, two)
 let energy_on_one = apply_operator(h_op, one)
 let normal_reordered = normal_order(annihilation(ho) * creation(ho))
+let h_toy = [[1, 0], [0, 2]]
+let rho_toy = [[1/2, 0], [0, 1/2]]
+let jumps = []
+let rho_dot = lindblad_rhs(h_toy, rho_toy, jumps)
 
-[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered]
+[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered, rho_dot]

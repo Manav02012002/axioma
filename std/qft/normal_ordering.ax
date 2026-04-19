@@ -1,4 +1,10 @@
 // Bosonic normal ordering and Wick expansion.
+declare_contraction(a, a, 1)
 normal_order(annihilation(a) * creation(a))
 wick(annihilation(a) * creation(a))
+
+// Fermionic normal ordering via explicit operator statistics metadata.
+declare_operator(c, annihilation, fermionic)
+normal_order(annihilation(c) * creation(c))
+
 apply_operator(creation(a), vacuum(a))

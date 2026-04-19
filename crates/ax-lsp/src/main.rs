@@ -8,8 +8,8 @@ use ax_eval::{
 };
 use ax_ir::{Expr, Interner, TensorProperty};
 use constants::{
-    convention_values, greek_to_unicode, property_documentation, CPT_CALLABLE_DOCS, GREEK_LETTERS,
-    KEYWORDS, PROPERTY_NAMES,
+    convention_values, greek_to_unicode, property_documentation, qm_snippet_documentation,
+    CPT_CALLABLE_DOCS, GREEK_LETTERS, KEYWORDS, PROPERTY_NAMES, QM_SNIPPETS,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -391,6 +391,10 @@ fn handle_hover(state: &LspState, params: &Value) -> Option<Value> {
     }
 
     if let Some(word) = word {
+        if let Some(doc) = qm_snippet_documentation(word) {
+            content_parts.push(format!("**{}**\n\n{}", word, doc));
+        }
+
         if let Some(doc) = lookup_function_doc(word) {
             content_parts.push(format!("**{}**\n\n{}", doc.name, doc.description));
             content_parts.push(format!("```\n{}\n```", doc.signature));
@@ -572,6 +576,17 @@ fn handle_completion(state: &LspState, params: &Value) -> Option<Value> {
                 "kind": 3,
                 "detail": doc.signature,
                 "documentation": { "kind": "markdown", "value": format!("{}\n\nExample: `{}`", doc.description, doc.example) }
+            }));
+        }
+
+        for &(name, snippet, documentation) in QM_SNIPPETS {
+            items.push(json!({
+                "label": name,
+                "kind": 15,
+                "detail": "qm snippet",
+                "documentation": { "kind": "markdown", "value": documentation },
+                "insertText": snippet,
+                "insertTextFormat": 2
             }));
         }
 
@@ -1203,6 +1218,32 @@ mod tests {
     }
 
     #[test]
+    fn completion_includes_qm_snippets() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "".into());
+        let response = handle_completion(&state, &completion_params("test.ax", 0, 0)).unwrap();
+        let items = response.as_array().unwrap();
+        let labels = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"ket"));
+        assert!(labels.contains(&"bra"));
+        assert!(labels.contains(&"braket"));
+        assert!(labels.contains(&"dagger"));
+        assert!(labels.contains(&"tensor_product"));
+
+        let docs = items
+            .iter()
+            .filter_map(|item| item.get("documentation"))
+            .filter_map(|doc| doc.get("value").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(docs.contains(&"Dirac ket syntax."));
+        assert!(docs.contains(&"Dirac inner-product syntax."));
+        assert!(docs.contains(&"Adjoint / Hermitian-conjugate syntax."));
+    }
+
+    #[test]
     fn hover_docs_include_frw_background_spec() {
         let mut state = LspState::new();
         state.upsert_document(
@@ -1212,6 +1253,24 @@ mod tests {
         let response = handle_hover(&state, &hover_params("test.ax", 0, 3)).unwrap();
         let value = response["contents"]["value"].as_str().unwrap();
         assert!(value.contains("frw_background_spec"));
+    }
+
+    #[test]
+    fn hover_docs_include_braket() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "braket".into());
+        let response = handle_hover(&state, &hover_params("test.ax", 0, 3)).unwrap();
+        let value = response["contents"]["value"].as_str().unwrap();
+        assert!(value.contains("Dirac inner-product syntax."));
+    }
+
+    #[test]
+    fn hover_docs_include_dagger() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "dagger".into());
+        let response = handle_hover(&state, &hover_params("test.ax", 0, 3)).unwrap();
+        let value = response["contents"]["value"].as_str().unwrap();
+        assert!(value.contains("Adjoint / Hermitian-conjugate syntax."));
     }
 
     #[test]

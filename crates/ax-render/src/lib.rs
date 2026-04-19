@@ -244,6 +244,7 @@ const PREC_MUL_DIV: u8 = 60;
 const PREC_UNARY: u8 = 70;
 const PREC_POW: u8 = 80;
 const PREC_ATOM: u8 = 100;
+const PREC_POSTFIX: u8 = 75;
 
 fn needs_paren(child_prec: u8, parent_prec: u8) -> bool {
     child_prec < parent_prec
@@ -354,6 +355,53 @@ fn spinor_label_latex(expr: &Expr, interner: &ax_ir::Interner) -> String {
         Expr::Sym(s) => symbol_to_latex(*s, interner),
         _ => render(expr, PREC_TOP, interner),
     }
+}
+
+fn canonical_call<'a>(
+    expr: &'a Expr,
+    name: &str,
+    interner: &ax_ir::Interner,
+) -> Option<&'a [Expr]> {
+    let Expr::Call(sym, args) = expr else {
+        return None;
+    };
+    (interner.resolve(*sym) == name).then_some(args.as_slice())
+}
+
+fn expr_prec(expr: &Expr) -> u8 {
+    match expr {
+        Expr::Add(_) => PREC_ADD_SUB,
+        Expr::Mul(_) => PREC_MUL_DIV,
+        Expr::Neg(_) => PREC_UNARY,
+        Expr::Pow(_, _) => PREC_POW,
+        Expr::Group(inner, _) => expr_prec(inner),
+        _ => PREC_ATOM,
+    }
+}
+
+fn render_latex_ket(arg: &Expr, interner: &ax_ir::Interner) -> String {
+    format!("\\left|{}\\right\\rangle", render(arg, PREC_TOP, interner))
+}
+
+fn render_latex_bra(arg: &Expr, interner: &ax_ir::Interner) -> String {
+    format!("\\left\\langle {}\\right|", render(arg, PREC_TOP, interner))
+}
+
+fn render_latex_dagger(arg: &Expr, interner: &ax_ir::Interner) -> String {
+    let rendered = wrap_if_needed(
+        render(arg, PREC_POSTFIX, interner),
+        expr_prec(arg),
+        PREC_POSTFIX,
+    );
+    format!("{rendered}^{{\\dagger}}")
+}
+
+fn render_latex_tensor_product(lhs: &Expr, rhs: &Expr, interner: &ax_ir::Interner) -> String {
+    format!(
+        "{} \\otimes {}",
+        render(lhs, PREC_MUL_DIV, interner),
+        render(rhs, PREC_MUL_DIV, interner)
+    )
 }
 
 fn render_add(terms: &[Expr], parent_prec: u8, interner: &ax_ir::Interner) -> String {
@@ -481,6 +529,43 @@ fn render_pow(base: &Expr, exp: &Expr, parent_prec: u8, interner: &ax_ir::Intern
 
 fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> String {
     let name = interner.resolve(f);
+    if let ("ket", [arg]) = (name, args) {
+        return render_latex_ket(arg, interner);
+    }
+    if let ("bra", [arg]) = (name, args) {
+        return render_latex_bra(arg, interner);
+    }
+    if let ("braket", [lhs, rhs]) = (name, args) {
+        if let (Some([bra_inner]), Some([ket_inner])) = (
+            canonical_call(lhs, "bra", interner),
+            canonical_call(rhs, "ket", interner),
+        ) {
+            return format!(
+                "\\left\\langle {} \\middle| {} \\right\\rangle",
+                render(bra_inner, PREC_TOP, interner),
+                render(ket_inner, PREC_TOP, interner)
+            );
+        }
+    }
+    if let ("dagger", [arg]) = (name, args) {
+        return render_latex_dagger(arg, interner);
+    }
+    if let ("tensor_product", [lhs, rhs]) = (name, args) {
+        return render_latex_tensor_product(lhs, rhs, interner);
+    }
+    if let ("outer", [lhs, rhs]) = (name, args) {
+        if let (Some([ket_inner]), Some([bra_inner])) = (
+            canonical_call(lhs, "ket", interner),
+            canonical_call(rhs, "bra", interner),
+        ) {
+            return format!(
+                "{}\\!{}",
+                render_latex_ket(ket_inner, interner),
+                render_latex_bra(bra_inner, interner)
+            );
+        }
+    }
+
     let rendered_args = args
         .iter()
         .map(|arg| render(arg, PREC_TOP, interner))

@@ -1,6 +1,7 @@
 use ax_ir::{
-    Expr, Index, IndexFamily, SymmetrySource, TableauAttachment, TensorProperty, TensorSymmetry,
-    Variance,
+    DiracBarMetadata, Expr, GammaMatrixMetadata, HilbertSpaceMetadata, Index, IndexFamily,
+    QuantumObjectKind, QuantumObjectMetadata, SpinorClass, SpinorMetadata, SymmetrySource,
+    TableauAttachment, TensorProperty, TensorSymmetry, TraceSpaceMetadata, Variance,
 };
 use num_traits::ToPrimitive;
 use std::collections::{HashMap, HashSet};
@@ -70,6 +71,64 @@ impl PropertyStore {
             },
             property,
         );
+    }
+
+    pub fn declare_with_compatibility(
+        &mut self,
+        pattern: PropertyPattern,
+        property: TensorProperty,
+    ) {
+        for property in expand_compatible_properties(property) {
+            self.declare(pattern.clone(), property);
+        }
+    }
+
+    pub fn declare_simple_with_compatibility(
+        &mut self,
+        name: lasso::Spur,
+        property: TensorProperty,
+    ) {
+        let pattern = PropertyPattern {
+            base_name: name,
+            index_slots: Vec::new(),
+        };
+        self.declare_with_compatibility(pattern, property);
+    }
+
+    pub fn declare_spinor_meta(&mut self, name: lasso::Spur, metadata: SpinorMetadata) {
+        self.declare_simple_with_compatibility(name, TensorProperty::SpinorMeta(metadata));
+    }
+
+    pub fn declare_gamma_matrix_meta(&mut self, name: lasso::Spur, metadata: GammaMatrixMetadata) {
+        self.declare_simple_with_compatibility(name, TensorProperty::GammaMatrixMeta(metadata));
+    }
+
+    pub fn declare_dirac_bar_meta(&mut self, name: lasso::Spur, metadata: DiracBarMetadata) {
+        self.declare_simple_with_compatibility(name, TensorProperty::DiracBarMeta(metadata));
+    }
+
+    pub fn declare_trace_space(&mut self, name: lasso::Spur, metadata: TraceSpaceMetadata) {
+        self.declare_simple(name, TensorProperty::TraceSpaceMeta(metadata));
+    }
+
+    /// Attach structured Hilbert-space metadata to a symbol.
+    pub fn declare_hilbert_space(&mut self, name: lasso::Spur, metadata: HilbertSpaceMetadata) {
+        self.declare_simple(name, TensorProperty::HilbertSpaceMeta(metadata));
+    }
+
+    /// Attach structured quantum-object metadata to a symbol and add compatible legacy markers.
+    pub fn declare_quantum_object(&mut self, name: lasso::Spur, metadata: QuantumObjectMetadata) {
+        self.declare_simple(name, TensorProperty::QuantumObjectMeta(metadata.clone()));
+        if matches!(
+            metadata.kind,
+            QuantumObjectKind::Operator
+                | QuantumObjectKind::DensityOperator
+                | QuantumObjectKind::Projector
+                | QuantumObjectKind::Observable
+                | QuantumObjectKind::Channel
+        ) {
+            self.declare_simple(name, TensorProperty::NonCommuting);
+        }
     }
 
     pub fn add_inheritance(&mut self, rule: InheritanceRule) {
@@ -444,6 +503,32 @@ impl PropertyStore {
 
 pub fn property_discriminant_matches(a: &TensorProperty, b: &TensorProperty) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+pub fn expand_compatible_properties(property: TensorProperty) -> Vec<TensorProperty> {
+    let mut properties = vec![property.clone()];
+    match property {
+        TensorProperty::SpinorMeta(SpinorMetadata { class, .. }) => {
+            properties.push(TensorProperty::Spinor);
+            match class {
+                SpinorClass::Dirac => {}
+                SpinorClass::Majorana => properties.push(TensorProperty::MajoranaSpinor),
+                SpinorClass::Weyl => properties.push(TensorProperty::WeylSpinor),
+                SpinorClass::MajoranaWeyl => {
+                    properties.push(TensorProperty::MajoranaSpinor);
+                    properties.push(TensorProperty::WeylSpinor);
+                }
+            }
+        }
+        TensorProperty::GammaMatrixMeta(_) => {
+            properties.push(TensorProperty::GammaMatrixProp);
+        }
+        TensorProperty::DiracBarMeta(_) => {
+            properties.push(TensorProperty::DiracBar);
+        }
+        _ => {}
+    }
+    properties
 }
 
 fn tableau_inherit_enabled(props: &[TensorProperty]) -> bool {

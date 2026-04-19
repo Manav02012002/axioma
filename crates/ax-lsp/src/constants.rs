@@ -152,10 +152,32 @@ pub const CPT_CALLABLE_DOCS: &[(&str, &str)] = &[
     ),
 ];
 
+pub const QM_SNIPPETS: &[(&str, &str, &str)] = &[
+    ("ket", "|${1:psi}>", "Dirac ket syntax."),
+    ("bra", "<${1:phi}|", "Dirac bra syntax."),
+    (
+        "braket",
+        "<${1:phi}|${2:psi}>",
+        "Dirac inner-product syntax.",
+    ),
+    ("dagger", "${1:A}†", "Adjoint / Hermitian-conjugate syntax."),
+    (
+        "tensor_product",
+        "${1:A} ⊗ ${2:B}",
+        "Tensor-product syntax.",
+    ),
+];
+
 pub fn greek_to_unicode(name: &str) -> Option<&'static str> {
     GREEK_LETTERS
         .iter()
         .find_map(|(entry, unicode)| (*entry == name).then_some(*unicode))
+}
+
+pub fn qm_snippet_documentation(name: &str) -> Option<&'static str> {
+    QM_SNIPPETS
+        .iter()
+        .find_map(|(entry, _, documentation)| (*entry == name).then_some(*documentation))
 }
 
 pub fn property_documentation(name: &str) -> &'static str {

@@ -61,9 +61,19 @@ enum RawTok {
     Slash,
     #[token("^")]
     Caret,
+    #[token("†")]
+    Dagger,
+    #[token("⊗")]
+    TensorProduct,
 
     #[token("=")]
     Eq,
+    #[token("<")]
+    Less,
+    #[token(">")]
+    Greater,
+    #[token("|")]
+    Pipe,
     #[token(",")]
     Comma,
     #[token(".")]
@@ -114,8 +124,13 @@ fn map_kind(t: RawTok) -> SyntaxKind {
         RawTok::Star => SyntaxKind::Star,
         RawTok::Slash => SyntaxKind::Slash,
         RawTok::Caret => SyntaxKind::Caret,
+        RawTok::Dagger => SyntaxKind::Dagger,
+        RawTok::TensorProduct => SyntaxKind::TensorProduct,
 
         RawTok::Eq => SyntaxKind::Eq,
+        RawTok::Less => SyntaxKind::Less,
+        RawTok::Greater => SyntaxKind::Greater,
+        RawTok::Pipe => SyntaxKind::Pipe,
         RawTok::Comma => SyntaxKind::Comma,
         RawTok::Dot => SyntaxKind::Dot,
         RawTok::Colon => SyntaxKind::Colon,

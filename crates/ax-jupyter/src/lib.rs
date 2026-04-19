@@ -3325,6 +3325,28 @@ mod tests {
     }
 
     #[test]
+    fn qm_execute_result_emits_application_json_bundle() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(Channel::Shell, execute_frames("ket(psi)"), "");
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+
+        assert!(data.contains_key("application/json"));
+        assert_eq!(data["text/plain"], "|psi⟩");
+        assert!(
+            data["text/latex"]
+                .as_str()
+                .is_some_and(|latex| latex.contains("\\left|"))
+        );
+        let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
+        assert!(json.contains("\"object_kind\":\"ket\""), "got {json}");
+    }
+
+    #[test]
     fn cancellation_requested_before_evaluation_interrupts_without_committing_state() {
         let mut runtime = KernelRuntime::new(Vec::new());
         let token = ax_ir::CancellationToken::new();

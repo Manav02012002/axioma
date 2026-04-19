@@ -8,6 +8,7 @@ const PREC_ADD: u8 = 50;
 const PREC_MUL: u8 = 60;
 const PREC_UNARY: u8 = 70;
 const PREC_POW: u8 = 80;
+const PREC_POSTFIX: u8 = 75;
 
 fn greek(name: &str) -> Option<&'static str> {
     match name {
@@ -140,7 +141,88 @@ fn spinor_label_unicode(expr: &Expr, interner: &ax_ir::Interner) -> String {
     }
 }
 
+fn qm_surface_label_unicode(expr: &Expr, interner: &ax_ir::Interner) -> String {
+    match expr {
+        Expr::Int(n) => n.to_string(),
+        Expr::Sym(s) => interner.resolve(*s).to_string(),
+        _ => render_with_paren(expr, PREC_TOP, interner),
+    }
+}
+
+fn canonical_call<'a>(
+    expr: &'a Expr,
+    name: &str,
+    interner: &ax_ir::Interner,
+) -> Option<&'a [Expr]> {
+    let Expr::Call(sym, args) = expr else {
+        return None;
+    };
+    (interner.resolve(*sym) == name).then_some(args.as_slice())
+}
+
+fn render_unicode_ket(arg: &Expr, interner: &ax_ir::Interner) -> String {
+    format!("|{}⟩", qm_surface_label_unicode(arg, interner))
+}
+
+fn render_unicode_bra(arg: &Expr, interner: &ax_ir::Interner) -> String {
+    format!("⟨{}|", qm_surface_label_unicode(arg, interner))
+}
+
+fn render_unicode_dagger(arg: &Expr, interner: &ax_ir::Interner) -> String {
+    let (rendered, prec) = render(arg, interner);
+    if needs_paren(prec, PREC_POSTFIX) {
+        format!("({rendered})†")
+    } else {
+        format!("{rendered}†")
+    }
+}
+
+fn render_unicode_tensor_product(lhs: &Expr, rhs: &Expr, interner: &ax_ir::Interner) -> String {
+    format!(
+        "{} ⊗ {}",
+        render_with_paren(lhs, PREC_MUL, interner),
+        render_with_paren(rhs, PREC_MUL, interner)
+    )
+}
+
 fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String {
+    if let ("ket", [arg]) = (name, args) {
+        return render_unicode_ket(arg, interner);
+    }
+    if let ("bra", [arg]) = (name, args) {
+        return render_unicode_bra(arg, interner);
+    }
+    if let ("braket", [lhs, rhs]) = (name, args) {
+        if let (Some([bra_inner]), Some([ket_inner])) = (
+            canonical_call(lhs, "bra", interner),
+            canonical_call(rhs, "ket", interner),
+        ) {
+            return format!(
+                "⟨{}|{}⟩",
+                qm_surface_label_unicode(bra_inner, interner),
+                qm_surface_label_unicode(ket_inner, interner)
+            );
+        }
+    }
+    if let ("dagger", [arg]) = (name, args) {
+        return render_unicode_dagger(arg, interner);
+    }
+    if let ("tensor_product", [lhs, rhs]) = (name, args) {
+        return render_unicode_tensor_product(lhs, rhs, interner);
+    }
+    if let ("outer", [lhs, rhs]) = (name, args) {
+        if let (Some([ket_inner]), Some([bra_inner])) = (
+            canonical_call(lhs, "ket", interner),
+            canonical_call(rhs, "bra", interner),
+        ) {
+            return format!(
+                "{}{}",
+                render_unicode_ket(ket_inner, interner),
+                render_unicode_bra(bra_inner, interner)
+            );
+        }
+    }
+
     let rendered_args = args
         .iter()
         .map(|arg| render_with_paren(arg, PREC_TOP, interner))

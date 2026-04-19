@@ -196,6 +196,71 @@ impl<'a> Cursor<'a> {
             .map_err(|e| self.error_at(start, self.pos, format!("invalid integer literal: {e}")))
     }
 
+    /// Parse a Dirac ket expression of the form `|expr>`.
+    fn parse_ket_expr(&mut self) -> Result<Expr, LowerError> {
+        self.skip_ws();
+        if !self.eat_if('|') {
+            return Err(self.error("expected '|'"));
+        }
+
+        let inner = self.parse_expr()?;
+        self.skip_ws();
+        if !self.eat_if('>') {
+            return Err(self.error("expected '>' to close ket"));
+        }
+
+        let ket = self.interner.get_or_intern("ket");
+        Ok(Expr::Call(ket, vec![inner]))
+    }
+
+    /// Parse either a Dirac bra `<expr|` or bra-ket `<expr|expr>`.
+    fn parse_bra_or_braket_expr(&mut self) -> Result<Expr, LowerError> {
+        self.skip_ws();
+        if !self.eat_if('<') {
+            return Err(self.error("expected '<'"));
+        }
+
+        let bra_inner = self.parse_expr()?;
+        self.skip_ws();
+        if !self.eat_if('|') {
+            return Err(self.error("expected '|' in bra or braket"));
+        }
+
+        let bra = self.interner.get_or_intern("bra");
+        let bra_expr = Expr::Call(bra, vec![bra_inner]);
+
+        self.skip_ws();
+        let starts_rhs = matches!(
+            self.peek_char(),
+            Some(ch)
+                if ch.is_ascii_alphabetic()
+                    || ch.is_ascii_digit()
+                    || ch == '('
+                    || ch == '['
+                    || ch == '"'
+                    || ch == '-'
+                    || ch == '<'
+                    || ch == '|'
+        );
+
+        if !starts_rhs {
+            return Ok(bra_expr);
+        }
+
+        let ket_inner = self.parse_expr()?;
+        self.skip_ws();
+        if !self.eat_if('>') {
+            return Err(self.error("expected '>' to close braket"));
+        }
+
+        let ket = self.interner.get_or_intern("ket");
+        let braket = self.interner.get_or_intern("braket");
+        Ok(Expr::Call(
+            braket,
+            vec![bra_expr, Expr::Call(ket, vec![ket_inner])],
+        ))
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, LowerError> {
         self.skip_ws();
 
@@ -524,6 +589,8 @@ impl<'a> Cursor<'a> {
         }
 
         match self.peek_char() {
+            Some('|') => self.parse_ket_expr(),
+            Some('<') => self.parse_bra_or_braket_expr(),
             Some(ch) if ch.is_ascii_digit() => self.parse_number(),
             Some(ch) if ch.is_ascii_alphabetic() => {
                 let sym = self.parse_ident()?;
@@ -783,9 +850,27 @@ impl<'a> Cursor<'a> {
                     }
                     expr = Expr::Indexed(Box::new(expr), indices);
                 }
+                Some('†') => {
+                    expr = self.parse_dagger_postfix(expr)?;
+                }
                 _ => return Ok(expr),
             }
         }
+    }
+
+    /// Parse a postfix dagger operator `†` and lower it to `dagger(expr)`.
+    fn parse_dagger_postfix(&mut self, expr: Expr) -> Result<Expr, LowerError> {
+        self.skip_ws();
+        if !self.eat_if('†') {
+            return Err(self.error("expected '†'"));
+        }
+
+        let dagger = self.interner.get_or_intern("dagger");
+        let operand = match expr {
+            Expr::Group(inner, _) => *inner,
+            other => other,
+        };
+        Ok(Expr::Call(dagger, vec![operand]))
     }
 
     fn parse_unary(&mut self) -> Result<Expr, LowerError> {
@@ -809,8 +894,15 @@ impl<'a> Cursor<'a> {
     }
 
     fn parse_mul(&mut self) -> Result<Expr, LowerError> {
-        let mut expr = self.parse_pow()?;
+        let expr = self.parse_pow()?;
+        self.parse_tensor_product_chain(expr)
+    }
 
+    /// Parse multiplicative chains including `*`, `/`, implicit multiplication, and `⊗`.
+    ///
+    /// Tensor product binds at the same precedence level as multiplication and division and
+    /// lowers to `tensor_product(lhs, rhs)`.
+    fn parse_tensor_product_chain(&mut self, mut expr: Expr) -> Result<Expr, LowerError> {
         loop {
             let before_ws = self.pos;
             self.skip_ws();
@@ -821,6 +913,10 @@ impl<'a> Cursor<'a> {
             } else if self.eat_if('/') {
                 let rhs = self.parse_pow()?;
                 expr = Expr::mul(vec![expr, Expr::pow(rhs, Expr::Int((-1).into()))]);
+            } else if self.eat_if('⊗') {
+                let rhs = self.parse_pow()?;
+                let tensor_product = self.interner.get_or_intern("tensor_product");
+                expr = Expr::Call(tensor_product, vec![expr, rhs]);
             } else if !saw_ws && self.starts_implicit_mul_rhs() {
                 let rhs = self.parse_pow()?;
                 expr = Expr::mul(vec![expr, rhs]);
@@ -1401,6 +1497,181 @@ mod tests {
             }
             other => panic!("expected FnDef, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn lower_ket_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("|psi>;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.exprs.len(), 1);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("ket"),
+                vec![Expr::Sym(interner.get_or_intern("psi"))]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_bra_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("<phi|;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.exprs.len(), 1);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("bra"),
+                vec![Expr::Sym(interner.get_or_intern("phi"))]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_braket_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("<phi|psi>;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(result.exprs.len(), 1);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("braket"),
+                vec![
+                    Expr::Call(
+                        interner.get_or_intern("bra"),
+                        vec![Expr::Sym(interner.get_or_intern("phi"))]
+                    ),
+                    Expr::Call(
+                        interner.get_or_intern("ket"),
+                        vec![Expr::Sym(interner.get_or_intern("psi"))]
+                    ),
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_dagger_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("A†;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("dagger"),
+                vec![Expr::Sym(interner.get_or_intern("A"))]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_tensor_product_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("A ⊗ B;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("tensor_product"),
+                vec![
+                    Expr::Sym(interner.get_or_intern("A")),
+                    Expr::Sym(interner.get_or_intern("B"))
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_dagger_of_grouped_tensor_product() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("(A ⊗ B)†;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("dagger"),
+                vec![Expr::Call(
+                    interner.get_or_intern("tensor_product"),
+                    vec![
+                        Expr::Sym(interner.get_or_intern("A")),
+                        Expr::Sym(interner.get_or_intern("B"))
+                    ]
+                )]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_bra_ket_tensor_product_mix() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("<phi| ⊗ |psi>;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("tensor_product"),
+                vec![
+                    Expr::Call(
+                        interner.get_or_intern("bra"),
+                        vec![Expr::Sym(interner.get_or_intern("phi"))]
+                    ),
+                    Expr::Call(
+                        interner.get_or_intern("ket"),
+                        vec![Expr::Sym(interner.get_or_intern("psi"))]
+                    )
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_dirac_syntax_in_call_argument() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("f(<phi|psi>);", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let expected_braket = Expr::Call(
+            interner.get_or_intern("braket"),
+            vec![
+                Expr::Call(
+                    interner.get_or_intern("bra"),
+                    vec![Expr::Sym(interner.get_or_intern("phi"))],
+                ),
+                Expr::Call(
+                    interner.get_or_intern("ket"),
+                    vec![Expr::Sym(interner.get_or_intern("psi"))],
+                ),
+            ],
+        );
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(interner.get_or_intern("f"), vec![expected_braket])
+        );
+    }
+
+    #[test]
+    fn lower_dirac_syntax_errors_on_missing_closer() {
+        let interner = ax_ir::Interner::new();
+
+        let ket = lower("|psi;", &interner);
+        assert!(ket
+            .errors
+            .iter()
+            .any(|err| err.message == "expected '>' to close ket"));
+
+        let bra = lower("<phi;", &interner);
+        assert!(bra
+            .errors
+            .iter()
+            .any(|err| err.message == "expected '|' in bra or braket"));
+
+        let braket = lower("<phi|psi;", &interner);
+        assert!(braket
+            .errors
+            .iter()
+            .any(|err| err.message == "expected '>' to close braket"));
     }
 
     #[test]

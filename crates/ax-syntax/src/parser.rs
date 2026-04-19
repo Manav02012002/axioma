@@ -101,9 +101,37 @@ impl<'a> Parser<'a> {
 
     fn parse_expr_bp(&mut self, min_bp: u8) {
         self.bump_trivia();
+        let lhs_checkpoint = self.builder.checkpoint();
         self.parse_prefix();
         loop {
             self.bump_trivia();
+            match self.current() {
+                SyntaxKind::Dagger => {
+                    let postfix_bp = 8;
+                    if postfix_bp < min_bp {
+                        break;
+                    }
+                    self.builder
+                        .start_node_at(lhs_checkpoint, SyntaxKind::DaggerExpr.into());
+                    self.bump();
+                    self.builder.finish_node();
+                    continue;
+                }
+                SyntaxKind::TensorProduct => {
+                    let (l_bp, r_bp) = (3, 4);
+                    if l_bp < min_bp {
+                        break;
+                    }
+                    self.builder
+                        .start_node_at(lhs_checkpoint, SyntaxKind::TensorProductExpr.into());
+                    self.bump();
+                    self.parse_expr_bp(r_bp);
+                    self.builder.finish_node();
+                    continue;
+                }
+                _ => {}
+            }
+
             let (l_bp, r_bp, op) = match self.current() {
                 SyntaxKind::Plus => (1, 2, SyntaxKind::Plus),
                 SyntaxKind::Minus => (1, 2, SyntaxKind::Minus),
@@ -174,11 +202,53 @@ impl<'a> Parser<'a> {
                 self.expect(SyntaxKind::RParen, "expected ')'");
             }
             SyntaxKind::LBrack => self.parse_list_expr(),
+            SyntaxKind::Pipe => self.parse_ket_expr(),
+            SyntaxKind::Less => self.parse_bra_or_braket_expr(),
             _ => {
                 self.unexpected_here("expected expression");
                 self.bump();
             }
         }
+    }
+
+    fn parse_ket_expr(&mut self) {
+        self.builder.start_node(SyntaxKind::KetExpr.into());
+        self.bump();
+        self.bump_trivia();
+        self.parse_expr_bp(0);
+        self.bump_trivia();
+        self.expect(SyntaxKind::Greater, "expected '>' to close ket");
+        self.builder.finish_node();
+    }
+
+    fn parse_bra_or_braket_expr(&mut self) {
+        let checkpoint = self.builder.checkpoint();
+        self.bump();
+        self.bump_trivia();
+        self.parse_expr_bp(0);
+        self.bump_trivia();
+
+        if self.current() != SyntaxKind::Pipe {
+            self.unexpected_here("expected '|' in bra or braket");
+            return;
+        }
+
+        self.bump();
+        self.bump_trivia();
+
+        if self.at_expr_start() {
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::BraKetExpr.into());
+            self.parse_expr_bp(0);
+            self.bump_trivia();
+            self.expect(SyntaxKind::Greater, "expected '>' to close braket");
+            self.builder.finish_node();
+            return;
+        }
+
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::BraExpr.into());
+        self.builder.finish_node();
     }
 
     fn parse_call_expr(&mut self) {
@@ -662,6 +732,23 @@ impl<'a> Parser<'a> {
         if self.current() == SyntaxKind::Semi {
             self.bump();
         }
+    }
+
+    fn at_expr_start(&self) -> bool {
+        matches!(
+            self.current(),
+            SyntaxKind::Ident
+                | SyntaxKind::Int
+                | SyntaxKind::Float
+                | SyntaxKind::String
+                | SyntaxKind::KwTrue
+                | SyntaxKind::KwFalse
+                | SyntaxKind::Minus
+                | SyntaxKind::LParen
+                | SyntaxKind::LBrack
+                | SyntaxKind::Pipe
+                | SyntaxKind::Less
+        )
     }
 }
 

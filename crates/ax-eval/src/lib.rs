@@ -39,9 +39,9 @@ pub use property_store::{
 };
 pub use registry::{
     algorithm_entries, assumption_entries, builtin_entries, callable_entries, convention_entries,
-    property_entries, std_modules, syntax_rules, AlgorithmEntry, AssumptionEntry, BuiltinEntry,
-    CallableEntry, ConventionEntry, EvalState, ParamDef, ParamType, PropertyEntry, StdModule,
-    SyntaxRule,
+    format_tensor_property, property_entries, property_lookup_aliases, property_lookup_names,
+    std_modules, syntax_rules, AlgorithmEntry, AssumptionEntry, BuiltinEntry, CallableEntry,
+    ConventionEntry, EvalState, ParamDef, ParamType, PropertyEntry, StdModule, SyntaxRule,
 };
 
 fn find_tensor_symmetry(
@@ -61,6 +61,8 @@ pub struct Env {
     pub assumptions: HashMap<lasso::Spur, Vec<Assumption>>,
     pub gradings: HashMap<lasso::Spur, Grading>,
     pub operators: HashMap<lasso::Spur, ax_qm::OperatorKind>,
+    pub operator_statistics: HashMap<lasso::Spur, ax_qm::OperatorStatistics>,
+    pub contractions: HashMap<(lasso::Spur, lasso::Spur), Expr>,
     pub coordinates: HashSet<lasso::Spur>,
     pub component_rule_symbols: HashSet<lasso::Spur>,
     pub index_families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
@@ -90,6 +92,8 @@ impl Env {
             assumptions: HashMap::new(),
             gradings: HashMap::new(),
             operators: HashMap::new(),
+            operator_statistics: HashMap::new(),
+            contractions: HashMap::new(),
             coordinates: HashSet::new(),
             component_rule_symbols: HashSet::new(),
             index_families: HashMap::new(),
@@ -124,6 +128,8 @@ impl Env {
             assumptions: self.assumptions.clone(),
             gradings: self.gradings.clone(),
             operators: self.operators.clone(),
+            operator_statistics: self.operator_statistics.clone(),
+            contractions: self.contractions.clone(),
             coordinates: self.coordinates.clone(),
             component_rule_symbols: self.component_rule_symbols.clone(),
             index_families: self.index_families.clone(),
@@ -505,6 +511,126 @@ fn symbol_list_from_expr(expr: &Expr) -> Option<Vec<lasso::Spur>> {
         Expr::List(items) => items.iter().map(symbol_from_expr).collect(),
         _ => None,
     }
+}
+
+fn hilbert_space_metadata_of_symbol(
+    env: &Env,
+    symbol: lasso::Spur,
+) -> Option<ax_ir::HilbertSpaceMetadata> {
+    env.property_store
+        .get_all(symbol)
+        .into_iter()
+        .find_map(|prop| match prop {
+            ax_ir::TensorProperty::HilbertSpaceMeta(metadata) => Some(metadata.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            env.tensor_properties.get(&symbol).and_then(|props| {
+                props.iter().find_map(|prop| match prop {
+                    ax_ir::TensorProperty::HilbertSpaceMeta(metadata) => Some(metadata.clone()),
+                    _ => None,
+                })
+            })
+        })
+}
+
+fn flatten_hilbert_space_factors(
+    env: &Env,
+    factors: &[lasso::Spur],
+) -> Option<Vec<ax_ir::HilbertSpaceFactor>> {
+    if factors.is_empty() {
+        return None;
+    }
+    let mut flattened = Vec::new();
+    for factor in factors {
+        let metadata = hilbert_space_metadata_of_symbol(env, *factor)?;
+        if metadata.factors.is_empty() {
+            return None;
+        }
+        flattened.extend(metadata.factors);
+    }
+    Some(flattened)
+}
+
+fn parse_quantum_object_kind_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_ir::QuantumObjectKind> {
+    match name_from_expr(expr, interner)?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "ket" => Some(ax_ir::QuantumObjectKind::Ket),
+        "bra" => Some(ax_ir::QuantumObjectKind::Bra),
+        "operator" => Some(ax_ir::QuantumObjectKind::Operator),
+        "density_operator" => Some(ax_ir::QuantumObjectKind::DensityOperator),
+        "projector" => Some(ax_ir::QuantumObjectKind::Projector),
+        "observable" => Some(ax_ir::QuantumObjectKind::Observable),
+        "channel" => Some(ax_ir::QuantumObjectKind::Channel),
+        _ => None,
+    }
+}
+
+fn usize_list_from_expr(expr: &Expr) -> Option<Vec<usize>> {
+    match expr {
+        Expr::List(items) => items.iter().map(usize_from_expr).collect(),
+        _ => None,
+    }
+}
+
+fn unique_factor_index(
+    metadata: &ax_ir::HilbertSpaceMetadata,
+    factor_symbol: lasso::Spur,
+) -> Result<usize, ()> {
+    let matches = metadata
+        .factors
+        .iter()
+        .enumerate()
+        .filter_map(|(index, factor)| (factor.symbol == factor_symbol).then_some(index))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        _ => Err(()),
+    }
+}
+
+/// Attach structured Hilbert-space metadata to the evaluator environment.
+pub fn apply_hilbert_space_declaration(
+    env: &mut Env,
+    symbol: lasso::Spur,
+    metadata: ax_ir::HilbertSpaceMetadata,
+) {
+    env.tensor_properties
+        .entry(symbol)
+        .or_default()
+        .push(ax_ir::TensorProperty::HilbertSpaceMeta(metadata.clone()));
+    env.property_store.declare_hilbert_space(symbol, metadata);
+}
+
+/// Attach structured quantum-object metadata and required legacy compatibility markers.
+pub fn apply_quantum_object_declaration(
+    env: &mut Env,
+    symbol: lasso::Spur,
+    metadata: ax_ir::QuantumObjectMetadata,
+) {
+    env.tensor_properties
+        .entry(symbol)
+        .or_default()
+        .push(ax_ir::TensorProperty::QuantumObjectMeta(metadata.clone()));
+    if matches!(
+        metadata.kind,
+        ax_ir::QuantumObjectKind::Operator
+            | ax_ir::QuantumObjectKind::DensityOperator
+            | ax_ir::QuantumObjectKind::Projector
+            | ax_ir::QuantumObjectKind::Observable
+            | ax_ir::QuantumObjectKind::Channel
+    ) {
+        env.tensor_properties
+            .entry(symbol)
+            .or_default()
+            .push(ax_ir::TensorProperty::NonCommuting);
+    }
+    env.property_store.declare_quantum_object(symbol, metadata);
 }
 
 fn name_from_expr<'a>(expr: &Expr, interner: &'a ax_ir::Interner) -> Option<&'a str> {
@@ -1911,6 +2037,9 @@ pub fn apply_operator_declaration(
     for arg in args {
         if let Expr::Sym(sym) = arg {
             env.operators.insert(*sym, kind);
+            env.operator_statistics
+                .entry(*sym)
+                .or_insert(ax_qm::OperatorStatistics::Bosonic);
             declared.push(interner.resolve(*sym).to_string());
         }
     }
@@ -1926,6 +2055,81 @@ pub fn apply_operator_declaration(
             declared.join(", ")
         ))
     }
+}
+
+pub fn apply_named_operator_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "declare_operator" || !(args.len() == 2 || args.len() == 3) {
+        return None;
+    }
+
+    let symbol = match &args[0] {
+        Expr::Sym(sym) => *sym,
+        _ => return None,
+    };
+    let kind = match &args[1] {
+        Expr::Sym(sym) => match interner.resolve(*sym) {
+            "creation" => ax_qm::OperatorKind::Creation,
+            "annihilation" => ax_qm::OperatorKind::Annihilation,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let statistics = match args.get(2) {
+        None => ax_qm::OperatorStatistics::Bosonic,
+        Some(Expr::Sym(sym)) => match interner.resolve(*sym) {
+            "bosonic" => ax_qm::OperatorStatistics::Bosonic,
+            "fermionic" => ax_qm::OperatorStatistics::Fermionic,
+            _ => return None,
+        },
+        Some(_) => return None,
+    };
+
+    env.operators.insert(symbol, kind);
+    env.operator_statistics.insert(symbol, statistics);
+    Some(format!(
+        "declared {:?} operator {} with {:?} statistics",
+        kind,
+        interner.resolve(symbol),
+        statistics
+    ))
+}
+
+pub fn apply_named_contraction_declaration(
+    expr: &Expr,
+    env: &mut Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "declare_contraction" || args.len() != 3 {
+        return None;
+    }
+
+    let lhs = match &args[0] {
+        Expr::Sym(sym) => *sym,
+        _ => return None,
+    };
+    let rhs = match &args[1] {
+        Expr::Sym(sym) => *sym,
+        _ => return None,
+    };
+    let value = args[2].clone();
+
+    env.contractions.insert((lhs, rhs), value.clone());
+    Some(format!(
+        "declared contraction ({}, {}) -> {}",
+        interner.resolve(lhs),
+        interner.resolve(rhs),
+        ax_ir::pretty_print(&value, interner)
+    ))
 }
 
 pub fn apply_coordinate_declaration(
@@ -1990,20 +2194,22 @@ pub fn apply_property_declaration(
         pattern_slots: &Option<Vec<SlotSpec>>,
         property: ax_ir::TensorProperty,
     ) {
-        env.tensor_properties
-            .entry(tensor)
-            .or_default()
-            .push(property.clone());
-        if let Some(index_slots) = pattern_slots {
-            env.property_store.declare(
-                PropertyPattern {
-                    base_name: tensor,
-                    index_slots: index_slots.clone(),
-                },
-                property,
-            );
-        } else {
-            env.property_store.declare_simple(tensor, property);
+        for property in crate::property_store::expand_compatible_properties(property) {
+            env.tensor_properties
+                .entry(tensor)
+                .or_default()
+                .push(property.clone());
+            if let Some(index_slots) = pattern_slots {
+                env.property_store.declare(
+                    PropertyPattern {
+                        base_name: tensor,
+                        index_slots: index_slots.clone(),
+                    },
+                    property,
+                );
+            } else {
+                env.property_store.declare_simple(tensor, property);
+            }
         }
     }
 
@@ -2030,6 +2236,23 @@ pub fn apply_property_declaration(
         "partial_derivative" if args.len() == 1 => (&args[0], "partial_derivative", &[][..]),
         "covariant_derivative" if args.len() == 1 => (&args[0], "covariant_derivative", &[][..]),
         "tableau_inherit" if args.len() == 1 => (&args[0], "tableau_inherit", &[][..]),
+        "declare_spinor_meta" if args.len() == 5 => (&args[0], "declare_spinor_meta", &args[1..]),
+        "declare_gamma_matrix_meta" if args.len() == 5 => {
+            (&args[0], "declare_gamma_matrix_meta", &args[1..])
+        }
+        "declare_dirac_bar_meta" if args.len() == 4 => {
+            (&args[0], "declare_dirac_bar_meta", &args[1..])
+        }
+        "declare_trace_space" if args.len() == 3 => (&args[0], "declare_trace_space", &args[1..]),
+        "declare_hilbert_space" if args.len() == 2 => {
+            (&args[0], "declare_hilbert_space", &args[1..])
+        }
+        "declare_composite_space" if args.len() == 2 => {
+            (&args[0], "declare_composite_space", &args[1..])
+        }
+        "declare_quantum_object" if args.len() == 3 => {
+            (&args[0], "declare_quantum_object", &args[1..])
+        }
         _ => return None,
     };
     let (tensor, pattern_slots) = match parse_property_target(target, env) {
@@ -2203,6 +2426,104 @@ pub fn apply_property_declaration(
             add_property(ax_ir::TensorProperty::GammaMatrixProp);
             Some(format!(
                 "attached property gamma_matrix to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_spinor_meta" => {
+            let metadata = ax_ir::SpinorMetadata {
+                dimension: parse_optional_usize_expr(&prop_args[0], interner)?,
+                class: parse_spinor_class_expr(&prop_args[1], interner)?,
+                chirality: parse_optional_chirality_expr(&prop_args[2], interner)?,
+                index_family: parse_optional_symbol_expr(&prop_args[3], interner)?,
+            };
+            add_property(ax_ir::TensorProperty::SpinorMeta(metadata));
+            Some(format!(
+                "attached property spinor_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_gamma_matrix_meta" => {
+            let metadata = ax_ir::GammaMatrixMetadata {
+                dimension: parse_optional_usize_expr(&prop_args[0], interner)?,
+                metric_symbol: parse_optional_symbol_expr(&prop_args[1], interner)?,
+                index_family: parse_optional_symbol_expr(&prop_args[2], interner)?,
+                has_gamma5: parse_bool_like_expr(&prop_args[3], interner)?,
+            };
+            add_property(ax_ir::TensorProperty::GammaMatrixMeta(metadata));
+            Some(format!(
+                "attached property gamma_matrix_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_dirac_bar_meta" => {
+            let metadata = ax_ir::DiracBarMetadata {
+                gamma_symbol: parse_optional_symbol_expr(&prop_args[0], interner)?,
+                spinor_family: parse_optional_symbol_expr(&prop_args[1], interner)?,
+                reverse_gamma_order: parse_bool_like_expr(&prop_args[2], interner)?,
+            };
+            add_property(ax_ir::TensorProperty::DiracBarMeta(metadata));
+            Some(format!(
+                "attached property dirac_bar_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_trace_space" => {
+            let metadata = ax_ir::TraceSpaceMetadata {
+                space_symbol: symbol_from_expr(&prop_args[0])?,
+                cyclic: parse_bool_like_expr(&prop_args[1], interner)?,
+            };
+            add_property(ax_ir::TensorProperty::TraceSpaceMeta(metadata));
+            Some(format!(
+                "attached property trace_space_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_hilbert_space" => {
+            let dimension = usize_from_expr(&prop_args[0]).filter(|dim| *dim > 0)?;
+            apply_hilbert_space_declaration(
+                env,
+                tensor,
+                ax_ir::HilbertSpaceMetadata {
+                    dimension,
+                    factors: vec![ax_ir::HilbertSpaceFactor {
+                        symbol: tensor,
+                        dimension,
+                    }],
+                },
+            );
+            Some(format!(
+                "attached property hilbert_space_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_composite_space" => {
+            let factors = symbol_list_from_expr(&prop_args[0])?;
+            let flattened = flatten_hilbert_space_factors(env, &factors)?;
+            let dimension = flattened.iter().map(|factor| factor.dimension).product();
+            apply_hilbert_space_declaration(
+                env,
+                tensor,
+                ax_ir::HilbertSpaceMetadata {
+                    dimension,
+                    factors: flattened,
+                },
+            );
+            Some(format!(
+                "attached property hilbert_space_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_quantum_object" => {
+            let kind = parse_quantum_object_kind_expr(&prop_args[0], interner)?;
+            let space_symbol = symbol_from_expr(&prop_args[1])?;
+            hilbert_space_metadata_of_symbol(env, space_symbol)?;
+            apply_quantum_object_declaration(
+                env,
+                tensor,
+                ax_ir::QuantumObjectMetadata { kind, space_symbol },
+            );
+            Some(format!(
+                "attached property quantum_object_meta to {}",
                 interner.resolve(tensor)
             ))
         }
@@ -7290,14 +7611,61 @@ fn builtin_call(
                 match (&args[0], &args[1], &args[2], &args[3]) {
                     (Expr::Matrix(rho), Expr::Int(dim_a), Expr::Int(dim_b), Expr::Sym(which)) => {
                         match (dim_a.to_usize(), dim_b.to_usize(), interner.resolve(*which)) {
-                            (Some(dim_a), Some(dim_b), "A") => {
-                                Expr::Matrix(ax_qm::partial_trace(rho, dim_a, dim_b, 'A', interner))
-                            }
-                            (Some(dim_a), Some(dim_b), "B") => {
-                                Expr::Matrix(ax_qm::partial_trace(rho, dim_a, dim_b, 'B', interner))
-                            }
+                            (Some(dim_a), Some(dim_b), "A") => ax_qm::try_partial_trace(
+                                rho,
+                                ax_qm::BipartiteDims { dim_a, dim_b },
+                                ax_qm::PartialTraceTarget::A,
+                            )
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| Expr::Call(f, args)),
+                            (Some(dim_a), Some(dim_b), "B") => ax_qm::try_partial_trace(
+                                rho,
+                                ax_qm::BipartiteDims { dim_a, dim_b },
+                                ax_qm::PartialTraceTarget::B,
+                            )
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| Expr::Call(f, args)),
                             _ => Expr::Call(f, args),
                         }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "partial_trace_factor" => {
+            if args.len() == 3 {
+                match (&args[0], usize_list_from_expr(&args[1]), &args[2]) {
+                    (Expr::Matrix(rho), Some(dims), Expr::Int(factor_index)) => factor_index
+                        .to_usize()
+                        .and_then(|factor_index| {
+                            ax_qm::try_partial_trace_factor(rho, &dims, factor_index).ok()
+                        })
+                        .map(Expr::Matrix)
+                        .unwrap_or_else(|| Expr::Call(f, args)),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "partial_trace_space" => {
+            if args.len() == 3 {
+                match (&args[0], &args[1], &args[2]) {
+                    (Expr::Matrix(rho), Expr::Sym(composite_space), Expr::Sym(factor_space)) => {
+                        hilbert_space_metadata_of_symbol(env, *composite_space)
+                            .and_then(|metadata| {
+                                unique_factor_index(&metadata, *factor_space).ok().and_then(
+                                    |factor_index| {
+                                        let dims = metadata.factor_dimensions();
+                                        ax_qm::try_partial_trace_factor(rho, &dims, factor_index)
+                                            .ok()
+                                    },
+                                )
+                            })
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|| Expr::Call(f, args))
                     }
                     _ => Expr::Call(f, args),
                 }
@@ -7388,15 +7756,20 @@ fn builtin_call(
         }
         "normal_order" => {
             if args.len() == 1 {
-                ax_qm::normal_order(&args[0], &env.operators, interner)
+                ax_qm::normal_order(&args[0], &env.operators, &env.operator_statistics, interner)
             } else {
                 Expr::Call(f, args)
             }
         }
         "wick" => {
             if args.len() == 1 {
-                let contractions = HashMap::new();
-                ax_qm::wick_expand(&args[0], &env.operators, &contractions, interner)
+                ax_qm::wick_expand(
+                    &args[0],
+                    &env.operators,
+                    &env.operator_statistics,
+                    &env.contractions,
+                    interner,
+                )
             } else {
                 Expr::Call(f, args)
             }
@@ -9073,6 +9446,108 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "identity_channel" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Int(dim) => dim
+                        .to_usize()
+                        .map(ax_qm::identity_channel)
+                        .map(expr_3d_to_list)
+                        .unwrap_or_else(|| Expr::Call(f, args)),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "basis_projector" => {
+            if args.len() == 2 {
+                match (&args[0], &args[1]) {
+                    (Expr::Int(index), Expr::Int(dim)) => {
+                        match (index.to_usize(), dim.to_usize()) {
+                            (Some(index), Some(dim)) => ax_qm::basis_projector(index, dim)
+                                .map(Expr::Matrix)
+                                .unwrap_or_else(|_| Expr::Call(f, args)),
+                            _ => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "measurement_probabilities" => {
+            if args.len() == 2 {
+                match (expr_to_3d(&args[0]), expr_to_matrix(&args[1])) {
+                    (Some(projectors), Some(rho)) => {
+                        ax_qm::measurement_probabilities(&projectors, &rho)
+                            .map(Expr::List)
+                            .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "post_measurement_state" => {
+            if args.len() == 3 {
+                match (&args[0], expr_to_matrix(&args[1]), &args[2]) {
+                    (Expr::Matrix(projector), Some(rho), Expr::Int(outcome_index)) => outcome_index
+                        .to_usize()
+                        .and_then(|outcome_index| {
+                            ax_qm::post_measurement_state(projector, &rho, outcome_index).ok()
+                        })
+                        .map(Expr::Matrix)
+                        .unwrap_or_else(|| Expr::Call(f, args)),
+                    (Expr::List(rows), Some(rho), Expr::Int(outcome_index)) => {
+                        let projector = expr_to_matrix(&Expr::List(rows.clone()));
+                        match (projector, outcome_index.to_usize()) {
+                            (Some(projector), Some(outcome_index)) => {
+                                ax_qm::post_measurement_state(&projector, &rho, outcome_index)
+                                    .map(Expr::Matrix)
+                                    .unwrap_or_else(|_| Expr::Call(f, args))
+                            }
+                            _ => Expr::Call(f, args),
+                        }
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "apply_channel" => {
+            if args.len() == 2 {
+                match (expr_to_3d(&args[0]), expr_to_matrix(&args[1])) {
+                    (Some(kraus), Some(rho)) => ax_qm::apply_kraus_channel(&kraus, &rho)
+                        .map(Expr::Matrix)
+                        .unwrap_or_else(|_| Expr::Call(f, args)),
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "lindblad_rhs" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_matrix(&args[1]),
+                    expr_to_3d(&args[2]),
+                ) {
+                    (Some(h), Some(rho), Some(jump_ops)) => {
+                        ax_qm::lindblad_rhs(&h, &rho, &jump_ops, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         _ => Expr::Call(f, args),
     }
 }
@@ -9171,6 +9646,53 @@ fn parse_bool_like_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<bool>
                 None
             }
         }
+        _ => None,
+    }
+}
+
+fn parse_optional_usize_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<Option<usize>> {
+    match expr {
+        Expr::Int(n) => n.to_usize().map(Some),
+        Expr::Sym(sym) if interner.resolve(*sym).eq_ignore_ascii_case("none") => Some(None),
+        _ => None,
+    }
+}
+
+fn parse_optional_symbol_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<Option<lasso::Spur>> {
+    match expr {
+        Expr::Sym(sym) if interner.resolve(*sym).eq_ignore_ascii_case("none") => Some(None),
+        Expr::Sym(sym) => Some(Some(*sym)),
+        _ => None,
+    }
+}
+
+fn parse_spinor_class_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<ax_ir::SpinorClass> {
+    let Expr::Sym(sym) = expr else {
+        return None;
+    };
+    match interner.resolve(*sym).to_ascii_lowercase().as_str() {
+        "dirac" => Some(ax_ir::SpinorClass::Dirac),
+        "majorana" => Some(ax_ir::SpinorClass::Majorana),
+        "weyl" => Some(ax_ir::SpinorClass::Weyl),
+        "majoranaweyl" | "majorana_weyl" => Some(ax_ir::SpinorClass::MajoranaWeyl),
+        _ => None,
+    }
+}
+
+fn parse_optional_chirality_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<Option<ax_ir::Chirality>> {
+    let Expr::Sym(sym) = expr else {
+        return None;
+    };
+    match interner.resolve(*sym).to_ascii_lowercase().as_str() {
+        "none" => Some(None),
+        "left" => Some(Some(ax_ir::Chirality::Left)),
+        "right" => Some(Some(ax_ir::Chirality::Right)),
         _ => None,
     }
 }
@@ -9443,6 +9965,21 @@ fn expr_to_3d(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
             .map(|row| expr_to_rows(&Expr::List(row.clone())))
             .collect(),
         Expr::Group(inner, _) => expr_to_3d(inner),
+        _ => None,
+    }
+}
+
+fn expr_to_matrix(expr: &Expr) -> Option<Vec<Vec<Expr>>> {
+    match expr {
+        Expr::Matrix(rows) => Some(rows.clone()),
+        Expr::List(rows) => rows
+            .iter()
+            .map(|row| match row {
+                Expr::List(cells) => Some(cells.clone()),
+                _ => None,
+            })
+            .collect(),
+        Expr::Group(inner, _) => expr_to_matrix(inner),
         _ => None,
     }
 }
@@ -10084,6 +10621,8 @@ mod tests {
                 || apply_graded_declaration(&expr, &mut env, &interner).is_some()
                 || apply_superspace_setup(&expr, &mut env, &interner).is_some()
                 || apply_brst_setup(&expr, &mut env, &interner).is_some()
+                || apply_named_operator_declaration(&expr, &mut env, &interner).is_some()
+                || apply_named_contraction_declaration(&expr, &mut env, &interner).is_some()
                 || apply_property_declaration(&expr, &mut env, &interner).is_some()
                 || apply_coordinate_declaration(&expr, &mut env, &interner).is_some()
                 || apply_index_declaration(&expr, &mut env, &interner).is_some()
@@ -10100,6 +10639,8 @@ mod tests {
             let _ = apply_coordinate_declaration(&result, &mut env, &interner);
             let _ = apply_grassmann_declaration(&result, &mut env, &interner);
             let _ = apply_operator_declaration(&result, &mut env, &interner);
+            let _ = apply_named_operator_declaration(&result, &mut env, &interner);
+            let _ = apply_named_contraction_declaration(&result, &mut env, &interner);
             if let Expr::Assume(var, assumptions) = &result {
                 env.assumptions
                     .entry(*var)
@@ -10140,6 +10681,8 @@ mod tests {
                 || apply_graded_declaration(&expr, &mut env, &interner).is_some()
                 || apply_superspace_setup(&expr, &mut env, &interner).is_some()
                 || apply_brst_setup(&expr, &mut env, &interner).is_some()
+                || apply_named_operator_declaration(&expr, &mut env, &interner).is_some()
+                || apply_named_contraction_declaration(&expr, &mut env, &interner).is_some()
                 || apply_property_declaration(&expr, &mut env, &interner).is_some()
                 || apply_coordinate_declaration(&expr, &mut env, &interner).is_some()
                 || apply_index_declaration(&expr, &mut env, &interner).is_some()
@@ -10155,6 +10698,8 @@ mod tests {
             let _ = apply_coordinate_declaration(&result, &mut env, &interner);
             let _ = apply_grassmann_declaration(&result, &mut env, &interner);
             let _ = apply_operator_declaration(&result, &mut env, &interner);
+            let _ = apply_named_operator_declaration(&result, &mut env, &interner);
+            let _ = apply_named_contraction_declaration(&result, &mut env, &interner);
             if let Expr::Assume(var, assumptions) = &result {
                 env.assumptions
                     .entry(*var)
@@ -12899,8 +13444,43 @@ mod tests {
     }
 
     #[test]
+    fn qm_partial_trace_space_matches_partial_trace_factor() {
+        let (space_result, _) = eval_src(
+            "declare_hilbert_space(QA, 2); declare_hilbert_space(QB, 2); declare_composite_space(QAB, [QA, QB]); let rho = density([1/sqrt(2), 0, 0, 1/sqrt(2)]); partial_trace_space(rho, QAB, QB);",
+        );
+        let (factor_result, _) = eval_src(
+            "let rho = density([1/sqrt(2), 0, 0, 1/sqrt(2)]); partial_trace_factor(rho, [2, 2], 1);",
+        );
+        assert_eq!(space_result, factor_result);
+    }
+
+    #[test]
     fn qm_normal_order_adds_bosonic_commutator_term() {
         let (result, interner) = eval_src("normal_order(annihilation(a) * creation(a));");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + creation(a)*annihilation(a)");
+    }
+
+    #[test]
+    fn qm_normal_order_adds_fermionic_anticommutator_sign() {
+        let (result, interner) = eval_src(
+            "declare_operator(c, annihilation, fermionic); normal_order(annihilation(c) * creation(c));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + -1*creation(c)*annihilation(c)");
+    }
+
+    #[test]
+    fn qm_wick_uses_declared_contraction_term() {
+        let (result, interner) =
+            eval_src("declare_contraction(a, a, 1); wick(annihilation(a) * creation(a));");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + creation(a)*annihilation(a)");
+    }
+
+    #[test]
+    fn qm_wick_without_declared_contraction_reduces_to_normal_ordering() {
+        let (result, interner) = eval_src("wick(annihilation(a) * creation(a));");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert_eq!(rendered, "1 + creation(a)*annihilation(a)");
     }

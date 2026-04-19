@@ -82,8 +82,11 @@ fn all_properties_have_entries() {
         "TableauInherit",
         "Depends",
         "Spinor",
+        "SpinorMeta",
         "DiracBar",
+        "DiracBarMeta",
         "GammaMatrixProp",
+        "GammaMatrixMeta",
         "Commuting",
         "AntiCommuting",
         "NonCommuting",
@@ -104,6 +107,9 @@ fn all_properties_have_entries() {
         "DimensionDependentIdentity",
         "WeylTensor",
         "DifferentialFormDegree",
+        "TraceSpaceMeta",
+        "HilbertSpaceMeta",
+        "QuantumObjectMeta",
     ];
     for e in &expected {
         assert!(prop_names.contains(e), "missing property entry for {}", e);

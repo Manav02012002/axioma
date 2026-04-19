@@ -122,6 +122,8 @@ impl EvalState for McpState {
         ax_eval::apply_property_declaration(&expr, &mut self.env, &self.interner);
         ax_eval::apply_grassmann_declaration(&expr, &mut self.env, &self.interner);
         ax_eval::apply_operator_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_named_operator_declaration(&expr, &mut self.env, &self.interner);
+        ax_eval::apply_named_contraction_declaration(&expr, &mut self.env, &self.interner);
         ax_eval::apply_parallel_declaration(&expr, &mut self.env, &self.interner);
         ax_eval::apply_graded_declaration(&expr, &mut self.env, &self.interner);
         ax_eval::apply_superspace_setup(&expr, &mut self.env, &self.interner);

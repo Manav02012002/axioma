@@ -15,9 +15,11 @@ use std::sync::{
 use std::time::Instant;
 
 pub use expr::{
-    Assumption, Condition, Convention, Expr, FourierSign, Grading, Index, IndexFamily,
-    IndexPosition, LeviCivitaNorm, MetricSignature, ParentRel, RicciContraction, RiemannSign,
-    TensorProperty, TrustLevel, Variance,
+    Assumption, Chirality, Condition, Convention, DiracBarMetadata, Expr, FourierSign,
+    GammaMatrixMetadata, Grading, HilbertSpaceFactor, HilbertSpaceMetadata, Index, IndexFamily,
+    IndexPosition, LeviCivitaNorm, MetricSignature, ParentRel, QuantumObjectKind,
+    QuantumObjectMetadata, RicciContraction, RiemannSign, SpinorClass, SpinorMetadata,
+    TensorProperty, TraceSpaceMetadata, TrustLevel, Variance,
 };
 pub use identities::{
     identity_permutation_terms, riemann_identity_set, PermutedCoefficientTerm, TensorIdentitySet,

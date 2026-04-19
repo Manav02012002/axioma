@@ -51,6 +51,108 @@ pub enum Assumption {
     Odd,
 }
 
+/// Classifies the representation-theoretic type of a spinor-valued object.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SpinorClass {
+    Dirac,
+    Majorana,
+    Weyl,
+    MajoranaWeyl,
+}
+
+/// Records the chirality projection associated with a chiral spinor object.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Chirality {
+    Left,
+    Right,
+}
+
+/// Structured metadata describing a spinor family, its dimension, and optional chirality.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SpinorMetadata {
+    pub class: SpinorClass,
+    pub dimension: Option<usize>,
+    pub chirality: Option<Chirality>,
+    pub index_family: Option<Sym>,
+}
+
+/// Structured metadata describing a gamma-matrix family and its associated Clifford data.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GammaMatrixMetadata {
+    pub dimension: Option<usize>,
+    pub metric_symbol: Option<Sym>,
+    pub index_family: Option<Sym>,
+    pub has_gamma5: bool,
+}
+
+/// Structured metadata describing how a Dirac-bar operation is related to spinors and gamma matrices.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DiracBarMetadata {
+    pub gamma_symbol: Option<Sym>,
+    pub spinor_family: Option<Sym>,
+    pub reverse_gamma_order: bool,
+}
+
+/// Structured metadata describing a trace space and whether traces in that space are cyclic.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TraceSpaceMetadata {
+    pub space_symbol: Sym,
+    pub cyclic: bool,
+}
+
+/// A named factor in a Hilbert-space decomposition together with its finite dimension.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HilbertSpaceFactor {
+    pub symbol: Sym,
+    pub dimension: usize,
+}
+
+/// Structured metadata describing a finite-dimensional Hilbert space and its ordered factors.
+///
+/// The `dimension` field always stores the total dimension of the full space, while `factors`
+/// records the elementary-space factors in tensor-product order.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HilbertSpaceMetadata {
+    pub dimension: usize,
+    pub factors: Vec<HilbertSpaceFactor>,
+}
+
+/// Classifies the kind of quantum object associated with structured tensor metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum QuantumObjectKind {
+    Ket,
+    Bra,
+    Operator,
+    DensityOperator,
+    Projector,
+    Observable,
+    Channel,
+}
+
+/// Structured metadata describing the quantum-object kind and the Hilbert space it belongs to.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct QuantumObjectMetadata {
+    pub kind: QuantumObjectKind,
+    pub space_symbol: Sym,
+}
+
+impl HilbertSpaceMetadata {
+    /// Return `true` when this Hilbert space has more than one ordered tensor factor.
+    pub fn is_composite(&self) -> bool {
+        self.factors.len() > 1
+    }
+
+    /// Return the ordered Hilbert-space factor symbols for this space decomposition.
+    pub fn factor_symbols(&self) -> Vec<Sym> {
+        self.factors.iter().map(|factor| factor.symbol).collect()
+    }
+
+    /// Return the ordered Hilbert-space factor dimensions for this space decomposition.
+    pub fn factor_dimensions(&self) -> Vec<usize> {
+        self.factors.iter().map(|factor| factor.dimension).collect()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TensorProperty {
     Symmetric(Vec<usize>),
@@ -69,8 +171,11 @@ pub enum TensorProperty {
     TableauInherit,
     Depends(Vec<Sym>),
     Spinor,
+    SpinorMeta(SpinorMetadata),
     DiracBar,
+    DiracBarMeta(DiracBarMetadata),
     GammaMatrixProp,
+    GammaMatrixMeta(GammaMatrixMetadata),
     Commuting,
     AntiCommuting,
     NonCommuting,
@@ -99,6 +204,9 @@ pub enum TensorProperty {
     DimensionDependentIdentity,
     WeylTensor,
     DifferentialFormDegree(usize),
+    TraceSpaceMeta(TraceSpaceMetadata),
+    HilbertSpaceMeta(HilbertSpaceMetadata),
+    QuantumObjectMeta(QuantumObjectMetadata),
     /// Generic marker for a background class or background geometry family.
     BackgroundClass(Sym),
     /// Generic perturbation-family metadata tagged by family symbol and order.
@@ -799,6 +907,352 @@ mod tests {
                 invariant: false,
                 generator: false,
             }
+        );
+    }
+
+    #[test]
+    fn tensor_property_structured_quantum_variants_compare_equal_for_same_payload() {
+        let family = lasso::Spur::try_from_usize(1).unwrap();
+        let metric = lasso::Spur::try_from_usize(2).unwrap();
+        let gamma = lasso::Spur::try_from_usize(3).unwrap();
+        let space = lasso::Spur::try_from_usize(4).unwrap();
+
+        assert_eq!(
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(10),
+                chirality: Some(Chirality::Left),
+                index_family: Some(family),
+            }),
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(10),
+                chirality: Some(Chirality::Left),
+                index_family: Some(family),
+            })
+        );
+        assert_eq!(
+            TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: Some(10),
+                metric_symbol: Some(metric),
+                index_family: Some(family),
+                has_gamma5: true,
+            }),
+            TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: Some(10),
+                metric_symbol: Some(metric),
+                index_family: Some(family),
+                has_gamma5: true,
+            })
+        );
+        assert_eq!(
+            TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: Some(gamma),
+                spinor_family: Some(family),
+                reverse_gamma_order: true,
+            }),
+            TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: Some(gamma),
+                spinor_family: Some(family),
+                reverse_gamma_order: true,
+            })
+        );
+        assert_eq!(
+            TensorProperty::TraceSpaceMeta(TraceSpaceMetadata {
+                space_symbol: space,
+                cyclic: true,
+            }),
+            TensorProperty::TraceSpaceMeta(TraceSpaceMetadata {
+                space_symbol: space,
+                cyclic: true,
+            })
+        );
+    }
+
+    #[test]
+    fn elementary_hilbert_space_meta_equality() {
+        let h = lasso::Spur::try_from_usize(5).unwrap();
+        let lhs = TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
+            dimension: 2,
+            factors: vec![HilbertSpaceFactor {
+                symbol: h,
+                dimension: 2,
+            }],
+        });
+        let rhs = TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
+            dimension: 2,
+            factors: vec![HilbertSpaceFactor {
+                symbol: h,
+                dimension: 2,
+            }],
+        });
+
+        assert_eq!(lhs, rhs);
+        let TensorProperty::HilbertSpaceMeta(meta) = lhs else {
+            panic!("expected HilbertSpaceMeta");
+        };
+        assert!(!meta.is_composite());
+        assert_eq!(meta.factor_symbols(), vec![h]);
+        assert_eq!(meta.factor_dimensions(), vec![2]);
+    }
+
+    #[test]
+    fn composite_hilbert_space_meta_equality() {
+        let ha = lasso::Spur::try_from_usize(6).unwrap();
+        let hb = lasso::Spur::try_from_usize(7).unwrap();
+        let lhs = TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
+            dimension: 6,
+            factors: vec![
+                HilbertSpaceFactor {
+                    symbol: ha,
+                    dimension: 2,
+                },
+                HilbertSpaceFactor {
+                    symbol: hb,
+                    dimension: 3,
+                },
+            ],
+        });
+        let rhs = TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
+            dimension: 6,
+            factors: vec![
+                HilbertSpaceFactor {
+                    symbol: ha,
+                    dimension: 2,
+                },
+                HilbertSpaceFactor {
+                    symbol: hb,
+                    dimension: 3,
+                },
+            ],
+        });
+
+        assert_eq!(lhs, rhs);
+        let TensorProperty::HilbertSpaceMeta(meta) = lhs else {
+            panic!("expected HilbertSpaceMeta");
+        };
+        assert!(meta.is_composite());
+        assert_eq!(meta.factor_symbols(), vec![ha, hb]);
+        assert_eq!(meta.factor_dimensions(), vec![2, 3]);
+    }
+
+    #[test]
+    fn changing_factor_order_changes_hilbert_space_meta_equality() {
+        let ha = lasso::Spur::try_from_usize(8).unwrap();
+        let hb = lasso::Spur::try_from_usize(9).unwrap();
+
+        assert_ne!(
+            TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
+                dimension: 4,
+                factors: vec![
+                    HilbertSpaceFactor {
+                        symbol: ha,
+                        dimension: 2,
+                    },
+                    HilbertSpaceFactor {
+                        symbol: hb,
+                        dimension: 2,
+                    },
+                ],
+            }),
+            TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
+                dimension: 4,
+                factors: vec![
+                    HilbertSpaceFactor {
+                        symbol: hb,
+                        dimension: 2,
+                    },
+                    HilbertSpaceFactor {
+                        symbol: ha,
+                        dimension: 2,
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn quantum_object_meta_equality_depends_on_kind_and_space() {
+        let ha = lasso::Spur::try_from_usize(10).unwrap();
+        let hb = lasso::Spur::try_from_usize(11).unwrap();
+
+        assert_eq!(
+            TensorProperty::QuantumObjectMeta(QuantumObjectMetadata {
+                kind: QuantumObjectKind::Ket,
+                space_symbol: ha,
+            }),
+            TensorProperty::QuantumObjectMeta(QuantumObjectMetadata {
+                kind: QuantumObjectKind::Ket,
+                space_symbol: ha,
+            })
+        );
+        assert_ne!(
+            TensorProperty::QuantumObjectMeta(QuantumObjectMetadata {
+                kind: QuantumObjectKind::Ket,
+                space_symbol: ha,
+            }),
+            TensorProperty::QuantumObjectMeta(QuantumObjectMetadata {
+                kind: QuantumObjectKind::Bra,
+                space_symbol: ha,
+            })
+        );
+        assert_ne!(
+            TensorProperty::QuantumObjectMeta(QuantumObjectMetadata {
+                kind: QuantumObjectKind::Operator,
+                space_symbol: ha,
+            }),
+            TensorProperty::QuantumObjectMeta(QuantumObjectMetadata {
+                kind: QuantumObjectKind::Operator,
+                space_symbol: hb,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_and_structured_property_variants_remain_distinct() {
+        let h = lasso::Spur::try_from_usize(12).unwrap();
+
+        assert_ne!(
+            TensorProperty::Spinor,
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Dirac,
+                dimension: Some(4),
+                chirality: None,
+                index_family: None,
+            })
+        );
+        assert_ne!(
+            TensorProperty::Trace,
+            TensorProperty::TraceSpaceMeta(TraceSpaceMetadata {
+                space_symbol: h,
+                cyclic: true,
+            })
+        );
+        assert_ne!(
+            TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
+                dimension: 2,
+                factors: vec![HilbertSpaceFactor {
+                    symbol: h,
+                    dimension: 2,
+                }],
+            }),
+            TensorProperty::QuantumObjectMeta(QuantumObjectMetadata {
+                kind: QuantumObjectKind::Ket,
+                space_symbol: h,
+            })
+        );
+    }
+
+    #[test]
+    fn tensor_property_structured_quantum_variants_distinguish_different_payloads() {
+        let family_a = lasso::Spur::try_from_usize(1).unwrap();
+        let family_b = lasso::Spur::try_from_usize(2).unwrap();
+        let metric_a = lasso::Spur::try_from_usize(3).unwrap();
+        let metric_b = lasso::Spur::try_from_usize(4).unwrap();
+
+        assert_ne!(
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(10),
+                chirality: Some(Chirality::Left),
+                index_family: Some(family_a),
+            }),
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(11),
+                chirality: Some(Chirality::Left),
+                index_family: Some(family_a),
+            })
+        );
+        assert_ne!(
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(10),
+                chirality: Some(Chirality::Left),
+                index_family: Some(family_a),
+            }),
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(10),
+                chirality: Some(Chirality::Right),
+                index_family: Some(family_a),
+            })
+        );
+        assert_ne!(
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(10),
+                chirality: Some(Chirality::Left),
+                index_family: Some(family_a),
+            }),
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(10),
+                chirality: Some(Chirality::Left),
+                index_family: Some(family_b),
+            })
+        );
+        assert_ne!(
+            TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: Some(10),
+                metric_symbol: Some(metric_a),
+                index_family: Some(family_a),
+                has_gamma5: true,
+            }),
+            TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: Some(10),
+                metric_symbol: Some(metric_b),
+                index_family: Some(family_a),
+                has_gamma5: true,
+            })
+        );
+    }
+
+    #[test]
+    fn tensor_property_legacy_and_structured_quantum_variants_are_distinct() {
+        assert_ne!(
+            TensorProperty::Spinor,
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Dirac,
+                dimension: None,
+                chirality: None,
+                index_family: None,
+            })
+        );
+        assert_ne!(
+            TensorProperty::DiracBar,
+            TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: None,
+                spinor_family: None,
+                reverse_gamma_order: true,
+            })
+        );
+        assert_ne!(
+            TensorProperty::GammaMatrixProp,
+            TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: None,
+                metric_symbol: None,
+                index_family: None,
+                has_gamma5: false,
+            })
+        );
+        assert_ne!(
+            TensorProperty::MajoranaSpinor,
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Majorana,
+                dimension: None,
+                chirality: None,
+                index_family: None,
+            })
+        );
+        assert_ne!(
+            TensorProperty::WeylSpinor,
+            TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: None,
+                chirality: Some(Chirality::Left),
+                index_family: None,
+            })
         );
     }
 }

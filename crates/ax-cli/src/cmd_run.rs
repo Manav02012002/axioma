@@ -94,6 +94,8 @@ pub fn handle_import(
             _ if ax_eval::apply_graded_declaration(&expr, env, interner).is_some() => {}
             _ if ax_eval::apply_superspace_setup(&expr, env, interner).is_some() => {}
             _ if ax_eval::apply_brst_setup(&expr, env, interner).is_some() => {}
+            _ if ax_eval::apply_named_operator_declaration(&expr, env, interner).is_some() => {}
+            _ if ax_eval::apply_named_contraction_declaration(&expr, env, interner).is_some() => {}
             _ if ax_eval::apply_property_declaration(&expr, env, interner).is_some() => {}
             _ if ax_eval::apply_index_declaration(&expr, env, interner).is_some() => {}
             _ => {
@@ -101,6 +103,8 @@ pub fn handle_import(
                 let _ = ax_eval::apply_coordinate_declaration(&result, env, interner);
                 let _ = ax_eval::apply_grassmann_declaration(&result, env, interner);
                 let _ = ax_eval::apply_operator_declaration(&result, env, interner);
+                let _ = ax_eval::apply_named_operator_declaration(&result, env, interner);
+                let _ = ax_eval::apply_named_contraction_declaration(&result, env, interner);
             }
         }
     }

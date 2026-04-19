@@ -1,4 +1,8 @@
 // Bell states
+declare_hilbert_space(QA, 2)
+declare_hilbert_space(QB, 2)
+declare_composite_space(QAB, [QA, QB])
+
 let up = ket(0)
 let down = ket(1)
 // |Φ+⟩ = (|00⟩ + |11⟩) / sqrt(2)
@@ -7,5 +11,11 @@ let phi_plus = [1/sqrt(2), 0, 0, 1/sqrt(2)]
 let rho = density(phi_plus)
 // Partial trace over second qubit → maximally mixed state
 let rho_A = partial_trace(rho, 2, 2, A)
+let rho_A_space = partial_trace_space(rho, QAB, QB)
+let rho_B_space = partial_trace_space(rho, QAB, QA)
 rho_A
 // Should be [[1/2, 0], [0, 1/2]]
+let id2 = identity_channel(2)
+let rho_A_after = apply_channel(id2, rho_A)
+rho_A_after
+[rho_A_space, rho_B_space]

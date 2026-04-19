@@ -25,11 +25,121 @@ pub struct TableauSymmetryExpr {
     syntax: SyntaxNode,
 }
 
+/// AST wrapper for Dirac ket expressions such as `|psi>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KetExpr {
+    syntax: SyntaxNode,
+}
+
+/// AST wrapper for Dirac bra expressions such as `<phi|`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BraExpr {
+    syntax: SyntaxNode,
+}
+
+/// AST wrapper for Dirac inner-product expressions such as `<phi|psi>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BraKetExpr {
+    syntax: SyntaxNode,
+}
+
+/// AST wrapper for postfix dagger expressions such as `A†`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DaggerExpr {
+    syntax: SyntaxNode,
+}
+
+/// AST wrapper for tensor product expressions such as `A ⊗ B`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TensorProductExpr {
+    syntax: SyntaxNode,
+}
+
 impl AstNode for TableauSymmetryExpr {
     type Language = AxLanguage;
 
     fn can_cast(kind: SyntaxKind) -> bool {
         kind == SyntaxKind::TableauSymmetryExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for KetExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::KetExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for BraExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::BraExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for BraKetExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::BraKetExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for DaggerExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::DaggerExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for TensorProductExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::TensorProductExpr
     }
 
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -157,6 +267,28 @@ pub fn syntax_node_from_green(green: GreenNode) -> SyntaxNode {
 pub fn tableau_symmetry_exprs(root: &SyntaxNode) -> Vec<TableauSymmetryExpr> {
     root.descendants()
         .filter_map(TableauSymmetryExpr::cast)
+        .collect()
+}
+
+pub fn ket_exprs(root: &SyntaxNode) -> Vec<KetExpr> {
+    root.descendants().filter_map(KetExpr::cast).collect()
+}
+
+pub fn bra_exprs(root: &SyntaxNode) -> Vec<BraExpr> {
+    root.descendants().filter_map(BraExpr::cast).collect()
+}
+
+pub fn braket_exprs(root: &SyntaxNode) -> Vec<BraKetExpr> {
+    root.descendants().filter_map(BraKetExpr::cast).collect()
+}
+
+pub fn dagger_exprs(root: &SyntaxNode) -> Vec<DaggerExpr> {
+    root.descendants().filter_map(DaggerExpr::cast).collect()
+}
+
+pub fn tensor_product_exprs(root: &SyntaxNode) -> Vec<TensorProductExpr> {
+    root.descendants()
+        .filter_map(TensorProductExpr::cast)
         .collect()
 }
 
