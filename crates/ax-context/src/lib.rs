@@ -96,6 +96,12 @@ pub struct CosmologyConfig {
     pub default_gauge: Option<String>,
     #[serde(default)]
     pub default_matter: Option<String>,
+    #[serde(default)]
+    pub default_hierarchy_gauge: Option<String>,
+    #[serde(default)]
+    pub default_hierarchy_closure: Option<String>,
+    #[serde(default)]
+    pub default_hierarchy_lmax: Option<usize>,
 }
 
 impl Default for SymmetryConfig {

@@ -5,6 +5,30 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SymbolicMatrix {
+    pub dim: usize,
+    pub data: Vec<Vec<ax_ir::Expr>>,
+}
+
+impl SymbolicMatrix {
+    pub fn new(dim: usize) -> Self {
+        Self {
+            dim,
+            data: vec![vec![Expr::zero(); dim]; dim],
+        }
+    }
+
+    pub fn from_data(data: Vec<Vec<ax_ir::Expr>>) -> Self {
+        let dim = data.len();
+        Self { dim, data }
+    }
+
+    pub fn get(&self, row: usize, col: usize) -> &ax_ir::Expr {
+        &self.data[row][col]
+    }
+}
+
 pub fn permutation_matrix_size(degree: usize) -> usize {
     degree * degree
 }

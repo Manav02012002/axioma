@@ -1,0 +1,7 @@
+// two-field multifield verification fixture
+let bg = frw_background_spec(conformal, flat, 3)
+let m = cpt_matter(canonical_scalar)
+
+multifield_equations(2)
+cpt_mukhanov_sasaki(bg, m)
+boltzmann_bridge()

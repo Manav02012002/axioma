@@ -1275,4 +1275,55 @@ Text with $x^2$ and \write18{boom}"#
             )
         );
     }
+
+    #[test]
+    fn notebook_and_jupyter_render_scalar_equation_labels_identically() {
+        let interner = ax_ir::Interner::new();
+        let mut env = ax_eval::Env::new();
+        let result = handle_eval(
+            &eval_body(
+                "cpt_linearized_einstein(1, frw_background_spec(conformal, flat, 3), cpt_gauge(newtonian), cpt_matter(symbolic))",
+            ),
+            &mut env,
+            &interner,
+            &[],
+        );
+
+        assert_eq!(result.error, None, "{result:?}");
+        let unicode = result.unicode.unwrap_or_default();
+        assert!(unicode.contains("00_constraint"), "{unicode}");
+        assert!(unicode.contains("ij_traceless"), "{unicode}");
+    }
+
+    #[test]
+    fn notebook_and_jupyter_render_tensor_equation_labels_identically() {
+        let interner = ax_ir::Interner::new();
+        let mut env = ax_eval::Env::new();
+        let result = handle_eval(
+            &eval_body("linearized_einstein_tensor()"),
+            &mut env,
+            &interner,
+            &[],
+        );
+
+        assert_eq!(result.error, None, "{result:?}");
+        let unicode = result.unicode.unwrap_or_default();
+        assert!(unicode.contains("tensor_xx"), "{unicode}");
+        assert!(unicode.contains("tensor_zz"), "{unicode}");
+    }
+
+    #[test]
+    fn notebook_and_jupyter_render_harmonic_spec_identically() {
+        let interner = ax_ir::Interner::new();
+        let mut env = ax_eval::Env::new();
+        let result = handle_eval(
+            &eval_body("tensor_harmonic_spec(flat)"),
+            &mut env,
+            &interner,
+            &[],
+        );
+
+        assert_eq!(result.error, None, "{result:?}");
+        assert_eq!(result.unicode.as_deref(), Some("TensorHarmonics(flat, k)"));
+    }
 }

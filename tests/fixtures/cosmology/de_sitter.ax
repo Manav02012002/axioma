@@ -1,0 +1,18 @@
+// de Sitter verification fixture
+let bg = frw_background_spec(conformal, flat, 3)
+let g = cpt_gauge(newtonian)
+let m = cpt_matter(canonical_scalar)
+
+// scalar equations
+linearized_einstein(1)
+cpt_linearized_einstein(1, bg, g, cpt_matter(symbolic))
+
+// tensor mode equations
+tensor_mode_equation()
+
+// harmonic projection
+project_scalar_harmonics()
+
+// Mukhanov-Sasaki equation
+mukhanov_sasaki()
+cpt_mukhanov_sasaki(bg, m)

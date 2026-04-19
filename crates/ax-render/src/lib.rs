@@ -212,6 +212,28 @@ pub fn render_cpt_spec_unicode(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -
             }
             _ => None,
         },
+        "harmonic" => {
+            let [Expr::Sym(sector), Expr::Sym(curvature), Expr::Sym(_wave)] = rest else {
+                return None;
+            };
+            let sector_name = match interner.resolve(*sector) {
+                "scalar" => "ScalarHarmonics",
+                "vector" => "VectorHarmonics",
+                "tensor" => "TensorHarmonics",
+                _ => return None,
+            };
+            Some(format!(
+                "{}({}, k)",
+                sector_name,
+                interner.resolve(*curvature)
+            ))
+        }
+        "eft_model" => {
+            let [Expr::Sym(kind)] = rest else {
+                return None;
+            };
+            Some(format!("EFTModel({})", interner.resolve(*kind)))
+        }
         _ => None,
     }
 }
@@ -869,12 +891,30 @@ pub fn to_unicode(expr: &Expr, interner: &ax_ir::Interner) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ax_perturb::{gauge::svt_decompose_perturbation, FrwBackgroundSpec};
 
     fn render_src(src: &str) -> String {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
         let expr = result.expr.expect("expected expression");
         to_latex(&expr, &interner)
+    }
+
+    fn labelled_equation_expr(
+        equations: &[ax_perturb::NamedEquation],
+        interner: &ax_ir::Interner,
+    ) -> Expr {
+        Expr::List(
+            equations
+                .iter()
+                .map(|eq| {
+                    Expr::List(vec![
+                        Expr::Sym(interner.get_or_intern(&eq.label)),
+                        eq.expr.clone(),
+                    ])
+                })
+                .collect(),
+        )
     }
 
     #[test]
@@ -1039,5 +1079,36 @@ mod tests {
             render_cpt_spec_unicode(&matter, &interner).as_deref(),
             Some("Matter(multi_canonical_scalar, fields=2)")
         );
+    }
+
+    #[test]
+    fn rendered_labelled_equation_lists_are_deterministic() {
+        let interner = ax_ir::Interner::new();
+        let bg = FrwBackgroundSpec::default_flat_conformal(&interner);
+        let decomp = svt_decompose_perturbation(3, &interner).unwrap();
+        let equations =
+            ax_perturb::cosmology::linearized_einstein_scalar(&bg, &decomp, &interner).unwrap();
+        let expr = labelled_equation_expr(&equations, &interner);
+
+        assert_eq!(to_unicode(&expr, &interner), to_unicode(&expr, &interner));
+        assert_eq!(to_latex(&expr, &interner), to_latex(&expr, &interner));
+    }
+
+    #[test]
+    fn rendered_harmonic_specs_are_deterministic() {
+        let interner = ax_ir::Interner::new();
+        let expr = Expr::List(vec![
+            Expr::Sym(interner.get_or_intern("__cpt_spec__")),
+            Expr::Sym(interner.get_or_intern("harmonic")),
+            Expr::Sym(interner.get_or_intern("tensor")),
+            Expr::Sym(interner.get_or_intern("closed")),
+            Expr::Sym(interner.get_or_intern("k")),
+        ]);
+
+        let rendered_once = to_unicode(&expr, &interner);
+        let rendered_twice = to_unicode(&expr, &interner);
+
+        assert_eq!(rendered_once, rendered_twice);
+        assert_eq!(rendered_once, "TensorHarmonics(closed, k)");
     }
 }

@@ -170,6 +170,7 @@ name = "ax-ai-proto"
 version = "0.1.0"
 dependencies = [
  "ax-ir",
+ "ax-perturb",
  "serde",
  "serde_json",
  "thiserror",
@@ -422,15 +423,20 @@ dependencies = [
 name = "ax-perturb"
 version = "0.1.0"
 dependencies = [
+ "ax-codegen",
  "ax-ir",
+ "ax-linalg",
  "ax-ode",
  "ax-render",
+ "ax-solve",
  "ax-tensor",
  "ax-variational",
  "lasso",
  "num-bigint",
  "num-rational",
  "num-traits",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -490,6 +496,7 @@ version = "0.1.0"
 dependencies = [
  "ax-core-ir",
  "ax-ir",
+ "ax-perturb",
  "ax-spinor",
  "ax-tensor",
  "ax-trace",

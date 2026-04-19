@@ -1,0 +1,6 @@
+[
+  {
+    "label": "mukhanov_sasaki",
+    "expected": "diff(diff(v, eta), eta) + (-1*diff(diff(a*(2*epsilon)^1/2*c_s^-1, eta), eta)*a^-1*(2*epsilon)^-1/2*c_s + c_s^2*k^2)*v"
+  }
+]

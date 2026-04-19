@@ -109,6 +109,20 @@ pub struct CptDerivationPacket {
     pub equations: Vec<CptEquationEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParityReportPacket {
+    pub suite_name: String,
+    pub entries: Vec<ax_perturb::ParityBenchmarkEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HierarchyExportPacket {
+    pub species: String,
+    pub gauge: String,
+    pub closure: String,
+    pub payload: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +168,37 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         let reparsed: CptDerivationPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn parity_report_packet_round_trips() {
+        let payload = ParityReportPacket {
+            suite_name: "suite".to_string(),
+            entries: vec![ax_perturb::ParityBenchmarkEntry {
+                label: "eq0".to_string(),
+                expected: "x".to_string(),
+                actual: "x".to_string(),
+                matched: true,
+            }],
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: ParityReportPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn hierarchy_export_packet_round_trips() {
+        let payload = HierarchyExportPacket {
+            species: "neutrino".to_string(),
+            gauge: "newtonian".to_string(),
+            closure: "power_law".to_string(),
+            payload: "{\"target\":\"class\"}".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: HierarchyExportPacket = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed, payload);
     }
 }

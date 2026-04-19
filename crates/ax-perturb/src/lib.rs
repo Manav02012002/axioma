@@ -1,15 +1,23 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod action;
+pub mod boltzmann_bridge;
 pub mod cosmology;
+pub mod cubic;
 pub mod domain;
+pub mod eft;
 pub mod error;
 pub mod gauge;
 pub mod gauge_transform;
+pub mod harmonics;
+pub mod hierarchy;
 pub mod linearized;
 pub mod matter;
 pub mod metric_ansatz;
+pub mod multifield;
 pub mod second_order;
+pub mod second_order_vector_tensor;
+pub mod vector_tensor;
 
 pub use action::{
     canonical_scalar_real_space_mukhanov_sasaki_equation,
@@ -17,14 +25,43 @@ pub use action::{
     fourier_reduce_mukhanov_sasaki, mukhanov_sasaki_first_order_system, MukhanovSasakiDerivation,
     ReducedQuadraticAction,
 };
+pub use boltzmann_bridge::{
+    export_boltzmann_bridge_system, standard_boltzmann_species_symbols,
+    symbolic_boltzmann_bridge_system, BoltzmannBridgeSystem, BoltzmannSpeciesSymbols,
+};
+pub use cubic::{
+    bispectrum_shape, cubic_fourier_kernel, export_cubic_vertex, reduced_cubic_mixed_action,
+    reduced_cubic_scalar_action, reduced_cubic_tensor_action, BispectrumShapeValue,
+    CubicInteractionChannel, FourierKernel, InteractionVertexExport, ReducedCubicAction,
+};
 pub use domain::{
     FrwBackgroundSpec, GaugeGeneratorNames, GaugeKind, HarmonicBasisKind, MatterKind,
     NamedEquation, NamedExpr, SectorKind, SpatialCurvature, SvtModeNames, TimeCoordinate,
+};
+pub use eft::{
+    derive_eft_mode_equations, eft_mode_equations_named, eft_model_name,
+    eft_quadratic_sector_named, eft_stability_named, export_eft_mode_rhs,
+    extract_stability_conditions, reduced_eft_quadratic_sector, standard_eft_coefficients,
+    EftCoefficientSet, EftModeEquations, EftModelKind, EftQuadraticSector, StabilityConditionSet,
 };
 pub use error::CosmologyError;
 pub use gauge_transform::{
     bardeen_variations, default_scalar_gauge_generator, normalize_scalar_gauge_expr,
     scalar_metric_gauge_variation, GaugeInvariantCheck, ScalarGaugeGenerator, ScalarGaugeVariation,
+};
+pub use harmonics::{
+    project_scalar_equations_to_harmonic_space, project_tensor_equations_to_harmonic_space,
+    project_vector_equations_to_harmonic_space, render_harmonic_spec_unicode,
+    scalar_laplacian_eigenvalue, standard_scalar_harmonic_spec, standard_tensor_harmonic_spec,
+    standard_vector_harmonic_spec, tensor_helicity_basis_flat, tensor_laplacian_eigenvalue,
+    vector_laplacian_eigenvalue, HarmonicProjectionRule, ProjectedEquationSet, ScalarHarmonicSpec,
+    TensorHarmonicSpec, VectorHarmonicSpec,
+};
+pub use hierarchy::{
+    benchmark_report_against_fixture, built_in_parity_reports, default_external_solver_hooks,
+    export_hierarchy_system, hierarchy_spec, neutrino_hierarchy_system, photon_hierarchy_system,
+    ExternalSolverHook, HierarchyClosure, HierarchyGauge, HierarchySpec, HierarchySystem,
+    HierarchyVariable, ParityBenchmarkEntry, ParityBenchmarkReport,
 };
 pub use linearized::{
     count_perturbation_degree, derive_linearized_einstein_matrices,
@@ -42,6 +79,11 @@ pub use metric_ansatz::{
     scalar_perturbed_metric_rules, FrwCoordinateChart, FrwMetricAnsatz, ScalarMetricModes,
     SpatialCoordinateNames, TensorMetricModes, VectorMetricModes,
 };
+pub use multifield::{
+    adiabatic_entropy_basis, derive_multifield_curvature_entropy_equations, multifield_mass_data,
+    standard_multifield_symbols, AdiabaticEntropyBasis, MultiFieldEquationSet, MultiFieldMassData,
+    MultiFieldSymbols,
+};
 pub use second_order::{
     default_second_order_gauge_generator, default_second_order_scalar_modes,
     derive_second_order_scalar_einstein_system, expand_expr_in_parameter,
@@ -49,6 +91,26 @@ pub use second_order::{
     second_order_scalar_gauge_variation, SecondOrderEinsteinEquationSplit,
     SecondOrderEinsteinSystem, SecondOrderGaugeGenerator, SecondOrderScalarGaugeVariation,
     SecondOrderScalarModes,
+};
+pub use second_order_vector_tensor::{
+    default_second_order_tensor_modes, default_second_order_vector_generator,
+    default_second_order_vector_modes, derive_second_order_tensor_system,
+    derive_second_order_vector_system, project_second_order_tensor_to_harmonics,
+    project_second_order_vector_to_harmonics, second_order_tensor_gauge_variation,
+    second_order_vector_gauge_variation, tensor_metric_piece_order_one,
+    tensor_metric_piece_order_two, vector_metric_piece_order_one, vector_metric_piece_order_two,
+    SecondOrderTensorEquationSplit, SecondOrderTensorGaugeVariation, SecondOrderTensorModes,
+    SecondOrderTensorSystem, SecondOrderVectorEquationSplit, SecondOrderVectorGaugeGenerator,
+    SecondOrderVectorGaugeVariation, SecondOrderVectorModes, SecondOrderVectorSystem,
+};
+pub use vector_tensor::{
+    derive_linear_tensor_einstein_equations, derive_linear_vector_einstein_equations_poisson,
+    derive_tensor_mode_equations, gauge_invariant_vector_variables,
+    poisson_gauge_vector_metric_matrix, standard_tensor_mode_names, standard_vector_mode_names,
+    tensor_metric_matrix, tensor_mode_first_order_system, tensor_quadratic_action,
+    vector_gauge_transformations, vector_metric_matrix, GaugeInvariantVectorVariables,
+    TensorEinsteinEquationSet, TensorModeDerivation, TensorModeNames, TensorQuadraticAction,
+    VectorEinsteinEquationSet, VectorModeNames,
 };
 
 use ax_ir::{Condition, Expr, Index, Variance};

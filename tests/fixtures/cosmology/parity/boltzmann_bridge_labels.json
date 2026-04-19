@@ -1,0 +1,12 @@
+[
+  { "label": "delta_cdm", "expected": "delta_cdm" },
+  { "label": "theta_cdm", "expected": "theta_cdm" },
+  { "label": "delta_b", "expected": "delta_b" },
+  { "label": "theta_b", "expected": "theta_b" },
+  { "label": "delta_gamma", "expected": "delta_gamma" },
+  { "label": "theta_gamma", "expected": "theta_gamma" },
+  { "label": "sigma_gamma", "expected": "sigma_gamma" },
+  { "label": "delta_nu", "expected": "delta_nu" },
+  { "label": "theta_nu", "expected": "theta_nu" },
+  { "label": "sigma_nu", "expected": "sigma_nu" }
+]

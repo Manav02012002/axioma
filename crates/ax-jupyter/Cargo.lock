@@ -257,14 +257,18 @@ dependencies = [
 name = "ax-perturb"
 version = "0.1.0"
 dependencies = [
+ "ax-codegen",
  "ax-ir",
+ "ax-linalg",
  "ax-ode",
+ "ax-solve",
  "ax-tensor",
  "ax-variational",
  "lasso",
  "num-bigint",
  "num-rational",
  "num-traits",
+ "serde_json",
  "thiserror",
 ]
 

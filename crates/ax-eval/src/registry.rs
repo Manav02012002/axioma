@@ -784,7 +784,37 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
         b("perturb_ricci", "perturbation", "perturb_ricci(field, background, background_inv, perturbation, epsilon, coords, order)", "Expand the Ricci tensor order by order in a metric perturbation.", "perturb_ricci(g, g0, g0inv, h, eps, [t,r,theta,phi], 1)"),
         b("perturb_einstein", "perturbation", "perturb_einstein(field, background, background_inv, perturbation, epsilon, coords, order)", "Expand the Einstein tensor order by order in a metric perturbation.", "perturb_einstein(g, g0, g0inv, h, eps, [t,r,theta,phi], 1)"),
         b("linearized_einstein", "cosmology", "linearized_einstein(order)", "Return first- or second-order scalar perturbation Einstein equations on an FRW background.", "linearized_einstein(1)"),
+        b("linearized_einstein_vector", "cosmology", "linearized_einstein_vector()", "Derived linear vector Einstein equations in FRW Poisson gauge.", "linearized_einstein_vector()"),
+        b("linearized_einstein_tensor", "cosmology", "linearized_einstein_tensor()", "Derived linear tensor Einstein equations in FRW.", "linearized_einstein_tensor()"),
+        b("second_order_einstein_vector", "cosmology", "second_order_einstein_vector()", "Derived second-order vector Einstein equations with quadratic source splitting.", "second_order_einstein_vector()"),
+        b("second_order_einstein_tensor", "cosmology", "second_order_einstein_tensor()", "Derived second-order tensor Einstein equations with quadratic source splitting.", "second_order_einstein_tensor()"),
         b("mukhanov_sasaki", "cosmology", "mukhanov_sasaki()", "Return the Mukhanov-Sasaki equation in conformal time.", "mukhanov_sasaki()"),
+        b("tensor_mode_equation", "cosmology", "tensor_mode_equation()", "Tensor polarization mode equations derived from the quadratic action.", "tensor_mode_equation()"),
+        b("tensor_mode_first_order", "cosmology", "tensor_mode_first_order(polarization)", "First-order ODE system for a tensor polarization mode.", "tensor_mode_first_order(plus)"),
+        b("multifield_equations", "cosmology", "multifield_equations(nfields)", "Derived multifield curvature and entropy mode equations.", "multifield_equations(2)"),
+        b("boltzmann_bridge", "cosmology", "boltzmann_bridge()", "Symbolic first-order Einstein–Boltzmann bridge system in Newtonian gauge.", "boltzmann_bridge()"),
+        b("boltzmann_bridge_export", "cosmology", "boltzmann_bridge_export(target)", "Export the symbolic Einstein–Boltzmann bridge system.", "boltzmann_bridge_export(python)"),
+        b("cubic_action", "cosmology", "cubic_action(channel)", "Reduced cubic CPT action density for a given interaction channel.", "cubic_action(scalar_scalar_scalar)"),
+        b("cubic_kernel", "cosmology", "cubic_kernel(channel)", "Fourier-space cubic interaction kernel for a given CPT channel.", "cubic_kernel(scalar_scalar_scalar)"),
+        b("bispectrum_shape", "cosmology", "bispectrum_shape(channel, shape)", "Evaluate a cubic kernel on a named bispectrum shape.", "bispectrum_shape(scalar_scalar_scalar, local)"),
+        b("export_cubic_vertex", "cosmology", "export_cubic_vertex(channel, target)", "Export a cubic interaction vertex as code.", "export_cubic_vertex(scalar_scalar_scalar, python)"),
+        b("eft_model", "cosmology", "eft_model(kind)", "Construct a typed reduced EFT-of-inflation model.", "eft_model(canonical)"),
+        b("eft_quadratic_sector", "cosmology", "eft_quadratic_sector(kind)", "Reduced scalar/tensor quadratic sector for an EFT model.", "eft_quadratic_sector(canonical)"),
+        b("eft_stability", "cosmology", "eft_stability(kind)", "Ghost and gradient stability conditions for a reduced EFT model.", "eft_stability(canonical)"),
+        b("eft_mode_equations", "cosmology", "eft_mode_equations(kind)", "Reduced scalar and tensor mode equations for a reduced EFT model.", "eft_mode_equations(canonical)"),
+        b("eft_export_rhs", "cosmology", "eft_export_rhs(kind, target)", "Export reduced EFT mode RHS functions.", "eft_export_rhs(canonical, python)"),
+        b("project_scalar_harmonics", "cosmology", "project_scalar_harmonics()", "Project derived scalar CPT equations to FRW harmonic space.", "project_scalar_harmonics()"),
+        b("project_vector_harmonics", "cosmology", "project_vector_harmonics()", "Project derived vector CPT equations to FRW harmonic space.", "project_vector_harmonics()"),
+        b("project_tensor_harmonics", "cosmology", "project_tensor_harmonics()", "Project derived tensor CPT equations to FRW harmonic space.", "project_tensor_harmonics()"),
+        b("project_second_order_vector_harmonics", "cosmology", "project_second_order_vector_harmonics()", "Project derived second-order vector equations to harmonic space.", "project_second_order_vector_harmonics()"),
+        b("project_second_order_tensor_harmonics", "cosmology", "project_second_order_tensor_harmonics()", "Project derived second-order tensor equations to harmonic space.", "project_second_order_tensor_harmonics()"),
+        b("neutrino_hierarchy", "cosmology", "neutrino_hierarchy(lmax, gauge, closure)", "Construct a symbolic neutrino multipole hierarchy with explicit truncation.", "neutrino_hierarchy(3, newtonian, power_law)"),
+        b("photon_hierarchy", "cosmology", "photon_hierarchy(lmax, gauge, closure)", "Construct a symbolic photon multipole hierarchy with explicit truncation.", "photon_hierarchy(3, newtonian, power_law)"),
+        b("export_hierarchy", "cosmology", "export_hierarchy(target, species, lmax, gauge, closure)", "Export a symbolic hierarchy system or external-solver hook payload.", "export_hierarchy(class_hook, neutrino, 3, newtonian, power_law)"),
+        b("cpt_parity_report", "cosmology", "cpt_parity_report()", "Run built-in CPT parity suites against embedded benchmark fixtures.", "cpt_parity_report()"),
+        b("scalar_harmonic_spec", "cosmology", "scalar_harmonic_spec(curvature)", "Describe the scalar harmonic basis for a given FRW spatial curvature.", "scalar_harmonic_spec(flat)"),
+        b("vector_harmonic_spec", "cosmology", "vector_harmonic_spec(curvature)", "Describe the vector harmonic basis for a given FRW spatial curvature.", "vector_harmonic_spec(closed)"),
+        b("tensor_harmonic_spec", "cosmology", "tensor_harmonic_spec(curvature)", "Describe the tensor harmonic basis for a given FRW spatial curvature.", "tensor_harmonic_spec(open)"),
         b("svt_decompose", "cosmology", "svt_decompose()", "Return the standard scalar-vector-tensor decomposition modes.", "svt_decompose()"),
         b("bardeen", "cosmology", "bardeen()", "Return the two Bardeen gauge-invariant scalar potentials.", "bardeen()"),
         b("regge_wheeler_decompose", "cosmology", "regge_wheeler_decompose(l)", "Return symbolic even- and odd-parity Schwarzschild perturbation sectors.", "regge_wheeler_decompose(2)"),
@@ -7687,6 +7717,392 @@ fn handle_mukhanov_sasaki_cosmology(
     handle_nullary_named("mukhanov_sasaki", state)
 }
 
+fn handle_linearized_einstein_vector_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("linearized_einstein_vector", state)
+}
+
+fn handle_linearized_einstein_tensor_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("linearized_einstein_tensor", state)
+}
+
+fn handle_second_order_einstein_vector_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("second_order_einstein_vector", state)
+}
+
+fn handle_second_order_einstein_tensor_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("second_order_einstein_tensor", state)
+}
+
+fn handle_tensor_mode_equation_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("tensor_mode_equation", state)
+}
+
+fn handle_multifield_equations_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "multifield_equations",
+            vec![int_expr_arg(args, 0, "nfields")?],
+            state,
+        ),
+        "multifield_equations",
+        state,
+    )
+}
+
+fn handle_boltzmann_bridge_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("boltzmann_bridge", state)
+}
+
+fn handle_boltzmann_bridge_export_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "boltzmann_bridge_export",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "target", state)?)],
+            state,
+        ),
+        "boltzmann_bridge_export",
+        state,
+    )
+}
+
+fn handle_cubic_action_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cubic_action",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "channel", state)?)],
+            state,
+        ),
+        "cubic_action",
+        state,
+    )
+}
+
+fn handle_cubic_kernel_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "cubic_kernel",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "channel", state)?)],
+            state,
+        ),
+        "cubic_kernel",
+        state,
+    )
+}
+
+fn handle_bispectrum_shape_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "bispectrum_shape",
+            vec![
+                ax_ir::Expr::Sym(symbol_arg(args, 0, "channel", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "shape", state)?),
+            ],
+            state,
+        ),
+        "bispectrum_shape",
+        state,
+    )
+}
+
+fn handle_export_cubic_vertex_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "export_cubic_vertex",
+            vec![
+                ax_ir::Expr::Sym(symbol_arg(args, 0, "channel", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "target", state)?),
+            ],
+            state,
+        ),
+        "export_cubic_vertex",
+        state,
+    )
+}
+
+fn handle_eft_model_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "eft_model",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "kind", state)?)],
+            state,
+        ),
+        "eft_model",
+        state,
+    )
+}
+
+fn handle_eft_quadratic_sector_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "eft_quadratic_sector",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "kind", state)?)],
+            state,
+        ),
+        "eft_quadratic_sector",
+        state,
+    )
+}
+
+fn handle_eft_stability_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "eft_stability",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "kind", state)?)],
+            state,
+        ),
+        "eft_stability",
+        state,
+    )
+}
+
+fn handle_eft_mode_equations_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "eft_mode_equations",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "kind", state)?)],
+            state,
+        ),
+        "eft_mode_equations",
+        state,
+    )
+}
+
+fn handle_eft_export_rhs_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "eft_export_rhs",
+            vec![
+                ax_ir::Expr::Sym(symbol_arg(args, 0, "kind", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "target", state)?),
+            ],
+            state,
+        ),
+        "eft_export_rhs",
+        state,
+    )
+}
+
+fn handle_project_scalar_harmonics_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("project_scalar_harmonics", state)
+}
+
+fn handle_project_vector_harmonics_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("project_vector_harmonics", state)
+}
+
+fn handle_project_tensor_harmonics_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("project_tensor_harmonics", state)
+}
+
+fn handle_project_second_order_vector_harmonics_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("project_second_order_vector_harmonics", state)
+}
+
+fn handle_project_second_order_tensor_harmonics_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    handle_nullary_named("project_second_order_tensor_harmonics", state)
+}
+
+fn handle_neutrino_hierarchy_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "neutrino_hierarchy",
+            vec![
+                int_expr_arg(args, 0, "lmax")?,
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "gauge", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 2, "closure", state)?),
+            ],
+            state,
+        ),
+        "neutrino_hierarchy",
+        state,
+    )
+}
+
+fn handle_photon_hierarchy_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "photon_hierarchy",
+            vec![
+                int_expr_arg(args, 0, "lmax")?,
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "gauge", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 2, "closure", state)?),
+            ],
+            state,
+        ),
+        "photon_hierarchy",
+        state,
+    )
+}
+
+fn handle_export_hierarchy_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "export_hierarchy",
+            vec![
+                ax_ir::Expr::Sym(symbol_arg(args, 0, "target", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 1, "species", state)?),
+                int_expr_arg(args, 2, "lmax")?,
+                ax_ir::Expr::Sym(symbol_arg(args, 3, "gauge", state)?),
+                ax_ir::Expr::Sym(symbol_arg(args, 4, "closure", state)?),
+            ],
+            state,
+        ),
+        "export_hierarchy",
+        state,
+    )
+}
+
+fn handle_cpt_parity_report_cosmology(
+    _args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named("cpt_parity_report", vec![], state),
+        "cpt_parity_report",
+        state,
+    )
+}
+
+fn handle_scalar_harmonic_spec_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "scalar_harmonic_spec",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "curvature", state)?)],
+            state,
+        ),
+        "scalar_harmonic_spec",
+        state,
+    )
+}
+
+fn handle_vector_harmonic_spec_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "vector_harmonic_spec",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "curvature", state)?)],
+            state,
+        ),
+        "vector_harmonic_spec",
+        state,
+    )
+}
+
+fn handle_tensor_harmonic_spec_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "tensor_harmonic_spec",
+            vec![ax_ir::Expr::Sym(symbol_arg(args, 0, "curvature", state)?)],
+            state,
+        ),
+        "tensor_harmonic_spec",
+        state,
+    )
+}
+
+fn handle_tensor_mode_first_order_cosmology(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    expr_or_struct_response_named(
+        call_named(
+            "tensor_mode_first_order",
+            vec![ax_ir::Expr::Sym(symbol_arg(
+                args,
+                0,
+                "polarization",
+                state,
+            )?)],
+            state,
+        ),
+        "tensor_mode_first_order",
+        state,
+    )
+}
+
 fn handle_frw_background_spec_cosmology(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -8423,7 +8839,84 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("perturb_ricci", "Expand the Ricci tensor perturbatively.", ps(vec![pdef("field", ParamType::Symbol, true, "Full metric symbol."), pdef("background", ParamType::Symbol, true, "Background metric symbol."), pdef("background_inv", ParamType::Symbol, true, "Background inverse metric symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_ricci),
         centry("perturb_einstein", "Expand the Einstein tensor perturbatively.", ps(vec![pdef("field", ParamType::Symbol, true, "Full metric symbol."), pdef("background", ParamType::Symbol, true, "Background metric symbol."), pdef("background_inv", ParamType::Symbol, true, "Background inverse metric symbol."), pdef("perturbation", ParamType::Symbol, true, "First-order perturbation symbol."), pdef("epsilon", ParamType::Symbol, true, "Expansion parameter."), pdef("coords", ParamType::SymbolList, true, "Coordinate symbols."), pdef("order", ParamType::Integer, true, "Maximum perturbative order.")]), handle_perturb_einstein),
         centry("linearized_einstein", "Return first- or second-order scalar perturbation Einstein equations.", ps(vec![pdef("order", ParamType::Integer, true, "Perturbation order, currently 1 or 2.")]), handle_linearized_einstein_cosmology),
+        centry("linearized_einstein_vector", "Derived linear vector Einstein equations in FRW Poisson gauge.", ps(vec![]), handle_linearized_einstein_vector_cosmology),
+        centry("linearized_einstein_tensor", "Derived linear tensor Einstein equations in FRW.", ps(vec![]), handle_linearized_einstein_tensor_cosmology),
+        centry("second_order_einstein_vector", "Derived second-order vector Einstein equations with quadratic source splitting.", ps(vec![]), handle_second_order_einstein_vector_cosmology),
+        centry("second_order_einstein_tensor", "Derived second-order tensor Einstein equations with quadratic source splitting.", ps(vec![]), handle_second_order_einstein_tensor_cosmology),
         centry("mukhanov_sasaki", "Return the Mukhanov-Sasaki equation.", ps(vec![]), handle_mukhanov_sasaki_cosmology),
+        centry("tensor_mode_equation", "Tensor polarization mode equations derived from the quadratic action.", ps(vec![]), handle_tensor_mode_equation_cosmology),
+        centry("tensor_mode_first_order", "First-order ODE system for a tensor polarization mode.", ps(vec![
+            pdef("polarization", ParamType::StringEnum(&["plus", "cross"]), true, "Tensor polarization mode."),
+        ]), handle_tensor_mode_first_order_cosmology),
+        centry("multifield_equations", "Derived multifield curvature and entropy mode equations.", ps(vec![
+            pdef("nfields", ParamType::Integer, true, "Number of canonical scalar fields."),
+        ]), handle_multifield_equations_cosmology),
+        centry("boltzmann_bridge", "Symbolic first-order Einstein–Boltzmann bridge system in Newtonian gauge.", ps(vec![]), handle_boltzmann_bridge_cosmology),
+        centry("boltzmann_bridge_export", "Export the symbolic Einstein–Boltzmann bridge system.", ps(vec![
+            pdef("target", ParamType::StringEnum(&["python", "rust", "cpp", "json"]), true, "Code-generation target."),
+        ]), handle_boltzmann_bridge_export_cosmology),
+        centry("cubic_action", "Reduced cubic CPT action density for a given interaction channel.", ps(vec![
+            pdef("channel", ParamType::StringEnum(&["scalar_scalar_scalar", "tensor_tensor_tensor", "scalar_scalar_tensor", "scalar_tensor_tensor"]), true, "Cubic interaction channel."),
+        ]), handle_cubic_action_cosmology),
+        centry("cubic_kernel", "Fourier-space cubic interaction kernel for a given CPT channel.", ps(vec![
+            pdef("channel", ParamType::StringEnum(&["scalar_scalar_scalar", "tensor_tensor_tensor", "scalar_scalar_tensor", "scalar_tensor_tensor"]), true, "Cubic interaction channel."),
+        ]), handle_cubic_kernel_cosmology),
+        centry("bispectrum_shape", "Evaluate a cubic kernel on a named bispectrum shape.", ps(vec![
+            pdef("channel", ParamType::StringEnum(&["scalar_scalar_scalar", "tensor_tensor_tensor", "scalar_scalar_tensor", "scalar_tensor_tensor"]), true, "Cubic interaction channel."),
+            pdef("shape", ParamType::StringEnum(&["local", "equilateral", "squeezed"]), true, "Named bispectrum shape."),
+        ]), handle_bispectrum_shape_cosmology),
+        centry("export_cubic_vertex", "Export a cubic interaction vertex as code.", ps(vec![
+            pdef("channel", ParamType::StringEnum(&["scalar_scalar_scalar", "tensor_tensor_tensor", "scalar_scalar_tensor", "scalar_tensor_tensor"]), true, "Cubic interaction channel."),
+            pdef("target", ParamType::StringEnum(&["python", "rust", "cpp"]), true, "Code-generation target."),
+        ]), handle_export_cubic_vertex_cosmology),
+        centry("eft_model", "Construct a typed reduced EFT-of-inflation model.", ps(vec![
+            pdef("kind", ParamType::StringEnum(&["canonical", "reduced_sound_speed", "horndeski_like"]), true, "Reduced EFT model kind."),
+        ]), handle_eft_model_cosmology),
+        centry("eft_quadratic_sector", "Reduced scalar/tensor quadratic sector for an EFT model.", ps(vec![
+            pdef("kind", ParamType::StringEnum(&["canonical", "reduced_sound_speed", "horndeski_like"]), true, "Reduced EFT model kind."),
+        ]), handle_eft_quadratic_sector_cosmology),
+        centry("eft_stability", "Ghost and gradient stability conditions for a reduced EFT model.", ps(vec![
+            pdef("kind", ParamType::StringEnum(&["canonical", "reduced_sound_speed", "horndeski_like"]), true, "Reduced EFT model kind."),
+        ]), handle_eft_stability_cosmology),
+        centry("eft_mode_equations", "Reduced scalar and tensor mode equations for a reduced EFT model.", ps(vec![
+            pdef("kind", ParamType::StringEnum(&["canonical", "reduced_sound_speed", "horndeski_like"]), true, "Reduced EFT model kind."),
+        ]), handle_eft_mode_equations_cosmology),
+        centry("eft_export_rhs", "Export reduced EFT mode RHS functions.", ps(vec![
+            pdef("kind", ParamType::StringEnum(&["canonical", "reduced_sound_speed", "horndeski_like"]), true, "Reduced EFT model kind."),
+            pdef("target", ParamType::StringEnum(&["python", "rust", "cpp", "json"]), true, "Code-generation target."),
+        ]), handle_eft_export_rhs_cosmology),
+        centry("project_scalar_harmonics", "Project derived scalar CPT equations to FRW harmonic space.", ps(vec![]), handle_project_scalar_harmonics_cosmology),
+        centry("project_vector_harmonics", "Project derived vector CPT equations to FRW harmonic space.", ps(vec![]), handle_project_vector_harmonics_cosmology),
+        centry("project_tensor_harmonics", "Project derived tensor CPT equations to FRW harmonic space.", ps(vec![]), handle_project_tensor_harmonics_cosmology),
+        centry("project_second_order_vector_harmonics", "Project derived second-order vector equations to harmonic space.", ps(vec![]), handle_project_second_order_vector_harmonics_cosmology),
+        centry("project_second_order_tensor_harmonics", "Project derived second-order tensor equations to harmonic space.", ps(vec![]), handle_project_second_order_tensor_harmonics_cosmology),
+        centry("neutrino_hierarchy", "Construct a symbolic neutrino multipole hierarchy with explicit truncation.", ps(vec![
+            pdef("lmax", ParamType::Integer, true, "Maximum multipole order."),
+            pdef("gauge", ParamType::StringEnum(&["newtonian", "synchronous"]), true, "Hierarchy gauge."),
+            pdef("closure", ParamType::StringEnum(&["power_law", "free_streaming", "user_symbolic"]), true, "Hierarchy closure relation."),
+        ]), handle_neutrino_hierarchy_cosmology),
+        centry("photon_hierarchy", "Construct a symbolic photon multipole hierarchy with explicit truncation.", ps(vec![
+            pdef("lmax", ParamType::Integer, true, "Maximum multipole order."),
+            pdef("gauge", ParamType::StringEnum(&["newtonian", "synchronous"]), true, "Hierarchy gauge."),
+            pdef("closure", ParamType::StringEnum(&["power_law", "free_streaming", "user_symbolic"]), true, "Hierarchy closure relation."),
+        ]), handle_photon_hierarchy_cosmology),
+        centry("export_hierarchy", "Export a symbolic hierarchy system or external-solver hook payload.", ps(vec![
+            pdef("target", ParamType::StringEnum(&["python", "rust", "cpp", "json", "class_hook", "camb_hook"]), true, "Export target."),
+            pdef("species", ParamType::StringEnum(&["neutrino", "photon"]), true, "Hierarchy species."),
+            pdef("lmax", ParamType::Integer, true, "Maximum multipole order."),
+            pdef("gauge", ParamType::StringEnum(&["newtonian", "synchronous"]), true, "Hierarchy gauge."),
+            pdef("closure", ParamType::StringEnum(&["power_law", "free_streaming", "user_symbolic"]), true, "Hierarchy closure relation."),
+        ]), handle_export_hierarchy_cosmology),
+        centry("cpt_parity_report", "Run built-in CPT parity suites against embedded benchmark fixtures.", ps(vec![]), handle_cpt_parity_report_cosmology),
+        centry("scalar_harmonic_spec", "Describe the scalar harmonic basis for a given FRW spatial curvature.", ps(vec![
+            pdef("curvature", ParamType::StringEnum(&["flat", "closed", "open"]), true, "Spatial curvature choice."),
+        ]), handle_scalar_harmonic_spec_cosmology),
+        centry("vector_harmonic_spec", "Describe the vector harmonic basis for a given FRW spatial curvature.", ps(vec![
+            pdef("curvature", ParamType::StringEnum(&["flat", "closed", "open"]), true, "Spatial curvature choice."),
+        ]), handle_vector_harmonic_spec_cosmology),
+        centry("tensor_harmonic_spec", "Describe the tensor harmonic basis for a given FRW spatial curvature.", ps(vec![
+            pdef("curvature", ParamType::StringEnum(&["flat", "closed", "open"]), true, "Spatial curvature choice."),
+        ]), handle_tensor_harmonic_spec_cosmology),
         centry("frw_background_spec", "Return a compact CPT background spec expression.", ps(vec![
             pdef("time", ParamType::StringEnum(&["conformal", "cosmic"]), true, "Time coordinate choice."),
             pdef("curvature", ParamType::StringEnum(&["flat", "closed", "open"]), true, "Spatial curvature choice."),

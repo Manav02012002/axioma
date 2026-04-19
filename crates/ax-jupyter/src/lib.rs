@@ -3140,6 +3140,93 @@ mod tests {
     }
 
     #[test]
+    fn notebook_and_jupyter_render_scalar_equation_labels_identically() {
+        let source = "cpt_linearized_einstein(1, frw_background_spec(conformal, flat, 3), cpt_gauge(newtonian), cpt_matter(symbolic))";
+        let mut notebook_env = ax_eval::Env::new();
+        let notebook_interner = ax_ir::Interner::new();
+        let notebook_result = ax_notebook::handle_eval(
+            &format!(r#"{{"source": "{source}"}}"#),
+            &mut notebook_env,
+            &notebook_interner,
+            &[],
+        );
+
+        let kernel_result = evaluate_code_transactional(
+            source,
+            ax_eval::Env::new(),
+            Arc::new(ax_ir::Interner::new()),
+            &[],
+        )
+        .expect("kernel scalar cpt result")
+        .0;
+        let kernel_plain = kernel_result.outputs.iter().find_map(|output| match output {
+            KernelOutput::ExecuteResult(bundle) => bundle.text_plain().map(str::to_string),
+            _ => None,
+        });
+
+        assert_eq!(notebook_result.unicode, kernel_plain);
+        assert!(kernel_plain.unwrap_or_default().contains("00_constraint"));
+    }
+
+    #[test]
+    fn notebook_and_jupyter_render_tensor_equation_labels_identically() {
+        let source = "linearized_einstein_tensor()";
+        let mut notebook_env = ax_eval::Env::new();
+        let notebook_interner = ax_ir::Interner::new();
+        let notebook_result = ax_notebook::handle_eval(
+            &format!(r#"{{"source": "{source}"}}"#),
+            &mut notebook_env,
+            &notebook_interner,
+            &[],
+        );
+
+        let kernel_result = evaluate_code_transactional(
+            source,
+            ax_eval::Env::new(),
+            Arc::new(ax_ir::Interner::new()),
+            &[],
+        )
+        .expect("kernel tensor cpt result")
+        .0;
+        let kernel_plain = kernel_result.outputs.iter().find_map(|output| match output {
+            KernelOutput::ExecuteResult(bundle) => bundle.text_plain().map(str::to_string),
+            _ => None,
+        });
+
+        assert_eq!(notebook_result.unicode, kernel_plain);
+        assert!(kernel_plain.unwrap_or_default().contains("tensor_xx"));
+    }
+
+    #[test]
+    fn notebook_and_jupyter_render_harmonic_spec_identically() {
+        let source = "tensor_harmonic_spec(flat)";
+        let mut notebook_env = ax_eval::Env::new();
+        let notebook_interner = ax_ir::Interner::new();
+        let notebook_result = ax_notebook::handle_eval(
+            &format!(r#"{{"source": "{source}"}}"#),
+            &mut notebook_env,
+            &notebook_interner,
+            &[],
+        );
+
+        let kernel_result = evaluate_code_transactional(
+            source,
+            ax_eval::Env::new(),
+            Arc::new(ax_ir::Interner::new()),
+            &[],
+        )
+        .expect("kernel harmonic spec")
+        .0;
+        let kernel_plain = kernel_result.outputs.iter().find_map(|output| match output {
+            KernelOutput::ExecuteResult(bundle) => bundle.text_plain().map(str::to_string),
+            _ => None,
+        });
+
+        assert_eq!(notebook_result.unicode, kernel_plain);
+        assert_eq!(kernel_plain.as_deref(), Some("TensorHarmonics(flat, k)"));
+    }
+
+    #[test]
     fn latex_bundle_emits_execute_result_with_plain_fallback() {
         let parent = DecodedMessage {
             identities: Vec::new(),

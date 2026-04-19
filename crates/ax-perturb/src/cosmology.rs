@@ -33,6 +33,42 @@ pub fn linearized_einstein_scalar(
     crate::linearized::linearized_scalar_equations_as_named(bg, interner)
 }
 
+pub fn linearized_einstein_vector(
+    bg: &FrwBackgroundSpec,
+    _decomp: &SVTDecomposition,
+    interner: &Interner,
+) -> Result<Vec<crate::domain::NamedEquation>, crate::error::CosmologyError> {
+    Ok(
+        crate::vector_tensor::derive_linear_vector_einstein_equations_poisson(bg, interner)?
+            .equations,
+    )
+}
+
+pub fn linearized_einstein_tensor(
+    bg: &FrwBackgroundSpec,
+    _decomp: &SVTDecomposition,
+    interner: &Interner,
+) -> Result<Vec<crate::domain::NamedEquation>, crate::error::CosmologyError> {
+    Ok(crate::vector_tensor::derive_linear_tensor_einstein_equations(bg, interner)?.equations)
+}
+
+pub fn tensor_mode_equation(
+    bg: &FrwBackgroundSpec,
+    interner: &Interner,
+) -> Result<Vec<crate::domain::NamedExpr>, crate::error::CosmologyError> {
+    let derivation = crate::vector_tensor::derive_tensor_mode_equations(bg, interner)?;
+    Ok(vec![
+        crate::domain::NamedExpr {
+            name: interner.get_or_intern("h_plus_eq"),
+            expr: derivation.plus_equation_fourier_space,
+        },
+        crate::domain::NamedExpr {
+            name: interner.get_or_intern("h_cross_eq"),
+            expr: derivation.cross_equation_fourier_space,
+        },
+    ])
+}
+
 pub fn mukhanov_sasaki_equation(
     bg: &FrwBackgroundSpec,
     slow_roll_epsilon: Spur,
@@ -102,6 +138,44 @@ pub fn linearized_einstein_second_order(
             sector: SectorKind::Scalar,
         })
         .collect())
+}
+
+pub fn second_order_einstein_vector(
+    bg: &FrwBackgroundSpec,
+    _decomp: &SVTDecomposition,
+    interner: &Interner,
+) -> Result<Vec<crate::domain::NamedEquation>, crate::error::CosmologyError> {
+    Ok(
+        crate::second_order_vector_tensor::derive_second_order_vector_system(bg, interner)?
+            .equations
+            .into_iter()
+            .map(|equation| crate::domain::NamedEquation {
+                label: equation.label,
+                expr: equation.full,
+                order: 2,
+                sector: SectorKind::Vector,
+            })
+            .collect(),
+    )
+}
+
+pub fn second_order_einstein_tensor(
+    bg: &FrwBackgroundSpec,
+    _decomp: &SVTDecomposition,
+    interner: &Interner,
+) -> Result<Vec<crate::domain::NamedEquation>, crate::error::CosmologyError> {
+    Ok(
+        crate::second_order_vector_tensor::derive_second_order_tensor_system(bg, interner)?
+            .equations
+            .into_iter()
+            .map(|equation| crate::domain::NamedEquation {
+                label: equation.label,
+                expr: equation.full,
+                order: 2,
+                sector: SectorKind::Tensor,
+            })
+            .collect(),
+    )
 }
 
 fn int(n: i64) -> Expr {

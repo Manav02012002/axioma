@@ -616,8 +616,112 @@ fn labelled_exprs_to_list(
     )
 }
 
+fn named_exprs_to_list(items: Vec<ax_perturb::NamedExpr>) -> Expr {
+    Expr::List(
+        items
+            .into_iter()
+            .map(|item| Expr::List(vec![Expr::Sym(item.name), item.expr]))
+            .collect(),
+    )
+}
+
 fn cpt_spec_tag(interner: &ax_ir::Interner) -> lasso::Spur {
     interner.get_or_intern("__cpt_spec__")
+}
+
+fn curvature_name(curvature: ax_perturb::SpatialCurvature) -> &'static str {
+    match curvature {
+        ax_perturb::SpatialCurvature::Flat => "flat",
+        ax_perturb::SpatialCurvature::Closed => "closed",
+        ax_perturb::SpatialCurvature::Open => "open",
+    }
+}
+
+fn parse_curvature_name(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_perturb::SpatialCurvature> {
+    match name_from_expr(expr, interner)? {
+        "flat" => Some(ax_perturb::SpatialCurvature::Flat),
+        "closed" => Some(ax_perturb::SpatialCurvature::Closed),
+        "open" => Some(ax_perturb::SpatialCurvature::Open),
+        _ => None,
+    }
+}
+
+fn parse_cubic_channel_name(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_perturb::CubicInteractionChannel> {
+    match name_from_expr(expr, interner)? {
+        "scalar_scalar_scalar" => Some(ax_perturb::CubicInteractionChannel::ScalarScalarScalar),
+        "tensor_tensor_tensor" => Some(ax_perturb::CubicInteractionChannel::TensorTensorTensor),
+        "scalar_scalar_tensor" => Some(ax_perturb::CubicInteractionChannel::ScalarScalarTensor),
+        "scalar_tensor_tensor" => Some(ax_perturb::CubicInteractionChannel::ScalarTensorTensor),
+        _ => None,
+    }
+}
+
+fn parse_eft_model_name(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_perturb::EftModelKind> {
+    match name_from_expr(expr, interner)? {
+        "canonical" => Some(ax_perturb::EftModelKind::Canonical),
+        "reduced_sound_speed" => Some(ax_perturb::EftModelKind::ReducedSoundSpeed),
+        "horndeski_like" => Some(ax_perturb::EftModelKind::HorndeskiLike),
+        _ => None,
+    }
+}
+
+fn parse_hierarchy_gauge_name(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_perturb::HierarchyGauge> {
+    match name_from_expr(expr, interner)? {
+        "newtonian" => Some(ax_perturb::HierarchyGauge::Newtonian),
+        "synchronous" => Some(ax_perturb::HierarchyGauge::Synchronous),
+        _ => None,
+    }
+}
+
+fn parse_hierarchy_closure_name(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_perturb::HierarchyClosure> {
+    match name_from_expr(expr, interner)? {
+        "power_law" => Some(ax_perturb::HierarchyClosure::PowerLaw),
+        "free_streaming" => Some(ax_perturb::HierarchyClosure::FreeStreaming),
+        "user_symbolic" => Some(ax_perturb::HierarchyClosure::UserSymbolic),
+        _ => None,
+    }
+}
+
+fn make_harmonic_spec_expr(
+    curvature: ax_perturb::SpatialCurvature,
+    sector: ax_perturb::SectorKind,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let sector_name = match sector {
+        ax_perturb::SectorKind::Scalar => "scalar",
+        ax_perturb::SectorKind::Vector => "vector",
+        ax_perturb::SectorKind::Tensor => "tensor",
+    };
+    Expr::List(vec![
+        Expr::Sym(cpt_spec_tag(interner)),
+        Expr::Sym(interner.get_or_intern("harmonic")),
+        Expr::Sym(interner.get_or_intern(sector_name)),
+        Expr::Sym(interner.get_or_intern(curvature_name(curvature))),
+        Expr::Sym(interner.get_or_intern("k")),
+    ])
+}
+
+fn make_eft_model_expr(model: ax_perturb::EftModelKind, interner: &ax_ir::Interner) -> Expr {
+    Expr::List(vec![
+        Expr::Sym(cpt_spec_tag(interner)),
+        Expr::Sym(interner.get_or_intern("eft_model")),
+        Expr::Sym(interner.get_or_intern(ax_perturb::eft_model_name(model))),
+    ])
 }
 
 fn make_background_spec_expr(
@@ -860,15 +964,6 @@ fn substitute_symbol_expr(expr: &Expr, from: lasso::Spur, to: &Expr) -> Expr {
         ),
         other => other.clone(),
     }
-}
-
-fn named_exprs_to_list(items: Vec<ax_perturb::NamedExpr>) -> Expr {
-    Expr::List(
-        items
-            .into_iter()
-            .map(|item| Expr::List(vec![Expr::Sym(item.name), item.expr]))
-            .collect(),
-    )
 }
 
 fn svt_decomposition_to_expr(
@@ -4253,6 +4348,568 @@ fn builtin_call(
                 match ax_perturb::cosmology::mukhanov_sasaki_equation(&bg, eps, interner) {
                     Ok(expr) => expr,
                     Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "linearized_einstein_vector" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::cosmology::linearized_einstein_vector(&bg, &decomp, interner) {
+                    Ok(equations) => labelled_exprs_to_list(equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "linearized_einstein_tensor" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::cosmology::linearized_einstein_tensor(&bg, &decomp, interner) {
+                    Ok(equations) => labelled_exprs_to_list(equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "second_order_einstein_vector" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::cosmology::second_order_einstein_vector(&bg, &decomp, interner) {
+                    Ok(equations) => labelled_exprs_to_list(equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "second_order_einstein_tensor" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::cosmology::second_order_einstein_tensor(&bg, &decomp, interner) {
+                    Ok(equations) => labelled_exprs_to_list(equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "tensor_mode_equation" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                match ax_perturb::cosmology::tensor_mode_equation(&bg, interner) {
+                    Ok(expressions) => named_exprs_to_list(expressions),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "tensor_mode_first_order" => {
+            if args.len() == 1 {
+                if let Some(polarization) = name_from_expr(&args[0], interner) {
+                    let bg = ax_perturb::cosmology::frw_background(interner);
+                    match ax_perturb::tensor_mode_first_order_system(&bg, polarization, interner) {
+                        Ok(system) => Expr::List(
+                            system
+                                .into_iter()
+                                .map(|(lhs, rhs)| Expr::List(vec![lhs, rhs]))
+                                .collect(),
+                        ),
+                        Err(_) => Expr::Call(f, args),
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "multifield_equations" => {
+            if args.len() == 1 {
+                if let Some(nfields) = usize_from_expr(&args[0]) {
+                    let bg = ax_perturb::cosmology::frw_background(interner);
+                    match ax_perturb::standard_multifield_symbols(nfields, interner).and_then(
+                        |symbols| {
+                            ax_perturb::derive_multifield_curvature_entropy_equations(
+                                &bg, &symbols, interner,
+                            )
+                        },
+                    ) {
+                        Ok(system) => labelled_exprs_to_list(system.equations, interner),
+                        Err(_) => Expr::Call(f, args),
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "boltzmann_bridge" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                match ax_perturb::symbolic_boltzmann_bridge_system(&bg, interner) {
+                    Ok(system) => Expr::List(
+                        system
+                            .equations
+                            .into_iter()
+                            .map(|(lhs, rhs)| Expr::List(vec![lhs, rhs]))
+                            .collect(),
+                    ),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "boltzmann_bridge_export" => {
+            if args.len() == 1 {
+                if let Some(target) = name_from_expr(&args[0], interner) {
+                    let bg = ax_perturb::cosmology::frw_background(interner);
+                    match ax_perturb::symbolic_boltzmann_bridge_system(&bg, interner).and_then(
+                        |system| {
+                            ax_perturb::export_boltzmann_bridge_system(target, &system, interner)
+                        },
+                    ) {
+                        Ok(code) => Expr::Sym(interner.get_or_intern(&code)),
+                        Err(_) => Expr::Call(f, args),
+                    }
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cubic_action" => {
+            if args.len() == 1 {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Some(channel) = parse_cubic_channel_name(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let result = match channel {
+                    ax_perturb::CubicInteractionChannel::ScalarScalarScalar => {
+                        ax_perturb::reduced_cubic_scalar_action(&bg, interner)
+                    }
+                    ax_perturb::CubicInteractionChannel::TensorTensorTensor => {
+                        ax_perturb::reduced_cubic_tensor_action(&bg, interner)
+                    }
+                    ax_perturb::CubicInteractionChannel::ScalarScalarTensor
+                    | ax_perturb::CubicInteractionChannel::ScalarTensorTensor => {
+                        ax_perturb::reduced_cubic_mixed_action(channel, &bg, interner)
+                    }
+                };
+                match result {
+                    Ok(action) => action.lagrangian_density,
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cubic_kernel" => {
+            if args.len() == 1 {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Some(channel) = parse_cubic_channel_name(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let action = match channel {
+                    ax_perturb::CubicInteractionChannel::ScalarScalarScalar => {
+                        ax_perturb::reduced_cubic_scalar_action(&bg, interner)
+                    }
+                    ax_perturb::CubicInteractionChannel::TensorTensorTensor => {
+                        ax_perturb::reduced_cubic_tensor_action(&bg, interner)
+                    }
+                    ax_perturb::CubicInteractionChannel::ScalarScalarTensor
+                    | ax_perturb::CubicInteractionChannel::ScalarTensorTensor => {
+                        ax_perturb::reduced_cubic_mixed_action(channel, &bg, interner)
+                    }
+                };
+                match action.and_then(|built| ax_perturb::cubic_fourier_kernel(&built, interner)) {
+                    Ok(kernel) => kernel.kernel,
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bispectrum_shape" => {
+            if args.len() == 2 {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Some(channel) = parse_cubic_channel_name(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(shape) = name_from_expr(&args[1], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let action = match channel {
+                    ax_perturb::CubicInteractionChannel::ScalarScalarScalar => {
+                        ax_perturb::reduced_cubic_scalar_action(&bg, interner)
+                    }
+                    ax_perturb::CubicInteractionChannel::TensorTensorTensor => {
+                        ax_perturb::reduced_cubic_tensor_action(&bg, interner)
+                    }
+                    ax_perturb::CubicInteractionChannel::ScalarScalarTensor
+                    | ax_perturb::CubicInteractionChannel::ScalarTensorTensor => {
+                        ax_perturb::reduced_cubic_mixed_action(channel, &bg, interner)
+                    }
+                };
+                match action
+                    .and_then(|built| ax_perturb::cubic_fourier_kernel(&built, interner))
+                    .and_then(|kernel| ax_perturb::bispectrum_shape(&kernel, shape, interner))
+                {
+                    Ok(shape_value) => shape_value.evaluated_form,
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "export_cubic_vertex" => {
+            if args.len() == 2 {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Some(channel) = parse_cubic_channel_name(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(target) = name_from_expr(&args[1], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let action = match channel {
+                    ax_perturb::CubicInteractionChannel::ScalarScalarScalar => {
+                        ax_perturb::reduced_cubic_scalar_action(&bg, interner)
+                    }
+                    ax_perturb::CubicInteractionChannel::TensorTensorTensor => {
+                        ax_perturb::reduced_cubic_tensor_action(&bg, interner)
+                    }
+                    ax_perturb::CubicInteractionChannel::ScalarScalarTensor
+                    | ax_perturb::CubicInteractionChannel::ScalarTensorTensor => {
+                        ax_perturb::reduced_cubic_mixed_action(channel, &bg, interner)
+                    }
+                };
+                match action
+                    .and_then(|built| ax_perturb::cubic_fourier_kernel(&built, interner))
+                    .and_then(|kernel| ax_perturb::export_cubic_vertex(target, &kernel, interner))
+                {
+                    Ok(export) => Expr::Sym(interner.get_or_intern(&export.code)),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "eft_model" => {
+            if args.len() == 1 {
+                match parse_eft_model_name(&args[0], interner) {
+                    Some(model) => make_eft_model_expr(model, interner),
+                    None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "eft_quadratic_sector" => {
+            if args.len() == 1 {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                match parse_eft_model_name(&args[0], interner)
+                    .map(|model| ax_perturb::standard_eft_coefficients(model, interner))
+                    .ok_or(())
+                    .and_then(|coeffs| {
+                        ax_perturb::eft_quadratic_sector_named(&bg, &coeffs, interner)
+                            .map_err(|_| ())
+                    }) {
+                    Ok(items) => named_exprs_to_list(items),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "eft_stability" => {
+            if args.len() == 1 {
+                match parse_eft_model_name(&args[0], interner)
+                    .map(|model| ax_perturb::standard_eft_coefficients(model, interner))
+                    .ok_or(())
+                    .and_then(|coeffs| {
+                        ax_perturb::eft_stability_named(&coeffs, interner).map_err(|_| ())
+                    }) {
+                    Ok(items) => named_exprs_to_list(items),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "eft_mode_equations" => {
+            if args.len() == 1 {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                match parse_eft_model_name(&args[0], interner)
+                    .map(|model| ax_perturb::standard_eft_coefficients(model, interner))
+                    .ok_or(())
+                    .and_then(|coeffs| {
+                        ax_perturb::eft_mode_equations_named(&bg, &coeffs, interner).map_err(|_| ())
+                    }) {
+                    Ok(items) => labelled_exprs_to_list(items, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "eft_export_rhs" => {
+            if args.len() == 2 {
+                let Some(model) = parse_eft_model_name(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(target) = name_from_expr(&args[1], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let coeffs = ax_perturb::standard_eft_coefficients(model, interner);
+                match ax_perturb::export_eft_mode_rhs(target, &coeffs, interner) {
+                    Ok(code) => Expr::Sym(interner.get_or_intern(&code)),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "project_scalar_harmonics" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::cosmology::linearized_einstein_scalar(&bg, &decomp, interner)
+                    .and_then(|equations| {
+                        ax_perturb::project_scalar_equations_to_harmonic_space(
+                            &equations, &bg, interner,
+                        )
+                    }) {
+                    Ok(projected) => labelled_exprs_to_list(projected.equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "project_vector_harmonics" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::cosmology::linearized_einstein_vector(&bg, &decomp, interner)
+                    .and_then(|equations| {
+                        ax_perturb::project_vector_equations_to_harmonic_space(
+                            &equations, &bg, interner,
+                        )
+                    }) {
+                    Ok(projected) => labelled_exprs_to_list(projected.equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "project_tensor_harmonics" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                let Ok(decomp) = ax_perturb::gauge::svt_decompose_perturbation(3, interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::cosmology::linearized_einstein_tensor(&bg, &decomp, interner)
+                    .and_then(|equations| {
+                        ax_perturb::project_tensor_equations_to_harmonic_space(
+                            &equations, &bg, interner,
+                        )
+                    }) {
+                    Ok(projected) => labelled_exprs_to_list(projected.equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "project_second_order_vector_harmonics" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                match ax_perturb::derive_second_order_vector_system(&bg, interner).and_then(
+                    |system| {
+                        ax_perturb::project_second_order_vector_to_harmonics(&system, &bg, interner)
+                    },
+                ) {
+                    Ok(projected) => labelled_exprs_to_list(projected.equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "project_second_order_tensor_harmonics" => {
+            if args.is_empty() {
+                let bg = ax_perturb::cosmology::frw_background(interner);
+                match ax_perturb::derive_second_order_tensor_system(&bg, interner).and_then(
+                    |system| {
+                        ax_perturb::project_second_order_tensor_to_harmonics(&system, &bg, interner)
+                    },
+                ) {
+                    Ok(projected) => labelled_exprs_to_list(projected.equations, interner),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "scalar_harmonic_spec" => {
+            if args.len() == 1 {
+                if let Some(curvature) = parse_curvature_name(&args[0], interner) {
+                    make_harmonic_spec_expr(curvature, ax_perturb::SectorKind::Scalar, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "vector_harmonic_spec" => {
+            if args.len() == 1 {
+                if let Some(curvature) = parse_curvature_name(&args[0], interner) {
+                    make_harmonic_spec_expr(curvature, ax_perturb::SectorKind::Vector, interner)
+                } else {
+                    Expr::Call(f, args)
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "neutrino_hierarchy" => {
+            if args.len() == 3 {
+                let Some(lmax) = usize_from_expr(&args[0]) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(gauge) = parse_hierarchy_gauge_name(&args[1], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(closure) = parse_hierarchy_closure_name(&args[2], interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::hierarchy_spec(lmax, gauge, closure)
+                    .and_then(|spec| ax_perturb::neutrino_hierarchy_system(&spec, interner))
+                {
+                    Ok(system) => Expr::List(
+                        system
+                            .equations
+                            .into_iter()
+                            .map(|(lhs, rhs)| Expr::List(vec![lhs, rhs]))
+                            .collect(),
+                    ),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "photon_hierarchy" => {
+            if args.len() == 3 {
+                let Some(lmax) = usize_from_expr(&args[0]) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(gauge) = parse_hierarchy_gauge_name(&args[1], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(closure) = parse_hierarchy_closure_name(&args[2], interner) else {
+                    return Expr::Call(f, args);
+                };
+                match ax_perturb::hierarchy_spec(lmax, gauge, closure)
+                    .and_then(|spec| ax_perturb::photon_hierarchy_system(&spec, interner))
+                {
+                    Ok(system) => Expr::List(
+                        system
+                            .equations
+                            .into_iter()
+                            .map(|(lhs, rhs)| Expr::List(vec![lhs, rhs]))
+                            .collect(),
+                    ),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "export_hierarchy" => {
+            if args.len() == 5 {
+                let Some(target) = name_from_expr(&args[0], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(species) = name_from_expr(&args[1], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(lmax) = usize_from_expr(&args[2]) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(gauge) = parse_hierarchy_gauge_name(&args[3], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let Some(closure) = parse_hierarchy_closure_name(&args[4], interner) else {
+                    return Expr::Call(f, args);
+                };
+                let system =
+                    ax_perturb::hierarchy_spec(lmax, gauge, closure).and_then(
+                        |spec| match species {
+                            "neutrino" => ax_perturb::neutrino_hierarchy_system(&spec, interner),
+                            "photon" => ax_perturb::photon_hierarchy_system(&spec, interner),
+                            _ => Err(ax_perturb::CosmologyError::UnsupportedExternalSolverHook {
+                                target: species.to_string(),
+                            }),
+                        },
+                    );
+                match system.and_then(|system| {
+                    ax_perturb::export_hierarchy_system(target, &system, interner)
+                }) {
+                    Ok(payload) => Expr::Sym(interner.get_or_intern(&payload)),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "cpt_parity_report" => {
+            if args.is_empty() {
+                match ax_perturb::built_in_parity_reports(interner).and_then(|reports| {
+                    serde_json::to_string_pretty(&reports).map_err(|err| {
+                        ax_perturb::CosmologyError::ParityFixtureValidationFailure {
+                            fixture: err.to_string(),
+                        }
+                    })
+                }) {
+                    Ok(report) => Expr::Sym(interner.get_or_intern(&report)),
+                    Err(_) => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "tensor_harmonic_spec" => {
+            if args.len() == 1 {
+                if let Some(curvature) = parse_curvature_name(&args[0], interner) {
+                    make_harmonic_spec_expr(curvature, ax_perturb::SectorKind::Tensor, interner)
+                } else {
+                    Expr::Call(f, args)
                 }
             } else {
                 Expr::Call(f, args)
@@ -9460,6 +10117,135 @@ mod tests {
         (last, interner)
     }
 
+    fn eval_fixture(path: &str) -> (ax_ir::Expr, ax_ir::Interner) {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fixture_path = manifest_dir
+            .join("../../tests/fixtures/cosmology")
+            .join(path);
+        let source = std::fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", fixture_path.display()));
+        let interner = ax_ir::Interner::new();
+        let lowered = ax_core_ir::lower(&source, &interner);
+        assert!(
+            lowered.errors.is_empty(),
+            "lower errors in {}: {:?}",
+            fixture_path.display(),
+            lowered.errors
+        );
+        let mut env = Env::new();
+        let mut outputs = Vec::new();
+        for expr in lowered.exprs {
+            if apply_set_convention(&expr, &mut env).is_some()
+                || apply_parallel_declaration(&expr, &mut env, &interner).is_some()
+                || apply_graded_declaration(&expr, &mut env, &interner).is_some()
+                || apply_superspace_setup(&expr, &mut env, &interner).is_some()
+                || apply_brst_setup(&expr, &mut env, &interner).is_some()
+                || apply_property_declaration(&expr, &mut env, &interner).is_some()
+                || apply_coordinate_declaration(&expr, &mut env, &interner).is_some()
+                || apply_index_declaration(&expr, &mut env, &interner).is_some()
+            {
+                continue;
+            }
+
+            let result = eval(&expr, &env, &interner);
+            if let Expr::FnDef(name, _, _) = &result {
+                env.bindings.insert(*name, result.clone());
+            }
+            let _ = register_rule(&result, &mut env, &interner);
+            let _ = apply_coordinate_declaration(&result, &mut env, &interner);
+            let _ = apply_grassmann_declaration(&result, &mut env, &interner);
+            let _ = apply_operator_declaration(&result, &mut env, &interner);
+            if let Expr::Assume(var, assumptions) = &result {
+                env.assumptions
+                    .entry(*var)
+                    .or_default()
+                    .extend(assumptions.clone());
+            }
+            if let Expr::Let(name, val, _) = &expr {
+                let evaled_val = eval(val, &env, &interner);
+                env.bindings.insert(*name, evaled_val);
+                continue;
+            }
+            outputs.push(result);
+        }
+        (Expr::List(outputs), interner)
+    }
+
+    fn contains_unresolved_cpt_call(
+        expr: &Expr,
+        interner: &ax_ir::Interner,
+        names: &[&str],
+    ) -> bool {
+        match expr {
+            Expr::Call(name, args) => {
+                let unresolved = names
+                    .iter()
+                    .any(|candidate| interner.resolve(*name) == *candidate);
+                unresolved
+                    || args
+                        .iter()
+                        .any(|arg| contains_unresolved_cpt_call(arg, interner, names))
+            }
+            Expr::Add(items) | Expr::Mul(items) | Expr::List(items) => items
+                .iter()
+                .any(|item| contains_unresolved_cpt_call(item, interner, names)),
+            Expr::Pow(base, exp) => {
+                contains_unresolved_cpt_call(base, interner, names)
+                    || contains_unresolved_cpt_call(exp, interner, names)
+            }
+            Expr::Neg(inner) | Expr::Group(inner, _) => {
+                contains_unresolved_cpt_call(inner, interner, names)
+            }
+            Expr::Matrix(rows) => rows
+                .iter()
+                .flatten()
+                .any(|item| contains_unresolved_cpt_call(item, interner, names)),
+            Expr::Indexed(base, _) => contains_unresolved_cpt_call(base, interner, names),
+            Expr::Rule(lhs, rhs, _) => {
+                contains_unresolved_cpt_call(lhs, interner, names)
+                    || contains_unresolved_cpt_call(rhs, interner, names)
+            }
+            Expr::Let(_, value, body) => {
+                contains_unresolved_cpt_call(value, interner, names)
+                    || contains_unresolved_cpt_call(body, interner, names)
+            }
+            Expr::FnDef(_, _, body) => contains_unresolved_cpt_call(body, interner, names),
+            Expr::Assume(_, _) => false,
+            Expr::Piecewise(items) => items.iter().any(|(branch, condition)| {
+                contains_unresolved_cpt_call(branch, interner, names)
+                    || contains_unresolved_cpt_condition(condition, interner, names)
+            }),
+            Expr::Import(_) | Expr::SetConvention(_, _) => false,
+            _ => false,
+        }
+    }
+
+    fn contains_unresolved_cpt_condition(
+        condition: &ax_ir::Condition,
+        interner: &ax_ir::Interner,
+        names: &[&str],
+    ) -> bool {
+        match condition {
+            ax_ir::Condition::Gt(lhs, rhs)
+            | ax_ir::Condition::Lt(lhs, rhs)
+            | ax_ir::Condition::Ge(lhs, rhs)
+            | ax_ir::Condition::Le(lhs, rhs)
+            | ax_ir::Condition::Eq(lhs, rhs)
+            | ax_ir::Condition::Ne(lhs, rhs) => {
+                contains_unresolved_cpt_call(lhs, interner, names)
+                    || contains_unresolved_cpt_call(rhs, interner, names)
+            }
+            ax_ir::Condition::And(lhs, rhs) | ax_ir::Condition::Or(lhs, rhs) => {
+                contains_unresolved_cpt_condition(lhs, interner, names)
+                    || contains_unresolved_cpt_condition(rhs, interner, names)
+            }
+            ax_ir::Condition::Not(inner) => {
+                contains_unresolved_cpt_condition(inner, interner, names)
+            }
+            ax_ir::Condition::True | ax_ir::Condition::False => false,
+        }
+    }
+
     #[test]
     fn convention_default_is_mtw() {
         let env = Env::new();
@@ -11737,6 +12523,304 @@ mod tests {
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert!(rendered.contains("fluid_continuity"));
         assert!(rendered.contains("fluid_euler"));
+    }
+
+    #[test]
+    fn linearized_einstein_vector_builtin_returns_labelled_list() {
+        let (result, interner) = eval_src("linearized_einstein_vector();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("vector_0x_momentum"), "got {rendered}");
+        assert!(rendered.contains("vector_z_evolution"), "got {rendered}");
+    }
+
+    #[test]
+    fn linearized_einstein_tensor_builtin_returns_labelled_list() {
+        let (result, interner) = eval_src("linearized_einstein_tensor();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("tensor_xx"), "got {rendered}");
+        assert!(rendered.contains("tensor_zz"), "got {rendered}");
+    }
+
+    #[test]
+    fn tensor_mode_equation_builtin_returns_plus_and_cross_entries() {
+        let (result, interner) = eval_src("tensor_mode_equation();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("h_plus_eq"), "got {rendered}");
+        assert!(rendered.contains("h_cross_eq"), "got {rendered}");
+    }
+
+    #[test]
+    fn project_scalar_harmonics_builtin_returns_labelled_list() {
+        let (result, interner) = eval_src("project_scalar_harmonics();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("00_constraint"), "got {rendered}");
+        assert!(!rendered.contains(", x)"), "got {rendered}");
+        assert!(!rendered.contains(", y)"), "got {rendered}");
+        assert!(!rendered.contains(", z)"), "got {rendered}");
+    }
+
+    #[test]
+    fn project_vector_harmonics_builtin_returns_labelled_list() {
+        let (result, interner) = eval_src("project_vector_harmonics();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("vector_0x_momentum"), "got {rendered}");
+        assert!(!rendered.contains(", x)"), "got {rendered}");
+        assert!(!rendered.contains(", y)"), "got {rendered}");
+        assert!(!rendered.contains(", z)"), "got {rendered}");
+    }
+
+    #[test]
+    fn project_tensor_harmonics_builtin_returns_labelled_list() {
+        let (result, interner) = eval_src("project_tensor_harmonics();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("tensor_xx"), "got {rendered}");
+        assert!(!rendered.contains(", x)"), "got {rendered}");
+        assert!(!rendered.contains(", y)"), "got {rendered}");
+        assert!(!rendered.contains(", z)"), "got {rendered}");
+    }
+
+    #[test]
+    fn multifield_equations_builtin_returns_labelled_list() {
+        let (result, interner) = eval_src("multifield_equations(2);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("multifield_curvature"), "got {rendered}");
+        assert!(rendered.contains("multifield_entropy_1"), "got {rendered}");
+    }
+
+    #[test]
+    fn boltzmann_bridge_builtin_returns_ten_pairs() {
+        let (result, _) = eval_src("boltzmann_bridge();");
+        match result {
+            Expr::List(items) => assert_eq!(items.len(), 10),
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn boltzmann_bridge_export_builtin_returns_code_string() {
+        let (result, interner) = eval_src("boltzmann_bridge_export(python);");
+        let Expr::Sym(code) = result else {
+            panic!("expected interned code string");
+        };
+        assert!(interner.resolve(code).contains("def rhs_0("));
+    }
+
+    #[test]
+    fn second_order_einstein_vector_builtin_returns_labelled_list() {
+        let (result, interner) = eval_src("second_order_einstein_vector();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("second_order_vector_x"), "got {rendered}");
+        assert!(rendered.contains("second_order_vector_z"), "got {rendered}");
+    }
+
+    #[test]
+    fn second_order_einstein_tensor_builtin_returns_labelled_list() {
+        let (result, interner) = eval_src("second_order_einstein_tensor();");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            rendered.contains("second_order_tensor_xx"),
+            "got {rendered}"
+        );
+        assert!(
+            rendered.contains("second_order_tensor_zz"),
+            "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn cubic_kernel_builtin_returns_nontrivial_expression() {
+        let (result, interner) = eval_src("cubic_kernel(scalar_scalar_scalar);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("k1"), "got {rendered}");
+        assert!(rendered.contains("epsilon"), "got {rendered}");
+    }
+
+    #[test]
+    fn bispectrum_shape_builtin_returns_expression_without_raw_spatial_derivatives() {
+        let (result, interner) = eval_src("bispectrum_shape(scalar_scalar_scalar, local);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(!rendered.contains("_x"), "got {rendered}");
+        assert!(!rendered.contains("_y"), "got {rendered}");
+        assert!(!rendered.contains("_z"), "got {rendered}");
+        assert!(rendered.contains("p"), "got {rendered}");
+        assert!(rendered.contains("q"), "got {rendered}");
+    }
+
+    #[test]
+    fn export_cubic_vertex_builtin_returns_code_string() {
+        let (result, interner) = eval_src("export_cubic_vertex(scalar_scalar_scalar, python);");
+        let Expr::Sym(code) = result else {
+            panic!("expected interned code string");
+        };
+        assert!(interner.resolve(code).contains("def cubic_vertex("));
+    }
+
+    #[test]
+    fn eft_stability_builtin_returns_four_entries() {
+        let (result, interner) = eval_src("eft_stability(canonical);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("ghost_free_scalar"), "got {rendered}");
+        assert!(
+            rendered.contains("gradient_stable_tensor"),
+            "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn eft_mode_equations_builtin_returns_two_labelled_equations() {
+        let (result, interner) = eval_src("eft_mode_equations(reduced_sound_speed);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("eft_scalar_mode"), "got {rendered}");
+        assert!(rendered.contains("eft_tensor_mode"), "got {rendered}");
+    }
+
+    #[test]
+    fn eft_export_rhs_builtin_returns_code_string() {
+        let (result, interner) = eval_src("eft_export_rhs(horndeski_like, python);");
+        let Expr::Sym(code) = result else {
+            panic!("expected interned code string");
+        };
+        let rendered = interner.resolve(code);
+        assert!(rendered.contains("def eft_scalar_rhs("), "got {rendered}");
+        assert!(rendered.contains("def eft_tensor_rhs("), "got {rendered}");
+    }
+
+    #[test]
+    fn neutrino_hierarchy_builtin_returns_pairs() {
+        let (result, _) = eval_src("neutrino_hierarchy(3, newtonian, power_law);");
+        match result {
+            Expr::List(items) => {
+                assert_eq!(items.len(), 4);
+                assert!(items
+                    .iter()
+                    .all(|item| matches!(item, Expr::List(pair) if pair.len() == 2)));
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn photon_hierarchy_builtin_returns_pairs() {
+        let (result, _) = eval_src("photon_hierarchy(3, synchronous, free_streaming);");
+        match result {
+            Expr::List(items) => {
+                assert_eq!(items.len(), 4);
+                assert!(items
+                    .iter()
+                    .all(|item| matches!(item, Expr::List(pair) if pair.len() == 2)));
+            }
+            other => panic!("expected list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn export_hierarchy_builtin_returns_payload_string() {
+        let (result, interner) =
+            eval_src("export_hierarchy(class_hook, neutrino, 3, newtonian, power_law);");
+        let Expr::Sym(payload) = result else {
+            panic!("expected interned payload string");
+        };
+        assert!(interner.resolve(payload).contains("\"target\":\"class\""));
+    }
+
+    #[test]
+    fn cpt_parity_report_builtin_returns_nonempty_summary() {
+        let (result, interner) = eval_src("cpt_parity_report();");
+        let Expr::Sym(report) = result else {
+            panic!("expected interned report string");
+        };
+        let rendered = interner.resolve(report);
+        assert!(rendered.contains("ma_bertschinger_scalar_labels"));
+        assert!(rendered.contains("tensor_mode_labels"));
+    }
+
+    #[test]
+    fn structured_cpt_callables_remain_backward_compatible_with_simple_builtins() {
+        let (simple, simple_interner) = eval_src("linearized_einstein(1);");
+        let (structured, structured_interner) = eval_src(
+            "cpt_linearized_einstein(1, frw_background_spec(conformal, flat, 3), cpt_gauge(newtonian), cpt_matter(symbolic));",
+        );
+
+        let Expr::List(simple_items) = simple else {
+            panic!("expected simple builtin list");
+        };
+        let Expr::List(structured_items) = structured else {
+            panic!("expected structured builtin list");
+        };
+
+        let simple_labels = simple_items
+            .iter()
+            .map(|item| match item {
+                Expr::List(pair) if pair.len() == 2 => match &pair[0] {
+                    Expr::Sym(label) => simple_interner.resolve(*label).to_string(),
+                    other => panic!("expected label symbol, got {other:?}"),
+                },
+                other => panic!("expected labelled pair, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        let structured_labels = structured_items
+            .iter()
+            .map(|item| match item {
+                Expr::List(pair) if pair.len() == 2 => match &pair[0] {
+                    Expr::Sym(label) => structured_interner.resolve(*label).to_string(),
+                    other => panic!("expected label symbol, got {other:?}"),
+                },
+                other => panic!("expected labelled pair, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(simple_items.len(), structured_items.len());
+        assert_eq!(simple_labels, structured_labels);
+    }
+
+    #[test]
+    fn fixture_files_parse_and_evaluate_without_fallback() {
+        let fixtures = [
+            (
+                "de_sitter.ax",
+                vec![
+                    "linearized_einstein",
+                    "cpt_linearized_einstein",
+                    "tensor_mode_equation",
+                    "project_scalar_harmonics",
+                    "mukhanov_sasaki",
+                    "cpt_mukhanov_sasaki",
+                ],
+            ),
+            (
+                "radiation.ax",
+                vec![
+                    "cpt_linearized_einstein",
+                    "cpt_fluid_equations",
+                    "project_scalar_harmonics",
+                ],
+            ),
+            (
+                "matter.ax",
+                vec![
+                    "cpt_linearized_einstein",
+                    "cpt_fluid_equations",
+                    "project_scalar_harmonics",
+                ],
+            ),
+            (
+                "multifield_twofield.ax",
+                vec![
+                    "multifield_equations",
+                    "cpt_mukhanov_sasaki",
+                    "boltzmann_bridge",
+                ],
+            ),
+        ];
+
+        for (fixture, call_names) in fixtures {
+            let (result, interner) = eval_fixture(fixture);
+            assert!(
+                !contains_unresolved_cpt_call(&result, &interner, &call_names),
+                "fixture {fixture} left unresolved CPT callable in {:?}",
+                result
+            );
+        }
     }
 
     #[test]

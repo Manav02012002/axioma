@@ -173,6 +173,20 @@ enum Command {
     CptExport {
         target: String,
     },
+    CptParity,
+    CptHierarchy {
+        species: String,
+        lmax: usize,
+        gauge: String,
+        closure: String,
+    },
+    CptHierarchyExport {
+        target: String,
+        species: String,
+        lmax: usize,
+        gauge: String,
+        closure: String,
+    },
     Docgen {
         #[arg(long, default_value = "share/axioma-llm-context.md")]
         output: std::path::PathBuf,
@@ -485,6 +499,29 @@ fn real_main() -> Result<()> {
             cmd_cpt::run_export(&target)?;
             Ok(())
         }
+        Command::CptParity => {
+            cmd_cpt::run_parity()?;
+            Ok(())
+        }
+        Command::CptHierarchy {
+            species,
+            lmax,
+            gauge,
+            closure,
+        } => {
+            cmd_cpt::run_hierarchy(&species, lmax, &gauge, &closure)?;
+            Ok(())
+        }
+        Command::CptHierarchyExport {
+            target,
+            species,
+            lmax,
+            gauge,
+            closure,
+        } => {
+            cmd_cpt::run_hierarchy_export(&target, &species, lmax, &gauge, &closure)?;
+            Ok(())
+        }
         Command::Docgen { output } => {
             cmd_docgen::run(&output)?;
             Ok(())
@@ -699,6 +736,24 @@ mod tests {
             vec!["axioma", "install", "demo"],
             vec!["axioma", "validate", "examples/aas/hello_world.json"],
             vec!["axioma", "paths"],
+            vec!["axioma", "cpt-parity"],
+            vec![
+                "axioma",
+                "cpt-hierarchy",
+                "neutrino",
+                "3",
+                "newtonian",
+                "power_law",
+            ],
+            vec![
+                "axioma",
+                "cpt-hierarchy-export",
+                "class_hook",
+                "neutrino",
+                "3",
+                "newtonian",
+                "power_law",
+            ],
             vec!["axioma", "fix", "examples/gr_tutorial.ax"],
             vec!["axioma", "ai", "fix", "examples/gr_tutorial.ax"],
             vec!["axioma", "ai", "pack", "examples/gr_tutorial.ax"],
@@ -725,6 +780,9 @@ mod tests {
                 | Command::Codegen { .. }
                 | Command::CptDemo
                 | Command::CptExport { .. }
+                | Command::CptParity
+                | Command::CptHierarchy { .. }
+                | Command::CptHierarchyExport { .. }
                 | Command::Docgen { .. }
                 | Command::Install { .. }
                 | Command::Init

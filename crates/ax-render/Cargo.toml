@@ -17,4 +17,5 @@ num-traits = { workspace = true }
 
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }
+ax-perturb = { path = "../ax-perturb" }
 ax-spinor = { path = "../ax-spinor" }

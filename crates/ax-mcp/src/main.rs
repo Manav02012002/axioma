@@ -429,6 +429,227 @@ fn cpt_tool_definitions() -> Vec<Value> {
                 "required": ["target", "time", "curvature", "spatial_dim", "matter"]
             }
         }),
+        json!({
+            "name": "cpt.multifield",
+            "category": "cosmology",
+            "description": "Return multifield curvature and entropy equations as structured JSON.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "nfields": {"type": "integer"}
+                },
+                "required": ["nfields"]
+            }
+        }),
+        json!({
+            "name": "cpt.boltzmann_bridge",
+            "category": "cosmology",
+            "description": "Return a symbolic Einstein-Boltzmann bridge system.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }),
+        json!({
+            "name": "cpt.boltzmann_bridge_export",
+            "category": "cosmology",
+            "description": "Return exported Einstein-Boltzmann bridge code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"}
+                },
+                "required": ["target"]
+            }
+        }),
+        json!({
+            "name": "cpt.second_order_vector",
+            "category": "cosmology",
+            "description": "Return derived second-order vector Einstein equations.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }),
+        json!({
+            "name": "cpt.second_order_tensor",
+            "category": "cosmology",
+            "description": "Return derived second-order tensor Einstein equations.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }),
+        json!({
+            "name": "cpt.project_second_order_vector",
+            "category": "cosmology",
+            "description": "Return second-order vector equations projected to harmonic space.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }),
+        json!({
+            "name": "cpt.project_second_order_tensor",
+            "category": "cosmology",
+            "description": "Return second-order tensor equations projected to harmonic space.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }),
+        json!({
+            "name": "cpt.cubic_action",
+            "category": "cosmology",
+            "description": "Return a reduced cubic CPT action density.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string"}
+                },
+                "required": ["channel"]
+            }
+        }),
+        json!({
+            "name": "cpt.cubic_kernel",
+            "category": "cosmology",
+            "description": "Return a cubic Fourier-space CPT kernel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string"}
+                },
+                "required": ["channel"]
+            }
+        }),
+        json!({
+            "name": "cpt.bispectrum_shape",
+            "category": "cosmology",
+            "description": "Return a cubic bispectrum shape evaluation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string"},
+                    "shape": {"type": "string"}
+                },
+                "required": ["channel", "shape"]
+            }
+        }),
+        json!({
+            "name": "cpt.export_cubic_vertex",
+            "category": "cosmology",
+            "description": "Return exported cubic vertex code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "channel": {"type": "string"},
+                    "target": {"type": "string"}
+                },
+                "required": ["channel", "target"]
+            }
+        }),
+        json!({
+            "name": "cpt.eft_model",
+            "category": "cosmology",
+            "description": "Return a typed reduced EFT model description.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"}
+                },
+                "required": ["kind"]
+            }
+        }),
+        json!({
+            "name": "cpt.neutrino_hierarchy",
+            "category": "cosmology",
+            "description": "Return a symbolic neutrino hierarchy with explicit truncation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "lmax": {"type": "integer"},
+                    "gauge": {"type": "string"},
+                    "closure": {"type": "string"}
+                },
+                "required": ["lmax", "gauge", "closure"]
+            }
+        }),
+        json!({
+            "name": "cpt.photon_hierarchy",
+            "category": "cosmology",
+            "description": "Return a symbolic photon hierarchy with explicit truncation.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "lmax": {"type": "integer"},
+                    "gauge": {"type": "string"},
+                    "closure": {"type": "string"}
+                },
+                "required": ["lmax", "gauge", "closure"]
+            }
+        }),
+        json!({
+            "name": "cpt.export_hierarchy",
+            "category": "cosmology",
+            "description": "Return exported hierarchy code or hook payload.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string"},
+                    "species": {"type": "string"},
+                    "lmax": {"type": "integer"},
+                    "gauge": {"type": "string"},
+                    "closure": {"type": "string"}
+                },
+                "required": ["target", "species", "lmax", "gauge", "closure"]
+            }
+        }),
+        json!({
+            "name": "cpt.parity_report",
+            "category": "cosmology",
+            "description": "Return built-in CPT parity benchmark reports.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }),
+        json!({
+            "name": "cpt.eft_stability",
+            "category": "cosmology",
+            "description": "Return reduced EFT stability conditions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"}
+                },
+                "required": ["kind"]
+            }
+        }),
+        json!({
+            "name": "cpt.eft_mode_equations",
+            "category": "cosmology",
+            "description": "Return reduced EFT mode equations.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"}
+                },
+                "required": ["kind"]
+            }
+        }),
+        json!({
+            "name": "cpt.eft_export_rhs",
+            "category": "cosmology",
+            "description": "Return exported reduced EFT mode RHS code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"},
+                    "target": {"type": "string"}
+                },
+                "required": ["kind", "target"]
+            }
+        }),
     ]
 }
 
@@ -627,6 +848,49 @@ fn cpt_labelled_equations_json(expr: &Expr, interner: &ax_ir::Interner) -> Optio
     Some(json!({ "status": "ok", "equations": equations }))
 }
 
+fn cpt_named_exprs_json(expr: &Expr, interner: &ax_ir::Interner) -> Option<Value> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let mut values = Vec::with_capacity(items.len());
+    for item in items {
+        let Expr::List(pair) = item else {
+            return None;
+        };
+        let [Expr::Sym(label), value] = pair.as_slice() else {
+            return None;
+        };
+        values.push(json!({
+            "label": interner.resolve(*label),
+            "unicode": ax_render::to_unicode(value, interner),
+            "latex": ax_render::to_latex(value, interner),
+        }));
+    }
+    Some(json!({ "status": "ok", "entries": values }))
+}
+
+fn cpt_pair_equations_json(expr: &Expr, interner: &ax_ir::Interner) -> Option<Value> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    let mut equations = Vec::with_capacity(items.len());
+    let mut variables = Vec::with_capacity(items.len());
+    for item in items {
+        let Expr::List(pair) = item else {
+            return None;
+        };
+        let [lhs, rhs] = pair.as_slice() else {
+            return None;
+        };
+        variables.push(ax_render::to_unicode(lhs, interner));
+        equations.push(json!({
+            "lhs": ax_render::to_unicode(lhs, interner),
+            "rhs": ax_render::to_unicode(rhs, interner),
+        }));
+    }
+    Some(json!({ "status": "ok", "variables": variables, "equations": equations }))
+}
+
 fn background_source(arguments: &Value) -> Result<String, String> {
     let time = arguments
         .get("time")
@@ -689,6 +953,151 @@ fn handle_cpt_tool_call(state: &mut McpState, tool_name: &str, arguments: &Value
             let matter = arguments.get("matter").and_then(Value::as_str)?;
             let bg = background_source(arguments).ok()?;
             let source = format!("cpt_export_mode_rhs({target}, {bg}, cpt_matter({matter}))");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "code": ax_render::to_unicode(&expr, &state.interner),
+            }))
+        }
+        "cpt.multifield" => {
+            let nfields = arguments.get("nfields").and_then(Value::as_i64)?;
+            let source = format!("multifield_equations({nfields})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            cpt_labelled_equations_json(&expr, &state.interner)
+        }
+        "cpt.boltzmann_bridge" => {
+            let expr = eval_cpt_source(state, "boltzmann_bridge()").ok()?;
+            cpt_pair_equations_json(&expr, &state.interner)
+        }
+        "cpt.boltzmann_bridge_export" => {
+            let target = arguments.get("target").and_then(Value::as_str)?;
+            let source = format!("boltzmann_bridge_export({target})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "code": ax_render::to_unicode(&expr, &state.interner),
+            }))
+        }
+        "cpt.second_order_vector" => {
+            let expr = eval_cpt_source(state, "second_order_einstein_vector()").ok()?;
+            cpt_labelled_equations_json(&expr, &state.interner)
+        }
+        "cpt.second_order_tensor" => {
+            let expr = eval_cpt_source(state, "second_order_einstein_tensor()").ok()?;
+            cpt_labelled_equations_json(&expr, &state.interner)
+        }
+        "cpt.project_second_order_vector" => {
+            let expr = eval_cpt_source(state, "project_second_order_vector_harmonics()").ok()?;
+            cpt_labelled_equations_json(&expr, &state.interner)
+        }
+        "cpt.project_second_order_tensor" => {
+            let expr = eval_cpt_source(state, "project_second_order_tensor_harmonics()").ok()?;
+            cpt_labelled_equations_json(&expr, &state.interner)
+        }
+        "cpt.cubic_action" => {
+            let channel = arguments.get("channel").and_then(Value::as_str)?;
+            let source = format!("cubic_action({channel})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "unicode": ax_render::to_unicode(&expr, &state.interner),
+                "latex": ax_render::to_latex(&expr, &state.interner),
+            }))
+        }
+        "cpt.cubic_kernel" => {
+            let channel = arguments.get("channel").and_then(Value::as_str)?;
+            let source = format!("cubic_kernel({channel})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "unicode": ax_render::to_unicode(&expr, &state.interner),
+                "latex": ax_render::to_latex(&expr, &state.interner),
+            }))
+        }
+        "cpt.bispectrum_shape" => {
+            let channel = arguments.get("channel").and_then(Value::as_str)?;
+            let shape = arguments.get("shape").and_then(Value::as_str)?;
+            let source = format!("bispectrum_shape({channel}, {shape})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "unicode": ax_render::to_unicode(&expr, &state.interner),
+                "latex": ax_render::to_latex(&expr, &state.interner),
+            }))
+        }
+        "cpt.export_cubic_vertex" => {
+            let channel = arguments.get("channel").and_then(Value::as_str)?;
+            let target = arguments.get("target").and_then(Value::as_str)?;
+            let source = format!("export_cubic_vertex({channel}, {target})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "code": ax_render::to_unicode(&expr, &state.interner),
+            }))
+        }
+        "cpt.eft_model" => {
+            let kind = arguments.get("kind").and_then(Value::as_str)?;
+            let source = format!("eft_model({kind})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "unicode": ax_render::to_unicode(&expr, &state.interner),
+                "latex": ax_render::to_latex(&expr, &state.interner),
+            }))
+        }
+        "cpt.neutrino_hierarchy" => {
+            let lmax = arguments.get("lmax").and_then(Value::as_i64)?;
+            let gauge = arguments.get("gauge").and_then(Value::as_str)?;
+            let closure = arguments.get("closure").and_then(Value::as_str)?;
+            let source = format!("neutrino_hierarchy({lmax}, {gauge}, {closure})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            cpt_pair_equations_json(&expr, &state.interner)
+        }
+        "cpt.photon_hierarchy" => {
+            let lmax = arguments.get("lmax").and_then(Value::as_i64)?;
+            let gauge = arguments.get("gauge").and_then(Value::as_str)?;
+            let closure = arguments.get("closure").and_then(Value::as_str)?;
+            let source = format!("photon_hierarchy({lmax}, {gauge}, {closure})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            cpt_pair_equations_json(&expr, &state.interner)
+        }
+        "cpt.export_hierarchy" => {
+            let target = arguments.get("target").and_then(Value::as_str)?;
+            let species = arguments.get("species").and_then(Value::as_str)?;
+            let lmax = arguments.get("lmax").and_then(Value::as_i64)?;
+            let gauge = arguments.get("gauge").and_then(Value::as_str)?;
+            let closure = arguments.get("closure").and_then(Value::as_str)?;
+            let source =
+                format!("export_hierarchy({target}, {species}, {lmax}, {gauge}, {closure})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            Some(json!({
+                "status": "ok",
+                "code": ax_render::to_unicode(&expr, &state.interner),
+            }))
+        }
+        "cpt.parity_report" => {
+            let expr = eval_cpt_source(state, "cpt_parity_report()").ok()?;
+            Some(json!({
+                "status": "ok",
+                "report": ax_render::to_unicode(&expr, &state.interner),
+            }))
+        }
+        "cpt.eft_stability" => {
+            let kind = arguments.get("kind").and_then(Value::as_str)?;
+            let source = format!("eft_stability({kind})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            cpt_named_exprs_json(&expr, &state.interner)
+        }
+        "cpt.eft_mode_equations" => {
+            let kind = arguments.get("kind").and_then(Value::as_str)?;
+            let source = format!("eft_mode_equations({kind})");
+            let expr = eval_cpt_source(state, &source).ok()?;
+            cpt_labelled_equations_json(&expr, &state.interner)
+        }
+        "cpt.eft_export_rhs" => {
+            let kind = arguments.get("kind").and_then(Value::as_str)?;
+            let target = arguments.get("target").and_then(Value::as_str)?;
+            let source = format!("eft_export_rhs({kind}, {target})");
             let expr = eval_cpt_source(state, &source).ok()?;
             Some(json!({
                 "status": "ok",
@@ -2049,5 +2458,241 @@ mod tests {
         );
         let code = result["code"].as_str().unwrap_or("");
         assert!(code.contains("def ms_rhs("), "{result:?}");
+    }
+
+    #[test]
+    fn cpt_multifield_tool_returns_expected_label_for_two_fields() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.multifield",
+            &json!({
+                "nfields": 2
+            }),
+            5,
+        );
+        let labels = result["equations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("label").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"multifield_curvature"), "{result:?}");
+    }
+
+    #[test]
+    fn cpt_boltzmann_bridge_export_tool_returns_code() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.boltzmann_bridge_export",
+            &json!({
+                "target": "python"
+            }),
+            5,
+        );
+        let code = result["code"].as_str().unwrap_or("");
+        assert!(code.contains("def rhs_0("), "{result:?}");
+    }
+
+    #[test]
+    fn cpt_cubic_kernel_tool_returns_nonempty_unicode() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.cubic_kernel",
+            &json!({
+                "channel": "scalar_scalar_scalar"
+            }),
+            5,
+        );
+        let unicode = result["unicode"].as_str().unwrap_or("");
+        assert!(!unicode.is_empty(), "{result:?}");
+        assert!(
+            unicode.contains("k₁") || unicode.contains("k1"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn cpt_export_cubic_vertex_tool_returns_code() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.export_cubic_vertex",
+            &json!({
+                "channel": "scalar_scalar_scalar",
+                "target": "python"
+            }),
+            5,
+        );
+        let code = result["code"].as_str().unwrap_or("");
+        assert!(code.contains("def cubic_vertex("), "{result:?}");
+    }
+
+    #[test]
+    fn cpt_eft_mode_equations_tool_returns_two_equations() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.eft_mode_equations",
+            &json!({
+                "kind": "canonical"
+            }),
+            5,
+        );
+        let equations = result["equations"].as_array().cloned().unwrap_or_default();
+        assert_eq!(equations.len(), 2, "{result:?}");
+    }
+
+    #[test]
+    fn cpt_eft_export_rhs_tool_returns_code() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.eft_export_rhs",
+            &json!({
+                "kind": "horndeski_like",
+                "target": "python"
+            }),
+            5,
+        );
+        let code = result["code"].as_str().unwrap_or("");
+        assert!(code.contains("def eft_scalar_rhs("), "{result:?}");
+    }
+
+    #[test]
+    fn cpt_neutrino_hierarchy_tool_returns_equations() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(
+            &mut state,
+            "cpt.neutrino_hierarchy",
+            &json!({
+                "lmax": 3,
+                "gauge": "newtonian",
+                "closure": "power_law"
+            }),
+            5,
+        );
+        let equations = result["equations"].as_array().cloned().unwrap_or_default();
+        assert_eq!(equations.len(), 4, "{result:?}");
+    }
+
+    #[test]
+    fn cpt_parity_report_tool_returns_report_payload() {
+        let mut state = McpState::new();
+        let result = handle_tools_call_safe(&mut state, "cpt.parity_report", &json!({}), 5);
+        let report = result["report"].as_str().unwrap_or("");
+        assert!(
+            report.contains("ma_bertschinger_scalar_labels"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn mcp_cpt_linearized_einstein_matches_eval_labels() {
+        let mut state = McpState::new();
+        let mcp_result = handle_tools_call_safe(
+            &mut state,
+            "cpt.linearized_einstein",
+            &json!({
+                "order": 1,
+                "time": "conformal",
+                "curvature": "flat",
+                "spatial_dim": 3,
+                "gauge": "newtonian",
+                "matter": "symbolic"
+            }),
+            5,
+        );
+        let eval_expr = eval_cpt_source(
+            &mut state,
+            "cpt_linearized_einstein(1, frw_background_spec(conformal, flat, 3), cpt_gauge(newtonian), cpt_matter(symbolic))",
+        )
+        .expect("eval cpt linearized einstein");
+
+        let mcp_labels = mcp_result["equations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("label").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let eval_labels = cpt_labelled_equations_json(&eval_expr, &state.interner)
+            .and_then(|payload| payload["equations"].as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                entry
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(mcp_labels, eval_labels);
+    }
+
+    #[test]
+    fn mcp_cpt_multifield_matches_eval_labels() {
+        let mut state = McpState::new();
+        let mcp_result = handle_tools_call_safe(
+            &mut state,
+            "cpt.multifield",
+            &json!({
+                "nfields": 2
+            }),
+            5,
+        );
+        let eval_expr = eval_cpt_source(&mut state, "multifield_equations(2)")
+            .expect("eval multifield equations");
+
+        let mcp_labels = mcp_result["equations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.get("label").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let eval_labels = cpt_labelled_equations_json(&eval_expr, &state.interner)
+            .and_then(|payload| payload["equations"].as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                entry
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(mcp_labels, eval_labels);
+    }
+
+    #[test]
+    fn mcp_cpt_export_code_is_nonempty_and_deterministic() {
+        let mut state = McpState::new();
+        let first = handle_tools_call_safe(
+            &mut state,
+            "cpt.boltzmann_bridge_export",
+            &json!({
+                "target": "python"
+            }),
+            5,
+        );
+        let second = handle_tools_call_safe(
+            &mut state,
+            "cpt.boltzmann_bridge_export",
+            &json!({
+                "target": "python"
+            }),
+            5,
+        );
+
+        let first_code = first["code"].as_str().unwrap_or("");
+        let second_code = second["code"].as_str().unwrap_or("");
+
+        assert!(!first_code.is_empty(), "{first:?}");
+        assert_eq!(first_code, second_code);
     }
 }

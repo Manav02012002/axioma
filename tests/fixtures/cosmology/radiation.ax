@@ -1,0 +1,12 @@
+// radiation era verification fixture
+let bg = frw_background_spec(conformal, flat, 3)
+let g = cpt_gauge(newtonian)
+
+// scalar equations
+cpt_linearized_einstein(1, bg, g, cpt_matter(symbolic))
+
+// fluid equations
+cpt_fluid_equations(bg)
+
+// harmonic projection
+project_scalar_harmonics()
