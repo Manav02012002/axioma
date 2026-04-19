@@ -17,5 +17,8 @@ let jumps = []
 let rho_dot = lindblad_rhs(h_toy, rho_toy, jumps)
 let rho_euler = lindblad_euler_step(h_toy, rho_toy, jumps, 1/10)
 let rho_rk4 = lindblad_rk4_step(h_toy, rho_toy, jumps, 1/10)
+let h_amp = [[0, 0], [0, 0]]
+let jumps_amp = [[[0, 1], [0, 0]]]
+let rho_steady = lindblad_steady_state(h_amp, jumps_amp)
 
-[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered, rho_dot, rho_euler, rho_rk4]
+[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered, rho_dot, rho_euler, rho_rk4, rho_steady]

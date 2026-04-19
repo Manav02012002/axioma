@@ -5,10 +5,44 @@ use ax_ir::Expr;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LindbladSteadyStateError {
+    #[error("Hamiltonian not square: rows={rows}, cols={cols}")]
+    HamiltonianNotSquare { rows: usize, cols: usize },
+    #[error("jump operator {index} not square: rows={rows}, cols={cols}")]
+    JumpOperatorNotSquare {
+        index: usize,
+        rows: usize,
+        cols: usize,
+    },
+    #[error("dimension mismatch for {which}: expected={expected}, actual={actual}")]
+    DimensionMismatch {
+        expected: usize,
+        actual: usize,
+        which: &'static str,
+    },
+    #[error("underdetermined steady state")]
+    UnderdeterminedSteadyState,
+    #[error("inconsistent steady state system")]
+    InconsistentSteadyStateSystem,
+}
 
 pub fn can_solve_componentwise_by_symmetry(sym: &ax_ir::TensorSymmetry) -> bool {
     !sym.tableaux.is_empty()
 }
+
+fn matrix_shape(matrix: &[Vec<Expr>]) -> Option<(usize, usize)> {
+    let rows = matrix.len();
+    let cols = matrix.first().map(|row| row.len()).unwrap_or(0);
+    matrix
+        .iter()
+        .all(|row| row.len() == cols)
+        .then_some((rows, cols))
+}
+
+static RHO_SYMBOL_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn to_rational(expr: &Expr) -> Option<BigRational> {
     match expr {
@@ -784,15 +818,22 @@ fn extract_linear_equation(
     Some((coeffs, -constant))
 }
 
-pub fn solve_linear_system(
-    equations: &[ax_ir::Expr],
-    vars: &[lasso::Spur],
-    _interner: &ax_ir::Interner,
-) -> Option<Vec<(lasso::Spur, ax_ir::Expr)>> {
+#[derive(Clone, Debug)]
+struct ReducedLinearSystem {
+    matrix: Vec<Vec<BigRational>>,
+    rank: usize,
+    inconsistent: bool,
+}
+
+fn reduce_linear_system(equations: &[Expr], vars: &[lasso::Spur]) -> Option<ReducedLinearSystem> {
     let rows = equations.len();
     let cols = vars.len();
     if rows == 0 || cols == 0 {
-        return Some(Vec::new());
+        return Some(ReducedLinearSystem {
+            matrix: Vec::new(),
+            rank: 0,
+            inconsistent: false,
+        });
     }
 
     let mut matrix = equations
@@ -835,21 +876,160 @@ pub fn solve_linear_system(
         }
     }
 
-    for row in &matrix {
-        if row[..cols].iter().all(|c| c.is_zero()) && !row[cols].is_zero() {
-            return None;
-        }
+    let inconsistent = matrix
+        .iter()
+        .any(|row| row[..cols].iter().all(|c| c.is_zero()) && !row[cols].is_zero());
+
+    Some(ReducedLinearSystem {
+        matrix,
+        rank: pivot_row,
+        inconsistent,
+    })
+}
+
+pub fn solve_linear_system(
+    equations: &[ax_ir::Expr],
+    vars: &[lasso::Spur],
+    _interner: &ax_ir::Interner,
+) -> Option<Vec<(lasso::Spur, ax_ir::Expr)>> {
+    let cols = vars.len();
+    if equations.is_empty() || cols == 0 {
+        return Some(Vec::new());
     }
 
-    if pivot_row < cols {
+    let reduced = reduce_linear_system(equations, vars)?;
+    if reduced.inconsistent || reduced.rank < cols {
         return None;
     }
 
     let mut out = Vec::with_capacity(cols);
     for i in 0..cols {
-        out.push((vars[i], expr_from_rational(matrix[i][cols].clone())));
+        out.push((vars[i], expr_from_rational(reduced.matrix[i][cols].clone())));
     }
     Some(out)
+}
+
+/// Compute the symbolic trace of a square matrix by summing its diagonal entries.
+pub fn matrix_trace_expr(mat: &[Vec<Expr>]) -> Expr {
+    Expr::add(
+        mat.iter()
+            .enumerate()
+            .filter_map(|(i, row)| row.get(i).cloned())
+            .collect(),
+    )
+}
+
+/// Create a fresh symbolic density matrix `rho` together with its flattened symbol list.
+pub fn fresh_rho_symbols(
+    dim: usize,
+    interner: &ax_ir::Interner,
+) -> (Vec<lasso::Spur>, Vec<Vec<Expr>>) {
+    let nonce = RHO_SYMBOL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut symbols = Vec::with_capacity(dim * dim);
+    let matrix = (0..dim)
+        .map(|row| {
+            (0..dim)
+                .map(|col| {
+                    let sym = interner.get_or_intern(&format!("rho_ss_{nonce}_{row}_{col}"));
+                    symbols.push(sym);
+                    Expr::Sym(sym)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    (symbols, matrix)
+}
+
+/// Solve the finite-dimensional Lindblad steady-state equations `L(rho) = 0` with `Tr(rho) = 1`.
+pub fn lindblad_steady_state_linear(
+    h: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, LindbladSteadyStateError> {
+    let (rows, cols) =
+        matrix_shape(h).unwrap_or((h.len(), h.first().map(|row| row.len()).unwrap_or(0)));
+    if rows != cols {
+        return Err(LindbladSteadyStateError::HamiltonianNotSquare { rows, cols });
+    }
+    let dim = rows;
+
+    for (index, jump) in jump_ops.iter().enumerate() {
+        let (jump_rows, jump_cols) = matrix_shape(jump)
+            .unwrap_or((jump.len(), jump.first().map(|row| row.len()).unwrap_or(0)));
+        if jump_rows != jump_cols {
+            return Err(LindbladSteadyStateError::JumpOperatorNotSquare {
+                index,
+                rows: jump_rows,
+                cols: jump_cols,
+            });
+        }
+        if jump_rows != dim {
+            return Err(LindbladSteadyStateError::DimensionMismatch {
+                expected: dim,
+                actual: jump_rows,
+                which: "jump operator",
+            });
+        }
+    }
+
+    let (vars, rho) = fresh_rho_symbols(dim, interner);
+    let rhs = ax_qm::lindblad_rhs(h, &rho, jump_ops, interner).map_err(|err| match err {
+        ax_qm::LindbladError::HamiltonianNotSquare { rows, cols } => {
+            LindbladSteadyStateError::HamiltonianNotSquare { rows, cols }
+        }
+        ax_qm::LindbladError::StateNotSquare { rows, cols } => {
+            LindbladSteadyStateError::DimensionMismatch {
+                expected: rows,
+                actual: cols,
+                which: "state",
+            }
+        }
+        ax_qm::LindbladError::DimensionMismatch {
+            expected,
+            actual,
+            which,
+        } => LindbladSteadyStateError::DimensionMismatch {
+            expected,
+            actual,
+            which,
+        },
+    })?;
+
+    let mut equations = rhs
+        .iter()
+        .flat_map(|row| row.iter().cloned())
+        .collect::<Vec<_>>();
+    equations.push(Expr::add(vec![
+        matrix_trace_expr(&rho),
+        Expr::neg(Expr::one()),
+    ]));
+
+    let reduced = reduce_linear_system(&equations, &vars)
+        .ok_or(LindbladSteadyStateError::InconsistentSteadyStateSystem)?;
+    if reduced.inconsistent {
+        return Err(LindbladSteadyStateError::InconsistentSteadyStateSystem);
+    }
+    if reduced.rank < vars.len() {
+        return Err(LindbladSteadyStateError::UnderdeterminedSteadyState);
+    }
+
+    let solution = solve_linear_system(&equations, &vars, interner)
+        .ok_or(LindbladSteadyStateError::InconsistentSteadyStateSystem)?;
+    let solution_map = solution
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+
+    Ok(rho
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|entry| match entry {
+                    Expr::Sym(sym) => solution_map.get(&sym).cloned().unwrap_or(Expr::Sym(sym)),
+                    other => other,
+                })
+                .collect()
+        })
+        .collect())
 }
 
 #[cfg(test)]

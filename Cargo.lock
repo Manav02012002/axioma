@@ -535,11 +535,13 @@ dependencies = [
  "ax-core-ir",
  "ax-eval",
  "ax-ir",
+ "ax-qm",
  "lasso",
  "num-bigint",
  "num-integer",
  "num-rational",
  "num-traits",
+ "thiserror",
 ]
 
 [[package]]

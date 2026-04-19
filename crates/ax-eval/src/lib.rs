@@ -9548,6 +9548,84 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "purity" => {
+            if args.len() == 1 {
+                match expr_to_matrix(&args[0]) {
+                    Some(rho) => ax_qm::purity(&rho).unwrap_or_else(|_| Expr::Call(f, args)),
+                    None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "linear_entropy" => {
+            if args.len() == 1 {
+                match expr_to_matrix(&args[0]) {
+                    Some(rho) => {
+                        ax_qm::linear_entropy(&rho).unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "renyi2_entropy" => {
+            if args.len() == 1 {
+                match expr_to_matrix(&args[0]) {
+                    Some(rho) => ax_qm::renyi2_entropy(&rho, interner)
+                        .unwrap_or_else(|_| Expr::Call(f, args)),
+                    None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "renyi2_mutual_information" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    usize_from_expr(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Some(rho_ab), Some(dim_a), Some(dim_b)) => {
+                        ax_qm::renyi2_mutual_information_bipartite(&rho_ab, dim_a, dim_b, interner)
+                            .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bloch_vector" => {
+            if args.len() == 1 {
+                match expr_to_matrix(&args[0]) {
+                    Some(rho) => ax_qm::bloch_vector(&rho)
+                        .map(|components| Expr::List(components.into_iter().collect()))
+                        .unwrap_or_else(|_| Expr::Call(f, args)),
+                    None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "qubit_density_from_bloch" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::List(items) if items.len() == 3 => {
+                        Expr::Matrix(ax_qm::qubit_density_from_bloch([
+                            items[0].clone(),
+                            items[1].clone(),
+                            items[2].clone(),
+                        ]))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "post_measurement_state" => {
             if args.len() == 3 {
                 match (&args[0], expr_to_matrix(&args[1]), &args[2]) {
@@ -9632,6 +9710,20 @@ fn builtin_call(
                 ) {
                     (Some(h), Some(rho), Some(jump_ops)) => {
                         ax_ode::lindblad_rk4_step(&h, &rho, &jump_ops, &args[3], interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| Expr::Call(f, args))
+                    }
+                    _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "lindblad_steady_state" => {
+            if args.len() == 2 {
+                match (expr_to_matrix(&args[0]), expr_to_3d(&args[1])) {
+                    (Some(h), Some(jump_ops)) => {
+                        ax_solve::lindblad_steady_state_linear(&h, &jump_ops, interner)
                             .map(Expr::Matrix)
                             .unwrap_or_else(|_| Expr::Call(f, args))
                     }
@@ -13562,6 +13654,79 @@ mod tests {
     #[test]
     fn qm_lindblad_rk4_step_with_zero_rhs_returns_input_matrix() {
         let (result, _) = eval_src("lindblad_rk4_step([[1,0],[0,2]], [[1,0],[0,0]], [], 1/10);");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::one(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero()],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_lindblad_steady_state_amplitude_damping_returns_ground_state() {
+        let (result, _) = eval_src("lindblad_steady_state([[0,0],[0,0]], [[[0,1],[0,0]]]);");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::one(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero()],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_purity_of_bell_state_is_one() {
+        let (result, _) = eval_src("purity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]));");
+        assert_eq!(result, Expr::one());
+    }
+
+    #[test]
+    fn qm_linear_entropy_of_reduced_bell_state_is_one_half() {
+        let (result, interner) = eval_src(
+            "linear_entropy(partial_trace(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2, A));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1/2");
+    }
+
+    #[test]
+    fn qm_renyi2_entropy_of_reduced_bell_state_is_log_two() {
+        let (result, interner) = eval_src(
+            "renyi2_entropy(partial_trace(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2, A));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered == "log(2)" || rendered == "-log(1/2)" || rendered == "-1*log(1/2)");
+    }
+
+    #[test]
+    fn qm_renyi2_mutual_information_of_bell_state_is_log_four() {
+        let (result, interner) =
+            eval_src("renyi2_mutual_information(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            rendered == "log(4)"
+                || rendered == "2*log(2)"
+                || rendered == "log(2) + log(2)"
+                || rendered == "-log(1/2) + -log(1/2)"
+                || rendered == "-1*log(1/2) + -1*log(1/2)"
+                || rendered == "log(1) + -2*log(1/2)",
+            "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn qm_bloch_vector_of_zero_state_is_001() {
+        let (result, _) = eval_src("bloch_vector([[1,0],[0,0]]);");
+        assert_eq!(
+            result,
+            Expr::List(vec![Expr::zero(), Expr::zero(), Expr::one()])
+        );
+    }
+
+    #[test]
+    fn qm_qubit_density_from_bloch_z_axis_is_zero_state() {
+        let (result, _) = eval_src("qubit_density_from_bloch([0, 0, 1]);");
         assert_eq!(
             result,
             Expr::Matrix(vec![

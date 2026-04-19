@@ -140,6 +140,18 @@ pub enum ObservableError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StateFunctionalError {
+    #[error("state not square: rows={rows}, cols={cols}")]
+    StateNotSquare { rows: usize, cols: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum QubitStateError {
+    #[error("matrix is not 2x2: rows={rows}, cols={cols}")]
+    NotTwoByTwo { rows: usize, cols: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CompositeSpaceError {
     #[error("empty factor list")]
     EmptyFactorList,
@@ -1245,6 +1257,15 @@ fn validate_observable_inputs(
     Ok(operator_rows)
 }
 
+fn validate_state_functional_input(rho: &[Vec<Expr>]) -> Result<usize, StateFunctionalError> {
+    let (rows, cols) =
+        matrix_shape(rho).unwrap_or((rho.len(), rho.first().map(|row| row.len()).unwrap_or(0)));
+    if rows != cols {
+        return Err(StateFunctionalError::StateNotSquare { rows, cols });
+    }
+    Ok(rows)
+}
+
 pub fn pauli_x(_interner: &ax_ir::Interner) -> Vec<Vec<ax_ir::Expr>> {
     vec![
         vec![Expr::zero(), Expr::one()],
@@ -1845,6 +1866,111 @@ pub fn variance(operator: &[Vec<Expr>], rho: &[Vec<Expr>]) -> Result<Expr, Obser
         second_moment,
         Expr::neg(Expr::pow(mean, Expr::Int(2.into()))),
     ])))
+}
+
+/// Compute the purity `Tr(ρ^2)` of a finite-dimensional density operator.
+pub fn purity(rho: &[Vec<Expr>]) -> Result<Expr, StateFunctionalError> {
+    validate_state_functional_input(rho)?;
+    let interner = ax_ir::Interner::new();
+    let rho_sq = ax_linalg::mat_mul(rho, rho, &interner);
+    Ok(simplify_expr(ax_linalg::trace(&rho_sq)))
+}
+
+/// Compute the linear entropy `1 - Tr(ρ^2)` of a finite-dimensional density operator.
+pub fn linear_entropy(rho: &[Vec<Expr>]) -> Result<Expr, StateFunctionalError> {
+    let purity_value = purity(rho)?;
+    Ok(simplify_expr(Expr::add(vec![
+        Expr::one(),
+        Expr::neg(purity_value),
+    ])))
+}
+
+/// Compute the Renyi-2 entropy `-log(Tr(ρ^2))` of a finite-dimensional density operator.
+pub fn renyi2_entropy(
+    rho: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, StateFunctionalError> {
+    let purity_value = purity(rho)?;
+    Ok(simplify_expr(Expr::neg(Expr::Call(
+        interner.get_or_intern("log"),
+        vec![purity_value],
+    ))))
+}
+
+/// Compute the bipartite Renyi-2 mutual information `S2(ρ_A) + S2(ρ_B) - S2(ρ_AB)`.
+pub fn renyi2_mutual_information_bipartite(
+    rho_ab: &[Vec<Expr>],
+    dim_a: usize,
+    dim_b: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, QmLinearAlgebraError> {
+    let rho_a = try_partial_trace(
+        rho_ab,
+        BipartiteDims { dim_a, dim_b },
+        PartialTraceTarget::B,
+    )?;
+    let rho_b = try_partial_trace(
+        rho_ab,
+        BipartiteDims { dim_a, dim_b },
+        PartialTraceTarget::A,
+    )?;
+    let s2_a = renyi2_entropy(&rho_a, interner).map_err(|err| match err {
+        StateFunctionalError::StateNotSquare { rows, cols } => {
+            QmLinearAlgebraError::NonSquareMatrix { rows, cols }
+        }
+    })?;
+    let s2_b = renyi2_entropy(&rho_b, interner).map_err(|err| match err {
+        StateFunctionalError::StateNotSquare { rows, cols } => {
+            QmLinearAlgebraError::NonSquareMatrix { rows, cols }
+        }
+    })?;
+    let s2_ab = renyi2_entropy(rho_ab, interner).map_err(|err| match err {
+        StateFunctionalError::StateNotSquare { rows, cols } => {
+            QmLinearAlgebraError::NonSquareMatrix { rows, cols }
+        }
+    })?;
+    Ok(simplify_expr(Expr::add(vec![s2_a, s2_b, Expr::neg(s2_ab)])))
+}
+
+/// Compute the Bloch-vector components `[x, y, z]` for a `2x2` density matrix.
+pub fn bloch_vector(rho: &[Vec<Expr>]) -> Result<[Expr; 3], QubitStateError> {
+    let (rows, cols) =
+        matrix_shape(rho).unwrap_or((rho.len(), rho.first().map(|row| row.len()).unwrap_or(0)));
+    if rows != 2 || cols != 2 {
+        return Err(QubitStateError::NotTwoByTwo { rows, cols });
+    }
+    let interner = ax_ir::Interner::new();
+    let sigma_x = pauli_x(&interner);
+    let sigma_y = pauli_y(&interner);
+    let sigma_z = pauli_z(&interner);
+    let x = expectation_value(&sigma_x, rho)
+        .map_err(|_| QubitStateError::NotTwoByTwo { rows, cols })?;
+    let y = expectation_value(&sigma_y, rho)
+        .map_err(|_| QubitStateError::NotTwoByTwo { rows, cols })?;
+    let z = expectation_value(&sigma_z, rho)
+        .map_err(|_| QubitStateError::NotTwoByTwo { rows, cols })?;
+    Ok([x, y, z])
+}
+
+/// Construct the qubit density matrix `1/2 (I + x σ_x + y σ_y + z σ_z)` from a Bloch vector.
+pub fn qubit_density_from_bloch(r: [Expr; 3]) -> Vec<Vec<Expr>> {
+    let interner = ax_ir::Interner::new();
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let identity = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::one()],
+    ];
+    let sigma_x = pauli_x(&interner);
+    let sigma_y = pauli_y(&interner);
+    let sigma_z = pauli_z(&interner);
+    let x_term = ax_linalg::mat_scale(&r[0], &sigma_x);
+    let y_term = ax_linalg::mat_scale(&r[1], &sigma_y);
+    let z_term = ax_linalg::mat_scale(&r[2], &sigma_z);
+    let sum = ax_linalg::mat_add(
+        &ax_linalg::mat_add(&identity, &x_term),
+        &ax_linalg::mat_add(&y_term, &z_term),
+    );
+    simplify_matrix(ax_linalg::mat_scale(&half, &sum))
 }
 
 /// Compute the normalized post-measurement state `ρ_i = P_i ρ P_i / p_i`.

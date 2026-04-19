@@ -75,3 +75,60 @@ fn solve_linear_system_2x2() {
     assert_eq!(x_val, Some(&Expr::Int(3.into())), "x should be 3");
     assert_eq!(y_val, Some(&Expr::Int(2.into())), "y should be 2");
 }
+
+#[test]
+fn lindblad_steady_state_amplitude_damping_ground_state() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let jump_ops = vec![vec![
+        vec![Expr::zero(), Expr::one()],
+        vec![Expr::zero(), Expr::zero()],
+    ]];
+    let steady = lindblad_steady_state_linear(&h, &jump_ops, &interner).unwrap();
+    assert_eq!(
+        steady,
+        vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero()],
+        ]
+    );
+}
+
+#[test]
+fn lindblad_steady_state_rejects_dimension_mismatch() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let jump_ops = vec![vec![
+        vec![Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero()],
+    ]];
+    assert_eq!(
+        lindblad_steady_state_linear(&h, &jump_ops, &interner),
+        Err(LindbladSteadyStateError::DimensionMismatch {
+            expected: 2,
+            actual: 3,
+            which: "jump operator",
+        })
+    );
+}
+
+#[test]
+fn lindblad_steady_state_reports_underdetermined_zero_generator() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let jump_ops: Vec<Vec<Vec<Expr>>> = Vec::new();
+    assert_eq!(
+        lindblad_steady_state_linear(&h, &jump_ops, &interner),
+        Err(LindbladSteadyStateError::UnderdeterminedSteadyState)
+    );
+}

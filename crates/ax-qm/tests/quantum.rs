@@ -613,6 +613,157 @@ fn variance_rejects_dimension_mismatch() {
 }
 
 #[test]
+fn purity_pure_state_is_one() {
+    let rho0 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(purity(&rho0).unwrap(), Expr::one());
+}
+
+#[test]
+fn purity_maximally_mixed_qubit_is_one_half() {
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let rho_mixed = vec![vec![half.clone(), Expr::zero()], vec![Expr::zero(), half]];
+    assert_eq!(
+        purity(&rho_mixed).unwrap(),
+        Expr::Rational(BigRational::new(1.into(), 2.into()))
+    );
+}
+
+#[test]
+fn linear_entropy_pure_state_is_zero() {
+    let rho0 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(linear_entropy(&rho0).unwrap(), Expr::zero());
+}
+
+#[test]
+fn linear_entropy_maximally_mixed_qubit_is_one_half() {
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let rho_mixed = vec![vec![half.clone(), Expr::zero()], vec![Expr::zero(), half]];
+    assert_eq!(
+        linear_entropy(&rho_mixed).unwrap(),
+        Expr::Rational(BigRational::new(1.into(), 2.into()))
+    );
+}
+
+#[test]
+fn purity_rejects_nonsquare_matrix() {
+    let rho = vec![
+        vec![Expr::one(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(
+        purity(&rho),
+        Err(StateFunctionalError::StateNotSquare { rows: 2, cols: 3 })
+    );
+}
+
+#[test]
+fn renyi2_entropy_pure_state_is_neg_log_one() {
+    let interner = int();
+    let rho0 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let result = renyi2_entropy(&rho0, &interner).unwrap();
+    assert!(
+        result == Expr::zero()
+            || result == Expr::neg(Expr::Call(interner.get_or_intern("log"), vec![Expr::one()]))
+    );
+}
+
+#[test]
+fn renyi2_entropy_maximally_mixed_qubit_is_log_two() {
+    let interner = int();
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let rho_mixed = vec![vec![half.clone(), Expr::zero()], vec![Expr::zero(), half]];
+    let result = renyi2_entropy(&rho_mixed, &interner).unwrap();
+    let rendered = pretty_print(&result, &interner);
+    assert!(rendered == "log(2)" || rendered == "-log(1/2)" || rendered == "-1*log(1/2)");
+}
+
+#[test]
+fn renyi2_mutual_information_bell_state_is_log_four() {
+    let interner = int();
+    let sqrt2_inv = Expr::pow(
+        Expr::Int(2.into()),
+        Expr::Rational(BigRational::new((-1).into(), 2.into())),
+    );
+    let bell = vec![
+        Expr::mul(vec![sqrt2_inv.clone()]),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::mul(vec![sqrt2_inv]),
+    ];
+    let rho = density_matrix(&bell);
+    let result = renyi2_mutual_information_bipartite(&rho, 2, 2, &interner).unwrap();
+    let rendered = pretty_print(&result, &interner);
+    assert!(
+        rendered == "log(4)"
+            || rendered == "2*log(2)"
+            || rendered == "log(2) + log(2)"
+            || rendered == "-log(1/2) + -log(1/2)"
+            || rendered == "-1*log(1/2) + -1*log(1/2)"
+            || rendered == "log(1) + -2*log(1/2)",
+        "got {rendered}"
+    );
+}
+
+#[test]
+fn bloch_vector_zero_state_is_001() {
+    let rho0 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(
+        bloch_vector(&rho0).unwrap(),
+        [Expr::zero(), Expr::zero(), Expr::one()]
+    );
+}
+
+#[test]
+fn bloch_vector_plus_state_is_100() {
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let rho_plus = vec![
+        vec![half.clone(), half.clone()],
+        vec![half.clone(), half.clone()],
+    ];
+    assert_eq!(
+        bloch_vector(&rho_plus).unwrap(),
+        [Expr::one(), Expr::zero(), Expr::zero()]
+    );
+}
+
+#[test]
+fn qubit_density_from_bloch_z_axis_is_zero_state() {
+    let rho = qubit_density_from_bloch([Expr::zero(), Expr::zero(), Expr::one()]);
+    assert_eq!(
+        rho,
+        vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero()],
+        ]
+    );
+}
+
+#[test]
+fn bloch_vector_rejects_non_qubit_matrix() {
+    let rho = vec![
+        vec![Expr::one(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(
+        bloch_vector(&rho),
+        Err(QubitStateError::NotTwoByTwo { rows: 3, cols: 3 })
+    );
+}
+
+#[test]
 fn post_measurement_state_of_certain_outcome_is_unchanged() {
     let rho = vec![
         vec![Expr::one(), Expr::zero()],

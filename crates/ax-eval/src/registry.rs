@@ -1837,6 +1837,48 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "variance(pauli_z(), density_matrix([1, 0]))",
         ),
         b(
+            "purity",
+            "quantum",
+            "purity(rho)",
+            "Purity Tr(rho^2) of a finite-dimensional density matrix.",
+            "purity(density_matrix([1, 0]))",
+        ),
+        b(
+            "linear_entropy",
+            "quantum",
+            "linear_entropy(rho)",
+            "Linear entropy 1 - Tr(rho^2) of a finite-dimensional density matrix.",
+            "linear_entropy([[1/2,0],[0,1/2]])",
+        ),
+        b(
+            "renyi2_entropy",
+            "quantum",
+            "renyi2_entropy(rho)",
+            "Renyi-2 entropy -log(Tr(rho^2)) of a finite-dimensional density matrix.",
+            "renyi2_entropy([[1/2,0],[0,1/2]])",
+        ),
+        b(
+            "renyi2_mutual_information",
+            "quantum",
+            "renyi2_mutual_information(rho_ab, dim_a, dim_b)",
+            "Bipartite Renyi-2 mutual information S2(rho_A) + S2(rho_B) - S2(rho_AB).",
+            "renyi2_mutual_information(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2)",
+        ),
+        b(
+            "bloch_vector",
+            "quantum",
+            "bloch_vector(rho)",
+            "Bloch-vector components [x, y, z] for a 2x2 density matrix.",
+            "bloch_vector([[1,0],[0,0]])",
+        ),
+        b(
+            "qubit_density_from_bloch",
+            "quantum",
+            "qubit_density_from_bloch([x, y, z])",
+            "Qubit density matrix 1/2 (I + x sigma_x + y sigma_y + z sigma_z) from a Bloch vector.",
+            "qubit_density_from_bloch([0, 0, 1])",
+        ),
+        b(
             "post_measurement_state",
             "quantum",
             "post_measurement_state(projector, rho, outcome_index)",
@@ -1877,6 +1919,13 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "lindblad_rk4_step(H, rho, jumps, dt)",
             "Take one classical RK4 step for finite-dimensional Lindblad evolution.",
             "lindblad_rk4_step([[1,0],[0,2]], [[1,0],[0,0]], [], 1/10)",
+        ),
+        b(
+            "lindblad_steady_state",
+            "quantum",
+            "lindblad_steady_state(H, jumps)",
+            "Solve lindblad_rhs(H, rho, jumps) = 0 together with Tr(rho) = 1 for a finite-dimensional steady state.",
+            "lindblad_steady_state([[0,0],[0,0]], [[[0,1],[0,0]]])",
         ),
         b(
             "creation",
@@ -6961,6 +7010,79 @@ fn handle_variance_qm(
     expr_or_struct_response_named(value, "variance", state)
 }
 
+fn handle_purity_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let value =
+        ax_qm::purity(&rho).map_err(|_| "purity expects a square density matrix".to_string())?;
+    expr_or_struct_response_named(value, "purity", state)
+}
+
+fn handle_linear_entropy_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let value = ax_qm::linear_entropy(&rho)
+        .map_err(|_| "linear_entropy expects a square density matrix".to_string())?;
+    expr_or_struct_response_named(value, "linear_entropy", state)
+}
+
+fn handle_renyi2_entropy_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let value = ax_qm::renyi2_entropy(&rho, state.interner())
+        .map_err(|_| "renyi2_entropy expects a square density matrix".to_string())?;
+    expr_or_struct_response_named(value, "renyi2_entropy", state)
+}
+
+fn handle_renyi2_mutual_information_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho_ab = matrix_from_id(args, 0, "rho_ab", state)?;
+    let dim_a = int_arg(args, 1, "dim_a").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_a' must be non-negative".to_string())
+    })?;
+    let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
+    })?;
+    let value = ax_qm::renyi2_mutual_information_bipartite(&rho_ab, dim_a, dim_b, state.interner())
+        .map_err(|_| {
+            "renyi2_mutual_information matrix dimension does not match dim_a * dim_b".to_string()
+        })?;
+    expr_or_struct_response_named(value, "renyi2_mutual_information", state)
+}
+
+fn handle_bloch_vector_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let value = ax_qm::bloch_vector(&rho)
+        .map_err(|_| "bloch_vector expects a 2x2 density matrix".to_string())?;
+    list_response(value.into_iter().collect(), state)
+}
+
+fn handle_qubit_density_from_bloch_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let vector_expr = expr_from_id(args, 0, "r", state)?;
+    let ax_ir::Expr::List(items) = vector_expr else {
+        return Err("qubit_density_from_bloch expects a length-3 list".to_string());
+    };
+    let [x, y, z] = items.as_slice() else {
+        return Err("qubit_density_from_bloch expects a length-3 list".to_string());
+    };
+    let matrix = ax_qm::qubit_density_from_bloch([x.clone(), y.clone(), z.clone()]);
+    matrix_response(matrix, state)
+}
+
 fn handle_post_measurement_state_qm(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -7081,6 +7203,33 @@ fn handle_lindblad_rk4_step_qm(
                 }
                 ax_ode::QuantumOdeError::Lindblad(_) => {
                     "lindblad step expects square operators with matching dimensions".to_string()
+                }
+            }
+        })?;
+    matrix_response(result, state)
+}
+
+fn handle_lindblad_steady_state_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let jumps_expr = expr_from_id(args, 1, "jumps", state)?;
+    let jump_ops = expr_to_3d(&jumps_expr)
+        .ok_or_else(|| "argument 'jumps' must reference a rank-3 nested list".to_string())?;
+    let result =
+        ax_solve::lindblad_steady_state_linear(&h, &jump_ops, state.interner()).map_err(|err| {
+            match err {
+                ax_solve::LindbladSteadyStateError::HamiltonianNotSquare { .. }
+                | ax_solve::LindbladSteadyStateError::JumpOperatorNotSquare { .. }
+                | ax_solve::LindbladSteadyStateError::DimensionMismatch { .. } => {
+                    "lindblad_steady_state expects a square Hamiltonian and square jump operators of matching dimension".to_string()
+                }
+                ax_solve::LindbladSteadyStateError::UnderdeterminedSteadyState => {
+                    "lindblad_steady_state generator has non-unique steady states".to_string()
+                }
+                ax_solve::LindbladSteadyStateError::InconsistentSteadyStateSystem => {
+                    "lindblad_steady_state system is inconsistent".to_string()
                 }
             }
         })?;
@@ -10267,12 +10416,19 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("measurement_probabilities", "Projective-measurement probabilities for a density matrix.", ps(vec![pdef("projectors", ParamType::ExprId, true, "Stored rank-3 projector-list expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_measurement_probabilities_qm),
         centry("expectation_value", "Expectation value Tr(rho * operator) for a density matrix.", ps(vec![pdef("operator", ParamType::ExprId, true, "Stored observable matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_expectation_value_qm),
         centry("variance", "Observable variance for a density matrix.", ps(vec![pdef("operator", ParamType::ExprId, true, "Stored observable matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_variance_qm),
+        centry("purity", "Purity Tr(rho^2) for a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_purity_qm),
+        centry("linear_entropy", "Linear entropy 1 - Tr(rho^2) for a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_linear_entropy_qm),
+        centry("renyi2_entropy", "Renyi-2 entropy -log(Tr(rho^2)) for a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_renyi2_entropy_qm),
+        centry("renyi2_mutual_information", "Bipartite Renyi-2 mutual information from a density matrix.", ps(vec![pdef("rho_ab", ParamType::ExprId, true, "Stored bipartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_renyi2_mutual_information_qm),
+        centry("bloch_vector", "Bloch-vector components for a 2x2 density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_bloch_vector_qm),
+        centry("qubit_density_from_bloch", "Qubit density matrix from a Bloch vector.", ps(vec![pdef("r", ParamType::ExprId, true, "Stored length-3 list expression id.")]), handle_qubit_density_from_bloch_qm),
         centry("post_measurement_state", "Normalized post-measurement state for an outcome projector.", ps(vec![pdef("projector", ParamType::ExprId, true, "Stored projector matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("outcome_index", ParamType::Integer, true, "Outcome label used for diagnostics.")]), handle_post_measurement_state_qm),
         centry("identity_channel", "Construct a finite-dimensional identity Kraus channel.", ps(vec![pdef("dim", ParamType::Integer, true, "Hilbert-space dimension.")]), handle_identity_channel_qm),
         centry("apply_channel", "Apply a Kraus channel to a density matrix.", ps(vec![pdef("kraus", ParamType::ExprId, true, "Stored rank-3 Kraus-list expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_apply_channel_qm),
         centry("lindblad_rhs", "Construct the finite-dimensional Lindblad right-hand side.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindblad_rhs_qm),
         centry("lindblad_euler_step", "Take one explicit Euler step for finite-dimensional Lindblad evolution.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("dt", ParamType::ExprId, true, "Stored scalar timestep expression id.")]), handle_lindblad_euler_step_qm),
         centry("lindblad_rk4_step", "Take one classical RK4 step for finite-dimensional Lindblad evolution.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("dt", ParamType::ExprId, true, "Stored scalar timestep expression id.")]), handle_lindblad_rk4_step_qm),
+        centry("lindblad_steady_state", "Solve for a finite-dimensional Lindblad steady state.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindblad_steady_state_qm),
         centry("normal_order", "Normal-order creation and annihilation operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_normal_order_qm),
         centry("wick_expand", "Apply Wick expansion.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_wick_expand_qm),
         centry("wick", "Apply Wick expansion.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_wick_expand_qm),
