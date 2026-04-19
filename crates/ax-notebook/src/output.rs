@@ -54,10 +54,13 @@ impl MimeBundle {
     }
 
     pub fn from_expr(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Self {
-        if let Some(bundle) = qm_mime_bundle(expr, interner) {
+        if let Some(bundle) = cpt_mime_bundle(expr, interner) {
             return bundle;
         }
-        if let Some(bundle) = cpt_mime_bundle(expr, interner) {
+        if let Some(bundle) = qm_density_summary_bundle(expr, interner) {
+            return bundle;
+        }
+        if let Some(bundle) = qm_mime_bundle(expr, interner) {
             return bundle;
         }
         Self::plain(ax_render::to_unicode(expr, interner))
@@ -183,6 +186,59 @@ pub fn qm_mime_bundle(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Option<
     Some(MimeBundle::plain(unicode).with_latex(latex).with_json(json))
 }
 
+pub fn qm_density_summary_bundle(
+    expr: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> Option<MimeBundle> {
+    let ax_ir::Expr::Matrix(rows) = expr else {
+        return None;
+    };
+    let dimension = rows.len();
+    if dimension == 0 || rows.iter().any(|row| row.len() != dimension) {
+        return None;
+    }
+
+    let trace = ax_render::to_unicode(
+        &ax_ir::Expr::add(
+            rows.iter()
+                .enumerate()
+                .filter_map(|(i, row)| row.get(i).cloned())
+                .collect(),
+        ),
+        interner,
+    );
+    let purity = ax_render::to_unicode(&ax_qm::purity(rows).ok()?, interner);
+    let linear_entropy = ax_render::to_unicode(&ax_qm::linear_entropy(rows).ok()?, interner);
+    let bloch_vector = ax_qm::bloch_vector(rows).ok().map(|vector| {
+        vector.map(|component| ax_render::to_unicode(&component, interner))
+    });
+    let is_qubit = bloch_vector.is_some();
+
+    let packet = ax_ai_proto::QuantumDensitySummaryPacket {
+        dimension,
+        trace: trace.clone(),
+        purity: purity.clone(),
+        linear_entropy: linear_entropy.clone(),
+        is_qubit,
+        bloch_vector: bloch_vector.clone(),
+    };
+    let json = serde_json::to_value(&packet).ok()?;
+
+    let mut markdown = format!(
+        "| Quantity | Value |\n| --- | --- |\n| Dimension | {} |\n| Trace | {} |\n| Purity | {} |\n| Linear entropy | {} |",
+        dimension, trace, purity, linear_entropy
+    );
+    if let Some([x, y, z]) = bloch_vector {
+        markdown.push_str(&format!("\n| Bloch vector | [{x}, {y}, {z}] |"));
+    }
+
+    Some(
+        MimeBundle::plain(ax_render::to_unicode(expr, interner))
+            .with_markdown(markdown)
+            .with_json(json),
+    )
+}
+
 pub fn cpt_mime_bundle(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> Option<MimeBundle> {
     if ax_render::is_labelled_equation_list(expr) {
         return Some(
@@ -263,5 +319,24 @@ mod tests {
         let json = bundle.application_json().expect("json mime");
         let encoded = serde_json::to_string(json).expect("json encoding");
         assert!(encoded.contains("\"object_kind\":\"ket\""), "got {encoded}");
+    }
+
+    #[test]
+    fn qm_density_summary_bundle_contains_markdown_and_json() {
+        let expr = ax_ir::Expr::Matrix(vec![
+            vec![ax_ir::Expr::one(), ax_ir::Expr::zero()],
+            vec![ax_ir::Expr::zero(), ax_ir::Expr::zero()],
+        ]);
+        let interner = ax_ir::Interner::new();
+
+        let bundle = qm_density_summary_bundle(&expr, &interner).expect("density summary bundle");
+        let data = bundle.to_jupyter_data();
+        let markdown = data["text/markdown"].as_str().expect("markdown");
+        let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
+
+        assert!(markdown.contains("Purity"), "{markdown}");
+        assert!(markdown.contains("1"), "{markdown}");
+        assert!(json.contains("\"dimension\":2"), "{json}");
+        assert!(json.contains("\"is_qubit\":true"), "{json}");
     }
 }

@@ -3347,6 +3347,26 @@ mod tests {
     }
 
     #[test]
+    fn qm_density_summary_execute_result_contains_application_json() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(Channel::Shell, execute_frames("[[1,0],[0,0]]"), "");
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+
+        let markdown = data["text/markdown"].as_str().expect("markdown");
+        let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
+
+        assert!(markdown.contains("Purity"), "{markdown}");
+        assert!(markdown.contains("1"), "{markdown}");
+        assert!(json.contains("\"dimension\":2"), "{json}");
+        assert!(json.contains("\"is_qubit\":true"), "{json}");
+    }
+
+    #[test]
     fn cancellation_requested_before_evaluation_interrupts_without_committing_state() {
         let mut runtime = KernelRuntime::new(Vec::new());
         let token = ax_ir::CancellationToken::new();

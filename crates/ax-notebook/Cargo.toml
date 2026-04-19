@@ -16,6 +16,7 @@ ax-eval = { path = "../ax-eval" }
 ax-render = { path = "../ax-render" }
 ax-plot = { path = "../ax-plot" }
 ax-context = { path = "../ax-context" }
+ax-qm = { path = "../ax-qm" }
 lasso = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

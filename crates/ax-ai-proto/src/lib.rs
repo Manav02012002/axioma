@@ -145,6 +145,16 @@ pub struct QuantumChannelPacket {
     pub trace_preserving: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QuantumDensitySummaryPacket {
+    pub dimension: usize,
+    pub trace: String,
+    pub purity: String,
+    pub linear_entropy: String,
+    pub is_qubit: bool,
+    pub bloch_vector: Option<[String; 3]>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +271,22 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         let reparsed: QuantumChannelPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_density_summary_packet_round_trips() {
+        let payload = QuantumDensitySummaryPacket {
+            dimension: 2,
+            trace: "1".to_string(),
+            purity: "1".to_string(),
+            linear_entropy: "0".to_string(),
+            is_qubit: true,
+            bloch_vector: Some(["0".to_string(), "0".to_string(), "1".to_string()]),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumDensitySummaryPacket = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed, payload);
     }
 }

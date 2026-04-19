@@ -389,6 +389,7 @@ dependencies = [
  "ax-eval",
  "ax-ir",
  "ax-plot",
+ "ax-qm",
  "ax-render",
  "lasso",
  "pulldown-cmark",

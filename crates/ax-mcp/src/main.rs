@@ -303,6 +303,7 @@ fn tool_definitions() -> Vec<Value> {
             })
         })
         .collect::<Vec<_>>();
+    tools.extend(qm_tool_definitions());
     tools.push(symmetry_summary_tool_definition());
     tools.extend(cpt_tool_definitions());
     tools
@@ -333,6 +334,89 @@ fn initialize_result(transport: &str, port: u16) -> Value {
 
 fn tools_list_result() -> Value {
     json!({ "tools": tool_definitions() })
+}
+
+fn qm_tool_definitions() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "axioma_qm_density_summary",
+            "category": "quantum",
+            "description": "Summarize a stored density-matrix expression with trace, purity, and qubit diagnostics.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "expr": {
+                        "type": "string",
+                        "description": "Stored density-matrix expression id."
+                    }
+                },
+                "required": ["expr"]
+            }
+        }),
+        json!({
+            "name": "axioma_qm_partial_trace",
+            "category": "quantum",
+            "description": "Reduce a stored density matrix by tracing out one tensor factor.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "expr": {
+                        "type": "string",
+                        "description": "Stored density-matrix expression id."
+                    },
+                    "dims": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "description": "Tensor-factor dimensions in lexicographic product order."
+                    },
+                    "factor_index": {
+                        "type": "integer",
+                        "description": "Zero-based factor index to trace out."
+                    }
+                },
+                "required": ["expr", "dims", "factor_index"]
+            }
+        }),
+        json!({
+            "name": "axioma_qm_expectation_value",
+            "category": "quantum",
+            "description": "Compute an expectation value from stored operator and state expressions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "operator_expr": {
+                        "type": "string",
+                        "description": "Stored observable matrix expression id."
+                    },
+                    "state_expr": {
+                        "type": "string",
+                        "description": "Stored density-matrix expression id."
+                    }
+                },
+                "required": ["operator_expr", "state_expr"]
+            }
+        }),
+        json!({
+            "name": "axioma_qm_lindblad_steady_state",
+            "category": "quantum",
+            "description": "Solve for a finite-dimensional Lindblad steady state from stored Hamiltonian and jump operators.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "hamiltonian_expr": {
+                        "type": "string",
+                        "description": "Stored Hamiltonian matrix expression id."
+                    },
+                    "jump_exprs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Stored jump-operator matrix expression ids."
+                    }
+                },
+                "required": ["hamiltonian_expr", "jump_exprs"]
+            }
+        }),
+    ]
 }
 
 fn symmetry_summary_tool_definition() -> Value {
@@ -672,12 +756,203 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
+fn stored_matrix_from_expression_id(
+    state: &McpState,
+    expr_id: &str,
+) -> Result<Vec<Vec<Expr>>, &'static str> {
+    match state.expressions.get(expr_id) {
+        Some(Expr::Matrix(rows)) => Ok(rows.clone()),
+        Some(_) => Err("stored expression is not a matrix"),
+        None => Err("expression id not found"),
+    }
+}
+
+fn stored_named_matrix_from_expression_id(
+    state: &McpState,
+    expr_id: &str,
+    not_found_message: &'static str,
+) -> Result<Vec<Vec<Expr>>, &'static str> {
+    match state.expressions.get(expr_id) {
+        Some(Expr::Matrix(rows)) => Ok(rows.clone()),
+        Some(_) => Err("stored expression is not a matrix"),
+        None => Err(not_found_message),
+    }
+}
+
+fn render_matrix_cell(state: &McpState, expr: &Expr) -> String {
+    match expr {
+        Expr::Int(value) => value.to_string(),
+        Expr::Rational(value) => {
+            if value.is_integer() {
+                value.to_integer().to_string()
+            } else {
+                format!("{}/{}", value.numer(), value.denom())
+            }
+        }
+        Expr::Neg(inner) => match inner.as_ref() {
+            Expr::Int(value) => format!("-{value}"),
+            Expr::Rational(value) if value.is_integer() => format!("-{}", value.to_integer()),
+            Expr::Rational(value) => format!("-{}/{}", value.numer(), value.denom()),
+            _ => state.render_unicode(expr),
+        },
+        _ => state.render_unicode(expr),
+    }
+}
+
+fn render_matrix_cells(state: &McpState, matrix: &[Vec<Expr>]) -> Vec<Vec<String>> {
+    matrix
+        .iter()
+        .map(|row| row.iter().map(|cell| render_matrix_cell(state, cell)).collect())
+        .collect()
+}
+
+fn parse_dims_argument(arguments: &Value) -> Result<Vec<usize>, &'static str> {
+    let Some(items) = arguments.get("dims").and_then(Value::as_array) else {
+        return Err("partial trace failed");
+    };
+    items.iter()
+        .map(|item| {
+            item.as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .ok_or("partial trace failed")
+        })
+        .collect()
+}
+
+fn handle_qm_density_summary(arguments: &Value, state: &McpState) -> Result<Value, &'static str> {
+    let expr_id = arguments
+        .get("expr")
+        .and_then(Value::as_str)
+        .ok_or("expression id not found")?;
+    let rho = stored_matrix_from_expression_id(state, expr_id)?;
+    let dimension = rho.len();
+    let trace = ax_eval::eval(
+        &Expr::add(
+            rho.iter()
+                .enumerate()
+                .filter_map(|(i, row)| row.get(i).cloned())
+                .collect(),
+        ),
+        &state.env,
+        &state.interner,
+    );
+    let purity = ax_qm::purity(&rho).map_err(|_| "stored expression is not a matrix")?;
+    let linear_entropy =
+        ax_qm::linear_entropy(&rho).map_err(|_| "stored expression is not a matrix")?;
+    let is_qubit = matches!(rho.as_slice(), [row_a, row_b] if row_a.len() == 2 && row_b.len() == 2);
+
+    let mut payload = json!({
+        "status": "ok",
+        "dimension": dimension,
+        "trace": state.render_unicode(&trace),
+        "purity": state.render_unicode(&purity),
+        "linear_entropy": state.render_unicode(&linear_entropy),
+        "is_qubit": is_qubit,
+    });
+
+    if is_qubit {
+        let bloch = ax_qm::bloch_vector(&rho).map_err(|_| "stored expression is not a matrix")?;
+        payload["bloch_vector"] = Value::Array(
+            bloch
+                .into_iter()
+                .map(|component| Value::String(state.render_unicode(&component)))
+                .collect(),
+        );
+    }
+
+    Ok(payload)
+}
+
+fn handle_qm_partial_trace(arguments: &Value, state: &McpState) -> Result<Value, &'static str> {
+    let expr_id = arguments
+        .get("expr")
+        .and_then(Value::as_str)
+        .ok_or("expression id not found")?;
+    let rho = stored_matrix_from_expression_id(state, expr_id)?;
+    let dims = parse_dims_argument(arguments)?;
+    let factor_index = arguments
+        .get("factor_index")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("partial trace failed")?;
+    let reduced =
+        ax_qm::try_partial_trace_factor(&rho, &dims, factor_index).map_err(|_| "partial trace failed")?;
+    let reduced_expr = Expr::Matrix(reduced.clone());
+    Ok(json!({
+        "status": "ok",
+        "matrix": render_matrix_cells(state, &reduced),
+        "unicode": state.render_unicode(&reduced_expr),
+        "latex": state.render_latex(&reduced_expr),
+    }))
+}
+
+fn handle_qm_expectation_value(arguments: &Value, state: &McpState) -> Result<Value, &'static str> {
+    let operator_expr = arguments
+        .get("operator_expr")
+        .and_then(Value::as_str)
+        .ok_or("expression id not found")?;
+    let state_expr = arguments
+        .get("state_expr")
+        .and_then(Value::as_str)
+        .ok_or("expression id not found")?;
+    let operator = stored_matrix_from_expression_id(state, operator_expr)?;
+    let rho = stored_matrix_from_expression_id(state, state_expr)?;
+    let value = ax_qm::expectation_value(&operator, &rho).map_err(|_| "expectation value failed")?;
+    let unicode = state.render_unicode(&value);
+    Ok(json!({
+        "status": "ok",
+        "value": unicode,
+        "unicode": state.render_unicode(&value),
+    }))
+}
+
+fn handle_qm_lindblad_steady_state(
+    arguments: &Value,
+    state: &McpState,
+) -> Result<Value, &'static str> {
+    let hamiltonian_expr = arguments
+        .get("hamiltonian_expr")
+        .and_then(Value::as_str)
+        .ok_or("hamiltonian expression id not found")?;
+    let h = stored_named_matrix_from_expression_id(
+        state,
+        hamiltonian_expr,
+        "hamiltonian expression id not found",
+    )?;
+
+    let jump_exprs = arguments
+        .get("jump_exprs")
+        .and_then(Value::as_array)
+        .ok_or("steady state solver failed")?;
+    let jump_ops = jump_exprs
+        .iter()
+        .map(|value| {
+            let expr_id = value.as_str().ok_or("jump expression id not found")?;
+            stored_named_matrix_from_expression_id(state, expr_id, "jump expression id not found")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let matrix = ax_solve::lindblad_steady_state_linear(&h, &jump_ops, &state.interner)
+        .map_err(|_| "steady state solver failed")?;
+    let matrix_expr = Expr::Matrix(matrix.clone());
+
+    Ok(json!({
+        "status": "ok",
+        "matrix": render_matrix_cells(state, &matrix),
+        "unicode": state.render_unicode(&matrix_expr),
+        "latex": state.render_latex(&matrix_expr),
+    }))
+}
+
 fn handle_tools_call_safe(
     state: &mut McpState,
     tool_name: &str,
     arguments: &Value,
     timeout_secs: u64,
 ) -> Value {
+    if let Some(result) = handle_qm_tool_call(state, tool_name, arguments) {
+        return result;
+    }
     if let Some(result) = handle_cpt_tool_call(state, tool_name, arguments) {
         return result;
     }
@@ -823,6 +1098,23 @@ fn handle_tools_call_safe(
     }
     state.deadline = None;
     response
+}
+
+fn handle_qm_tool_call(state: &McpState, tool_name: &str, arguments: &Value) -> Option<Value> {
+    let result = match tool_name {
+        "axioma_qm_density_summary" => handle_qm_density_summary(arguments, state),
+        "axioma_qm_partial_trace" => handle_qm_partial_trace(arguments, state),
+        "axioma_qm_expectation_value" => handle_qm_expectation_value(arguments, state),
+        "axioma_qm_lindblad_steady_state" => handle_qm_lindblad_steady_state(arguments, state),
+        _ => return None,
+    };
+    Some(match result {
+        Ok(value) => value,
+        Err(message) => json!({
+            "status": "error",
+            "message": message,
+        }),
+    })
 }
 
 fn eval_cpt_source(state: &mut McpState, source: &str) -> Result<Expr, String> {
@@ -1782,6 +2074,179 @@ mod tests {
                 .find(|tool| tool["name"] == name)
                 .unwrap_or_else(|| panic!("missing tool definition for {name}"));
             assert_eq!(tool["category"], "state", "{tool:?}");
+        }
+    }
+
+    #[test]
+    fn qm_density_summary_reports_purity_and_trace() {
+        let mut state = McpState::new();
+        let rho0 = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "[[1,0],[0,0]]"}),
+                5,
+            ),
+            "axioma_eval rho0",
+        );
+
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_qm_density_summary",
+            &json!({"expr": rho0["expr_id"].clone()}),
+            5,
+        );
+
+        assert_eq!(result["status"], "ok", "{result:?}");
+        assert!(result["trace"].as_str().unwrap_or("").contains("1"), "{result:?}");
+        assert!(
+            result["purity"].as_str().unwrap_or("").contains("1"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn qm_partial_trace_returns_reduced_qubit() {
+        let mut state = McpState::new();
+        let rho_bell = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "[[1/2,0,0,1/2],[0,0,0,0],[0,0,0,0],[1/2,0,0,1/2]]"}),
+                5,
+            ),
+            "axioma_eval rho_bell",
+        );
+
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_qm_partial_trace",
+            &json!({
+                "expr": rho_bell["expr_id"].clone(),
+                "dims": [2, 2],
+                "factor_index": 1
+            }),
+            5,
+        );
+
+        assert_eq!(result["status"], "ok", "{result:?}");
+        let matrix = result["matrix"].to_string();
+        assert!(matrix.contains("1/2"), "{result:?}");
+    }
+
+    #[test]
+    fn qm_expectation_value_reports_one_for_pauli_z_on_zero_state() {
+        let mut state = McpState::new();
+        let z = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "[[1,0],[0,-1]]"}),
+                5,
+            ),
+            "axioma_eval Z",
+        );
+        let rho0 = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "[[1,0],[0,0]]"}),
+                5,
+            ),
+            "axioma_eval rho0",
+        );
+
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_qm_expectation_value",
+            &json!({
+                "operator_expr": z["expr_id"].clone(),
+                "state_expr": rho0["expr_id"].clone()
+            }),
+            5,
+        );
+
+        assert_eq!(result["status"], "ok", "{result:?}");
+        assert!(result["value"].as_str().unwrap_or("").contains("1"), "{result:?}");
+    }
+
+    #[test]
+    fn qm_lindblad_steady_state_tool_returns_ground_state_for_amplitude_damping() {
+        let mut state = McpState::new();
+        let h = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "[[0,0],[0,0]]"}),
+                5,
+            ),
+            "axioma_eval H",
+        );
+        let l = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "[[0,1],[0,0]]"}),
+                5,
+            ),
+            "axioma_eval L",
+        );
+
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_qm_lindblad_steady_state",
+            &json!({
+                "hamiltonian_expr": h["expr_id"].clone(),
+                "jump_exprs": [l["expr_id"].clone()]
+            }),
+            5,
+        );
+
+        assert_eq!(result["status"], "ok", "{result:?}");
+        assert_eq!(result["matrix"], json!([["1", "0"], ["0", "0"]]), "{result:?}");
+    }
+
+    #[test]
+    fn qm_lindblad_steady_state_tool_reports_solver_failure_for_zero_generator() {
+        let mut state = McpState::new();
+        let h = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "[[0,0],[0,0]]"}),
+                5,
+            ),
+            "axioma_eval H",
+        );
+
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_qm_lindblad_steady_state",
+            &json!({
+                "hamiltonian_expr": h["expr_id"].clone(),
+                "jump_exprs": []
+            }),
+            5,
+        );
+
+        assert_eq!(result["status"], "error", "{result:?}");
+        assert_eq!(result["message"], "steady state solver failed", "{result:?}");
+    }
+
+    #[test]
+    fn qm_tools_are_categorized_as_quantum() {
+        let tools = tool_definitions();
+        for name in [
+            "axioma_qm_density_summary",
+            "axioma_qm_partial_trace",
+            "axioma_qm_expectation_value",
+            "axioma_qm_lindblad_steady_state",
+        ] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool["name"] == name)
+                .unwrap_or_else(|| panic!("missing tool definition for {name}"));
+            assert_eq!(tool["category"], "quantum", "{tool:?}");
         }
     }
 

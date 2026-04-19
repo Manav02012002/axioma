@@ -326,6 +326,25 @@ fn render_plot(
     svg
 }
 
+fn invalid_svg(message: &str, title: &str) -> String {
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">"#
+    );
+    svg.push_str(&format!(
+        r#"<rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="white"/>"#
+    ));
+    svg.push_str(&format!(
+        r##"<text x="400" y="40" text-anchor="middle" font-size="16" font-family="monospace" fill="#222">{}</text>"##,
+        escape_xml(title)
+    ));
+    svg.push_str(&format!(
+        r##"<text x="400" y="250" text-anchor="middle" font-size="18" font-family="monospace" fill="#b91c1c">{}</text>"##,
+        escape_xml(message)
+    ));
+    svg.push_str("</svg>");
+    svg
+}
+
 pub fn plot_2d(
     expr: &Expr,
     var: lasso::Spur,
@@ -400,6 +419,100 @@ pub fn plot_data(points: &[(f64, f64)], title: &str) -> String {
     svg
 }
 
+/// Render a simple SVG bar chart for probability or eigenvalue data.
+///
+/// The chart uses one bar per `values` entry, places the provided `labels` on
+/// the x-axis, and keeps the shared visual style used by the existing plot
+/// renderers in this crate. If the inputs have mismatched lengths, the returned
+/// SVG contains the text `invalid bar chart input`.
+pub fn probability_bar_chart_svg(labels: &[String], values: &[f64], title: &str) -> String {
+    if labels.len() != values.len() {
+        return invalid_svg("invalid bar chart input", title);
+    }
+
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500">"#
+    );
+    let y_max = values
+        .iter()
+        .copied()
+        .fold(1.0_f64, |acc, value| acc.max(value))
+        .max(0.0);
+    let y_min = values
+        .iter()
+        .copied()
+        .fold(0.0_f64, |acc, value| acc.min(value))
+        .min(0.0);
+    let (x_min, x_max, y_min, y_max) = compute_bounds(&[vec![(0.0, y_min), (1.0, y_max)]]);
+
+    append_axes(&mut svg, x_min, x_max, y_min, y_max);
+    svg.push_str(&format!(
+        r##"<text x="400" y="20" text-anchor="middle" font-size="16" font-family="monospace" fill="#222">{}</text>"##,
+        escape_xml(title)
+    ));
+
+    if values.is_empty() {
+        svg.push_str("</svg>");
+        return svg;
+    }
+
+    let plot_width = PLOT_RIGHT - PLOT_LEFT;
+    let slot_width = plot_width / values.len() as f64;
+    let bar_width = slot_width * 0.7;
+
+    for (idx, (label, value)) in labels.iter().zip(values.iter()).enumerate() {
+        let center_x = PLOT_LEFT + (idx as f64 + 0.5) * slot_width;
+        let x = center_x - bar_width / 2.0;
+        let (_, bar_top) = to_svg_coords(0.0, *value, x_min, x_max, y_min, y_max);
+        let (_, zero_y) = to_svg_coords(0.0, 0.0, x_min, x_max, y_min, y_max);
+        let y = bar_top.min(zero_y);
+        let height = (zero_y - bar_top).abs().max(1.0);
+        svg.push_str(&format!(
+            r##"<rect x="{x:.2}" y="{y:.2}" width="{bar_width:.2}" height="{height:.2}" fill="#2563eb" stroke="#1d4ed8" stroke-width="1"/>"##
+        ));
+        svg.push_str(&format!(
+            r##"<text x="{center_x:.2}" y="494" text-anchor="middle" font-size="12" fill="#555">{}</text>"##,
+            escape_xml(label)
+        ));
+    }
+
+    svg.push_str("</svg>");
+    svg
+}
+
+/// Render an SVG trajectory plot for expectation values sampled over time.
+///
+/// The output draws a single polyline through the provided `(times, values)`
+/// pairs, labels the horizontal axis as `t`, and uses `y_label` for the
+/// vertical axis caption. If the inputs are empty or have mismatched lengths,
+/// the returned SVG contains the text `invalid trajectory input`.
+pub fn expectation_trajectory_svg(
+    times: &[f64],
+    values: &[f64],
+    y_label: &str,
+    title: &str,
+) -> String {
+    if times.is_empty() || times.len() != values.len() {
+        return invalid_svg("invalid trajectory input", title);
+    }
+
+    let points = times
+        .iter()
+        .copied()
+        .zip(values.iter().copied())
+        .collect::<Vec<_>>();
+    let (x_min, x_max, y_min, y_max) = compute_bounds(std::slice::from_ref(&points));
+
+    let mut svg = render_plot(title, &[(&points, "#2563eb", title)], Some((x_min, x_max, y_min, y_max)));
+    let insert_at = svg.rfind("</svg>").unwrap_or(svg.len());
+    let labels = format!(
+        r##"<text x="420" y="494" text-anchor="middle" font-size="14" font-family="monospace" fill="#222">t</text><text x="20" y="245" text-anchor="middle" font-size="14" font-family="monospace" fill="#222" transform="rotate(-90 20 245)">{}</text>"##,
+        escape_xml(y_label)
+    );
+    svg.insert_str(insert_at, &labels);
+    svg
+}
+
 pub fn projector_trace_points(trace: &ax_trace::ProjectorBuildTrace) -> Vec<(String, usize)> {
     vec![
         ("row_generators".to_string(), trace.row_generator_count),
@@ -457,5 +570,38 @@ mod tests {
                 ("expanded_terms".to_string(), 4),
             ]
         );
+    }
+
+    #[test]
+    fn probability_bar_chart_svg_contains_svg_rects_and_labels() {
+        let svg = probability_bar_chart_svg(
+            &["0".to_string(), "1".to_string()],
+            &[0.75, 0.25],
+            "Probabilities",
+        );
+        assert!(svg.contains("<svg"), "{svg}");
+        assert!(svg.contains("<rect"), "{svg}");
+        assert!(svg.contains("0"), "{svg}");
+        assert!(svg.contains("1"), "{svg}");
+    }
+
+    #[test]
+    fn probability_bar_chart_svg_reports_invalid_input() {
+        let svg = probability_bar_chart_svg(&["0".to_string()], &[0.2, 0.8], "Invalid");
+        assert!(svg.contains("invalid bar chart input"), "{svg}");
+    }
+
+    #[test]
+    fn expectation_trajectory_svg_contains_polyline_and_axes() {
+        let svg = expectation_trajectory_svg(&[0.0, 1.0, 2.0], &[1.0, 0.5, 0.25], "⟨Z⟩", "Trajectory");
+        assert!(svg.contains("<polyline"), "{svg}");
+        assert!(svg.contains("t"), "{svg}");
+        assert!(svg.contains("⟨Z⟩"), "{svg}");
+    }
+
+    #[test]
+    fn expectation_trajectory_svg_reports_invalid_input() {
+        let svg = expectation_trajectory_svg(&[], &[], "y", "Invalid");
+        assert!(svg.contains("invalid trajectory input"), "{svg}");
     }
 }

@@ -226,6 +226,7 @@ dependencies = [
  "ax-eval",
  "ax-ir",
  "ax-plot",
+ "ax-qm",
  "ax-render",
  "lasso",
  "pulldown-cmark",
@@ -240,10 +241,12 @@ name = "ax-ode"
 version = "0.1.0"
 dependencies = [
  "ax-ir",
+ "ax-qm",
  "lasso",
  "num-bigint",
  "num-rational",
  "num-traits",
+ "thiserror",
 ]
 
 [[package]]
@@ -333,11 +336,13 @@ name = "ax-solve"
 version = "0.1.0"
 dependencies = [
  "ax-ir",
+ "ax-qm",
  "lasso",
  "num-bigint",
  "num-integer",
  "num-rational",
  "num-traits",
+ "thiserror",
 ]
 
 [[package]]
@@ -373,7 +378,6 @@ dependencies = [
  "ax-forms",
  "ax-ir",
  "ax-linalg",
- "ax-ode",
  "ax-perm",
  "ax-trace",
  "ax-young",
