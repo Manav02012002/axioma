@@ -354,3 +354,24 @@ fn renders_multiplicity_basis_trace_lines() {
     assert!(rendered.contains("left_basis="));
     assert!(rendered.contains("right_basis="));
 }
+
+#[test]
+fn render_eigenvalue_list_unicode_formats_lists() {
+    let interner = int();
+    let values = vec![
+        Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
+        Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
+    ];
+    assert_eq!(render_eigenvalue_list_unicode(&values, &interner), "[½, ½]");
+}
+
+#[test]
+fn render_eigenvalue_list_latex_formats_lists() {
+    let interner = int();
+    let values = vec![
+        Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
+        Expr::Rational(num_rational::BigRational::new(1.into(), 2.into())),
+    ];
+    let rendered = render_eigenvalue_list_latex(&values, &interner);
+    assert_eq!(rendered, "\\left[\\frac{1}{2}, \\frac{1}{2}\\right]");
+}

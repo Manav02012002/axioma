@@ -155,6 +155,30 @@ pub struct QuantumDensitySummaryPacket {
     pub bloch_vector: Option<[String; 3]>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumEntropyPacket {
+    pub kind: String,
+    pub value_unicode: String,
+    pub value_latex: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumEntanglementPacket {
+    pub spectrum: Vec<String>,
+    pub negativity: String,
+    pub logarithmic_negativity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumSpectralSummaryPacket {
+    pub dimension: usize,
+    pub eigenvalues: Vec<String>,
+    pub entropy: Option<String>,
+    pub renyi2_entropy: Option<String>,
+    pub negativity: Option<String>,
+    pub logarithmic_negativity: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +241,32 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         let reparsed: ParityReportPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_entropy_packet_round_trips() {
+        let payload = QuantumEntropyPacket {
+            kind: "von_neumann_entropy".to_string(),
+            value_unicode: "log(2)".to_string(),
+            value_latex: "\\log\\left(2\\right)".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumEntropyPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_entanglement_packet_round_trips() {
+        let payload = QuantumEntanglementPacket {
+            spectrum: vec!["1/2".to_string(), "1/2".to_string(), "-1/2".to_string()],
+            negativity: "1/2".to_string(),
+            logarithmic_negativity: "log(2)".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumEntanglementPacket = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed, payload);
     }
 
@@ -287,6 +337,22 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         let reparsed: QuantumDensitySummaryPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_spectral_summary_packet_round_trips() {
+        let payload = QuantumSpectralSummaryPacket {
+            dimension: 2,
+            eigenvalues: vec!["1/2".to_string(), "1/2".to_string()],
+            entropy: Some("log(2)".to_string()),
+            renyi2_entropy: Some("log(2)".to_string()),
+            negativity: None,
+            logarithmic_negativity: None,
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumSpectralSummaryPacket = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed, payload);
     }
 }

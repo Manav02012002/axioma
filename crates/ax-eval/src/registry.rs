@@ -1648,6 +1648,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "eigenvalues([[1,0],[0,2]])",
         ),
         b(
+            "hermitian_eigenvalues",
+            "quantum",
+            "hermitian_eigenvalues(matrix)",
+            "Exact small Hermitian eigenvalues for supported 2x2 and diagonal 3x3 matrices.",
+            "hermitian_eigenvalues(pauli_z())",
+        ),
+        b(
+            "hermitian_eigenprojectors",
+            "quantum",
+            "hermitian_eigenprojectors(matrix)",
+            "Exact small Hermitian spectral projectors for supported nondegenerate 2x2 and diagonal 3x3 matrices.",
+            "hermitian_eigenprojectors(pauli_z())",
+        ),
+        b(
             "matmul",
             "linear-algebra",
             "matmul(a, b)",
@@ -1858,11 +1872,81 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "renyi2_entropy([[1/2,0],[0,1/2]])",
         ),
         b(
+            "renyi2_entropy_factor",
+            "quantum",
+            "renyi2_entropy_factor(rho, dims, kept_factor)",
+            "Renyi-2 entropy of the reduced state obtained by keeping one tensor factor and tracing out the rest.",
+            "renyi2_entropy_factor(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), [2, 2], 0)",
+        ),
+        b(
+            "von_neumann_entropy",
+            "quantum",
+            "von_neumann_entropy(rho)",
+            "Von Neumann entropy -Tr(rho log rho) of a supported finite-dimensional Hermitian density matrix.",
+            "von_neumann_entropy([[1/2,0],[0,1/2]])",
+        ),
+        b(
+            "mutual_information",
+            "quantum",
+            "mutual_information(rho_ab, dim_a, dim_b)",
+            "Bipartite von Neumann mutual information S(rho_A) + S(rho_B) - S(rho_AB).",
+            "mutual_information(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2)",
+        ),
+        b(
+            "conditional_entropy",
+            "quantum",
+            "conditional_entropy(rho_ab, dim_a, dim_b)",
+            "Bipartite conditional entropy S(B|A) = S(rho_AB) - S(rho_A).",
+            "conditional_entropy(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2)",
+        ),
+        b(
+            "participation_ratio",
+            "quantum",
+            "participation_ratio(rho)",
+            "Participation ratio 1 / Tr(rho^2) of a finite-dimensional density matrix.",
+            "participation_ratio([[1/2,0],[0,1/2]])",
+        ),
+        b(
+            "entanglement_spectrum",
+            "quantum",
+            "entanglement_spectrum(state_or_rho, dim_a, dim_b)",
+            "Bipartite entanglement spectrum for a pure-state vector or bipartite density matrix, keeping subsystem A.",
+            "entanglement_spectrum([1/sqrt(2), 0, 0, 1/sqrt(2)], 2, 2)",
+        ),
+        b(
+            "schmidt_coefficients",
+            "quantum",
+            "schmidt_coefficients(state, dim_a, dim_b)",
+            "Schmidt coefficients of a bipartite pure-state vector.",
+            "schmidt_coefficients([1/sqrt(2), 0, 0, 1/sqrt(2)], 2, 2)",
+        ),
+        b(
+            "negativity",
+            "quantum",
+            "negativity(rho_ab, dim_a, dim_b)",
+            "Bipartite negativity from the supported partial-transpose spectrum.",
+            "negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2)",
+        ),
+        b(
+            "logarithmic_negativity",
+            "quantum",
+            "logarithmic_negativity(rho_ab, dim_a, dim_b)",
+            "Bipartite logarithmic negativity log(1 + 2 N(rho)).",
+            "logarithmic_negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2)",
+        ),
+        b(
             "renyi2_mutual_information",
             "quantum",
             "renyi2_mutual_information(rho_ab, dim_a, dim_b)",
             "Bipartite Renyi-2 mutual information S2(rho_A) + S2(rho_B) - S2(rho_AB).",
             "renyi2_mutual_information(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2)",
+        ),
+        b(
+            "renyi2_tripartite_information",
+            "quantum",
+            "renyi2_tripartite_information(rho, dim_a, dim_b, dim_c)",
+            "Tripartite Renyi-2 information S2(A) + S2(B) + S2(C) - S2(AB) - S2(AC) - S2(BC) + S2(ABC).",
+            "renyi2_tripartite_information(density([1, 0, 0, 0, 0, 0, 0, 0]), 2, 2, 2)",
         ),
         b(
             "bloch_vector",
@@ -2592,6 +2676,10 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("partial_trace_factor", "qm", "try_partial_trace_factor(rho: &[Vec<Expr>], factor_dims: &[usize], traced_factor: usize) -> Result<Vec<Vec<Expr>>, CompositeSpaceError>", "Trace out one factor from a general finite-dimensional tensor-product space while preserving the order of the remaining factors.", "rho must be square with dimension equal to the product of factor_dims, and traced_factor must be a valid factor index.", "partial_trace_factor(rho, [2, 2], 1)"),
         a("partial_transpose_factor", "qm", "try_partial_transpose_factor(rho: &[Vec<Expr>], factor_dims: &[usize], transposed_factor: usize) -> Result<Vec<Vec<Expr>>, CompositeSpaceError>", "Partially transpose one subsystem by swapping the chosen factor's bra and ket indices in lexicographic tensor-product order.", "rho must be square with dimension equal to the product of factor_dims, and transposed_factor must be a valid factor index.", "partial_transpose_factor(rho, [2, 2], 1)"),
         a("permute_subsystems", "qm", "try_permute_subsystems(rho: &[Vec<Expr>], factor_dims: &[usize], permutation: &[usize]) -> Result<Vec<Vec<Expr>>, CompositeSpaceError>", "Permute subsystem order by exact basis relabeling of both row and column tensor-product indices.", "rho must be square with dimension equal to the product of factor_dims, and permutation must contain each factor index exactly once.", "permute_subsystems(rho, [2, 2], [1, 0])"),
+        a("renyi2_entropy_factor", "qm", "renyi2_entropy_factor(rho: &[Vec<Expr>], factor_dims: &[usize], kept_factor: usize, interner: &Interner) -> Result<Expr, CompositeSpaceError>", "Compute the Renyi-2 entropy of the reduced state obtained by keeping one tensor factor and tracing out the rest.", "rho must be square with dimension equal to the product of factor_dims, and kept_factor must be a valid factor index.", "renyi2_entropy_factor(rho, [2, 2], 0)"),
+        a("von_neumann_mutual_information_bipartite", "qm", "von_neumann_mutual_information_bipartite(rho_ab: &[Vec<Expr>], dim_a: usize, dim_b: usize, interner: &Interner) -> Result<Expr, EntropyError>", "Compute bipartite von Neumann mutual information S(rho_A) + S(rho_B) - S(rho_AB).", "rho_ab must be a supported Hermitian bipartite density matrix of dimension dim_a * dim_b.", "mutual_information(rho, 2, 2)"),
+        a("conditional_entropy_b_given_a", "qm", "conditional_entropy_b_given_a(rho_ab: &[Vec<Expr>], dim_a: usize, dim_b: usize, interner: &Interner) -> Result<Expr, EntropyError>", "Compute bipartite conditional entropy S(B|A) = S(rho_AB) - S(rho_A).", "rho_ab must be a supported Hermitian bipartite density matrix of dimension dim_a * dim_b.", "conditional_entropy(rho, 2, 2)"),
+        a("renyi2_tripartite_information", "qm", "renyi2_tripartite_information(rho_abc: &[Vec<Expr>], dims: [usize; 3], interner: &Interner) -> Result<Expr, CompositeSpaceError>", "Compute tripartite Renyi-2 information S2(A) + S2(B) + S2(C) - S2(AB) - S2(AC) - S2(BC) + S2(ABC).", "rho_abc must be a square density matrix of dimension dim_a * dim_b * dim_c.", "renyi2_tripartite_information(rho, 2, 2, 2)"),
         a("expectation_value", "qm", "expectation_value(operator: &[Vec<Expr>], rho: &[Vec<Expr>]) -> Result<Expr, ObservableError>", "Compute the observable expectation value Tr(rho * operator) for a finite-dimensional density matrix.", "Both operator and rho must be square matrices of the same dimension.", "expectation_value(pauli_z(), density_matrix([1, 0]))"),
         a("variance", "qm", "variance(operator: &[Vec<Expr>], rho: &[Vec<Expr>]) -> Result<Expr, ObservableError>", "Compute the observable variance Tr(rho * operator^2) - Tr(rho * operator)^2 for a finite-dimensional density matrix.", "Both operator and rho must be square matrices of the same dimension.", "variance(pauli_z(), density_matrix([1, 0]))"),
         a("braket", "qm", "braket(bra: &[Expr], ket: &[Expr]) -> Expr", "Compute the inner product of a bra and ket by componentwise contraction.", "The two vectors should have the same length.", "braket([1, 0], [0, 1])"),
@@ -7030,6 +7118,16 @@ fn handle_linear_entropy_qm(
     expr_or_struct_response_named(value, "linear_entropy", state)
 }
 
+fn handle_participation_ratio_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let value = ax_qm::participation_ratio(&rho, state.interner())
+        .map_err(|_| "participation_ratio expects a square density matrix".to_string())?;
+    expr_or_struct_response_named(value, "participation_ratio", state)
+}
+
 fn handle_renyi2_entropy_qm(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -7038,6 +7136,27 @@ fn handle_renyi2_entropy_qm(
     let value = ax_qm::renyi2_entropy(&rho, state.interner())
         .map_err(|_| "renyi2_entropy expects a square density matrix".to_string())?;
     expr_or_struct_response_named(value, "renyi2_entropy", state)
+}
+
+fn handle_renyi2_entropy_factor_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let dims = factor_dimensions_arg(args, 1, "dims").map_err(|_| {
+        "renyi2_entropy_factor expects a square matrix whose dimension matches the factor dimensions"
+            .to_string()
+    })?;
+    let kept_factor = usize::try_from(int_arg(args, 2, "kept_factor")?).map_err(|_| {
+        "renyi2_entropy_factor expects a square matrix whose dimension matches the factor dimensions"
+            .to_string()
+    })?;
+    let value = ax_qm::renyi2_entropy_factor(&rho, &dims, kept_factor, state.interner())
+        .map_err(|_| {
+            "renyi2_entropy_factor expects a square matrix whose dimension matches the factor dimensions"
+                .to_string()
+        })?;
+    expr_or_struct_response_named(value, "renyi2_entropy_factor", state)
 }
 
 fn handle_renyi2_mutual_information_qm(
@@ -7054,8 +7173,178 @@ fn handle_renyi2_mutual_information_qm(
     let value = ax_qm::renyi2_mutual_information_bipartite(&rho_ab, dim_a, dim_b, state.interner())
         .map_err(|_| {
             "renyi2_mutual_information matrix dimension does not match dim_a * dim_b".to_string()
-        })?;
+    })?;
     expr_or_struct_response_named(value, "renyi2_mutual_information", state)
+}
+
+fn handle_renyi2_tripartite_information_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho_abc = matrix_from_id(args, 0, "rho", state)?;
+    let dim_a = usize::try_from(int_arg(args, 1, "dim_a")?).map_err(|_| {
+        "renyi2_tripartite_information expects a tripartite density matrix of dimension dim_a * dim_b * dim_c"
+            .to_string()
+    })?;
+    let dim_b = usize::try_from(int_arg(args, 2, "dim_b")?).map_err(|_| {
+        "renyi2_tripartite_information expects a tripartite density matrix of dimension dim_a * dim_b * dim_c"
+            .to_string()
+    })?;
+    let dim_c = usize::try_from(int_arg(args, 3, "dim_c")?).map_err(|_| {
+        "renyi2_tripartite_information expects a tripartite density matrix of dimension dim_a * dim_b * dim_c"
+            .to_string()
+    })?;
+    let value = ax_qm::renyi2_tripartite_information(&rho_abc, [dim_a, dim_b, dim_c], state.interner())
+        .map_err(|_| {
+            "renyi2_tripartite_information expects a tripartite density matrix of dimension dim_a * dim_b * dim_c"
+                .to_string()
+        })?;
+    expr_or_struct_response_named(value, "renyi2_tripartite_information", state)
+}
+
+fn handle_von_neumann_entropy_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho = matrix_from_id(args, 0, "rho", state)?;
+    let value = ax_qm::von_neumann_entropy(&rho, state.interner()).map_err(|_| {
+        "von_neumann_entropy expects a supported square Hermitian density matrix".to_string()
+    })?;
+    expr_or_struct_response_named(value, "von_neumann_entropy", state)
+}
+
+fn handle_mutual_information_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho_ab = matrix_from_id(args, 0, "rho_ab", state)?;
+    let dim_a = int_arg(args, 1, "dim_a").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_a' must be non-negative".to_string())
+    })?;
+    let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
+    })?;
+    let value = ax_qm::von_neumann_mutual_information_bipartite(
+        &rho_ab,
+        dim_a,
+        dim_b,
+        state.interner(),
+    )
+    .map_err(|_| {
+        "mutual_information expects a bipartite density matrix of dimension dim_a * dim_b"
+            .to_string()
+    })?;
+    expr_or_struct_response_named(value, "mutual_information", state)
+}
+
+fn handle_conditional_entropy_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho_ab = matrix_from_id(args, 0, "rho_ab", state)?;
+    let dim_a = int_arg(args, 1, "dim_a").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_a' must be non-negative".to_string())
+    })?;
+    let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
+    })?;
+    let value =
+        ax_qm::conditional_entropy_b_given_a(&rho_ab, dim_a, dim_b, state.interner()).map_err(
+            |_| {
+                "conditional_entropy expects a bipartite density matrix of dimension dim_a * dim_b"
+                    .to_string()
+            },
+        )?;
+    expr_or_struct_response_named(value, "conditional_entropy", state)
+}
+
+fn handle_entanglement_spectrum_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "state_or_rho", state)?;
+    let dim_a = int_arg(args, 1, "dim_a").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_a' must be non-negative".to_string())
+    })?;
+    let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
+    })?;
+    let values = match &expr {
+        ax_ir::Expr::List(state_vector) => {
+            ax_qm::entanglement_spectrum_from_state(state_vector, dim_a, dim_b, state.interner())
+        }
+        ax_ir::Expr::Matrix(rho_ab) => {
+            ax_qm::entanglement_spectrum_from_density(rho_ab, dim_a, dim_b, 'A', state.interner())
+        }
+        _ => Err(ax_qm::EntanglementError::StateDimensionMismatch {
+            expected: dim_a.saturating_mul(dim_b),
+            actual: 0,
+        }),
+    }
+    .map_err(|_| {
+        "entanglement_spectrum expects a bipartite state vector or density matrix of dimension dim_a * dim_b".to_string()
+    })?;
+    list_response(values, state)
+}
+
+fn handle_schmidt_coefficients_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let state_vector = list_from_id(args, 0, "state", state).map_err(|_| {
+        "schmidt_coefficients expects a bipartite pure-state vector of dimension dim_a * dim_b"
+            .to_string()
+    })?;
+    let dim_a = int_arg(args, 1, "dim_a").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_a' must be non-negative".to_string())
+    })?;
+    let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
+    })?;
+    let values = ax_qm::schmidt_coefficients_from_state(&state_vector, dim_a, dim_b, state.interner())
+        .map_err(|_| {
+            "schmidt_coefficients expects a bipartite pure-state vector of dimension dim_a * dim_b".to_string()
+    })?;
+    list_response(values, state)
+}
+
+fn handle_negativity_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho_ab = matrix_from_id(args, 0, "rho_ab", state)?;
+    let dim_a = int_arg(args, 1, "dim_a").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_a' must be non-negative".to_string())
+    })?;
+    let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
+    })?;
+    let value = ax_qm::negativity_bipartite(&rho_ab, dim_a, dim_b, 1, state.interner())
+        .map_err(|_| {
+            "negativity expects a bipartite density matrix of dimension dim_a * dim_b"
+                .to_string()
+        })?;
+    expr_or_struct_response_named(value, "negativity", state)
+}
+
+fn handle_logarithmic_negativity_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let rho_ab = matrix_from_id(args, 0, "rho_ab", state)?;
+    let dim_a = int_arg(args, 1, "dim_a").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_a' must be non-negative".to_string())
+    })?;
+    let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
+        usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
+    })?;
+    let value =
+        ax_qm::logarithmic_negativity_bipartite(&rho_ab, dim_a, dim_b, 1, state.interner())
+            .map_err(|_| {
+                "logarithmic_negativity expects a bipartite density matrix of dimension dim_a * dim_b"
+                    .to_string()
+            })?;
+    expr_or_struct_response_named(value, "logarithmic_negativity", state)
 }
 
 fn handle_bloch_vector_qm(
@@ -7613,6 +7902,33 @@ fn handle_eigenvalues_symbolic_linalg(
         &ax_ir::Expr::Matrix(matrix.clone()),
         ax_linalg::eigenvalues_symbolic(&matrix, state.interner()),
         "eigenvalues_symbolic",
+        state,
+    )
+}
+
+fn handle_hermitian_eigenvalues_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let matrix = matrix_from_id(args, 0, "matrix", state)?;
+    let values = ax_qm::hermitian_eigenvalues_small(&matrix, state.interner()).map_err(|_| {
+        "hermitian_eigenvalues expects a square Hermitian matrix of supported dimension"
+            .to_string()
+    })?;
+    list_response(values, state)
+}
+
+fn handle_hermitian_eigenprojectors_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let matrix = matrix_from_id(args, 0, "matrix", state)?;
+    let projectors =
+        ax_qm::hermitian_eigenprojectors_small(&matrix, state.interner()).map_err(|_| {
+            "hermitian_eigenprojectors expects a square Hermitian matrix of supported dimension with nondegenerate spectrum".to_string()
+        })?;
+    list_response(
+        projectors.into_iter().map(ax_ir::Expr::Matrix).collect(),
         state,
     )
 }
@@ -10418,8 +10734,22 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("variance", "Observable variance for a density matrix.", ps(vec![pdef("operator", ParamType::ExprId, true, "Stored observable matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_variance_qm),
         centry("purity", "Purity Tr(rho^2) for a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_purity_qm),
         centry("linear_entropy", "Linear entropy 1 - Tr(rho^2) for a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_linear_entropy_qm),
+        centry("participation_ratio", "Participation ratio 1 / Tr(rho^2) for a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_participation_ratio_qm),
         centry("renyi2_entropy", "Renyi-2 entropy -log(Tr(rho^2)) for a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_renyi2_entropy_qm),
+        centry("renyi2_entropy_factor", "Renyi-2 entropy of the reduced state obtained by keeping one tensor factor.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("dims", ParamType::Code, true, "JSON array of factor dimensions."), pdef("kept_factor", ParamType::Integer, true, "Factor index to keep.")]), handle_renyi2_entropy_factor_qm),
+        centry("von_neumann_entropy", "Von Neumann entropy -Tr(rho log rho) for a supported finite-dimensional Hermitian density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_von_neumann_entropy_qm),
+        centry("mutual_information", "Bipartite von Neumann mutual information from a density matrix.", ps(vec![pdef("rho_ab", ParamType::ExprId, true, "Stored bipartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_mutual_information_qm),
+        centry("conditional_entropy", "Bipartite conditional entropy from a density matrix.", ps(vec![pdef("rho_ab", ParamType::ExprId, true, "Stored bipartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_conditional_entropy_qm),
+        centry("von_neumann_mutual_information_bipartite", "Bipartite von Neumann mutual information from a density matrix.", ps(vec![pdef("rho_ab", ParamType::ExprId, true, "Stored bipartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_mutual_information_qm),
+        centry("conditional_entropy_b_given_a", "Bipartite conditional entropy from a density matrix.", ps(vec![pdef("rho_ab", ParamType::ExprId, true, "Stored bipartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_conditional_entropy_qm),
+        centry("entanglement_spectrum", "Bipartite entanglement spectrum for a pure-state vector or bipartite density matrix, keeping subsystem A.", ps(vec![pdef("state_or_rho", ParamType::ExprId, true, "Stored bipartite state-vector or density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_entanglement_spectrum_qm),
+        centry("schmidt_coefficients", "Schmidt coefficients of a bipartite pure-state vector.", ps(vec![pdef("state", ParamType::ExprId, true, "Stored bipartite pure-state vector expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_schmidt_coefficients_qm),
+        centry("negativity", "Bipartite negativity from the supported partial-transpose spectrum of a density matrix.", ps(vec![pdef("rho_ab", ParamType::ExprId, true, "Stored bipartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_negativity_qm),
+        centry("logarithmic_negativity", "Bipartite logarithmic negativity log(1 + 2 N(rho)) from a supported density matrix.", ps(vec![pdef("rho_ab", ParamType::ExprId, true, "Stored bipartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_logarithmic_negativity_qm),
         centry("renyi2_mutual_information", "Bipartite Renyi-2 mutual information from a density matrix.", ps(vec![pdef("rho_ab", ParamType::ExprId, true, "Stored bipartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension.")]), handle_renyi2_mutual_information_qm),
+        centry("renyi2_tripartite_information", "Tripartite Renyi-2 information from a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored tripartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension."), pdef("dim_c", ParamType::Integer, true, "Subsystem-C dimension.")]), handle_renyi2_tripartite_information_qm),
+        centry("hermitian_eigenvalues", "Exact small Hermitian eigenvalues for supported matrices.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_hermitian_eigenvalues_qm),
+        centry("hermitian_eigenprojectors", "Exact small Hermitian spectral projectors for supported nondegenerate matrices.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_hermitian_eigenprojectors_qm),
         centry("bloch_vector", "Bloch-vector components for a 2x2 density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_bloch_vector_qm),
         centry("qubit_density_from_bloch", "Qubit density matrix from a Bloch vector.", ps(vec![pdef("r", ParamType::ExprId, true, "Stored length-3 list expression id.")]), handle_qubit_density_from_bloch_qm),
         centry("post_measurement_state", "Normalized post-measurement state for an outcome projector.", ps(vec![pdef("projector", ParamType::ExprId, true, "Stored projector matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("outcome_index", ParamType::Integer, true, "Outcome label used for diagnostics.")]), handle_post_measurement_state_qm),

@@ -339,6 +339,123 @@ fn partial_trace_factor_bell_state_first_qubit() {
 }
 
 #[test]
+fn bell_state_entanglement_spectrum_is_half_half() {
+    let interner = int();
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let bell = vec![
+        Expr::pow(
+            Expr::Int(2.into()),
+            Expr::Rational(BigRational::new((-1).into(), 2.into())),
+        ),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::pow(
+            Expr::Int(2.into()),
+            Expr::Rational(BigRational::new((-1).into(), 2.into())),
+        ),
+    ];
+
+    let spectrum = entanglement_spectrum_from_state(&bell, 2, 2, &interner).unwrap();
+    assert_eq!(spectrum, vec![half.clone(), half]);
+}
+
+#[test]
+fn bell_state_schmidt_coefficients_are_inv_sqrt2() {
+    let interner = int();
+    let inv_sqrt2 = Expr::Call(
+        interner.get_or_intern("sqrt"),
+        vec![Expr::Rational(BigRational::new(1.into(), 2.into()))],
+    );
+    let bell = vec![
+        Expr::pow(
+            Expr::Int(2.into()),
+            Expr::Rational(BigRational::new((-1).into(), 2.into())),
+        ),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::pow(
+            Expr::Int(2.into()),
+            Expr::Rational(BigRational::new((-1).into(), 2.into())),
+        ),
+    ];
+
+    let coefficients = schmidt_coefficients_from_state(&bell, 2, 2, &interner).unwrap();
+    assert_eq!(coefficients, vec![inv_sqrt2.clone(), inv_sqrt2]);
+}
+
+#[test]
+fn product_state_entanglement_spectrum_is_one_zero() {
+    let interner = int();
+    let product = vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()];
+
+    let spectrum = entanglement_spectrum_from_state(&product, 2, 2, &interner).unwrap();
+    assert_eq!(spectrum, vec![Expr::one(), Expr::zero()]);
+}
+
+#[test]
+fn schmidt_coefficients_reject_bad_vector_length() {
+    let interner = int();
+    let err = schmidt_coefficients_from_state(&[Expr::one(), Expr::zero(), Expr::zero()], 2, 2, &interner);
+    assert_eq!(
+        err,
+        Err(EntanglementError::StateDimensionMismatch {
+            expected: 4,
+            actual: 3,
+        })
+    );
+}
+
+#[test]
+fn negativity_bell_state_is_one_half() {
+    let interner = int();
+    let bell = vec![
+        Expr::pow(
+            Expr::Int(2.into()),
+            Expr::Rational(BigRational::new((-1).into(), 2.into())),
+        ),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::pow(
+            Expr::Int(2.into()),
+            Expr::Rational(BigRational::new((-1).into(), 2.into())),
+        ),
+    ];
+    let rho = density_matrix(&bell);
+
+    let negativity = negativity_bipartite(&rho, 2, 2, 1, &interner).unwrap();
+    assert_eq!(negativity, Expr::Rational(BigRational::new(1.into(), 2.into())));
+}
+
+#[test]
+fn negativity_product_state_is_zero() {
+    let interner = int();
+    let product = vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()];
+    let rho = density_matrix(&product);
+
+    let negativity = negativity_bipartite(&rho, 2, 2, 1, &interner).unwrap();
+    assert_eq!(negativity, Expr::zero());
+}
+
+#[test]
+fn negativity_rejects_dimension_mismatch() {
+    let interner = int();
+    let rho = vec![
+        vec![Expr::one(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::one()],
+    ];
+
+    let err = negativity_bipartite(&rho, 2, 2, 1, &interner);
+    assert_eq!(
+        err,
+        Err(NegativityError::DimensionMismatch {
+            expected: 4,
+            actual: 3,
+        })
+    );
+}
+
+#[test]
 fn partial_trace_factor_bell_state_second_qubit() {
     let interner = int();
     let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
@@ -663,6 +780,40 @@ fn purity_rejects_nonsquare_matrix() {
 }
 
 #[test]
+fn participation_ratio_pure_state_is_one() {
+    let interner = int();
+    let rho0 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(participation_ratio(&rho0, &interner).unwrap(), Expr::one());
+}
+
+#[test]
+fn participation_ratio_maximally_mixed_qubit_is_two() {
+    let interner = int();
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let rho_mixed = vec![vec![half.clone(), Expr::zero()], vec![Expr::zero(), half]];
+    assert_eq!(
+        participation_ratio(&rho_mixed, &interner).unwrap(),
+        Expr::Int(2.into())
+    );
+}
+
+#[test]
+fn participation_ratio_rejects_nonsquare_matrix() {
+    let interner = int();
+    let rho = vec![
+        vec![Expr::one(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(
+        participation_ratio(&rho, &interner),
+        Err(StateFunctionalError::StateNotSquare { rows: 2, cols: 3 })
+    );
+}
+
+#[test]
 fn renyi2_entropy_pure_state_is_neg_log_one() {
     let interner = int();
     let rho0 = vec![
@@ -687,6 +838,188 @@ fn renyi2_entropy_maximally_mixed_qubit_is_log_two() {
 }
 
 #[test]
+fn renyi2_entropy_factor_bell_pair_kept_qubit_is_log_two() {
+    let interner = int();
+    let sqrt2_inv = Expr::pow(
+        Expr::Int(2.into()),
+        Expr::Rational(BigRational::new((-1).into(), 2.into())),
+    );
+    let bell = vec![
+        Expr::mul(vec![sqrt2_inv.clone()]),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::mul(vec![sqrt2_inv]),
+    ];
+    let rho = density_matrix(&bell);
+    let result = renyi2_entropy_factor(&rho, &[2, 2], 0, &interner).unwrap();
+    let rendered = pretty_print(&result, &interner);
+    assert!(rendered == "log(2)" || rendered == "-log(1/2)" || rendered == "-1*log(1/2)");
+}
+
+#[test]
+fn renyi2_tripartite_information_product_state_is_zero() {
+    let interner = int();
+    let product = vec![
+        Expr::one(),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::zero(),
+    ];
+    let rho = density_matrix(&product);
+    assert_eq!(
+        renyi2_tripartite_information(&rho, [2, 2, 2], &interner).unwrap(),
+        Expr::zero()
+    );
+}
+
+#[test]
+fn renyi2_entropy_factor_rejects_bad_factor_index() {
+    let interner = int();
+    let rho = vec![
+        vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+    ];
+    let err = renyi2_entropy_factor(&rho, &[2, 2], 2, &interner);
+    assert_eq!(
+        err,
+        Err(CompositeSpaceError::InvalidFactorIndex {
+            index: 2,
+            factor_count: 2
+        })
+    );
+}
+
+#[test]
+fn von_neumann_entropy_pure_qubit_is_zero() {
+    let interner = int();
+    let rho0 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    assert_eq!(von_neumann_entropy(&rho0, &interner).unwrap(), Expr::zero());
+}
+
+#[test]
+fn von_neumann_entropy_maximally_mixed_qubit_is_log_two() {
+    let interner = int();
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let rho_mixed = vec![vec![half.clone(), Expr::zero()], vec![Expr::zero(), half]];
+    let result = von_neumann_entropy(&rho_mixed, &interner).unwrap();
+    let rendered = pretty_print(&result, &interner);
+    assert!(
+        rendered == "log(2)"
+            || rendered == "-log(1/2)"
+            || rendered == "-1*log(1/2)"
+            || rendered == "-2*1/2*log(1/2)"
+    );
+}
+
+#[test]
+fn von_neumann_entropy_diagonal_qutrit_probabilities() {
+    let interner = int();
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let quarter = Expr::Rational(BigRational::new(1.into(), 4.into()));
+    let rho = vec![
+        vec![half, Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), quarter.clone(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), quarter],
+    ];
+    let result = von_neumann_entropy(&rho, &interner).unwrap();
+    let rendered = pretty_print(&result, &interner);
+    assert!(
+        rendered == "3/2*log(2)"
+            || rendered == "-3/2*log(1/2)"
+            || rendered == "-1/2*log(1/2) + -1/2*log(1/4)"
+            || rendered == "-1/2*log(1/4) + -1/2*log(1/2)"
+            || rendered == "-1/2*log(1/2) + -2*1/4*log(1/4)"
+            || rendered == "-2*1/4*log(1/4) + -1/2*log(1/2)",
+        "got {rendered}"
+    );
+}
+
+#[test]
+fn von_neumann_entropy_rejects_nonhermitian_matrix() {
+    let interner = int();
+    let matrix = vec![
+        vec![Expr::zero(), Expr::one()],
+        vec![Expr::Int(2.into()), Expr::zero()],
+    ];
+    let err = von_neumann_entropy(&matrix, &interner);
+    assert_eq!(err, Err(EntropyError::StateNotHermitian));
+}
+
+#[test]
+fn mutual_information_bell_state_is_log_four() {
+    let interner = int();
+    let sqrt2_inv = Expr::pow(
+        Expr::Int(2.into()),
+        Expr::Rational(BigRational::new((-1).into(), 2.into())),
+    );
+    let bell = vec![
+        Expr::mul(vec![sqrt2_inv.clone()]),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::mul(vec![sqrt2_inv]),
+    ];
+    let rho = density_matrix(&bell);
+    let result = von_neumann_mutual_information_bipartite(&rho, 2, 2, &interner).unwrap();
+    let rendered = pretty_print(&result, &interner);
+    assert!(
+        rendered == "log(4)"
+            || rendered == "2*log(2)"
+            || rendered == "log(2) + log(2)"
+            || rendered == "-2*log(1/2)"
+            || rendered == "-log(1/2) + -log(1/2)"
+            || rendered == "-1*log(1/2) + -1*log(1/2)"
+            || rendered == "log(1) + -2*log(1/2)",
+        "got {rendered}"
+    );
+}
+
+#[test]
+fn conditional_entropy_bell_state_is_minus_log_two() {
+    let interner = int();
+    let sqrt2_inv = Expr::pow(
+        Expr::Int(2.into()),
+        Expr::Rational(BigRational::new((-1).into(), 2.into())),
+    );
+    let bell = vec![
+        Expr::mul(vec![sqrt2_inv.clone()]),
+        Expr::zero(),
+        Expr::zero(),
+        Expr::mul(vec![sqrt2_inv]),
+    ];
+    let rho = density_matrix(&bell);
+    let result = conditional_entropy_b_given_a(&rho, 2, 2, &interner).unwrap();
+    let rendered = pretty_print(&result, &interner);
+    assert!(
+        rendered == "-log(2)"
+            || rendered == "log(1/2)"
+            || rendered == "-1*log(2)"
+            || rendered == "0 + -1*log(1/2)"
+            || rendered == "-1*log(1/2)",
+        "got {rendered}"
+    );
+}
+
+#[test]
+fn mutual_information_product_state_is_zero() {
+    let interner = int();
+    let product = vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()];
+    let rho = density_matrix(&product);
+    assert_eq!(
+        von_neumann_mutual_information_bipartite(&rho, 2, 2, &interner).unwrap(),
+        Expr::zero()
+    );
+}
+
+#[test]
 fn renyi2_mutual_information_bell_state_is_log_four() {
     let interner = int();
     let sqrt2_inv = Expr::pow(
@@ -706,6 +1039,7 @@ fn renyi2_mutual_information_bell_state_is_log_four() {
         rendered == "log(4)"
             || rendered == "2*log(2)"
             || rendered == "log(2) + log(2)"
+            || rendered == "-2*log(1/2)"
             || rendered == "-log(1/2) + -log(1/2)"
             || rendered == "-1*log(1/2) + -1*log(1/2)"
             || rendered == "log(1) + -2*log(1/2)",
@@ -838,6 +1172,77 @@ fn lindblad_rhs_rejects_dimension_mismatch() {
             which: "jump operator",
         })
     );
+}
+
+#[test]
+fn hermitian_eigenvalues_pauli_z_are_pm_one() {
+    let interner = int();
+    let sigma_z = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::neg(Expr::one())],
+    ];
+    let eigenvalues = hermitian_eigenvalues_small(&sigma_z, &interner).unwrap();
+    assert_eq!(eigenvalues, vec![Expr::one(), Expr::neg(Expr::one())]);
+}
+
+#[test]
+fn hermitian_eigenprojectors_diagonal_qubit_are_basis_projectors() {
+    let interner = int();
+    let sigma_z = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::neg(Expr::one())],
+    ];
+    let projectors = hermitian_eigenprojectors_small(&sigma_z, &interner).unwrap();
+    assert_eq!(
+        projectors,
+        vec![
+            vec![
+                vec![Expr::one(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero()],
+            ],
+            vec![
+                vec![Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::one()],
+            ],
+        ]
+    );
+}
+
+#[test]
+fn hermitian_eigenvalues_diagonal_qutrit_are_diagonal_entries() {
+    let interner = int();
+    let diag = vec![
+        vec![Expr::one(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into()), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::Int(3.into())],
+    ];
+    let eigenvalues = hermitian_eigenvalues_small(&diag, &interner).unwrap();
+    assert_eq!(
+        eigenvalues,
+        vec![Expr::one(), Expr::Int(2.into()), Expr::Int(3.into())]
+    );
+}
+
+#[test]
+fn hermitian_eigenvalues_reject_nonhermitian_matrix() {
+    let interner = int();
+    let matrix = vec![
+        vec![Expr::zero(), Expr::one()],
+        vec![Expr::Int(2.into()), Expr::zero()],
+    ];
+    let err = hermitian_eigenvalues_small(&matrix, &interner);
+    assert_eq!(err, Err(SpectralError::MatrixNotHermitian));
+}
+
+#[test]
+fn hermitian_eigenprojectors_reject_degenerate_diagonal_case() {
+    let interner = int();
+    let matrix = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::one()],
+    ];
+    let err = hermitian_eigenprojectors_small(&matrix, &interner);
+    assert_eq!(err, Err(SpectralError::DegenerateSpectrumUnsupported));
 }
 
 #[test]

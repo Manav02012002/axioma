@@ -12,6 +12,8 @@ let exp_z = expectation_value(Z, rho0)
 let var_z = variance(Z, rho0)
 let bloch_rho0 = bloch_vector(rho0)
 let rho_from_bloch_z = qubit_density_from_bloch([0, 0, 1])
+let z_eigs = hermitian_eigenvalues(pauli_z())
+let z_projectors = hermitian_eigenprojectors(pauli_z())
 exp_z
 var_z
 let projectors = [basis_projector(0, 2), basis_projector(1, 2)]

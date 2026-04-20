@@ -17,7 +17,15 @@ let rho_pt = partial_transpose_factor(rho, [2, 2], 1)
 let rho_purity = purity(rho)
 let rho_A_purity = purity(rho_A)
 let rho_A_linear_entropy = linear_entropy(rho_A)
+let rho_A_participation_ratio = participation_ratio(rho_A)
 let rho_A_renyi2 = renyi2_entropy(rho_A)
+let rho_A_von_neumann_entropy = von_neumann_entropy(rho_A)
+let rho_mutual_information = mutual_information(rho, 2, 2)
+let rho_conditional_entropy = conditional_entropy(rho, 2, 2)
+let phi_plus_entanglement_spectrum = entanglement_spectrum([1/sqrt(2), 0, 0, 1/sqrt(2)], 2, 2)
+let phi_plus_schmidt = schmidt_coefficients([1/sqrt(2), 0, 0, 1/sqrt(2)], 2, 2)
+let rho_negativity = negativity(rho, 2, 2)
+let rho_logarithmic_negativity = logarithmic_negativity(rho, 2, 2)
 let rho_renyi2_mi = renyi2_mutual_information(rho, 2, 2)
 rho_A
 // Should be [[1/2, 0], [0, 1/2]]
@@ -25,4 +33,4 @@ let id2 = identity_channel(2)
 let rho_A_after = apply_channel(id2, rho_A)
 rho_A_after
 let rho_flip = permute_subsystems([[0, 0, 0, 1], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], [2, 2], [1, 0])
-[rho_A_space, rho_B_space, rho_pt, rho_purity, rho_A_purity, rho_A_linear_entropy, rho_A_renyi2, rho_renyi2_mi, rho_flip]
+rho

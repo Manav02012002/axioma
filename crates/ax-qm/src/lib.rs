@@ -152,6 +152,50 @@ pub enum QubitStateError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SpectralError {
+    #[error("matrix is not square: rows={rows}, cols={cols}")]
+    MatrixNotSquare { rows: usize, cols: usize },
+    #[error("unsupported spectral dimension: dim={dim}")]
+    UnsupportedDimension { dim: usize },
+    #[error("matrix is not Hermitian")]
+    MatrixNotHermitian,
+    #[error("degenerate spectrum unsupported")]
+    DegenerateSpectrumUnsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum EntropyError {
+    #[error("state not square: rows={rows}, cols={cols}")]
+    StateNotSquare { rows: usize, cols: usize },
+    #[error("state is not Hermitian")]
+    StateNotHermitian,
+    #[error(transparent)]
+    Spectral(#[from] SpectralError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum EntanglementError {
+    #[error("state dimension mismatch: expected={expected}, actual={actual}")]
+    StateDimensionMismatch { expected: usize, actual: usize },
+    #[error("density dimension mismatch: expected={expected}, actual={actual}")]
+    DensityDimensionMismatch { expected: usize, actual: usize },
+    #[error(transparent)]
+    UnsupportedSpectrum(#[from] SpectralError),
+    #[error(transparent)]
+    PartialTrace(#[from] QmLinearAlgebraError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum NegativityError {
+    #[error(transparent)]
+    PartialTranspose(#[from] CompositeSpaceError),
+    #[error(transparent)]
+    Spectral(#[from] SpectralError),
+    #[error("dimension mismatch: expected={expected}, actual={actual}")]
+    DimensionMismatch { expected: usize, actual: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CompositeSpaceError {
     #[error("empty factor list")]
     EmptyFactorList,
@@ -1097,6 +1141,319 @@ fn adjoint_matrix(matrix: &[Vec<Expr>]) -> Vec<Vec<Expr>> {
         .collect()
 }
 
+fn diagonal_entries(matrix: &[Vec<Expr>]) -> Option<Vec<Expr>> {
+    let dim = matrix_shape(matrix)?;
+    if dim.0 != dim.1 {
+        return None;
+    }
+    if matrix.iter().enumerate().any(|(row_idx, row)| {
+        row.iter()
+            .enumerate()
+            .any(|(col_idx, cell)| row_idx != col_idx && *cell != Expr::zero())
+    }) {
+        return None;
+    }
+    Some(
+        matrix
+            .iter()
+            .enumerate()
+            .map(|(idx, row)| row[idx].clone())
+            .collect(),
+    )
+}
+
+fn basis_projector_matrix(dim: usize, index: usize) -> Vec<Vec<Expr>> {
+    let mut projector = vec![vec![Expr::zero(); dim]; dim];
+    if index < dim {
+        projector[index][index] = Expr::one();
+    }
+    projector
+}
+
+fn matrix_subtract(left: &[Vec<Expr>], right: &[Vec<Expr>]) -> Vec<Vec<Expr>> {
+    simplify_matrix(ax_linalg::mat_add(
+        left,
+        &ax_linalg::mat_scale(&Expr::neg(Expr::one()), right),
+    ))
+}
+
+fn scalar_inverse(expr: Expr) -> Expr {
+    Expr::pow(expr, Expr::Int((-1).into()))
+}
+
+fn exact_sqrt_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("sqrt"), vec![expr])
+}
+
+fn simplify_visible_scalar_expr(expr: Expr) -> Expr {
+    match expr {
+        Expr::Call(sym, args) if args.len() == 1 => {
+            let arg = simplify_visible_scalar_expr(args[0].clone());
+            if arg == Expr::one() {
+                Expr::one()
+            } else {
+                Expr::Call(sym, vec![arg])
+            }
+        }
+        Expr::Mul(factors) => simplify_expr(Expr::mul(
+            factors
+                .into_iter()
+                .map(simplify_visible_scalar_expr)
+                .collect::<Vec<_>>(),
+        )),
+        Expr::Neg(inner) => Expr::neg(simplify_visible_scalar_expr(*inner)),
+        other => other,
+    }
+}
+
+fn explicit_negative_magnitude(expr: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::Int(value) if value < &BigInt::zero() => Some(Expr::Int(-value.clone())),
+        Expr::Rational(value) if value < &BigRational::zero() => Some(Expr::Rational(-value.clone())),
+        Expr::Neg(inner) => Some(simplify_visible_scalar_expr((**inner).clone())),
+        Expr::Mul(factors) => {
+            let Some((first, rest)) = factors.split_first() else {
+                return None;
+            };
+            match first {
+                Expr::Int(value) if value < &BigInt::zero() => Some(simplify_visible_scalar_expr(
+                    Expr::mul(
+                        std::iter::once(Expr::Int(-value.clone()))
+                            .chain(rest.iter().cloned())
+                            .collect::<Vec<_>>(),
+                    ),
+                )),
+                Expr::Rational(value) if value < &BigRational::zero() => Some(
+                    simplify_visible_scalar_expr(Expr::mul(
+                        std::iter::once(Expr::Rational(-value.clone()))
+                            .chain(rest.iter().cloned())
+                            .collect::<Vec<_>>(),
+                    )),
+                ),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn induced_block_indices(matrix: &[Vec<Expr>]) -> Vec<Vec<usize>> {
+    let dim = matrix.len();
+    let mut visited = vec![false; dim];
+    let mut blocks = Vec::new();
+
+    for start in 0..dim {
+        if visited[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut block = Vec::new();
+        visited[start] = true;
+
+        while let Some(node) = stack.pop() {
+            block.push(node);
+            for next in 0..dim {
+                if visited[next] {
+                    continue;
+                }
+                let connected = if node == next {
+                    !is_zero_expr(&matrix[node][node])
+                } else {
+                    !is_zero_expr(&matrix[node][next]) || !is_zero_expr(&matrix[next][node])
+                };
+                if connected {
+                    visited[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+
+        block.sort_unstable();
+        blocks.push(block);
+    }
+
+    blocks
+}
+
+fn submatrix_from_indices(matrix: &[Vec<Expr>], indices: &[usize]) -> Vec<Vec<Expr>> {
+    indices
+        .iter()
+        .map(|&row| {
+            indices
+                .iter()
+                .map(|&col| matrix[row][col].clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn spectral_eigenvalues_supported_blocks(
+    matrix: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, SpectralError> {
+    let dim = is_square_matrix(matrix)?;
+    if !matrix_is_exactly_hermitian(matrix) {
+        return Err(SpectralError::MatrixNotHermitian);
+    }
+    if dim <= 3 {
+        return hermitian_eigenvalues_small(matrix, interner);
+    }
+
+    let mut eigenvalues = Vec::new();
+    for block in induced_block_indices(matrix) {
+        match block.len() {
+            0 => {}
+            1 => eigenvalues.push(matrix[block[0]][block[0]].clone()),
+            2 | 3 => {
+                let submatrix = submatrix_from_indices(matrix, &block);
+                eigenvalues.extend(hermitian_eigenvalues_small(&submatrix, interner)?);
+            }
+            size => return Err(SpectralError::UnsupportedDimension { dim: size }),
+        }
+    }
+    Ok(eigenvalues)
+}
+
+/// Construct an exact symbolic natural logarithm expression.
+pub fn expr_log(arg: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("log"), vec![arg])
+}
+
+/// Construct the exact entropy contribution `-λ log(λ)` with `0` handled exactly.
+pub fn entropy_term(lambda: &Expr, interner: &ax_ir::Interner) -> Expr {
+    if *lambda == Expr::zero() || *lambda == Expr::one() {
+        Expr::zero()
+    } else {
+        simplify_expr(Expr::neg(Expr::mul(vec![
+            lambda.clone(),
+            expr_log(lambda.clone(), interner),
+        ])))
+    }
+}
+
+/// Validate that a matrix slice is square and return its common dimension.
+pub fn is_square_matrix(mat: &[Vec<Expr>]) -> Result<usize, SpectralError> {
+    let rows = mat.len();
+    let cols = mat.first().map(|row| row.len()).unwrap_or(0);
+    let Some((actual_rows, actual_cols)) = matrix_shape(mat) else {
+        return Err(SpectralError::MatrixNotSquare { rows, cols });
+    };
+    if actual_rows != actual_cols {
+        return Err(SpectralError::MatrixNotSquare {
+            rows: actual_rows,
+            cols: actual_cols,
+        });
+    }
+    Ok(actual_rows)
+}
+
+/// Return the exact conjugate transpose of a symbolic matrix.
+pub fn matrix_conjugate_transpose(mat: &[Vec<Expr>]) -> Vec<Vec<Expr>> {
+    ax_linalg::transpose(mat)
+        .into_iter()
+        .map(|row| row.into_iter().map(|cell| conjugate_expr(&cell)).collect())
+        .collect()
+}
+
+/// Check Hermiticity by exact structural equality against the conjugate transpose.
+pub fn matrix_is_exactly_hermitian(mat: &[Vec<Expr>]) -> bool {
+    mat == matrix_conjugate_transpose(mat)
+}
+
+/// Construct the exact identity matrix of the requested finite dimension.
+pub fn identity_matrix(dim: usize, _interner: &ax_ir::Interner) -> Vec<Vec<Expr>> {
+    ax_linalg::identity(dim)
+}
+
+/// Return exact small-dimensional Hermitian eigenvalues for supported matrix classes.
+pub fn hermitian_eigenvalues_small(
+    mat: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, SpectralError> {
+    let dim = is_square_matrix(mat)?;
+    if !matrix_is_exactly_hermitian(mat) {
+        return Err(SpectralError::MatrixNotHermitian);
+    }
+
+    match dim {
+        2 => {
+            if let Some(diagonal) = diagonal_entries(mat) {
+                return Ok(diagonal);
+            }
+
+            let a = mat[0][0].clone();
+            let b = mat[0][1].clone();
+            let d = mat[1][1].clone();
+            let trace = Expr::add(vec![a.clone(), d.clone()]);
+            let diff = Expr::add(vec![a.clone(), Expr::neg(d.clone())]);
+            let b_norm_sq = Expr::mul(vec![b.clone(), conjugate_expr(&b)]);
+            let discriminant = Expr::add(vec![
+                Expr::pow(diff, Expr::Int(2.into())),
+                Expr::mul(vec![Expr::Int(4.into()), b_norm_sq]),
+            ]);
+            let sqrt_discriminant =
+                Expr::Call(interner.get_or_intern("sqrt"), vec![discriminant]);
+            let half_trace = Expr::mul(vec![half(), trace]);
+            let half_gap = Expr::mul(vec![half(), sqrt_discriminant]);
+            Ok(vec![
+                simplify_expr(Expr::add(vec![half_trace.clone(), half_gap.clone()])),
+                simplify_expr(Expr::add(vec![half_trace, Expr::neg(half_gap)])),
+            ])
+        }
+        3 => diagonal_entries(mat).ok_or(SpectralError::UnsupportedDimension { dim: 3 }),
+        _ => Err(SpectralError::UnsupportedDimension { dim }),
+    }
+}
+
+/// Return exact spectral projectors for supported small Hermitian matrices.
+pub fn hermitian_eigenprojectors_small(
+    mat: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Vec<Expr>>>, SpectralError> {
+    let dim = is_square_matrix(mat)?;
+    if !matrix_is_exactly_hermitian(mat) {
+        return Err(SpectralError::MatrixNotHermitian);
+    }
+
+    if let Some(diagonal) = diagonal_entries(mat) {
+        if diagonal
+            .iter()
+            .enumerate()
+            .any(|(idx, entry)| diagonal.iter().skip(idx + 1).any(|other| other == entry))
+        {
+            return Err(SpectralError::DegenerateSpectrumUnsupported);
+        }
+        return Ok((0..dim).map(|idx| basis_projector_matrix(dim, idx)).collect());
+    }
+
+    if dim != 2 {
+        return Err(SpectralError::UnsupportedDimension { dim });
+    }
+
+    let eigenvalues = hermitian_eigenvalues_small(mat, interner)?;
+    if eigenvalues.len() != 2 || eigenvalues[0] == eigenvalues[1] {
+        return Err(SpectralError::DegenerateSpectrumUnsupported);
+    }
+
+    let identity = identity_matrix(dim, interner);
+    let projectors = (0..2)
+        .map(|i| {
+            let j = 1 - i;
+            let numerator = matrix_subtract(
+                mat,
+                &ax_linalg::mat_scale(&eigenvalues[j], &identity),
+            );
+            let denominator = Expr::add(vec![
+                eigenvalues[i].clone(),
+                Expr::neg(eigenvalues[j].clone()),
+            ]);
+            simplify_matrix(ax_linalg::mat_scale(&scalar_inverse(denominator), &numerator))
+        })
+        .collect();
+
+    Ok(projectors)
+}
+
 fn is_zero_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Int(n) if n.is_zero()) || matches!(expr, Expr::Rational(r) if r.is_zero())
 }
@@ -1885,16 +2242,308 @@ pub fn linear_entropy(rho: &[Vec<Expr>]) -> Result<Expr, StateFunctionalError> {
     ])))
 }
 
+/// Compute the participation ratio `1 / Tr(ρ^2)` of a finite-dimensional density operator.
+pub fn participation_ratio(
+    rho: &[Vec<Expr>],
+    _interner: &ax_ir::Interner,
+) -> Result<Expr, StateFunctionalError> {
+    let purity_value = purity(rho)?;
+    Ok(simplify_expr(Expr::pow(
+        purity_value,
+        Expr::Int((-1).into()),
+    )))
+}
+
 /// Compute the Renyi-2 entropy `-log(Tr(ρ^2))` of a finite-dimensional density operator.
 pub fn renyi2_entropy(
     rho: &[Vec<Expr>],
     interner: &ax_ir::Interner,
 ) -> Result<Expr, StateFunctionalError> {
     let purity_value = purity(rho)?;
+    if purity_value == Expr::one() {
+        return Ok(Expr::zero());
+    }
     Ok(simplify_expr(Expr::neg(Expr::Call(
         interner.get_or_intern("log"),
         vec![purity_value],
     ))))
+}
+
+/// Compute the von Neumann entropy `S(ρ) = -Σ_i λ_i log(λ_i)` for small supported density matrices.
+pub fn von_neumann_entropy(
+    rho: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, EntropyError> {
+    let (rows, cols) =
+        matrix_shape(rho).unwrap_or((rho.len(), rho.first().map(|row| row.len()).unwrap_or(0)));
+    if rows != cols {
+        return Err(EntropyError::StateNotSquare { rows, cols });
+    }
+
+    if rows == 1 {
+        let lambda = rho[0][0].clone();
+        if lambda == Expr::one() {
+            return Ok(Expr::zero());
+        }
+        return Ok(simplify_expr(entropy_term(&lambda, interner)));
+    }
+
+    if !matrix_is_exactly_hermitian(rho) {
+        return Err(EntropyError::StateNotHermitian);
+    }
+
+    if purity(rho).map_err(|err| match err {
+        StateFunctionalError::StateNotSquare { rows, cols } => {
+            EntropyError::StateNotSquare { rows, cols }
+        }
+    })? == Expr::one()
+    {
+        return Ok(Expr::zero());
+    }
+
+    let eigenvalues = hermitian_eigenvalues_small(rho, interner)?;
+    Ok(simplify_expr(Expr::add(
+        eigenvalues
+            .iter()
+            .map(|lambda| entropy_term(lambda, interner))
+            .collect(),
+    )))
+}
+
+/// Compute the bipartite von Neumann mutual information `S(ρ_A) + S(ρ_B) - S(ρ_AB)`.
+///
+/// The input density matrix must be arranged in row-major lexicographic order with total
+/// dimension `dim_a * dim_b`. The reduced states are constructed using the checked bipartite
+/// partial-trace helper.
+pub fn von_neumann_mutual_information_bipartite(
+    rho_ab: &[Vec<Expr>],
+    dim_a: usize,
+    dim_b: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, EntropyError> {
+    let expected = dim_a.saturating_mul(dim_b);
+    let rows = rho_ab.len();
+    let cols = rho_ab.first().map(|row| row.len()).unwrap_or(0);
+    if rows != expected || cols != expected || rho_ab.iter().any(|row| row.len() != cols) {
+        return Err(EntropyError::StateNotSquare { rows, cols });
+    }
+
+    let rho_a = try_partial_trace(
+        rho_ab,
+        BipartiteDims { dim_a, dim_b },
+        PartialTraceTarget::B,
+    )
+    .map_err(|err| match err {
+        QmLinearAlgebraError::NonSquareMatrix { rows, cols } => {
+            EntropyError::StateNotSquare { rows, cols }
+        }
+        QmLinearAlgebraError::SubsystemDimensionMismatch { .. }
+        | QmLinearAlgebraError::InvalidTraceTarget { .. }
+        | QmLinearAlgebraError::DimensionMismatch { .. }
+        | QmLinearAlgebraError::BasisIndexOutOfRange { .. } => {
+            EntropyError::StateNotSquare { rows, cols }
+        }
+    })?;
+    let rho_b = try_partial_trace(
+        rho_ab,
+        BipartiteDims { dim_a, dim_b },
+        PartialTraceTarget::A,
+    )
+    .map_err(|err| match err {
+        QmLinearAlgebraError::NonSquareMatrix { rows, cols } => {
+            EntropyError::StateNotSquare { rows, cols }
+        }
+        QmLinearAlgebraError::SubsystemDimensionMismatch { .. }
+        | QmLinearAlgebraError::InvalidTraceTarget { .. }
+        | QmLinearAlgebraError::DimensionMismatch { .. }
+        | QmLinearAlgebraError::BasisIndexOutOfRange { .. } => {
+            EntropyError::StateNotSquare { rows, cols }
+        }
+    })?;
+    let s_a = von_neumann_entropy(&rho_a, interner)?;
+    let s_b = von_neumann_entropy(&rho_b, interner)?;
+    let s_ab = von_neumann_entropy(rho_ab, interner)?;
+    Ok(simplify_expr(Expr::add(vec![s_a, s_b, Expr::neg(s_ab)])))
+}
+
+/// Compute the bipartite conditional entropy `S(B|A) = S(ρ_AB) - S(ρ_A)`.
+///
+/// The input density matrix must be arranged in row-major lexicographic order with total
+/// dimension `dim_a * dim_b`. The reduced state `ρ_A` is obtained via the checked bipartite
+/// partial-trace helper by tracing out subsystem `B`.
+pub fn conditional_entropy_b_given_a(
+    rho_ab: &[Vec<Expr>],
+    dim_a: usize,
+    dim_b: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, EntropyError> {
+    let expected = dim_a.saturating_mul(dim_b);
+    let rows = rho_ab.len();
+    let cols = rho_ab.first().map(|row| row.len()).unwrap_or(0);
+    if rows != expected || cols != expected || rho_ab.iter().any(|row| row.len() != cols) {
+        return Err(EntropyError::StateNotSquare { rows, cols });
+    }
+
+    let rho_a = try_partial_trace(
+        rho_ab,
+        BipartiteDims { dim_a, dim_b },
+        PartialTraceTarget::B,
+    )
+    .map_err(|err| match err {
+        QmLinearAlgebraError::NonSquareMatrix { rows, cols } => {
+            EntropyError::StateNotSquare { rows, cols }
+        }
+        QmLinearAlgebraError::SubsystemDimensionMismatch { .. }
+        | QmLinearAlgebraError::InvalidTraceTarget { .. }
+        | QmLinearAlgebraError::DimensionMismatch { .. }
+        | QmLinearAlgebraError::BasisIndexOutOfRange { .. } => {
+            EntropyError::StateNotSquare { rows, cols }
+        }
+    })?;
+    let s_ab = von_neumann_entropy(rho_ab, interner)?;
+    let s_a = von_neumann_entropy(&rho_a, interner)?;
+    Ok(simplify_expr(Expr::add(vec![s_ab, Expr::neg(s_a)])))
+}
+
+/// Compute the Schmidt coefficients of a bipartite pure state from the reduced spectrum on A.
+pub fn schmidt_coefficients_from_state(
+    state: &[Expr],
+    dim_a: usize,
+    dim_b: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, EntanglementError> {
+    let spectrum = entanglement_spectrum_from_state(state, dim_a, dim_b, interner)?;
+    Ok(spectrum
+        .into_iter()
+        .map(|lambda| {
+            if lambda == Expr::zero() || lambda == Expr::one() {
+                lambda
+            } else {
+                exact_sqrt_expr(lambda, interner)
+            }
+        })
+        .collect())
+}
+
+/// Compute the bipartite entanglement spectrum of a pure state as the eigenvalues of `ρ_A`.
+pub fn entanglement_spectrum_from_state(
+    state: &[Expr],
+    dim_a: usize,
+    dim_b: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, EntanglementError> {
+    let expected = dim_a.saturating_mul(dim_b);
+    let actual = state.len();
+    if actual != expected {
+        return Err(EntanglementError::StateDimensionMismatch { expected, actual });
+    }
+
+    let rho_ab = try_density_matrix(state)?;
+    entanglement_spectrum_from_density(&rho_ab, dim_a, dim_b, 'A', interner)
+}
+
+/// Compute the entanglement spectrum from a bipartite density matrix by reducing to the kept side.
+pub fn entanglement_spectrum_from_density(
+    rho_ab: &[Vec<Expr>],
+    dim_a: usize,
+    dim_b: usize,
+    kept: char,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, EntanglementError> {
+    let expected = dim_a.saturating_mul(dim_b);
+    let rows = rho_ab.len();
+    let cols = rho_ab.first().map(|row| row.len()).unwrap_or(0);
+    if rows != expected || cols != expected || rho_ab.iter().any(|row| row.len() != cols) {
+        return Err(EntanglementError::DensityDimensionMismatch {
+            expected,
+            actual: rows,
+        });
+    }
+
+    let trace_target = match kept {
+        'A' => PartialTraceTarget::B,
+        'B' => PartialTraceTarget::A,
+        other => {
+            return Err(EntanglementError::PartialTrace(
+                QmLinearAlgebraError::InvalidTraceTarget { target: other },
+            ))
+        }
+    };
+    let reduced = try_partial_trace(rho_ab, BipartiteDims { dim_a, dim_b }, trace_target)?;
+    hermitian_eigenvalues_small(&reduced, interner).map_err(EntanglementError::from)
+}
+
+/// Compute the negativity from a partial-transpose spectrum by summing exact visible negative parts.
+pub fn negativity_from_partial_transpose_spectrum(eigs: &[Expr], _interner: &ax_ir::Interner) -> Expr {
+    simplify_expr(Expr::add(
+        eigs.iter()
+            .filter_map(explicit_negative_magnitude)
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// Compute bipartite negativity from the exact spectrum of the chosen partial transpose.
+pub fn negativity_bipartite(
+    rho_ab: &[Vec<Expr>],
+    dim_a: usize,
+    dim_b: usize,
+    transposed_factor: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, NegativityError> {
+    let expected = dim_a.saturating_mul(dim_b);
+    let rows = rho_ab.len();
+    let cols = rho_ab.first().map(|row| row.len()).unwrap_or(0);
+    if rows != expected || cols != expected || rho_ab.iter().any(|row| row.len() != cols) {
+        return Err(NegativityError::DimensionMismatch {
+            expected,
+            actual: rows,
+        });
+    }
+
+    let partial_transpose = try_partial_transpose_factor(rho_ab, &[dim_a, dim_b], transposed_factor)?;
+    let eigenvalues = spectral_eigenvalues_supported_blocks(&partial_transpose, interner)?;
+    Ok(negativity_from_partial_transpose_spectrum(&eigenvalues, interner))
+}
+
+/// Compute the exact supported spectrum of the chosen bipartite partial transpose.
+pub fn partial_transpose_spectrum_bipartite(
+    rho_ab: &[Vec<Expr>],
+    dim_a: usize,
+    dim_b: usize,
+    transposed_factor: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, NegativityError> {
+    let expected = dim_a.saturating_mul(dim_b);
+    let rows = rho_ab.len();
+    let cols = rho_ab.first().map(|row| row.len()).unwrap_or(0);
+    if rows != expected || cols != expected || rho_ab.iter().any(|row| row.len() != cols) {
+        return Err(NegativityError::DimensionMismatch {
+            expected,
+            actual: rows,
+        });
+    }
+
+    let partial_transpose =
+        try_partial_transpose_factor(rho_ab, &[dim_a, dim_b], transposed_factor)?;
+    spectral_eigenvalues_supported_blocks(&partial_transpose, interner).map_err(NegativityError::from)
+}
+
+/// Compute logarithmic negativity `log(1 + 2 N(ρ))` from the exact bipartite negativity.
+pub fn logarithmic_negativity_bipartite(
+    rho_ab: &[Vec<Expr>],
+    dim_a: usize,
+    dim_b: usize,
+    transposed_factor: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, NegativityError> {
+    let negativity = negativity_bipartite(rho_ab, dim_a, dim_b, transposed_factor, interner)?;
+    Ok(simplify_expr(expr_log(
+        Expr::add(vec![
+            Expr::one(),
+            Expr::mul(vec![Expr::Int(2.into()), negativity]),
+        ]),
+        interner,
+    )))
 }
 
 /// Compute the bipartite Renyi-2 mutual information `S2(ρ_A) + S2(ρ_B) - S2(ρ_AB)`.
@@ -1930,6 +2579,124 @@ pub fn renyi2_mutual_information_bipartite(
         }
     })?;
     Ok(simplify_expr(Expr::add(vec![s2_a, s2_b, Expr::neg(s2_ab)])))
+}
+
+/// Compute the Renyi-2 entropy of the reduced state obtained by keeping one tensor factor.
+///
+/// The input density matrix is interpreted in row-major lexicographic order induced by
+/// `factor_dims`. The subsystem indexed by `kept_factor` is retained, and every other factor is
+/// traced out exactly.
+pub fn renyi2_entropy_factor(
+    rho: &[Vec<Expr>],
+    factor_dims: &[usize],
+    kept_factor: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, CompositeSpaceError> {
+    validate_factor_index(factor_dims, kept_factor)?;
+    renyi2_entropy_factors_kept(rho, factor_dims, &[kept_factor], interner)
+}
+
+/// Compute the Renyi-2 entropy of the reduced state obtained by keeping an arbitrary factor subset.
+///
+/// The factors listed in `kept_factors` are preserved in their original relative order from
+/// `factor_dims`, while all complementary factors are traced out. Repeated entries are rejected.
+/// An empty `kept_factors` list denotes the scalar reduced state on the trivial subsystem.
+pub fn renyi2_entropy_factors_kept(
+    rho: &[Vec<Expr>],
+    factor_dims: &[usize],
+    kept_factors: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, CompositeSpaceError> {
+    validate_composite_space_matrix(rho, factor_dims)?;
+
+    let mut kept_mask = vec![false; factor_dims.len()];
+    let mut kept_order = Vec::with_capacity(kept_factors.len());
+    for &factor in kept_factors {
+        validate_factor_index(factor_dims, factor)?;
+        if std::mem::replace(&mut kept_mask[factor], true) {
+            return Err(CompositeSpaceError::DuplicatePermutationEntry { value: factor });
+        }
+        kept_order.push(factor);
+    }
+
+    let traced_factors = (0..factor_dims.len())
+        .filter(|&factor| !kept_mask[factor])
+        .collect::<Vec<_>>();
+    let kept_dims = kept_order
+        .iter()
+        .map(|&factor| factor_dims[factor])
+        .collect::<Vec<_>>();
+    let traced_dims = traced_factors
+        .iter()
+        .map(|&factor| factor_dims[factor])
+        .collect::<Vec<_>>();
+    let kept_total = kept_dims.iter().product::<usize>();
+    let traced_total = traced_dims.iter().product::<usize>();
+    let mut reduced = vec![vec![Expr::zero(); kept_total]; kept_total];
+
+    for out_row in 0..kept_total {
+        let kept_row_multi = multi_index_from_linear(out_row, &kept_dims);
+        for out_col in 0..kept_total {
+            let kept_col_multi = multi_index_from_linear(out_col, &kept_dims);
+            let terms = (0..traced_total)
+                .map(|traced_linear| {
+                    let traced_multi = multi_index_from_linear(traced_linear, &traced_dims);
+                    let mut full_row = vec![0usize; factor_dims.len()];
+                    let mut full_col = vec![0usize; factor_dims.len()];
+
+                    for (cursor, &factor) in kept_order.iter().enumerate() {
+                        full_row[factor] = kept_row_multi[cursor];
+                        full_col[factor] = kept_col_multi[cursor];
+                    }
+                    for (cursor, &factor) in traced_factors.iter().enumerate() {
+                        full_row[factor] = traced_multi[cursor];
+                        full_col[factor] = traced_multi[cursor];
+                    }
+
+                    let row_index = linear_index_from_multi(&full_row, factor_dims);
+                    let col_index = linear_index_from_multi(&full_col, factor_dims);
+                    rho[row_index][col_index].clone()
+                })
+                .collect::<Vec<_>>();
+            reduced[out_row][out_col] = simplify_expr(Expr::add(terms));
+        }
+    }
+
+    renyi2_entropy(&reduced, interner).map_err(|err| match err {
+        StateFunctionalError::StateNotSquare { rows, cols } => {
+            CompositeSpaceError::NonSquareMatrix { rows, cols }
+        }
+    })
+}
+
+/// Compute the tripartite Renyi-2 information
+/// `I_3(A:B:C) = S2(A) + S2(B) + S2(C) - S2(AB) - S2(AC) - S2(BC) + S2(ABC)`.
+pub fn renyi2_tripartite_information(
+    rho_abc: &[Vec<Expr>],
+    dims: [usize; 3],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, CompositeSpaceError> {
+    let s2_a = renyi2_entropy_factor(rho_abc, &dims, 0, interner)?;
+    let s2_b = renyi2_entropy_factor(rho_abc, &dims, 1, interner)?;
+    let s2_c = renyi2_entropy_factor(rho_abc, &dims, 2, interner)?;
+    let s2_ab = renyi2_entropy_factors_kept(rho_abc, &dims, &[0, 1], interner)?;
+    let s2_ac = renyi2_entropy_factors_kept(rho_abc, &dims, &[0, 2], interner)?;
+    let s2_bc = renyi2_entropy_factors_kept(rho_abc, &dims, &[1, 2], interner)?;
+    let s2_abc = renyi2_entropy(rho_abc, interner).map_err(|err| match err {
+        StateFunctionalError::StateNotSquare { rows, cols } => {
+            CompositeSpaceError::NonSquareMatrix { rows, cols }
+        }
+    })?;
+
+    Ok(simplify_expr(Expr::add(vec![
+        s2_a,
+        s2_b,
+        s2_c,
+        Expr::neg(s2_ab),
+        Expr::neg(s2_ac),
+        Expr::neg(s2_bc),
+        s2_abc,
+    ])))
 }
 
 /// Compute the Bloch-vector components `[x, y, z]` for a `2x2` density matrix.

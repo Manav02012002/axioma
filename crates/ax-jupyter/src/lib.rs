@@ -1068,7 +1068,16 @@ fn evaluate_code(
                         "plot saved to axioma_plot.svg",
                     ))
                 }),
-            _ => KernelOutput::ExecuteResult(MimeBundle::from_expr(&display, interner)),
+            _ => {
+                let bundle_expr = if ax_notebook::output::qm_entropy_bundle(expr, interner).is_some()
+                    || ax_notebook::output::qm_entanglement_bundle(expr, interner).is_some()
+                {
+                    expr
+                } else {
+                    &display
+                };
+                KernelOutput::ExecuteResult(MimeBundle::from_expr(bundle_expr, interner))
+            }
         };
         outcome.outputs.push(output);
     }
@@ -3360,10 +3369,66 @@ mod tests {
         let markdown = data["text/markdown"].as_str().expect("markdown");
         let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
 
-        assert!(markdown.contains("Purity"), "{markdown}");
-        assert!(markdown.contains("1"), "{markdown}");
+        assert!(markdown.contains("Von Neumann entropy"), "{markdown}");
         assert!(json.contains("\"dimension\":2"), "{json}");
-        assert!(json.contains("\"is_qubit\":true"), "{json}");
+        assert!(json.contains("\"eigenvalues\":[\"1\",\"0\"]"), "{json}");
+    }
+
+    #[test]
+    fn qm_entropy_execute_result_contains_application_json() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(
+            Channel::Shell,
+            execute_frames("von_neumann_entropy([[1/2,0],[0,1/2]])"),
+            "",
+        );
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+
+        assert!(data.contains_key("application/json"));
+        let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
+        assert!(json.contains("\"kind\":\"von_neumann_entropy\""), "{json}");
+    }
+
+    #[test]
+    fn qm_entanglement_execute_result_contains_application_json() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(
+            Channel::Shell,
+            execute_frames("negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2)"),
+            "",
+        );
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+
+        assert!(data.contains_key("application/json"));
+    }
+
+    #[test]
+    fn qm_spectral_summary_execute_result_contains_markdown_and_json() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(
+            Channel::Shell,
+            execute_frames("[[1/2,0],[0,1/2]]"),
+            "",
+        );
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+
+        assert!(data.contains_key("text/markdown"));
+        assert!(data.contains_key("application/json"));
     }
 
     #[test]

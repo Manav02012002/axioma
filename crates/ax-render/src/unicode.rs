@@ -222,6 +222,9 @@ fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String 
             );
         }
     }
+    if let ("von_neumann_entropy", [arg]) = (name, args) {
+        return format!("S({})", render_with_paren(arg, PREC_TOP, interner));
+    }
 
     let rendered_args = args
         .iter()
@@ -654,6 +657,19 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
 
 pub fn to_unicode(expr: &Expr, interner: &ax_ir::Interner) -> String {
     render(expr, interner).0
+}
+
+/// Render an eigenvalue list in Unicode notation using the same per-entry formatting as
+/// `to_unicode`.
+pub fn render_eigenvalue_list_unicode(values: &[Expr], interner: &ax_ir::Interner) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| to_unicode(value, interner))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 #[cfg(test)]

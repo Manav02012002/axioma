@@ -14,6 +14,7 @@ pub use tableau::{
     render_tableau_slot_map_ascii, render_tensor_symmetry_summary, render_young_diagram_ascii,
     render_young_diagram_unicode,
 };
+pub use unicode::render_eigenvalue_list_unicode;
 
 pub fn render_classical_irrep_summary(
     summary: &ax_young::classical_groups::ClassicalIrrepSummary,
@@ -565,6 +566,9 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
             );
         }
     }
+    if let ("von_neumann_entropy", [arg]) = (name, args) {
+        return format!("S\\!\\left({}\\right)", render(arg, PREC_TOP, interner));
+    }
 
     let rendered_args = args
         .iter()
@@ -963,6 +967,19 @@ pub fn to_latex(expr: &Expr, interner: &ax_ir::Interner) -> String {
     render(expr, PREC_TOP, interner)
 }
 
+/// Render an eigenvalue list in LaTeX notation using the same per-entry formatting as
+/// `to_latex`.
+pub fn render_eigenvalue_list_latex(values: &[Expr], interner: &ax_ir::Interner) -> String {
+    format!(
+        "\\left[{}\\right]",
+        values
+            .iter()
+            .map(|value| to_latex(value, interner))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 pub fn to_unicode(expr: &Expr, interner: &ax_ir::Interner) -> String {
     if let Some(rendered) = render_labelled_equation_list_unicode(expr, interner) {
         return rendered;
@@ -1052,6 +1069,20 @@ mod tests {
         let expr = Expr::Call(sinh_sym, vec![Expr::Sym(x)]);
         let latex = to_latex(&expr, &interner);
         assert!(latex.contains("\\sinh"), "expected \\sinh, got: {}", latex);
+    }
+
+    #[test]
+    fn von_neumann_entropy_render_uses_entropy_notation() {
+        let interner = ax_ir::Interner::new();
+        let von_neumann_entropy = interner.get_or_intern("von_neumann_entropy");
+        let rho = interner.get_or_intern("rho");
+        let expr = Expr::Call(von_neumann_entropy, vec![Expr::Sym(rho)]);
+
+        let unicode = unicode::to_unicode(&expr, &interner);
+        let latex = to_latex(&expr, &interner);
+
+        assert!(unicode.contains("S("), "got: {unicode}");
+        assert!(latex.contains("S"), "got: {latex}");
     }
 
     #[test]

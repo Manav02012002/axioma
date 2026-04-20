@@ -7444,6 +7444,42 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "hermitian_eigenvalues" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Matrix(rows) => match ax_qm::hermitian_eigenvalues_small(rows, interner) {
+                        Ok(values) => Expr::List(values),
+                        Err(_) => Expr::Sym(interner.get_or_intern(
+                            "hermitian_eigenvalues expects a square Hermitian matrix of supported dimension",
+                        )),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "hermitian_eigenvalues expects a square Hermitian matrix of supported dimension",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "hermitian_eigenprojectors" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Matrix(rows) => match ax_qm::hermitian_eigenprojectors_small(rows, interner) {
+                        Ok(projectors) => Expr::List(
+                            projectors.into_iter().map(Expr::Matrix).collect(),
+                        ),
+                        Err(_) => Expr::Sym(interner.get_or_intern(
+                            "hermitian_eigenprojectors expects a square Hermitian matrix of supported dimension with nondegenerate spectrum",
+                        )),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "hermitian_eigenprojectors expects a square Hermitian matrix of supported dimension with nondegenerate spectrum",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "matmul" => {
             if args.len() == 2 {
                 match (&args[0], &args[1]) {
@@ -9570,12 +9606,233 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "participation_ratio" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Matrix(rows) => match ax_qm::participation_ratio(rows, interner) {
+                        Ok(value) => value,
+                        Err(_) => Expr::Sym(interner.get_or_intern(
+                            "participation_ratio expects a square density matrix",
+                        )),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "participation_ratio expects a square density matrix",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "renyi2_entropy" => {
             if args.len() == 1 {
                 match expr_to_matrix(&args[0]) {
                     Some(rho) => ax_qm::renyi2_entropy(&rho, interner)
                         .unwrap_or_else(|_| Expr::Call(f, args)),
                     None => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "renyi2_entropy_factor" => {
+            if args.len() == 3 {
+                match (&args[0], usize_list_from_expr(&args[1]), &args[2]) {
+                    (Expr::Matrix(rho), Some(dims), Expr::Int(kept_factor)) => {
+                        match kept_factor.to_usize() {
+                            Some(kept_factor) => ax_qm::renyi2_entropy_factor(
+                                rho,
+                                &dims,
+                                kept_factor,
+                                interner,
+                            )
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(
+                                    "renyi2_entropy_factor expects a square matrix whose dimension matches the factor dimensions",
+                                ))
+                            }),
+                            None => Expr::Sym(interner.get_or_intern(
+                                "renyi2_entropy_factor expects a square matrix whose dimension matches the factor dimensions",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "renyi2_entropy_factor expects a square matrix whose dimension matches the factor dimensions",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "von_neumann_entropy" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Matrix(rows) => match ax_qm::von_neumann_entropy(rows, interner) {
+                        Ok(value) => value,
+                        Err(_) => Expr::Sym(interner.get_or_intern(
+                            "von_neumann_entropy expects a supported square Hermitian density matrix",
+                        )),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "von_neumann_entropy expects a supported square Hermitian density matrix",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "mutual_information" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    usize_from_expr(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Some(rho_ab), Some(dim_a), Some(dim_b)) => {
+                        ax_qm::von_neumann_mutual_information_bipartite(
+                            &rho_ab,
+                            dim_a,
+                            dim_b,
+                            interner,
+                        )
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "mutual_information expects a bipartite density matrix of dimension dim_a * dim_b",
+                            ))
+                        })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "mutual_information expects a bipartite density matrix of dimension dim_a * dim_b",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "conditional_entropy" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    usize_from_expr(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Some(rho_ab), Some(dim_a), Some(dim_b)) => {
+                        ax_qm::conditional_entropy_b_given_a(&rho_ab, dim_a, dim_b, interner)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(
+                                    "conditional_entropy expects a bipartite density matrix of dimension dim_a * dim_b",
+                                ))
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "conditional_entropy expects a bipartite density matrix of dimension dim_a * dim_b",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "entanglement_spectrum" => {
+            if args.len() == 3 {
+                match (
+                    &args[0],
+                    usize_from_expr(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Expr::List(state), Some(dim_a), Some(dim_b)) => {
+                        match ax_qm::entanglement_spectrum_from_state(
+                            state, dim_a, dim_b, interner,
+                        ) {
+                            Ok(values) => Expr::List(values),
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "entanglement_spectrum expects a bipartite state vector or density matrix of dimension dim_a * dim_b",
+                            )),
+                        }
+                    }
+                    (Expr::Matrix(rho), Some(dim_a), Some(dim_b)) => {
+                        match ax_qm::entanglement_spectrum_from_density(
+                            rho, dim_a, dim_b, 'A', interner,
+                        ) {
+                            Ok(values) => Expr::List(values),
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "entanglement_spectrum expects a bipartite state vector or density matrix of dimension dim_a * dim_b",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "entanglement_spectrum expects a bipartite state vector or density matrix of dimension dim_a * dim_b",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "schmidt_coefficients" => {
+            if args.len() == 3 {
+                match (
+                    &args[0],
+                    usize_from_expr(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Expr::List(state), Some(dim_a), Some(dim_b)) => {
+                        match ax_qm::schmidt_coefficients_from_state(state, dim_a, dim_b, interner)
+                        {
+                            Ok(values) => Expr::List(values),
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "schmidt_coefficients expects a bipartite pure-state vector of dimension dim_a * dim_b",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "schmidt_coefficients expects a bipartite pure-state vector of dimension dim_a * dim_b",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "negativity" => {
+            if args.len() == 3 {
+                match (
+                    &args[0],
+                    usize_from_expr(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Expr::Matrix(rho_ab), Some(dim_a), Some(dim_b)) => {
+                        match ax_qm::negativity_bipartite(rho_ab, dim_a, dim_b, 1, interner) {
+                            Ok(value) => value,
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "negativity expects a bipartite density matrix of dimension dim_a * dim_b",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "negativity expects a bipartite density matrix of dimension dim_a * dim_b",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "logarithmic_negativity" => {
+            if args.len() == 3 {
+                match (
+                    &args[0],
+                    usize_from_expr(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Expr::Matrix(rho_ab), Some(dim_a), Some(dim_b)) => {
+                        match ax_qm::logarithmic_negativity_bipartite(
+                            rho_ab, dim_a, dim_b, 1, interner,
+                        ) {
+                            Ok(value) => value,
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "logarithmic_negativity expects a bipartite density matrix of dimension dim_a * dim_b",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "logarithmic_negativity expects a bipartite density matrix of dimension dim_a * dim_b",
+                    )),
                 }
             } else {
                 Expr::Call(f, args)
@@ -9593,6 +9850,34 @@ fn builtin_call(
                             .unwrap_or_else(|_| Expr::Call(f, args))
                     }
                     _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "renyi2_tripartite_information" => {
+            if args.len() == 4 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    usize_from_expr(&args[1]),
+                    usize_from_expr(&args[2]),
+                    usize_from_expr(&args[3]),
+                ) {
+                    (Some(rho_abc), Some(dim_a), Some(dim_b), Some(dim_c)) => {
+                        ax_qm::renyi2_tripartite_information(
+                            &rho_abc,
+                            [dim_a, dim_b, dim_c],
+                            interner,
+                        )
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "renyi2_tripartite_information expects a tripartite density matrix of dimension dim_a * dim_b * dim_c",
+                            ))
+                        })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "renyi2_tripartite_information expects a tripartite density matrix of dimension dim_a * dim_b * dim_c",
+                    )),
                 }
             } else {
                 Expr::Call(f, args)
@@ -13682,12 +13967,60 @@ mod tests {
     }
 
     #[test]
+    fn qm_hermitian_eigenvalues_pauli_z_returns_pm_one() {
+        let (result, _) = eval_src("hermitian_eigenvalues([[1,0],[0,-1]]);");
+        assert_eq!(
+            result,
+            Expr::List(vec![Expr::one(), Expr::neg(Expr::one())])
+        );
+    }
+
+    #[test]
+    fn qm_hermitian_eigenprojectors_pauli_z_returns_two_projectors() {
+        let (result, _) = eval_src("hermitian_eigenprojectors([[1,0],[0,-1]]);");
+        assert_eq!(
+            result,
+            Expr::List(vec![
+                Expr::Matrix(vec![
+                    vec![Expr::one(), Expr::zero()],
+                    vec![Expr::zero(), Expr::zero()],
+                ]),
+                Expr::Matrix(vec![
+                    vec![Expr::zero(), Expr::zero()],
+                    vec![Expr::zero(), Expr::one()],
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_hermitian_eigenvalues_nonhermitian_matrix_returns_exact_error_string() {
+        let (result, interner) = eval_src("hermitian_eigenvalues([[0,1],[2,0]]);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "hermitian_eigenvalues expects a square Hermitian matrix of supported dimension"
+        );
+    }
+
+    #[test]
     fn qm_linear_entropy_of_reduced_bell_state_is_one_half() {
         let (result, interner) = eval_src(
             "linear_entropy(partial_trace(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2, A));",
         );
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert_eq!(rendered, "1/2");
+    }
+
+    #[test]
+    fn qm_participation_ratio_of_reduced_bell_state_is_two() {
+        let (result, interner) = eval_src(
+            "participation_ratio(partial_trace(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2, A));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "2");
     }
 
     #[test]
@@ -13700,6 +14033,170 @@ mod tests {
     }
 
     #[test]
+    fn qm_renyi2_entropy_factor_of_bell_state_is_log_two() {
+        let (result, interner) = eval_src(
+            "renyi2_entropy_factor(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), [2, 2], 0);",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered == "log(2)" || rendered == "-log(1/2)" || rendered == "-1*log(1/2)");
+    }
+
+    #[test]
+    fn qm_renyi2_entropy_factor_bad_dims_return_exact_error_string() {
+        let (result, interner) = eval_src("renyi2_entropy_factor([[1,0],[0,0]], [2, 2], 0);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "renyi2_entropy_factor expects a square matrix whose dimension matches the factor dimensions"
+        );
+    }
+
+    #[test]
+    fn qm_von_neumann_entropy_maximally_mixed_qubit_is_log_two() {
+        let (result, interner) = eval_src("von_neumann_entropy([[1/2,0],[0,1/2]]);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered == "log(2)" || rendered == "-log(1/2)" || rendered == "-1*log(1/2)");
+    }
+
+    #[test]
+    fn qm_von_neumann_entropy_nonhermitian_matrix_returns_exact_error_string() {
+        let (result, interner) = eval_src("von_neumann_entropy([[0,1],[2,0]]);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "von_neumann_entropy expects a supported square Hermitian density matrix"
+        );
+    }
+
+    #[test]
+    fn qm_mutual_information_bell_state_is_log_four() {
+        let (result, interner) =
+            eval_src("mutual_information(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            rendered == "log(4)"
+                || rendered == "2*log(2)"
+                || rendered == "log(2) + log(2)"
+                || rendered == "-2*log(1/2)"
+                || rendered == "-log(1/2) + -log(1/2)"
+                || rendered == "-1*log(1/2) + -1*log(1/2)"
+                || rendered == "log(1) + -2*log(1/2)",
+            "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn qm_conditional_entropy_bell_state_is_minus_log_two() {
+        let (result, interner) =
+            eval_src("conditional_entropy(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            rendered == "-log(2)"
+                || rendered == "log(1/2)"
+                || rendered == "-1*log(2)"
+                || rendered == "0 + -1*log(1/2)"
+                || rendered == "-1*log(1/2)",
+            "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn qm_mutual_information_bad_dims_return_exact_error_string() {
+        let (result, interner) = eval_src("mutual_information([[1,0],[0,0]], 2, 2);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "mutual_information expects a bipartite density matrix of dimension dim_a * dim_b"
+        );
+    }
+
+    #[test]
+    fn qm_conditional_entropy_bad_dims_return_exact_error_string() {
+        let (result, interner) = eval_src("conditional_entropy([[1,0],[0,0]], 2, 2);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "conditional_entropy expects a bipartite density matrix of dimension dim_a * dim_b"
+        );
+    }
+
+    #[test]
+    fn qm_entanglement_spectrum_bell_state_contains_half_twice() {
+        let (result, _) =
+            eval_src("entanglement_spectrum([1/sqrt(2), 0, 0, 1/sqrt(2)], 2, 2);");
+        assert_eq!(
+            result,
+            Expr::List(vec![
+                Expr::Rational(BigRational::new(1.into(), 2.into())),
+                Expr::Rational(BigRational::new(1.into(), 2.into())),
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_schmidt_coefficients_bell_state_contain_inv_sqrt2_twice() {
+        let (result, interner) =
+            eval_src("schmidt_coefficients([1/sqrt(2), 0, 0, 1/sqrt(2)], 2, 2);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(
+            rendered == "[sqrt(1/2), sqrt(1/2)]"
+                || rendered == "[1/sqrt(2), 1/sqrt(2)]"
+                || rendered == "[2^-1/2, 2^-1/2]",
+            "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn qm_entanglement_spectrum_bad_dimensions_return_exact_error_string() {
+        let (result, interner) = eval_src("entanglement_spectrum([1,0,0], 2, 2);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "entanglement_spectrum expects a bipartite state vector or density matrix of dimension dim_a * dim_b"
+        );
+    }
+
+    #[test]
+    fn qm_schmidt_coefficients_bad_dimensions_return_exact_error_string() {
+        let (result, interner) = eval_src("schmidt_coefficients([1,0,0], 2, 2);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "schmidt_coefficients expects a bipartite pure-state vector of dimension dim_a * dim_b"
+        );
+    }
+
+    #[test]
+    fn qm_negativity_bell_state_is_one_half() {
+        let (result, interner) = eval_src(
+            "negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1/2");
+    }
+
+    #[test]
+    fn qm_logarithmic_negativity_bell_state_is_log_two() {
+        let (result, interner) = eval_src(
+            "logarithmic_negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "log(2)");
+    }
+
+    #[test]
     fn qm_renyi2_mutual_information_of_bell_state_is_log_four() {
         let (result, interner) =
             eval_src("renyi2_mutual_information(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);");
@@ -13708,10 +14205,31 @@ mod tests {
             rendered == "log(4)"
                 || rendered == "2*log(2)"
                 || rendered == "log(2) + log(2)"
+                || rendered == "-2*log(1/2)"
                 || rendered == "-log(1/2) + -log(1/2)"
                 || rendered == "-1*log(1/2) + -1*log(1/2)"
                 || rendered == "log(1) + -2*log(1/2)",
             "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn qm_renyi2_tripartite_information_product_state_is_zero() {
+        let (result, _) =
+            eval_src("renyi2_tripartite_information(density([1, 0, 0, 0, 0, 0, 0, 0]), 2, 2, 2);");
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn qm_renyi2_tripartite_information_bad_dims_return_exact_error_string() {
+        let (result, interner) =
+            eval_src("renyi2_tripartite_information([[1,0],[0,0]], 2, 2, 2);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "renyi2_tripartite_information expects a tripartite density matrix of dimension dim_a * dim_b * dim_c"
         );
     }
 
