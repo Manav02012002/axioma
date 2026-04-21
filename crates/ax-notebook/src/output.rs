@@ -72,6 +72,9 @@ impl MimeBundle {
         if let Some(bundle) = qm_density_summary_bundle(expr, interner) {
             return bundle;
         }
+        if let Some(bundle) = qm_channel_summary_bundle(expr, interner) {
+            return bundle;
+        }
         Self::plain(ax_render::to_unicode(expr, interner))
             .with_latex(ax_render::to_latex(expr, interner))
     }
@@ -226,9 +229,9 @@ pub fn qm_density_summary_bundle(
     );
     let purity = ax_render::to_unicode(&ax_qm::purity(rows).ok()?, interner);
     let linear_entropy = ax_render::to_unicode(&ax_qm::linear_entropy(rows).ok()?, interner);
-    let bloch_vector = ax_qm::bloch_vector(rows).ok().map(|vector| {
-        vector.map(|component| ax_render::to_unicode(&component, interner))
-    });
+    let bloch_vector = ax_qm::bloch_vector(rows)
+        .ok()
+        .map(|vector| vector.map(|component| ax_render::to_unicode(&component, interner)));
     let is_qubit = bloch_vector.is_some();
 
     let packet = ax_ai_proto::QuantumDensitySummaryPacket {
@@ -268,6 +271,53 @@ struct QuantumSpectralSummaryData {
 fn is_square_matrix(rows: &[Vec<ax_ir::Expr>]) -> bool {
     let dimension = rows.len();
     dimension > 0 && rows.iter().all(|row| row.len() == dimension)
+}
+
+fn expr_to_kraus_channel(expr: &ax_ir::Expr) -> Option<Vec<Vec<Vec<ax_ir::Expr>>>> {
+    match strip_groups(expr) {
+        ax_ir::Expr::List(items) if !items.is_empty() => items
+            .iter()
+            .map(|item| match strip_groups(item) {
+                ax_ir::Expr::Matrix(rows) => Some(rows.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    }
+}
+
+pub fn qm_channel_summary_bundle(
+    expr: &ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> Option<MimeBundle> {
+    let kraus = expr_to_kraus_channel(expr)?;
+    let dimension = ax_qm::kraus_dimension(&kraus).ok()?;
+    let kraus_count = kraus.len();
+    let trace_preserving = ax_qm::is_trace_preserving_exact(&kraus, interner).ok()?;
+    let unital = ax_qm::is_unital_exact(&kraus, interner).ok()?;
+    let choi_dimension = dimension.checked_mul(dimension)?;
+
+    let packet = ax_ai_proto::QuantumChannelSummaryPacket {
+        dimension,
+        kraus_count,
+        trace_preserving,
+        unital,
+        choi_dimension,
+    };
+    let json = serde_json::to_value(&packet).ok()?;
+    let plain = format!(
+        "Quantum channel: dimension={dimension}, kraus_count={kraus_count}, trace_preserving={trace_preserving}, unital={unital}, choi_dimension={choi_dimension}"
+    );
+    let markdown = format!(
+        "| Quantity | Value |\n| --- | --- |\n| Dimension | {} |\n| Kraus count | {} |\n| Trace preserving | {} |\n| Unital | {} |\n| Choi dimension | {} |",
+        dimension, kraus_count, trace_preserving, unital, choi_dimension
+    );
+
+    Some(
+        MimeBundle::plain(plain)
+            .with_markdown(markdown)
+            .with_json(json),
+    )
 }
 
 fn is_diagonal_matrix(rows: &[Vec<ax_ir::Expr>]) -> bool {
@@ -456,8 +506,8 @@ pub fn qm_entanglement_bundle(
     let dim_a = dim_a.to_string().parse::<usize>().ok()?;
     let dim_b = dim_b.to_string().parse::<usize>().ok()?;
 
-    let spectrum = ax_qm::partial_transpose_spectrum_bipartite(rows, dim_a, dim_b, 1, interner)
-        .ok()?;
+    let spectrum =
+        ax_qm::partial_transpose_spectrum_bipartite(rows, dim_a, dim_b, 1, interner).ok()?;
     let negativity = ax_qm::negativity_bipartite(rows, dim_a, dim_b, 1, interner).ok()?;
     let logarithmic_negativity =
         ax_qm::logarithmic_negativity_bipartite(rows, dim_a, dim_b, 1, interner).ok()?;
@@ -576,6 +626,30 @@ mod tests {
     }
 
     #[test]
+    fn qm_channel_summary_bundle_identity_channel_contains_tp_and_unital() {
+        let expr = ax_ir::Expr::List(vec![ax_ir::Expr::Matrix(vec![
+            vec![ax_ir::Expr::one(), ax_ir::Expr::zero()],
+            vec![ax_ir::Expr::zero(), ax_ir::Expr::one()],
+        ])]);
+        let interner = ax_ir::Interner::new();
+
+        let bundle = qm_channel_summary_bundle(&expr, &interner).expect("channel summary bundle");
+        let data = bundle.to_jupyter_data();
+        let markdown = data["text/markdown"].as_str().expect("markdown");
+        let json = &data["application/json"];
+
+        assert!(markdown.contains("| Dimension | 2 |"), "{markdown}");
+        assert!(markdown.contains("| Kraus count | 1 |"), "{markdown}");
+        assert!(markdown.contains("| Trace preserving | true |"), "{markdown}");
+        assert!(markdown.contains("| Unital | true |"), "{markdown}");
+        assert!(markdown.contains("| Choi dimension | 4 |"), "{markdown}");
+        assert_eq!(json["kraus_count"], 1);
+        assert_eq!(json["trace_preserving"], true);
+        assert_eq!(json["unital"], true);
+        assert_eq!(json["choi_dimension"], 4);
+    }
+
+    #[test]
     fn qm_entropy_bundle_contains_json_kind() {
         let interner = ax_ir::Interner::new();
         let von_neumann_entropy = interner.get_or_intern("von_neumann_entropy");
@@ -669,12 +743,7 @@ mod tests {
                 ax_ir::Expr::zero(),
                 ax_ir::Expr::zero(),
             ],
-            vec![
-                half.clone(),
-                ax_ir::Expr::zero(),
-                ax_ir::Expr::zero(),
-                half,
-            ],
+            vec![half.clone(), ax_ir::Expr::zero(), ax_ir::Expr::zero(), half],
         ]);
         let interner = ax_ir::Interner::new();
 

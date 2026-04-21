@@ -3432,6 +3432,25 @@ mod tests {
     }
 
     #[test]
+    fn qm_channel_summary_execute_result_contains_json_and_markdown() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(Channel::Shell, execute_frames("identity_channel(2)"), "");
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+
+        assert!(data.contains_key("text/markdown"));
+        assert!(data.contains_key("application/json"));
+        assert_eq!(data["application/json"]["kraus_count"], 1);
+        assert_eq!(data["application/json"]["trace_preserving"], true);
+        assert_eq!(data["application/json"]["unital"], true);
+        assert_eq!(data["application/json"]["choi_dimension"], 4);
+    }
+
+    #[test]
     fn cancellation_requested_before_evaluation_interrupts_without_committing_state() {
         let mut runtime = KernelRuntime::new(Vec::new());
         let token = ax_ir::CancellationToken::new();

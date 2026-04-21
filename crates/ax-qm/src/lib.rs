@@ -83,6 +83,18 @@ pub enum QmLinearAlgebraError {
 pub enum ChannelError {
     #[error("empty Kraus set")]
     EmptyKrausSet,
+    #[error("channel composition dimension mismatch: left={left_dim}, right={right_dim}")]
+    CompositionDimensionMismatch { left_dim: usize, right_dim: usize },
+    #[error("non-numeric Choi matrix")]
+    NonNumericChoiMatrix,
+    #[error("unsupported complete positivity check for Choi dimension {dim}")]
+    UnsupportedCompletePositivityCheck { dim: usize },
+    #[error("unsupported Choi recovery")]
+    UnsupportedChoiRecovery,
+    #[error("invalid Choi dimension: dim={dim}")]
+    InvalidChoiDimension { dim: usize },
+    #[error("invalid Kraus set")]
+    InvalidKrausSet,
     #[error("non-square Kraus operator at index {index}: rows={rows}, cols={cols}")]
     NonSquareKraus {
         index: usize,
@@ -1101,14 +1113,88 @@ fn simplify_expr(expr: Expr) -> Expr {
                         if count == 1 {
                             term
                         } else {
-                            Expr::mul(vec![Expr::Int((count as i64).into()), term])
+                            simplify_expr(Expr::mul(vec![Expr::Int((count as i64).into()), term]))
                         }
                     })
                     .collect(),
             )
         }
-        Expr::Mul(factors) => Expr::mul(factors.into_iter().map(simplify_expr).collect()),
-        Expr::Pow(base, exp) => Expr::pow(simplify_expr(*base), simplify_expr(*exp)),
+        Expr::Mul(factors) => {
+            let mut scalar_re = BigRational::one();
+            let mut scalar_im = BigRational::zero();
+            let mut simplified_factors = Vec::new();
+
+            for factor in factors.into_iter().map(simplify_expr) {
+                if let Some((re, im)) = exact_numeric_expr(&factor) {
+                    let next_re = scalar_re.clone() * re.clone() - scalar_im.clone() * im.clone();
+                    let next_im = scalar_re * im + scalar_im * re;
+                    scalar_re = next_re;
+                    scalar_im = next_im;
+                } else {
+                    simplified_factors.push(factor);
+                }
+            }
+
+            let mut collapsed_factors = Vec::new();
+            let mut used = vec![false; simplified_factors.len()];
+            for idx in 0..simplified_factors.len() {
+                if used[idx] {
+                    continue;
+                }
+
+                let factor = &simplified_factors[idx];
+                if let Expr::Call(_, args) = factor {
+                    if args.len() == 1 {
+                        if let Some(next_idx) =
+                            ((idx + 1)..simplified_factors.len()).find(|candidate| {
+                                !used[*candidate] && simplified_factors[*candidate] == *factor
+                            })
+                        {
+                            used[idx] = true;
+                            used[next_idx] = true;
+                            collapsed_factors.push(args[0].clone());
+                            continue;
+                        }
+                    }
+                }
+
+                used[idx] = true;
+                collapsed_factors.push(factor.clone());
+            }
+
+            if scalar_re.is_zero() && scalar_im.is_zero() {
+                Expr::zero()
+            } else {
+                let scalar_expr = if scalar_re.is_one() && scalar_im.is_zero() {
+                    None
+                } else {
+                    Some(expr_from_exact_complex(scalar_re, scalar_im))
+                };
+
+                let mut factors = Vec::new();
+                if let Some(scalar_expr) = scalar_expr {
+                    factors.push(scalar_expr);
+                }
+                factors.extend(collapsed_factors);
+
+                match factors.len() {
+                    0 => Expr::one(),
+                    1 => factors.into_iter().next().unwrap_or_else(Expr::one),
+                    _ => Expr::mul(factors),
+                }
+            }
+        }
+        Expr::Pow(base, exp) => {
+            let base = simplify_expr(*base);
+            let exp = simplify_expr(*exp);
+            match (&base, &exp) {
+                // Keep `f(x)^2` consistent with the unary-call collapse already used in `Mul`.
+                (Expr::Call(_, args), Expr::Int(power)) if args.len() == 1 && power == &2.into() => {
+                    args[0].clone()
+                }
+                _ => Expr::pow(base, exp),
+            }
+        }
         Expr::Neg(inner) => Expr::neg(simplify_expr(*inner)),
         other => other,
     }
@@ -1185,6 +1271,131 @@ fn exact_sqrt_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(interner.get_or_intern("sqrt"), vec![expr])
 }
 
+fn simplified_sqrt_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    let expr = simplify_expr(expr);
+    if expr == Expr::zero() || expr == Expr::one() {
+        expr
+    } else {
+        exact_sqrt_expr(expr, interner)
+    }
+}
+
+fn numeric_scalar_expr_exact(expr: &Expr) -> Option<BigRational> {
+    match expr {
+        Expr::Int(value) => Some(BigRational::from_integer(value.clone())),
+        Expr::Rational(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn exact_numeric_expr(expr: &Expr) -> Option<(BigRational, BigRational)> {
+    match expr {
+        Expr::Int(_) | Expr::Rational(_) => {
+            Some((numeric_scalar_expr_exact(expr)?, BigRational::zero()))
+        }
+        Expr::Complex(re, im) => Some((
+            numeric_scalar_expr_exact(re)?,
+            numeric_scalar_expr_exact(im)?,
+        )),
+        _ => None,
+    }
+}
+
+fn expr_from_exact_rational(value: BigRational) -> Expr {
+    if value.denom() == &BigInt::one() {
+        Expr::Int(value.numer().clone())
+    } else {
+        Expr::Rational(value)
+    }
+}
+
+fn expr_from_exact_complex(re: BigRational, im: BigRational) -> Expr {
+    if im.is_zero() {
+        expr_from_exact_rational(re)
+    } else {
+        Expr::Complex(
+            Box::new(expr_from_exact_rational(re)),
+            Box::new(expr_from_exact_rational(im)),
+        )
+    }
+}
+
+fn linear_term_coeff(expr: Expr) -> (BigRational, Option<Expr>) {
+    match expr {
+        Expr::Int(value) => (BigRational::from_integer(value), None),
+        Expr::Rational(value) => (value, None),
+        Expr::Neg(inner) => {
+            let (coeff, basis) = linear_term_coeff(*inner);
+            (-coeff, basis)
+        }
+        Expr::Mul(factors) => {
+            let mut coeff = BigRational::one();
+            let mut basis = Vec::new();
+            for factor in factors {
+                match factor {
+                    Expr::Int(value) => coeff *= BigRational::from_integer(value),
+                    Expr::Rational(value) => coeff *= value,
+                    other => basis.push(other),
+                }
+            }
+            let basis_expr = match basis.len() {
+                0 => None,
+                1 => basis.into_iter().next(),
+                _ => Some(Expr::mul(basis)),
+            };
+            (coeff, basis_expr)
+        }
+        other => (BigRational::one(), Some(other)),
+    }
+}
+
+fn expr_is_structurally_zero(expr: &Expr) -> bool {
+    let expr = simplify_expr(expr.clone());
+    if expr == Expr::zero() {
+        return true;
+    }
+
+    let Expr::Add(terms) = expr else {
+        return false;
+    };
+
+    let mut constant = BigRational::zero();
+    let mut grouped: Vec<(Expr, BigRational)> = Vec::new();
+
+    for term in terms {
+        let (coeff, basis) = linear_term_coeff(term);
+        if coeff.is_zero() {
+            continue;
+        }
+        if let Some(basis) = basis {
+            if let Some((_, existing_coeff)) = grouped
+                .iter_mut()
+                .find(|(existing_basis, _)| *existing_basis == basis)
+            {
+                *existing_coeff += coeff;
+            } else {
+                grouped.push((basis, coeff));
+            }
+        } else {
+            constant += coeff;
+        }
+    }
+
+    constant.is_zero() && grouped.into_iter().all(|(_, coeff)| coeff.is_zero())
+}
+
+fn prune_zero_kraus_ops(kraus: Vec<Vec<Vec<Expr>>>) -> Vec<Vec<Vec<Expr>>> {
+    kraus
+        .into_iter()
+        .filter(|operator| {
+            operator
+                .iter()
+                .flat_map(|row| row.iter())
+                .any(|entry| entry != &Expr::zero())
+        })
+        .collect()
+}
+
 fn simplify_visible_scalar_expr(expr: Expr) -> Expr {
     match expr {
         Expr::Call(sym, args) if args.len() == 1 => {
@@ -1209,27 +1420,29 @@ fn simplify_visible_scalar_expr(expr: Expr) -> Expr {
 fn explicit_negative_magnitude(expr: &Expr) -> Option<Expr> {
     match expr {
         Expr::Int(value) if value < &BigInt::zero() => Some(Expr::Int(-value.clone())),
-        Expr::Rational(value) if value < &BigRational::zero() => Some(Expr::Rational(-value.clone())),
+        Expr::Rational(value) if value < &BigRational::zero() => {
+            Some(Expr::Rational(-value.clone()))
+        }
         Expr::Neg(inner) => Some(simplify_visible_scalar_expr((**inner).clone())),
         Expr::Mul(factors) => {
             let Some((first, rest)) = factors.split_first() else {
                 return None;
             };
             match first {
-                Expr::Int(value) if value < &BigInt::zero() => Some(simplify_visible_scalar_expr(
-                    Expr::mul(
+                Expr::Int(value) if value < &BigInt::zero() => {
+                    Some(simplify_visible_scalar_expr(Expr::mul(
                         std::iter::once(Expr::Int(-value.clone()))
                             .chain(rest.iter().cloned())
                             .collect::<Vec<_>>(),
-                    ),
-                )),
-                Expr::Rational(value) if value < &BigRational::zero() => Some(
-                    simplify_visible_scalar_expr(Expr::mul(
+                    )))
+                }
+                Expr::Rational(value) if value < &BigRational::zero() => {
+                    Some(simplify_visible_scalar_expr(Expr::mul(
                         std::iter::once(Expr::Rational(-value.clone()))
                             .chain(rest.iter().cloned())
                             .collect::<Vec<_>>(),
-                    )),
-                ),
+                    )))
+                }
                 _ => None,
             }
         }
@@ -1391,8 +1604,7 @@ pub fn hermitian_eigenvalues_small(
                 Expr::pow(diff, Expr::Int(2.into())),
                 Expr::mul(vec![Expr::Int(4.into()), b_norm_sq]),
             ]);
-            let sqrt_discriminant =
-                Expr::Call(interner.get_or_intern("sqrt"), vec![discriminant]);
+            let sqrt_discriminant = Expr::Call(interner.get_or_intern("sqrt"), vec![discriminant]);
             let half_trace = Expr::mul(vec![half(), trace]);
             let half_gap = Expr::mul(vec![half(), sqrt_discriminant]);
             Ok(vec![
@@ -1423,7 +1635,9 @@ pub fn hermitian_eigenprojectors_small(
         {
             return Err(SpectralError::DegenerateSpectrumUnsupported);
         }
-        return Ok((0..dim).map(|idx| basis_projector_matrix(dim, idx)).collect());
+        return Ok((0..dim)
+            .map(|idx| basis_projector_matrix(dim, idx))
+            .collect());
     }
 
     if dim != 2 {
@@ -1439,15 +1653,15 @@ pub fn hermitian_eigenprojectors_small(
     let projectors = (0..2)
         .map(|i| {
             let j = 1 - i;
-            let numerator = matrix_subtract(
-                mat,
-                &ax_linalg::mat_scale(&eigenvalues[j], &identity),
-            );
+            let numerator = matrix_subtract(mat, &ax_linalg::mat_scale(&eigenvalues[j], &identity));
             let denominator = Expr::add(vec![
                 eigenvalues[i].clone(),
                 Expr::neg(eigenvalues[j].clone()),
             ]);
-            simplify_matrix(ax_linalg::mat_scale(&scalar_inverse(denominator), &numerator))
+            simplify_matrix(ax_linalg::mat_scale(
+                &scalar_inverse(denominator),
+                &numerator,
+            ))
         })
         .collect();
 
@@ -1456,6 +1670,193 @@ pub fn hermitian_eigenprojectors_small(
 
 fn is_zero_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Int(n) if n.is_zero()) || matches!(expr, Expr::Rational(r) if r.is_zero())
+}
+
+const NUMERIC_CP_TOLERANCE: f64 = 1.0e-12;
+
+fn numeric_scalar_expr(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::Int(value) => num_traits::ToPrimitive::to_f64(value),
+        Expr::Rational(value) => {
+            let numer = num_traits::ToPrimitive::to_f64(value.numer())?;
+            let denom = num_traits::ToPrimitive::to_f64(value.denom())?;
+            Some(numer / denom)
+        }
+        Expr::Float(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn numeric_complex_expr(expr: &Expr) -> Result<(f64, f64), ChannelError> {
+    match expr {
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => numeric_scalar_expr(expr)
+            .map(|value| (value, 0.0))
+            .ok_or(ChannelError::NonNumericChoiMatrix),
+        Expr::Complex(re, im) => Ok((
+            numeric_scalar_expr(re).ok_or(ChannelError::NonNumericChoiMatrix)?,
+            numeric_scalar_expr(im).ok_or(ChannelError::NonNumericChoiMatrix)?,
+        )),
+        _ => Err(ChannelError::NonNumericChoiMatrix),
+    }
+}
+
+fn numeric_choi_matrix(choi: &[Vec<Expr>]) -> Result<Vec<Vec<(f64, f64)>>, ChannelError> {
+    choi.iter()
+        .map(|row| {
+            row.iter()
+                .map(numeric_complex_expr)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect()
+}
+
+fn numeric_complex_is_zero((re, im): (f64, f64)) -> bool {
+    re.abs() <= NUMERIC_CP_TOLERANCE && im.abs() <= NUMERIC_CP_TOLERANCE
+}
+
+fn numeric_complex_conjugate((re, im): (f64, f64)) -> (f64, f64) {
+    (re, -im)
+}
+
+fn numeric_complex_close(left: (f64, f64), right: (f64, f64)) -> bool {
+    (left.0 - right.0).abs() <= NUMERIC_CP_TOLERANCE
+        && (left.1 - right.1).abs() <= NUMERIC_CP_TOLERANCE
+}
+
+fn numeric_matrix_is_hermitian(matrix: &[Vec<(f64, f64)>]) -> bool {
+    for row in 0..matrix.len() {
+        if matrix[row][row].1.abs() > NUMERIC_CP_TOLERANCE {
+            return false;
+        }
+        for col in (row + 1)..matrix.len() {
+            if !numeric_complex_close(
+                matrix[row][col],
+                numeric_complex_conjugate(matrix[col][row]),
+            ) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn numeric_induced_block_indices(matrix: &[Vec<(f64, f64)>]) -> Vec<Vec<usize>> {
+    let dim = matrix.len();
+    let mut visited = vec![false; dim];
+    let mut blocks = Vec::new();
+
+    for start in 0..dim {
+        if visited[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        let mut block = Vec::new();
+        visited[start] = true;
+
+        while let Some(node) = stack.pop() {
+            block.push(node);
+            for next in 0..dim {
+                if visited[next] {
+                    continue;
+                }
+                let connected = if node == next {
+                    !numeric_complex_is_zero(matrix[node][node])
+                } else {
+                    !numeric_complex_is_zero(matrix[node][next])
+                        || !numeric_complex_is_zero(matrix[next][node])
+                };
+                if connected {
+                    visited[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+
+        block.sort_unstable();
+        blocks.push(block);
+    }
+
+    blocks
+}
+
+fn numeric_hermitian_2x2_eigenvalues(block: &[Vec<(f64, f64)>]) -> [f64; 2] {
+    let a = block[0][0].0;
+    let d = block[1][1].0;
+    let b = block[0][1];
+    let b_norm_sq = b.0 * b.0 + b.1 * b.1;
+    let discriminant = ((a - d) * (a - d) + 4.0 * b_norm_sq).sqrt();
+    [0.5 * (a + d + discriminant), 0.5 * (a + d - discriminant)]
+}
+
+/// Check complete positivity from a low-dimensional numeric Choi matrix.
+///
+/// Supported cases are:
+/// - `1x1`
+/// - Hermitian `2x2`
+/// - Hermitian `4x4` matrices that reduce to supported `1x1` and `2x2` blocks by exact zero pattern
+///
+/// Symbolic Choi entries are rejected with `NonNumericChoiMatrix`, and larger or
+/// otherwise unsupported matrices return `UnsupportedCompletePositivityCheck`.
+pub fn is_completely_positive_choi_small(
+    choi: &[Vec<Expr>],
+    _interner: &ax_ir::Interner,
+) -> Result<bool, ChannelError> {
+    let Some((rows, cols)) = matrix_shape(choi) else {
+        return Err(ChannelError::UnsupportedCompletePositivityCheck { dim: choi.len() });
+    };
+    if rows != cols {
+        return Err(ChannelError::UnsupportedCompletePositivityCheck { dim: rows });
+    }
+
+    let numeric = numeric_choi_matrix(choi)?;
+    if !numeric_matrix_is_hermitian(&numeric) {
+        return Ok(false);
+    }
+
+    match rows {
+        1 => Ok(numeric[0][0].0 >= -NUMERIC_CP_TOLERANCE),
+        2 => Ok(numeric_hermitian_2x2_eigenvalues(&numeric)
+            .into_iter()
+            .all(|eigenvalue| eigenvalue >= -NUMERIC_CP_TOLERANCE)),
+        4 => {
+            let blocks = numeric_induced_block_indices(&numeric);
+            if blocks.iter().any(|block| block.len() > 2) {
+                return Err(ChannelError::UnsupportedCompletePositivityCheck { dim: 4 });
+            }
+
+            for block in blocks {
+                match block.len() {
+                    0 => {}
+                    1 => {
+                        if numeric[block[0]][block[0]].0 < -NUMERIC_CP_TOLERANCE {
+                            return Ok(false);
+                        }
+                    }
+                    2 => {
+                        let submatrix = block
+                            .iter()
+                            .map(|&row| {
+                                block
+                                    .iter()
+                                    .map(|&col| numeric[row][col])
+                                    .collect::<Vec<_>>()
+                            })
+                            .collect::<Vec<_>>();
+                        if !numeric_hermitian_2x2_eigenvalues(&submatrix)
+                            .into_iter()
+                            .all(|eigenvalue| eigenvalue >= -NUMERIC_CP_TOLERANCE)
+                        {
+                            return Ok(false);
+                        }
+                    }
+                    _ => return Err(ChannelError::UnsupportedCompletePositivityCheck { dim: 4 }),
+                }
+            }
+
+            Ok(true)
+        }
+        dim => Err(ChannelError::UnsupportedCompletePositivityCheck { dim }),
+    }
 }
 
 fn validate_kraus_set(kraus: &[Vec<Vec<Expr>>]) -> Result<usize, ChannelError> {
@@ -1491,7 +1892,7 @@ fn validate_kraus_set(kraus: &[Vec<Vec<Expr>>]) -> Result<usize, ChannelError> {
         }
     }
 
-    Ok(expected_dim.unwrap_or(0))
+    expected_dim.ok_or(ChannelError::InvalidKrausSet)
 }
 
 fn validate_square_state_dimension(
@@ -2125,6 +2526,29 @@ pub fn try_outer(ket: &[Expr], bra: &[Expr]) -> Result<Vec<Vec<Expr>>, QmLinearA
         .collect())
 }
 
+/// Flatten a matrix into a single column-stacked vector in column-major order.
+pub fn vec_column_major(mat: &[Vec<Expr>]) -> Vec<Expr> {
+    let Some((rows, cols)) = matrix_shape(mat) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::with_capacity(rows * cols);
+    for col in 0..cols {
+        for row in mat.iter().take(rows) {
+            out.push(row[col].clone());
+        }
+    }
+    out
+}
+
+/// Form the conjugation-aware outer product `vec vec†` of a column vector.
+pub fn outer_column_vector(vec: &[Expr]) -> Vec<Vec<Expr>> {
+    match try_outer(vec, vec) {
+        Ok(matrix) => matrix,
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Compute the pure-state density matrix `|ψ⟩⟨ψ|`.
 pub fn try_density_matrix(state: &[Expr]) -> Result<Vec<Vec<Expr>>, QmLinearAlgebraError> {
     try_outer(state, state)
@@ -2138,7 +2562,7 @@ pub fn basis_projector(index: usize, dim: usize) -> Result<Vec<Vec<Expr>>, QmLin
 
 /// Compute the Kraus completeness matrix `Σ_k K_k† K_k` for a finite-dimensional channel.
 pub fn kraus_completeness_matrix(kraus: &[Vec<Vec<Expr>>]) -> Result<Vec<Vec<Expr>>, ChannelError> {
-    let dim = validate_kraus_set(kraus)?;
+    let dim = kraus_dimension(kraus)?;
     let interner = ax_ir::Interner::new();
     let mut completeness = zero_matrix(dim);
     for operator in kraus {
@@ -2149,12 +2573,234 @@ pub fn kraus_completeness_matrix(kraus: &[Vec<Vec<Expr>>]) -> Result<Vec<Vec<Exp
     Ok(simplify_matrix(completeness))
 }
 
+/// Compute the exact trace-preserving residual `Σ_k K_k† K_k - I` for a Kraus channel.
+///
+/// The input Kraus set must be non-empty, and every operator must be square with
+/// a common dimension.
+pub fn trace_preserving_residual(
+    kraus: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, ChannelError> {
+    let dim = kraus_dimension(kraus)?;
+    let mut completeness = zero_matrix(dim);
+    for operator in kraus {
+        let adjoint = adjoint_matrix(operator);
+        let term = ax_linalg::mat_mul(&adjoint, operator, interner);
+        completeness = simplify_matrix(ax_linalg::mat_add(&completeness, &term));
+    }
+    let identity = identity_matrix(dim, interner);
+    Ok(simplify_matrix(ax_linalg::mat_add(
+        &completeness,
+        &ax_linalg::mat_scale(&Expr::neg(Expr::one()), &identity),
+    )))
+}
+
+/// Check whether a Kraus channel is exactly trace preserving.
+///
+/// This returns `true` iff every entry of the residual `Σ_k K_k† K_k - I` is
+/// structurally zero after simplification.
+pub fn is_trace_preserving_exact(
+    kraus: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<bool, ChannelError> {
+    let residual = trace_preserving_residual(kraus, interner)?;
+    Ok(residual
+        .iter()
+        .flat_map(|row| row.iter())
+        .all(expr_is_structurally_zero))
+}
+
+/// Compute the exact unital residual `Σ_k K_k K_k† - I` for a Kraus channel.
+///
+/// The input Kraus set must be non-empty, and every operator must be square with
+/// a common dimension.
+pub fn unital_residual(
+    kraus: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, ChannelError> {
+    let dim = kraus_dimension(kraus)?;
+    let mut completeness = zero_matrix(dim);
+    for operator in kraus {
+        let adjoint = adjoint_matrix(operator);
+        let term = ax_linalg::mat_mul(operator, &adjoint, interner);
+        completeness = simplify_matrix(ax_linalg::mat_add(&completeness, &term));
+    }
+    let identity = identity_matrix(dim, interner);
+    Ok(simplify_matrix(ax_linalg::mat_add(
+        &completeness,
+        &ax_linalg::mat_scale(&Expr::neg(Expr::one()), &identity),
+    )))
+}
+
+/// Check whether a Kraus channel is exactly unital.
+///
+/// This returns `true` iff every entry of the residual `Σ_k K_k K_k† - I` is
+/// structurally zero after simplification.
+pub fn is_unital_exact(
+    kraus: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<bool, ChannelError> {
+    let residual = unital_residual(kraus, interner)?;
+    Ok(residual
+        .iter()
+        .flat_map(|row| row.iter())
+        .all(expr_is_structurally_zero))
+}
+
+/// Compute the Frobenius distance between two channels via their Choi matrices.
+///
+/// This constructs both Choi matrices and returns `||J(left) - J(right)||_F`,
+/// where the norm is represented exactly as `sqrt(Tr((J1 - J2)† (J1 - J2)))`
+/// unless the result simplifies structurally to zero.
+pub fn choi_frobenius_distance(
+    left: &[Vec<Vec<Expr>>],
+    right: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, ChannelError> {
+    let left_dim = kraus_dimension(left)?;
+    let right_dim = kraus_dimension(right)?;
+    if left_dim != right_dim {
+        return Err(ChannelError::CompositionDimensionMismatch {
+            left_dim,
+            right_dim,
+        });
+    }
+
+    let left_choi = choi_matrix_from_kraus(left)?;
+    let right_choi = choi_matrix_from_kraus(right)?;
+    choi_frobenius_distance_from_choi(&left_choi, &right_choi, interner)
+}
+
+/// Compute the Frobenius distance between two Choi matrices.
+///
+/// The input Choi matrices must be square and have matching shape. The returned
+/// expression is `sqrt(Tr((J1 - J2)† (J1 - J2)))`, with an exact `0` returned
+/// when the squared norm simplifies structurally to zero.
+pub fn choi_frobenius_distance_from_choi(
+    left: &[Vec<Expr>],
+    right: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, ChannelError> {
+    let Some((left_rows, left_cols)) = matrix_shape(left) else {
+        return Err(ChannelError::InvalidChoiDimension { dim: left.len() });
+    };
+    let Some((right_rows, right_cols)) = matrix_shape(right) else {
+        return Err(ChannelError::InvalidChoiDimension { dim: right.len() });
+    };
+    if left_rows != left_cols {
+        return Err(ChannelError::InvalidChoiDimension { dim: left_rows });
+    }
+    if right_rows != right_cols {
+        return Err(ChannelError::InvalidChoiDimension { dim: right_rows });
+    }
+    if left_rows != right_rows {
+        return Err(ChannelError::CompositionDimensionMismatch {
+            left_dim: left_rows,
+            right_dim: right_rows,
+        });
+    }
+
+    let delta = matrix_subtract(left, right);
+    let delta_adjoint = adjoint_matrix(&delta);
+    let gram = simplify_matrix(ax_linalg::mat_mul(&delta_adjoint, &delta, interner));
+    let norm_sq = simplify_expr(ax_linalg::trace(&gram));
+    if norm_sq == Expr::zero() {
+        Ok(Expr::zero())
+    } else {
+        Ok(exact_sqrt_expr(norm_sq, interner))
+    }
+}
+
+/// Construct the Choi matrix `J(E) = Σ_k vec(K_k) vec(K_k)†` from Kraus operators.
+///
+/// This uses column-stacking vectorization, so a `d x d` channel produces a
+/// `d^2 x d^2` Choi matrix.
+pub fn choi_matrix_from_kraus(kraus: &[Vec<Vec<Expr>>]) -> Result<Vec<Vec<Expr>>, ChannelError> {
+    let dim = kraus_dimension(kraus)?;
+    let choi_dim = dim.checked_mul(dim).ok_or(ChannelError::InvalidKrausSet)?;
+    let mut choi = zero_matrix(choi_dim);
+
+    for operator in kraus {
+        let vec_k = vec_column_major(operator);
+        let term = outer_column_vector(&vec_k);
+        choi = simplify_matrix(ax_linalg::mat_add(&choi, &term));
+    }
+
+    Ok(simplify_matrix(choi))
+}
+
+fn matrix_from_column_major_vec(vec: &[Expr], dim: usize) -> Option<Vec<Vec<Expr>>> {
+    if vec.len() != dim.checked_mul(dim)? {
+        return None;
+    }
+
+    let mut matrix = vec![vec![Expr::zero(); dim]; dim];
+    let mut cursor = 0usize;
+    for col in 0..dim {
+        for row in matrix.iter_mut().take(dim) {
+            row[col] = vec[cursor].clone();
+            cursor += 1;
+        }
+    }
+    Some(matrix)
+}
+
+/// Recover Kraus operators from exact small Choi matrices in narrowly supported cases.
+///
+/// Supported cases are:
+/// - a `1x1` trivial channel with Choi matrix `[[1]]`
+/// - a `4x4` rank-1 Choi matrix equal to `vec(K) vec(K)†` for a single `2x2` Kraus operator
+///
+/// Any other Choi matrix returns `UnsupportedChoiRecovery` rather than attempting a
+/// generic spectral decomposition.
+pub fn kraus_from_choi_small(choi: &[Vec<Expr>]) -> Result<Vec<Vec<Vec<Expr>>>, ChannelError> {
+    let Some((rows, cols)) = matrix_shape(choi) else {
+        return Err(ChannelError::InvalidChoiDimension { dim: choi.len() });
+    };
+    if rows != cols {
+        return Err(ChannelError::InvalidChoiDimension { dim: rows });
+    }
+
+    match rows {
+        1 => {
+            if choi[0][0] == Expr::one() {
+                Ok(vec![vec![vec![Expr::one()]]])
+            } else {
+                Err(ChannelError::UnsupportedChoiRecovery)
+            }
+        }
+        4 => {
+            let Some(pivot) = (0..4).find(|&idx| !is_zero_expr(&choi[idx][idx])) else {
+                return Err(ChannelError::UnsupportedChoiRecovery);
+            };
+
+            if choi[pivot][pivot] != Expr::one() {
+                return Err(ChannelError::UnsupportedChoiRecovery);
+            }
+
+            let vec_k = choi
+                .iter()
+                .map(|row| row[pivot].clone())
+                .collect::<Vec<_>>();
+            let rebuilt = simplify_matrix(outer_column_vector(&vec_k));
+            if rebuilt != simplify_matrix(choi.to_vec()) {
+                return Err(ChannelError::UnsupportedChoiRecovery);
+            }
+
+            let kraus = matrix_from_column_major_vec(&vec_k, 2)
+                .ok_or(ChannelError::UnsupportedChoiRecovery)?;
+            Ok(vec![kraus])
+        }
+        dim => Err(ChannelError::InvalidChoiDimension { dim }),
+    }
+}
+
 /// Apply a Kraus channel to a density matrix via `Σ_k K_k ρ K_k†`.
 pub fn apply_kraus_channel(
     kraus: &[Vec<Vec<Expr>>],
     rho: &[Vec<Expr>],
 ) -> Result<Vec<Vec<Expr>>, ChannelError> {
-    let dim = validate_kraus_set(kraus)?;
+    let dim = kraus_dimension(kraus)?;
     let (rows, cols) =
         matrix_shape(rho).unwrap_or((rho.len(), rho.first().map(|row| row.len()).unwrap_or(0)));
     if rows != cols || rows != dim {
@@ -2176,9 +2822,188 @@ pub fn apply_kraus_channel(
     Ok(simplify_matrix(output))
 }
 
+/// Return the common square dimension of a validated Kraus set.
+///
+/// This requires a non-empty Kraus list where every operator is square and all
+/// operators share the same dimension.
+pub fn kraus_dimension(kraus: &[Vec<Vec<Expr>>]) -> Result<usize, ChannelError> {
+    let dim = validate_kraus_set(kraus)?;
+    if dim == 0 {
+        return Err(ChannelError::InvalidKrausSet);
+    }
+    Ok(dim)
+}
+
+/// Compose two Kraus channels by applying `right` first and then `left`.
+///
+/// The resulting Kraus operators are ordered as `{L_i R_j}` with `i` varying
+/// slowest, so `{L1, L2}` composed with `{R1, R2}` yields
+/// `{L1 R1, L1 R2, L2 R1, L2 R2}`.
+pub fn compose_kraus_channels(
+    left: &[Vec<Vec<Expr>>],
+    right: &[Vec<Vec<Expr>>],
+) -> Result<Vec<Vec<Vec<Expr>>>, ChannelError> {
+    let left_dim = kraus_dimension(left)?;
+    let right_dim = kraus_dimension(right)?;
+    if left_dim != right_dim {
+        return Err(ChannelError::CompositionDimensionMismatch {
+            left_dim,
+            right_dim,
+        });
+    }
+
+    let interner = ax_ir::Interner::new();
+    let mut composed = Vec::with_capacity(left.len() * right.len());
+    for left_operator in left {
+        for right_operator in right {
+            composed.push(simplify_matrix(ax_linalg::mat_mul(
+                left_operator,
+                right_operator,
+                &interner,
+            )));
+        }
+    }
+    Ok(composed)
+}
+
+/// Form the tensor-product channel whose Kraus operators are `{L_i ⊗ R_j}`.
+///
+/// The output preserves lexicographic pair ordering with `left` varying
+/// slowest, so `{L1, L2}` tensored with `{R1, R2}` yields
+/// `{L1 ⊗ R1, L1 ⊗ R2, L2 ⊗ R1, L2 ⊗ R2}`.
+pub fn tensor_product_kraus_channels(
+    left: &[Vec<Vec<Expr>>],
+    right: &[Vec<Vec<Expr>>],
+) -> Result<Vec<Vec<Vec<Expr>>>, ChannelError> {
+    let _left_dim = kraus_dimension(left)?;
+    let _right_dim = kraus_dimension(right)?;
+
+    let mut product = Vec::with_capacity(left.len() * right.len());
+    for left_operator in left {
+        for right_operator in right {
+            product.push(simplify_matrix(ax_linalg::tensor_product(
+                left_operator,
+                right_operator,
+            )));
+        }
+    }
+
+    Ok(product)
+}
+
 /// Construct the finite-dimensional identity channel with a single identity Kraus operator.
 pub fn identity_channel(dim: usize) -> Vec<Vec<Vec<Expr>>> {
     vec![ax_linalg::identity(dim)]
+}
+
+/// Construct the canonical qubit depolarizing channel.
+///
+/// The Kraus operators are `{sqrt(1-p) I, sqrt(p/3) X, sqrt(p/3) Y, sqrt(p/3) Z}`.
+pub fn depolarizing_channel_qubit(p: Expr, interner: &ax_ir::Interner) -> Vec<Vec<Vec<Expr>>> {
+    let identity = identity_matrix(2, interner);
+    let pauli_x = pauli_x(interner);
+    let pauli_y = pauli_y(interner);
+    let pauli_z = pauli_z(interner);
+    let one_minus_p = simplify_expr(Expr::add(vec![Expr::one(), Expr::neg(p.clone())]));
+    let p_over_three = simplify_expr(Expr::mul(vec![
+        p,
+        Expr::Rational(BigRational::new(1.into(), 3.into())),
+    ]));
+    let weight_identity = simplified_sqrt_expr(one_minus_p, interner);
+    let weight_pauli = simplified_sqrt_expr(p_over_three, interner);
+
+    prune_zero_kraus_ops(vec![
+        simplify_matrix(ax_linalg::mat_scale(&weight_identity, &identity)),
+        simplify_matrix(ax_linalg::mat_scale(&weight_pauli, &pauli_x)),
+        simplify_matrix(ax_linalg::mat_scale(&weight_pauli, &pauli_y)),
+        simplify_matrix(ax_linalg::mat_scale(&weight_pauli, &pauli_z)),
+    ])
+}
+
+/// Construct the canonical qubit dephasing channel.
+///
+/// The Kraus operators are `{sqrt(1-p) I, sqrt(p) Z}`.
+pub fn dephasing_channel_qubit(p: Expr, interner: &ax_ir::Interner) -> Vec<Vec<Vec<Expr>>> {
+    let identity = identity_matrix(2, interner);
+    let pauli_z = pauli_z(interner);
+    let one_minus_p = simplify_expr(Expr::add(vec![Expr::one(), Expr::neg(p.clone())]));
+    let weight_identity = simplified_sqrt_expr(one_minus_p, interner);
+    let weight_phase = simplified_sqrt_expr(p, interner);
+
+    prune_zero_kraus_ops(vec![
+        simplify_matrix(ax_linalg::mat_scale(&weight_identity, &identity)),
+        simplify_matrix(ax_linalg::mat_scale(&weight_phase, &pauli_z)),
+    ])
+}
+
+/// Construct the canonical qubit amplitude-damping channel.
+///
+/// The Kraus operators are `{[[1,0],[0,sqrt(1-gamma)]], [[0,sqrt(gamma)],[0,0]]}`.
+pub fn amplitude_damping_channel_qubit(
+    gamma: Expr,
+    interner: &ax_ir::Interner,
+) -> Vec<Vec<Vec<Expr>>> {
+    let sqrt = |expr| simplified_sqrt_expr(expr, interner);
+    let one_minus_gamma = simplify_expr(Expr::add(vec![Expr::one(), Expr::neg(gamma.clone())]));
+
+    prune_zero_kraus_ops(vec![
+        vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), sqrt(one_minus_gamma)],
+        ],
+        vec![
+            vec![Expr::zero(), sqrt(gamma)],
+            vec![Expr::zero(), Expr::zero()],
+        ],
+    ])
+}
+
+/// Construct the canonical qubit bit-flip channel.
+///
+/// The Kraus operators are `{sqrt(1-p) I, sqrt(p) X}`.
+pub fn bit_flip_channel_qubit(p: Expr, interner: &ax_ir::Interner) -> Vec<Vec<Vec<Expr>>> {
+    let identity = identity_matrix(2, interner);
+    let pauli_x = pauli_x(interner);
+    let one_minus_p = simplify_expr(Expr::add(vec![Expr::one(), Expr::neg(p.clone())]));
+    let weight_identity = simplified_sqrt_expr(one_minus_p, interner);
+    let weight_flip = simplified_sqrt_expr(p, interner);
+
+    prune_zero_kraus_ops(vec![
+        simplify_matrix(ax_linalg::mat_scale(&weight_identity, &identity)),
+        simplify_matrix(ax_linalg::mat_scale(&weight_flip, &pauli_x)),
+    ])
+}
+
+/// Construct the canonical qubit phase-flip channel.
+///
+/// The Kraus operators are `{sqrt(1-p) I, sqrt(p) Z}`.
+pub fn phase_flip_channel_qubit(p: Expr, interner: &ax_ir::Interner) -> Vec<Vec<Vec<Expr>>> {
+    let identity = identity_matrix(2, interner);
+    let pauli_z = pauli_z(interner);
+    let one_minus_p = simplify_expr(Expr::add(vec![Expr::one(), Expr::neg(p.clone())]));
+    let weight_identity = simplified_sqrt_expr(one_minus_p, interner);
+    let weight_flip = simplified_sqrt_expr(p, interner);
+
+    prune_zero_kraus_ops(vec![
+        simplify_matrix(ax_linalg::mat_scale(&weight_identity, &identity)),
+        simplify_matrix(ax_linalg::mat_scale(&weight_flip, &pauli_z)),
+    ])
+}
+
+/// Construct the canonical qubit bit-phase-flip channel.
+///
+/// The Kraus operators are `{sqrt(1-p) I, sqrt(p) Y}`.
+pub fn bit_phase_flip_channel_qubit(p: Expr, interner: &ax_ir::Interner) -> Vec<Vec<Vec<Expr>>> {
+    let identity = identity_matrix(2, interner);
+    let pauli_y = pauli_y(interner);
+    let one_minus_p = simplify_expr(Expr::add(vec![Expr::one(), Expr::neg(p.clone())]));
+    let weight_identity = simplified_sqrt_expr(one_minus_p, interner);
+    let weight_flip = simplified_sqrt_expr(p, interner);
+
+    prune_zero_kraus_ops(vec![
+        simplify_matrix(ax_linalg::mat_scale(&weight_identity, &identity)),
+        simplify_matrix(ax_linalg::mat_scale(&weight_flip, &pauli_y)),
+    ])
 }
 
 /// Compute projective-measurement probabilities `p_i = Tr(P_i ρ)`.
@@ -2474,7 +3299,10 @@ pub fn entanglement_spectrum_from_density(
 }
 
 /// Compute the negativity from a partial-transpose spectrum by summing exact visible negative parts.
-pub fn negativity_from_partial_transpose_spectrum(eigs: &[Expr], _interner: &ax_ir::Interner) -> Expr {
+pub fn negativity_from_partial_transpose_spectrum(
+    eigs: &[Expr],
+    _interner: &ax_ir::Interner,
+) -> Expr {
     simplify_expr(Expr::add(
         eigs.iter()
             .filter_map(explicit_negative_magnitude)
@@ -2500,9 +3328,13 @@ pub fn negativity_bipartite(
         });
     }
 
-    let partial_transpose = try_partial_transpose_factor(rho_ab, &[dim_a, dim_b], transposed_factor)?;
+    let partial_transpose =
+        try_partial_transpose_factor(rho_ab, &[dim_a, dim_b], transposed_factor)?;
     let eigenvalues = spectral_eigenvalues_supported_blocks(&partial_transpose, interner)?;
-    Ok(negativity_from_partial_transpose_spectrum(&eigenvalues, interner))
+    Ok(negativity_from_partial_transpose_spectrum(
+        &eigenvalues,
+        interner,
+    ))
 }
 
 /// Compute the exact supported spectrum of the chosen bipartite partial transpose.
@@ -2525,7 +3357,8 @@ pub fn partial_transpose_spectrum_bipartite(
 
     let partial_transpose =
         try_partial_transpose_factor(rho_ab, &[dim_a, dim_b], transposed_factor)?;
-    spectral_eigenvalues_supported_blocks(&partial_transpose, interner).map_err(NegativityError::from)
+    spectral_eigenvalues_supported_blocks(&partial_transpose, interner)
+        .map_err(NegativityError::from)
 }
 
 /// Compute logarithmic negativity `log(1 + 2 N(ρ))` from the exact bipartite negativity.

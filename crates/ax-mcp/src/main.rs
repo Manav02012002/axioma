@@ -339,6 +339,21 @@ fn tools_list_result() -> Value {
 fn qm_tool_definitions() -> Vec<Value> {
     vec![
         json!({
+            "name": "axioma_qm_channel_summary",
+            "category": "quantum",
+            "description": "Summarize a stored Kraus-channel expression with dimension, Kraus count, and exact channel diagnostics.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "expr": {
+                        "type": "string",
+                        "description": "Stored Kraus-channel expression id."
+                    }
+                },
+                "required": ["expr"]
+            }
+        }),
+        json!({
             "name": "axioma_qm_density_summary",
             "category": "quantum",
             "description": "Summarize a stored density-matrix expression with trace, purity, and qubit diagnostics.",
@@ -779,6 +794,31 @@ fn stored_named_matrix_from_expression_id(
     }
 }
 
+fn stored_kraus_channel_from_expression_id(
+    state: &McpState,
+    expr_id: &str,
+) -> Result<Vec<Vec<Vec<Expr>>>, &'static str> {
+    let expr = state
+        .expressions
+        .get(expr_id)
+        .ok_or("expression id not found")?;
+    let Expr::List(items) = expr else {
+        return Err("stored expression is not a Kraus channel");
+    };
+    if items.is_empty() {
+        return Err("stored expression is not a Kraus channel");
+    }
+    items
+        .iter()
+        .map(|item| match item {
+            Expr::Matrix(rows) => Some(rows.clone()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .filter(|kraus| ax_qm::kraus_dimension(kraus).is_ok())
+        .ok_or("stored expression is not a Kraus channel")
+}
+
 fn render_matrix_cell(state: &McpState, expr: &Expr) -> String {
     match expr {
         Expr::Int(value) => value.to_string(),
@@ -802,7 +842,11 @@ fn render_matrix_cell(state: &McpState, expr: &Expr) -> String {
 fn render_matrix_cells(state: &McpState, matrix: &[Vec<Expr>]) -> Vec<Vec<String>> {
     matrix
         .iter()
-        .map(|row| row.iter().map(|cell| render_matrix_cell(state, cell)).collect())
+        .map(|row| {
+            row.iter()
+                .map(|cell| render_matrix_cell(state, cell))
+                .collect()
+        })
         .collect()
 }
 
@@ -810,7 +854,8 @@ fn parse_dims_argument(arguments: &Value) -> Result<Vec<usize>, &'static str> {
     let Some(items) = arguments.get("dims").and_then(Value::as_array) else {
         return Err("partial trace failed");
     };
-    items.iter()
+    items
+        .iter()
         .map(|item| {
             item.as_u64()
                 .and_then(|n| usize::try_from(n).ok())
@@ -863,6 +908,32 @@ fn handle_qm_density_summary(arguments: &Value, state: &McpState) -> Result<Valu
     Ok(payload)
 }
 
+fn handle_qm_channel_summary(arguments: &Value, state: &McpState) -> Result<Value, &'static str> {
+    let expr_id = arguments
+        .get("expr")
+        .and_then(Value::as_str)
+        .ok_or("expression id not found")?;
+    let kraus = stored_kraus_channel_from_expression_id(state, expr_id)?;
+    let dimension = ax_qm::kraus_dimension(&kraus).map_err(|_| "stored expression is not a Kraus channel")?;
+    let kraus_count = kraus.len();
+    let trace_preserving =
+        ax_qm::is_trace_preserving_exact(&kraus, state.interner()).map_err(|_| "stored expression is not a Kraus channel")?;
+    let unital =
+        ax_qm::is_unital_exact(&kraus, state.interner()).map_err(|_| "stored expression is not a Kraus channel")?;
+    let choi_dimension = dimension
+        .checked_mul(dimension)
+        .ok_or("stored expression is not a Kraus channel")?;
+
+    Ok(json!({
+        "status": "ok",
+        "dimension": dimension,
+        "kraus_count": kraus_count,
+        "trace_preserving": trace_preserving,
+        "unital": unital,
+        "choi_dimension": choi_dimension,
+    }))
+}
+
 fn handle_qm_partial_trace(arguments: &Value, state: &McpState) -> Result<Value, &'static str> {
     let expr_id = arguments
         .get("expr")
@@ -875,8 +946,8 @@ fn handle_qm_partial_trace(arguments: &Value, state: &McpState) -> Result<Value,
         .and_then(Value::as_u64)
         .and_then(|n| usize::try_from(n).ok())
         .ok_or("partial trace failed")?;
-    let reduced =
-        ax_qm::try_partial_trace_factor(&rho, &dims, factor_index).map_err(|_| "partial trace failed")?;
+    let reduced = ax_qm::try_partial_trace_factor(&rho, &dims, factor_index)
+        .map_err(|_| "partial trace failed")?;
     let reduced_expr = Expr::Matrix(reduced.clone());
     Ok(json!({
         "status": "ok",
@@ -897,7 +968,8 @@ fn handle_qm_expectation_value(arguments: &Value, state: &McpState) -> Result<Va
         .ok_or("expression id not found")?;
     let operator = stored_matrix_from_expression_id(state, operator_expr)?;
     let rho = stored_matrix_from_expression_id(state, state_expr)?;
-    let value = ax_qm::expectation_value(&operator, &rho).map_err(|_| "expectation value failed")?;
+    let value =
+        ax_qm::expectation_value(&operator, &rho).map_err(|_| "expectation value failed")?;
     let unicode = state.render_unicode(&value);
     Ok(json!({
         "status": "ok",
@@ -1102,6 +1174,7 @@ fn handle_tools_call_safe(
 
 fn handle_qm_tool_call(state: &McpState, tool_name: &str, arguments: &Value) -> Option<Value> {
     let result = match tool_name {
+        "axioma_qm_channel_summary" => handle_qm_channel_summary(arguments, state),
         "axioma_qm_density_summary" => handle_qm_density_summary(arguments, state),
         "axioma_qm_partial_trace" => handle_qm_partial_trace(arguments, state),
         "axioma_qm_expectation_value" => handle_qm_expectation_value(arguments, state),
@@ -2098,11 +2171,42 @@ mod tests {
         );
 
         assert_eq!(result["status"], "ok", "{result:?}");
-        assert!(result["trace"].as_str().unwrap_or("").contains("1"), "{result:?}");
+        assert!(
+            result["trace"].as_str().unwrap_or("").contains("1"),
+            "{result:?}"
+        );
         assert!(
             result["purity"].as_str().unwrap_or("").contains("1"),
             "{result:?}"
         );
+    }
+
+    #[test]
+    fn qm_channel_summary_tool_reports_identity_channel_correctly() {
+        let mut state = McpState::new();
+        let channel = expect_ok(
+            handle_tools_call_safe(
+                &mut state,
+                "axioma_eval",
+                &json!({"code": "identity_channel(2)"}),
+                5,
+            ),
+            "axioma_eval identity channel",
+        );
+
+        let result = handle_tools_call_safe(
+            &mut state,
+            "axioma_qm_channel_summary",
+            &json!({"expr": channel["expr_id"].clone()}),
+            5,
+        );
+
+        assert_eq!(result["status"], "ok", "{result:?}");
+        assert_eq!(result["dimension"], 2, "{result:?}");
+        assert_eq!(result["kraus_count"], 1, "{result:?}");
+        assert_eq!(result["trace_preserving"], true, "{result:?}");
+        assert_eq!(result["unital"], true, "{result:?}");
+        assert_eq!(result["choi_dimension"], 4, "{result:?}");
     }
 
     #[test]
@@ -2167,7 +2271,10 @@ mod tests {
         );
 
         assert_eq!(result["status"], "ok", "{result:?}");
-        assert!(result["value"].as_str().unwrap_or("").contains("1"), "{result:?}");
+        assert!(
+            result["value"].as_str().unwrap_or("").contains("1"),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -2203,7 +2310,11 @@ mod tests {
         );
 
         assert_eq!(result["status"], "ok", "{result:?}");
-        assert_eq!(result["matrix"], json!([["1", "0"], ["0", "0"]]), "{result:?}");
+        assert_eq!(
+            result["matrix"],
+            json!([["1", "0"], ["0", "0"]]),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -2230,13 +2341,17 @@ mod tests {
         );
 
         assert_eq!(result["status"], "error", "{result:?}");
-        assert_eq!(result["message"], "steady state solver failed", "{result:?}");
+        assert_eq!(
+            result["message"], "steady state solver failed",
+            "{result:?}"
+        );
     }
 
     #[test]
     fn qm_tools_are_categorized_as_quantum() {
         let tools = tool_definitions();
         for name in [
+            "axioma_qm_channel_summary",
             "axioma_qm_density_summary",
             "axioma_qm_partial_trace",
             "axioma_qm_expectation_value",
@@ -2248,6 +2363,15 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing tool definition for {name}"));
             assert_eq!(tool["category"], "quantum", "{tool:?}");
         }
+    }
+
+    #[test]
+    fn qm_channel_summary_tool_is_categorized_as_quantum() {
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|tool| tool["name"] == "axioma_qm_channel_summary")
+            .expect("missing tool definition");
+        assert_eq!(tool["category"], "quantum", "{tool:?}");
     }
 
     #[test]

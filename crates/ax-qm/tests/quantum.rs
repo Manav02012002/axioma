@@ -395,7 +395,12 @@ fn product_state_entanglement_spectrum_is_one_zero() {
 #[test]
 fn schmidt_coefficients_reject_bad_vector_length() {
     let interner = int();
-    let err = schmidt_coefficients_from_state(&[Expr::one(), Expr::zero(), Expr::zero()], 2, 2, &interner);
+    let err = schmidt_coefficients_from_state(
+        &[Expr::one(), Expr::zero(), Expr::zero()],
+        2,
+        2,
+        &interner,
+    );
     assert_eq!(
         err,
         Err(EntanglementError::StateDimensionMismatch {
@@ -423,7 +428,10 @@ fn negativity_bell_state_is_one_half() {
     let rho = density_matrix(&bell);
 
     let negativity = negativity_bipartite(&rho, 2, 2, 1, &interner).unwrap();
-    assert_eq!(negativity, Expr::Rational(BigRational::new(1.into(), 2.into())));
+    assert_eq!(
+        negativity,
+        Expr::Rational(BigRational::new(1.into(), 2.into()))
+    );
 }
 
 #[test]
@@ -651,6 +659,394 @@ fn apply_kraus_channel_rejects_dimension_mismatch() {
             expected: 2,
             actual: 3
         })
+    );
+}
+
+#[test]
+fn compose_identity_channel_with_itself_is_identity_channel() {
+    let composed = compose_kraus_channels(&identity_channel(2), &identity_channel(2)).unwrap();
+    assert_eq!(
+        composed,
+        vec![vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::one()],
+        ]]
+    );
+}
+
+#[test]
+fn compose_channels_preserves_application_order() {
+    let left = vec![vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ]];
+    let right = vec![vec![
+        vec![Expr::Int(3.into()), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(4.into())],
+    ]];
+
+    let composed = compose_kraus_channels(&left, &right).unwrap();
+    assert_eq!(
+        composed,
+        vec![vec![
+            vec![Expr::Int(3.into()), Expr::zero()],
+            vec![Expr::zero(), Expr::Int(8.into())],
+        ]]
+    );
+}
+
+#[test]
+fn compose_channels_rejects_dimension_mismatch() {
+    let left = identity_channel(2);
+    let right = identity_channel(3);
+
+    let err = compose_kraus_channels(&left, &right);
+    assert_eq!(
+        err,
+        Err(ChannelError::CompositionDimensionMismatch {
+            left_dim: 2,
+            right_dim: 3,
+        })
+    );
+}
+
+#[test]
+fn tensor_product_identity_channels_gives_identity_channel_on_product_space() {
+    let product =
+        tensor_product_kraus_channels(&identity_channel(2), &identity_channel(2)).unwrap();
+    assert_eq!(
+        product,
+        vec![vec![
+            vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::one(), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::one()],
+        ]]
+    );
+}
+
+#[test]
+fn tensor_product_single_kraus_diagonal_channels_has_expected_operator() {
+    let left = vec![vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ]];
+    let right = vec![vec![
+        vec![Expr::Int(3.into()), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(4.into())],
+    ]];
+
+    let product = tensor_product_kraus_channels(&left, &right).unwrap();
+    assert_eq!(
+        product,
+        vec![vec![
+            vec![
+                Expr::Int(3.into()),
+                Expr::zero(),
+                Expr::zero(),
+                Expr::zero()
+            ],
+            vec![
+                Expr::zero(),
+                Expr::Int(4.into()),
+                Expr::zero(),
+                Expr::zero()
+            ],
+            vec![
+                Expr::zero(),
+                Expr::zero(),
+                Expr::Int(6.into()),
+                Expr::zero()
+            ],
+            vec![
+                Expr::zero(),
+                Expr::zero(),
+                Expr::zero(),
+                Expr::Int(8.into())
+            ],
+        ]]
+    );
+}
+
+#[test]
+fn tensor_product_channels_rejects_invalid_empty_input() {
+    let err = tensor_product_kraus_channels(&[], &identity_channel(2));
+    assert_eq!(err, Err(ChannelError::EmptyKrausSet));
+}
+
+#[test]
+fn choi_matrix_identity_qubit_channel_has_rank_one_bell_like_form() {
+    let choi = choi_matrix_from_kraus(&identity_channel(2)).unwrap();
+    assert_eq!(
+        choi,
+        vec![
+            vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::one()],
+            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::one()],
+        ]
+    );
+}
+
+#[test]
+fn choi_matrix_single_diagonal_kraus_channel_matches_vec_outer() {
+    let kraus = vec![vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ]];
+    let expected = outer_column_vector(&vec_column_major(&kraus[0]));
+    let choi = choi_matrix_from_kraus(&kraus).unwrap();
+    assert_eq!(choi, expected);
+}
+
+#[test]
+fn choi_matrix_rejects_invalid_kraus_set() {
+    let err = choi_matrix_from_kraus(&[]);
+    assert!(matches!(err, Err(ChannelError::EmptyKrausSet)));
+}
+
+#[test]
+fn identity_channel_choi_is_completely_positive() {
+    let interner = int();
+    let choi = choi_matrix_from_kraus(&identity_channel(2)).unwrap();
+    assert!(is_completely_positive_choi_small(&choi, &interner).unwrap());
+}
+
+#[test]
+fn negative_diagonal_choi_is_not_completely_positive() {
+    let interner = int();
+    let choi = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int((-1).into())],
+    ];
+    assert!(!is_completely_positive_choi_small(&choi, &interner).unwrap());
+}
+
+#[test]
+fn cp_check_rejects_symbolic_non_numeric_input() {
+    let interner = int();
+    let x = Expr::Sym(interner.get_or_intern("x"));
+    let choi = vec![vec![x]];
+    let err = is_completely_positive_choi_small(&choi, &interner);
+    assert_eq!(err, Err(ChannelError::NonNumericChoiMatrix));
+}
+
+#[test]
+fn kraus_from_choi_recovers_identity_single_kraus() {
+    let choi = choi_matrix_from_kraus(&identity_channel(2)).unwrap();
+    let kraus = kraus_from_choi_small(&choi).unwrap();
+    assert_eq!(
+        kraus,
+        vec![vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::one()],
+        ]]
+    );
+}
+
+#[test]
+fn kraus_from_choi_recovers_diagonal_single_kraus() {
+    let input = vec![vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ]];
+    let choi = choi_matrix_from_kraus(&input).unwrap();
+    let kraus = kraus_from_choi_small(&choi).unwrap();
+    assert_eq!(kraus, input);
+}
+
+#[test]
+fn kraus_from_choi_rejects_generic_unsupported_case() {
+    let kraus = vec![
+        vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero()],
+        ],
+        vec![
+            vec![Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::one()],
+        ],
+    ];
+    let choi = choi_matrix_from_kraus(&kraus).unwrap();
+    let err = kraus_from_choi_small(&choi);
+    assert_eq!(err, Err(ChannelError::UnsupportedChoiRecovery));
+}
+
+#[test]
+fn identity_channel_is_trace_preserving() {
+    let interner = int();
+    assert!(is_trace_preserving_exact(&identity_channel(2), &interner).unwrap());
+}
+
+#[test]
+fn trace_preserving_residual_identity_channel_is_zero_matrix() {
+    let interner = int();
+    assert_eq!(
+        trace_preserving_residual(&identity_channel(2), &interner).unwrap(),
+        vec![
+            vec![Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero()],
+        ]
+    );
+}
+
+#[test]
+fn non_tp_single_kraus_channel_is_detected() {
+    let interner = int();
+    let kraus = vec![vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ]];
+    assert!(!is_trace_preserving_exact(&kraus, &interner).unwrap());
+}
+
+#[test]
+fn identity_channel_is_unital() {
+    let interner = int();
+    assert!(is_unital_exact(&identity_channel(2), &interner).unwrap());
+}
+
+#[test]
+fn unital_residual_identity_channel_is_zero_matrix() {
+    let interner = int();
+    assert_eq!(
+        unital_residual(&identity_channel(2), &interner).unwrap(),
+        vec![
+            vec![Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero()],
+        ]
+    );
+}
+
+#[test]
+fn amplitude_damping_like_channel_is_not_unital() {
+    let interner = int();
+    let g = Expr::Sym(interner.get_or_intern("g"));
+    let sqrt = |expr| Expr::Call(interner.get_or_intern("sqrt"), vec![expr]);
+    let kraus = vec![
+        vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![
+                Expr::zero(),
+                sqrt(Expr::add(vec![Expr::one(), Expr::neg(g.clone())])),
+            ],
+        ],
+        vec![
+            vec![Expr::zero(), sqrt(g)],
+            vec![Expr::zero(), Expr::zero()],
+        ],
+    ];
+    assert!(!is_unital_exact(&kraus, &interner).unwrap());
+}
+
+#[test]
+fn choi_distance_identical_channels_is_zero() {
+    let interner = int();
+    assert_eq!(
+        choi_frobenius_distance(&identity_channel(2), &identity_channel(2), &interner).unwrap(),
+        Expr::zero()
+    );
+}
+
+#[test]
+fn choi_distance_distinct_channels_is_nonzero() {
+    let interner = int();
+    let right = vec![vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ]];
+    let distance = choi_frobenius_distance(&identity_channel(2), &right, &interner).unwrap();
+    assert_ne!(distance, Expr::zero());
+}
+
+#[test]
+fn choi_distance_rejects_dimension_mismatch() {
+    let interner = int();
+    let err = choi_frobenius_distance(&identity_channel(2), &identity_channel(3), &interner);
+    assert_eq!(
+        err,
+        Err(ChannelError::CompositionDimensionMismatch {
+            left_dim: 2,
+            right_dim: 3,
+        })
+    );
+}
+
+#[test]
+fn depolarizing_channel_has_four_kraus_ops() {
+    let interner = int();
+    let p = Expr::Sym(interner.get_or_intern("p"));
+    assert_eq!(depolarizing_channel_qubit(p, &interner).len(), 4);
+}
+
+#[test]
+fn dephasing_channel_has_two_kraus_ops() {
+    let interner = int();
+    let p = Expr::Sym(interner.get_or_intern("p"));
+    assert_eq!(dephasing_channel_qubit(p, &interner).len(), 2);
+}
+
+#[test]
+fn amplitude_damping_channel_kraus_shapes_are_2x2() {
+    let interner = int();
+    let gamma = Expr::Sym(interner.get_or_intern("gamma"));
+    let channel = amplitude_damping_channel_qubit(gamma, &interner);
+    assert_eq!(channel.len(), 2);
+    assert!(channel
+        .iter()
+        .all(|operator| { operator.len() == 2 && operator.iter().all(|row| row.len() == 2) }));
+}
+
+#[test]
+fn bit_flip_identity_limit_at_p_zero() {
+    let interner = int();
+    assert_eq!(
+        bit_flip_channel_qubit(Expr::zero(), &interner),
+        identity_channel(2)
+    );
+}
+
+#[test]
+fn all_canonical_channels_are_trace_preserving_exactly() {
+    let interner = int();
+    let p = Expr::Sym(interner.get_or_intern("p"));
+    let gamma = Expr::Sym(interner.get_or_intern("gamma"));
+
+    println!(
+        "depolarizing residual = {:?}",
+        trace_preserving_residual(&depolarizing_channel_qubit(p.clone(), &interner), &interner)
+    );
+    println!(
+        "amplitude residual = {:?}",
+        trace_preserving_residual(
+            &amplitude_damping_channel_qubit(gamma.clone(), &interner),
+            &interner
+        )
+    );
+    assert!(is_trace_preserving_exact(
+        &depolarizing_channel_qubit(p.clone(), &interner),
+        &interner
+    )
+    .unwrap());
+    assert!(
+        is_trace_preserving_exact(&dephasing_channel_qubit(p.clone(), &interner), &interner)
+            .unwrap()
+    );
+    assert!(is_trace_preserving_exact(
+        &amplitude_damping_channel_qubit(gamma, &interner),
+        &interner
+    )
+    .unwrap());
+    assert!(
+        is_trace_preserving_exact(&bit_flip_channel_qubit(p.clone(), &interner), &interner)
+            .unwrap()
+    );
+    assert!(
+        is_trace_preserving_exact(&phase_flip_channel_qubit(p.clone(), &interner), &interner)
+            .unwrap()
+    );
+    assert!(
+        is_trace_preserving_exact(&bit_phase_flip_channel_qubit(p, &interner), &interner).unwrap()
     );
 }
 

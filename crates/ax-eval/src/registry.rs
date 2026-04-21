@@ -1,8 +1,9 @@
 use crate::{
-    expr_3d_to_list, expr_4d_to_list, expr_to_3d, expr_to_4d, expr_to_null_tetrad,
-    expr_to_weyl_scalars, matrix_to_symbolic, null_tetrad_to_expr, simplify_symbolic_matrix,
-    spin_coefficients_to_expr, weyl_scalars_to_expr,
+    expr_3d_to_list, expr_4d_to_list, expr_to_3d, expr_to_4d, expr_to_kraus_list,
+    expr_to_null_tetrad, expr_to_weyl_scalars, kraus_list_to_expr, matrix_to_symbolic,
+    null_tetrad_to_expr, simplify_symbolic_matrix, spin_coefficients_to_expr, weyl_scalars_to_expr,
 };
+use ax_ir::Expr;
 use num_traits::{One, ToPrimitive};
 
 pub struct BuiltinEntry {
@@ -1977,11 +1978,102 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "identity_channel(2)",
         ),
         b(
+            "depolarizing_channel",
+            "quantum",
+            "depolarizing_channel(p)",
+            "Construct the canonical qubit depolarizing channel with Kraus operators sqrt(1-p) I, sqrt(p/3) X, sqrt(p/3) Y, and sqrt(p/3) Z.",
+            "depolarizing_channel(p)",
+        ),
+        b(
+            "dephasing_channel",
+            "quantum",
+            "dephasing_channel(p)",
+            "Construct the canonical qubit dephasing channel with Kraus operators sqrt(1-p) I and sqrt(p) Z.",
+            "dephasing_channel(p)",
+        ),
+        b(
+            "amplitude_damping_channel",
+            "quantum",
+            "amplitude_damping_channel(gamma)",
+            "Construct the canonical qubit amplitude-damping channel with Kraus operators [[1,0],[0,sqrt(1-gamma)]] and [[0,sqrt(gamma)],[0,0]].",
+            "amplitude_damping_channel(gamma)",
+        ),
+        b(
+            "bit_flip_channel",
+            "quantum",
+            "bit_flip_channel(p)",
+            "Construct the canonical qubit bit-flip channel with Kraus operators sqrt(1-p) I and sqrt(p) X.",
+            "bit_flip_channel(p)",
+        ),
+        b(
+            "phase_flip_channel",
+            "quantum",
+            "phase_flip_channel(p)",
+            "Construct the canonical qubit phase-flip channel with Kraus operators sqrt(1-p) I and sqrt(p) Z.",
+            "phase_flip_channel(p)",
+        ),
+        b(
+            "bit_phase_flip_channel",
+            "quantum",
+            "bit_phase_flip_channel(p)",
+            "Construct the canonical qubit bit-phase-flip channel with Kraus operators sqrt(1-p) I and sqrt(p) Y.",
+            "bit_phase_flip_channel(p)",
+        ),
+        b(
             "apply_channel",
             "quantum",
             "apply_channel(kraus, rho)",
             "Apply a Kraus channel to a density matrix.",
             "apply_channel(identity_channel(2), [[1,0],[0,0]])",
+        ),
+        b(
+            "compose_channels",
+            "quantum",
+            "compose_channels(left, right)",
+            "Compose two Kraus channels so the right channel acts first and the left channel acts second.",
+            "compose_channels(identity_channel(2), identity_channel(2))",
+        ),
+        b(
+            "tensor_product_channel",
+            "quantum",
+            "tensor_product_channel(left, right)",
+            "Form the tensor-product Kraus channel whose operators are L_i tensor R_j.",
+            "tensor_product_channel(identity_channel(2), identity_channel(2))",
+        ),
+        b(
+            "choi_distance",
+            "quantum",
+            "choi_distance(left, right)",
+            "Compute the Frobenius distance between two channels using their Choi matrices.",
+            "choi_distance(identity_channel(2), identity_channel(2))",
+        ),
+        b(
+            "trace_preserving_residual",
+            "quantum",
+            "trace_preserving_residual(kraus)",
+            "Compute the exact trace-preserving residual Σ_k K_k† K_k - I for a Kraus channel.",
+            "trace_preserving_residual(identity_channel(2))",
+        ),
+        b(
+            "is_trace_preserving",
+            "quantum",
+            "is_trace_preserving(kraus)",
+            "Check whether a Kraus channel is exactly trace preserving.",
+            "is_trace_preserving(identity_channel(2))",
+        ),
+        b(
+            "unital_residual",
+            "quantum",
+            "unital_residual(kraus)",
+            "Compute the exact unital residual Σ_k K_k K_k† - I for a Kraus channel.",
+            "unital_residual(identity_channel(2))",
+        ),
+        b(
+            "is_unital",
+            "quantum",
+            "is_unital(kraus)",
+            "Check whether a Kraus channel is exactly unital.",
+            "is_unital(identity_channel(2))",
         ),
         b(
             "lindblad_rhs",
@@ -2796,6 +2888,7 @@ pub fn std_modules() -> Vec<StdModule> {
         m("qft/superspace", "N=1 superspace: supercovariant derivatives, chiral/antichiral superfields, Wess-Zumino gauge vector superfields, D-algebra, superspace integration.", "setup_superspace, expand_superfield, chiral_superfield, d_alpha, d_squared, superspace_integrate"),
         m("qft/brst", "BRST cohomology: ghost grading, Yang-Mills BRST setup, nilpotency, and ghost-sector projection.", "setup_brst_ym, brst, ghost_number, brst_check, filter_ghost_number"),
         m("qm/bell", "Constructs a Bell state, its density matrix, and a reduced density matrix by partial trace.", "let up, let down, let phi_plus, let rho, let rho_A"),
+        m("qm/channels", "Finite-dimensional Kraus-channel examples including the identity channel, canonical qubit noise channels, channel composition, tensor-product channels, Choi-matrix distance surrogates, and exact trace-preserving and unital checks.", "let I, depolarizing_channel, dephasing_channel, amplitude_damping_channel, bit_flip_channel, phase_flip_channel, bit_phase_flip_channel, compose_channels, choi_distance, tensor_product_channel, trace_preserving_residual, is_trace_preserving, unital_residual, is_unital"),
         m("qm/harmonic_oscillator", "Builds an abstract harmonic-oscillator annihilation operator, creation operator, number operator, Hamiltonian, and sample Fock-state actions.", "let a_op, let adag_op, let n_op, let h_op, let vac, let one, let two, let lowered_two, let number_on_two, let energy_on_one, let normal_reordered"),
         m("qm/spin", "Builds Pauli matrices and their commutator as a spin-1/2 algebra example.", "let sigma_x, let sigma_y, let sigma_z, let comm_xy"),
         m("tensor/index", "Documents index notation and contraction conventions for tensors.", "documentation comments only"),
@@ -7173,7 +7266,7 @@ fn handle_renyi2_mutual_information_qm(
     let value = ax_qm::renyi2_mutual_information_bipartite(&rho_ab, dim_a, dim_b, state.interner())
         .map_err(|_| {
             "renyi2_mutual_information matrix dimension does not match dim_a * dim_b".to_string()
-    })?;
+        })?;
     expr_or_struct_response_named(value, "renyi2_mutual_information", state)
 }
 
@@ -7224,16 +7317,12 @@ fn handle_mutual_information_qm(
     let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
         usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
     })?;
-    let value = ax_qm::von_neumann_mutual_information_bipartite(
-        &rho_ab,
-        dim_a,
-        dim_b,
-        state.interner(),
-    )
-    .map_err(|_| {
-        "mutual_information expects a bipartite density matrix of dimension dim_a * dim_b"
-            .to_string()
-    })?;
+    let value =
+        ax_qm::von_neumann_mutual_information_bipartite(&rho_ab, dim_a, dim_b, state.interner())
+            .map_err(|_| {
+                "mutual_information expects a bipartite density matrix of dimension dim_a * dim_b"
+                    .to_string()
+            })?;
     expr_or_struct_response_named(value, "mutual_information", state)
 }
 
@@ -7248,13 +7337,11 @@ fn handle_conditional_entropy_qm(
     let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
         usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
     })?;
-    let value =
-        ax_qm::conditional_entropy_b_given_a(&rho_ab, dim_a, dim_b, state.interner()).map_err(
-            |_| {
-                "conditional_entropy expects a bipartite density matrix of dimension dim_a * dim_b"
-                    .to_string()
-            },
-        )?;
+    let value = ax_qm::conditional_entropy_b_given_a(&rho_ab, dim_a, dim_b, state.interner())
+        .map_err(|_| {
+            "conditional_entropy expects a bipartite density matrix of dimension dim_a * dim_b"
+                .to_string()
+        })?;
     expr_or_struct_response_named(value, "conditional_entropy", state)
 }
 
@@ -7301,9 +7388,15 @@ fn handle_schmidt_coefficients_qm(
     let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
         usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
     })?;
-    let values = ax_qm::schmidt_coefficients_from_state(&state_vector, dim_a, dim_b, state.interner())
-        .map_err(|_| {
-            "schmidt_coefficients expects a bipartite pure-state vector of dimension dim_a * dim_b".to_string()
+    let values = ax_qm::schmidt_coefficients_from_state(
+        &state_vector,
+        dim_a,
+        dim_b,
+        state.interner(),
+    )
+    .map_err(|_| {
+        "schmidt_coefficients expects a bipartite pure-state vector of dimension dim_a * dim_b"
+            .to_string()
     })?;
     list_response(values, state)
 }
@@ -7319,10 +7412,9 @@ fn handle_negativity_qm(
     let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
         usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
     })?;
-    let value = ax_qm::negativity_bipartite(&rho_ab, dim_a, dim_b, 1, state.interner())
-        .map_err(|_| {
-            "negativity expects a bipartite density matrix of dimension dim_a * dim_b"
-                .to_string()
+    let value =
+        ax_qm::negativity_bipartite(&rho_ab, dim_a, dim_b, 1, state.interner()).map_err(|_| {
+            "negativity expects a bipartite density matrix of dimension dim_a * dim_b".to_string()
         })?;
     expr_or_struct_response_named(value, "negativity", state)
 }
@@ -7338,12 +7430,11 @@ fn handle_logarithmic_negativity_qm(
     let dim_b = int_arg(args, 2, "dim_b").and_then(|n| {
         usize::try_from(n).map_err(|_| "argument 'dim_b' must be non-negative".to_string())
     })?;
-    let value =
-        ax_qm::logarithmic_negativity_bipartite(&rho_ab, dim_a, dim_b, 1, state.interner())
-            .map_err(|_| {
-                "logarithmic_negativity expects a bipartite density matrix of dimension dim_a * dim_b"
-                    .to_string()
-            })?;
+    let value = ax_qm::logarithmic_negativity_bipartite(&rho_ab, dim_a, dim_b, 1, state.interner())
+        .map_err(|_| {
+            "logarithmic_negativity expects a bipartite density matrix of dimension dim_a * dim_b"
+                .to_string()
+        })?;
     expr_or_struct_response_named(value, "logarithmic_negativity", state)
 }
 
@@ -7399,8 +7490,188 @@ fn handle_identity_channel_qm(
 ) -> Result<serde_json::Value, String> {
     let dim = int_arg(args, 0, "dim")? as usize;
     expr_or_struct_response_named(
-        expr_3d_to_list(ax_qm::identity_channel(dim)),
+        kraus_list_to_expr(ax_qm::identity_channel(dim)),
         "identity_channel",
+        state,
+    )
+}
+
+fn handle_depolarizing_channel_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let p = expr_from_id(args, 0, "p", state)?;
+    expr_or_struct_response_named(
+        kraus_list_to_expr(ax_qm::depolarizing_channel_qubit(p, state.interner())),
+        "depolarizing_channel",
+        state,
+    )
+}
+
+fn handle_dephasing_channel_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let p = expr_from_id(args, 0, "p", state)?;
+    expr_or_struct_response_named(
+        kraus_list_to_expr(ax_qm::dephasing_channel_qubit(p, state.interner())),
+        "dephasing_channel",
+        state,
+    )
+}
+
+fn handle_amplitude_damping_channel_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let gamma = expr_from_id(args, 0, "gamma", state)?;
+    expr_or_struct_response_named(
+        kraus_list_to_expr(ax_qm::amplitude_damping_channel_qubit(
+            gamma,
+            state.interner(),
+        )),
+        "amplitude_damping_channel",
+        state,
+    )
+}
+
+fn handle_bit_flip_channel_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let p = expr_from_id(args, 0, "p", state)?;
+    expr_or_struct_response_named(
+        kraus_list_to_expr(ax_qm::bit_flip_channel_qubit(p, state.interner())),
+        "bit_flip_channel",
+        state,
+    )
+}
+
+fn handle_phase_flip_channel_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let p = expr_from_id(args, 0, "p", state)?;
+    expr_or_struct_response_named(
+        kraus_list_to_expr(ax_qm::phase_flip_channel_qubit(p, state.interner())),
+        "phase_flip_channel",
+        state,
+    )
+}
+
+fn handle_bit_phase_flip_channel_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let p = expr_from_id(args, 0, "p", state)?;
+    expr_or_struct_response_named(
+        kraus_list_to_expr(ax_qm::bit_phase_flip_channel_qubit(p, state.interner())),
+        "bit_phase_flip_channel",
+        state,
+    )
+}
+
+fn handle_compose_channels_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error =
+        "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension";
+    let left_expr = expr_from_id(args, 0, "left", state)?;
+    let right_expr = expr_from_id(args, 1, "right", state)?;
+    let left = expr_to_kraus_list(&left_expr).ok_or_else(|| error.to_string())?;
+    let right = expr_to_kraus_list(&right_expr).ok_or_else(|| error.to_string())?;
+    let result = ax_qm::compose_kraus_channels(&left, &right).map_err(|_| error.to_string())?;
+    expr_or_struct_response_named(kraus_list_to_expr(result), "compose_channels", state)
+}
+
+fn handle_tensor_product_channel_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error = "tensor_product_channel expects two non-empty Kraus lists of square matrices";
+    let left_expr = expr_from_id(args, 0, "left", state)?;
+    let right_expr = expr_from_id(args, 1, "right", state)?;
+    let left = expr_to_kraus_list(&left_expr).ok_or_else(|| error.to_string())?;
+    let right = expr_to_kraus_list(&right_expr).ok_or_else(|| error.to_string())?;
+    let result =
+        ax_qm::tensor_product_kraus_channels(&left, &right).map_err(|_| error.to_string())?;
+    expr_or_struct_response_named(kraus_list_to_expr(result), "tensor_product_channel", state)
+}
+
+fn handle_choi_distance_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error = "choi_distance expects two channels of matching dimension";
+    let left_expr = expr_from_id(args, 0, "left", state)?;
+    let right_expr = expr_from_id(args, 1, "right", state)?;
+    let left = expr_to_kraus_list(&left_expr).ok_or_else(|| error.to_string())?;
+    let right = expr_to_kraus_list(&right_expr).ok_or_else(|| error.to_string())?;
+    let distance = ax_qm::choi_frobenius_distance(&left, &right, state.interner())
+        .map_err(|_| error.to_string())?;
+    expr_or_struct_response_named(distance, "choi_distance", state)
+}
+
+fn handle_trace_preserving_residual_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error = "trace_preserving_residual expects a non-empty Kraus list of square matrices";
+    let kraus_expr = expr_from_id(args, 0, "kraus", state)?;
+    let kraus = expr_to_kraus_list(&kraus_expr).ok_or_else(|| error.to_string())?;
+    let residual = ax_qm::trace_preserving_residual(&kraus, state.interner())
+        .map_err(|_| error.to_string())?;
+    expr_or_struct_response_named(Expr::Matrix(residual), "trace_preserving_residual", state)
+}
+
+fn handle_is_trace_preserving_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error = "is_trace_preserving expects a non-empty Kraus list of square matrices";
+    let kraus_expr = expr_from_id(args, 0, "kraus", state)?;
+    let kraus = expr_to_kraus_list(&kraus_expr).ok_or_else(|| error.to_string())?;
+    let value = ax_qm::is_trace_preserving_exact(&kraus, state.interner())
+        .map_err(|_| error.to_string())?;
+    expr_or_struct_response_named(
+        Expr::Sym(
+            state
+                .interner_mut()
+                .get_or_intern(if value { "true" } else { "false" }),
+        ),
+        "is_trace_preserving",
+        state,
+    )
+}
+
+fn handle_unital_residual_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error = "unital_residual expects a non-empty Kraus list of square matrices";
+    let kraus_expr = expr_from_id(args, 0, "kraus", state)?;
+    let kraus = expr_to_kraus_list(&kraus_expr).ok_or_else(|| error.to_string())?;
+    let residual =
+        ax_qm::unital_residual(&kraus, state.interner()).map_err(|_| error.to_string())?;
+    expr_or_struct_response_named(Expr::Matrix(residual), "unital_residual", state)
+}
+
+fn handle_is_unital_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error = "is_unital expects a non-empty Kraus list of square matrices";
+    let kraus_expr = expr_from_id(args, 0, "kraus", state)?;
+    let kraus = expr_to_kraus_list(&kraus_expr).ok_or_else(|| error.to_string())?;
+    let value = ax_qm::is_unital_exact(&kraus, state.interner()).map_err(|_| error.to_string())?;
+    expr_or_struct_response_named(
+        Expr::Sym(
+            state
+                .interner_mut()
+                .get_or_intern(if value { "true" } else { "false" }),
+        ),
+        "is_unital",
         state,
     )
 }
@@ -7410,16 +7681,29 @@ fn handle_apply_channel_qm(
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
     let kraus_expr = expr_from_id(args, 0, "kraus", state)?;
-    let kraus = expr_to_3d(&kraus_expr)
+    let kraus = expr_to_kraus_list(&kraus_expr)
         .ok_or_else(|| "argument 'kraus' must reference a rank-3 nested list".to_string())?;
     let rho = matrix_from_id(args, 1, "rho", state)?;
     let result = ax_qm::apply_kraus_channel(&kraus, &rho).map_err(|err| match err {
         ax_qm::ChannelError::EmptyKrausSet => {
             "apply_channel expects a non-empty Kraus list".to_string()
         }
+        ax_qm::ChannelError::InvalidKrausSet => {
+            "apply_channel Kraus list must describe a non-empty positive-dimensional channel"
+                .to_string()
+        }
+        ax_qm::ChannelError::UnsupportedChoiRecovery
+        | ax_qm::ChannelError::InvalidChoiDimension { .. }
+        | ax_qm::ChannelError::NonNumericChoiMatrix
+        | ax_qm::ChannelError::UnsupportedCompletePositivityCheck { .. } => {
+            "apply_channel received an unexpected Choi-recovery error".to_string()
+        }
         ax_qm::ChannelError::NonSquareKraus { .. }
         | ax_qm::ChannelError::KrausDimensionMismatch { .. } => {
             "apply_channel Kraus operators must be square and share a common dimension".to_string()
+        }
+        ax_qm::ChannelError::CompositionDimensionMismatch { .. } => {
+            "apply_channel received an unexpected channel composition error".to_string()
         }
         ax_qm::ChannelError::StateDimensionMismatch { .. } => {
             "apply_channel state dimension does not match Kraus dimension".to_string()
@@ -7912,8 +8196,7 @@ fn handle_hermitian_eigenvalues_qm(
 ) -> Result<serde_json::Value, String> {
     let matrix = matrix_from_id(args, 0, "matrix", state)?;
     let values = ax_qm::hermitian_eigenvalues_small(&matrix, state.interner()).map_err(|_| {
-        "hermitian_eigenvalues expects a square Hermitian matrix of supported dimension"
-            .to_string()
+        "hermitian_eigenvalues expects a square Hermitian matrix of supported dimension".to_string()
     })?;
     list_response(values, state)
 }
@@ -10754,6 +11037,19 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("qubit_density_from_bloch", "Qubit density matrix from a Bloch vector.", ps(vec![pdef("r", ParamType::ExprId, true, "Stored length-3 list expression id.")]), handle_qubit_density_from_bloch_qm),
         centry("post_measurement_state", "Normalized post-measurement state for an outcome projector.", ps(vec![pdef("projector", ParamType::ExprId, true, "Stored projector matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("outcome_index", ParamType::Integer, true, "Outcome label used for diagnostics.")]), handle_post_measurement_state_qm),
         centry("identity_channel", "Construct a finite-dimensional identity Kraus channel.", ps(vec![pdef("dim", ParamType::Integer, true, "Hilbert-space dimension.")]), handle_identity_channel_qm),
+        centry("depolarizing_channel", "Construct the canonical qubit depolarizing channel.", ps(vec![pdef("p", ParamType::ExprId, true, "Stored depolarizing probability expression id.")]), handle_depolarizing_channel_qm),
+        centry("dephasing_channel", "Construct the canonical qubit dephasing channel.", ps(vec![pdef("p", ParamType::ExprId, true, "Stored dephasing probability expression id.")]), handle_dephasing_channel_qm),
+        centry("amplitude_damping_channel", "Construct the canonical qubit amplitude-damping channel.", ps(vec![pdef("gamma", ParamType::ExprId, true, "Stored damping parameter expression id.")]), handle_amplitude_damping_channel_qm),
+        centry("bit_flip_channel", "Construct the canonical qubit bit-flip channel.", ps(vec![pdef("p", ParamType::ExprId, true, "Stored flip probability expression id.")]), handle_bit_flip_channel_qm),
+        centry("phase_flip_channel", "Construct the canonical qubit phase-flip channel.", ps(vec![pdef("p", ParamType::ExprId, true, "Stored flip probability expression id.")]), handle_phase_flip_channel_qm),
+        centry("bit_phase_flip_channel", "Construct the canonical qubit bit-phase-flip channel.", ps(vec![pdef("p", ParamType::ExprId, true, "Stored flip probability expression id.")]), handle_bit_phase_flip_channel_qm),
+        centry("compose_channels", "Compose two Kraus channels so the right channel acts first and the left channel acts second.", ps(vec![pdef("left", ParamType::ExprId, true, "Stored Kraus-list expression id for the outer channel."), pdef("right", ParamType::ExprId, true, "Stored Kraus-list expression id for the inner channel.")]), handle_compose_channels_qm),
+        centry("tensor_product_channel", "Form the tensor-product Kraus channel whose operators are L_i tensor R_j.", ps(vec![pdef("left", ParamType::ExprId, true, "Stored Kraus-list expression id for the left channel."), pdef("right", ParamType::ExprId, true, "Stored Kraus-list expression id for the right channel.")]), handle_tensor_product_channel_qm),
+        centry("choi_distance", "Compute the Frobenius distance between two channels using their Choi matrices.", ps(vec![pdef("left", ParamType::ExprId, true, "Stored Kraus-list expression id for the left channel."), pdef("right", ParamType::ExprId, true, "Stored Kraus-list expression id for the right channel.")]), handle_choi_distance_qm),
+        centry("trace_preserving_residual", "Compute the exact trace-preserving residual Σ_k K_k† K_k - I for a Kraus channel.", ps(vec![pdef("kraus", ParamType::ExprId, true, "Stored Kraus-list expression id for the channel.")]), handle_trace_preserving_residual_qm),
+        centry("is_trace_preserving", "Check whether a Kraus channel is exactly trace preserving.", ps(vec![pdef("kraus", ParamType::ExprId, true, "Stored Kraus-list expression id for the channel.")]), handle_is_trace_preserving_qm),
+        centry("unital_residual", "Compute the exact unital residual Σ_k K_k K_k† - I for a Kraus channel.", ps(vec![pdef("kraus", ParamType::ExprId, true, "Stored Kraus-list expression id for the channel.")]), handle_unital_residual_qm),
+        centry("is_unital", "Check whether a Kraus channel is exactly unital.", ps(vec![pdef("kraus", ParamType::ExprId, true, "Stored Kraus-list expression id for the channel.")]), handle_is_unital_qm),
         centry("apply_channel", "Apply a Kraus channel to a density matrix.", ps(vec![pdef("kraus", ParamType::ExprId, true, "Stored rank-3 Kraus-list expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_apply_channel_qm),
         centry("lindblad_rhs", "Construct the finite-dimensional Lindblad right-hand side.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindblad_rhs_qm),
         centry("lindblad_euler_step", "Take one explicit Euler step for finite-dimensional Lindblad evolution.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("dt", ParamType::ExprId, true, "Stored scalar timestep expression id.")]), handle_lindblad_euler_step_qm),

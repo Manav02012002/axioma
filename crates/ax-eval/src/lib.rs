@@ -9522,9 +9522,192 @@ fn builtin_call(
                     Expr::Int(dim) => dim
                         .to_usize()
                         .map(ax_qm::identity_channel)
-                        .map(expr_3d_to_list)
+                        .map(kraus_list_to_expr)
                         .unwrap_or_else(|| Expr::Call(f, args)),
                     _ => Expr::Call(f, args),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "depolarizing_channel" => {
+            if args.len() == 1 {
+                kraus_list_to_expr(ax_qm::depolarizing_channel_qubit(args[0].clone(), interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "dephasing_channel" => {
+            if args.len() == 1 {
+                kraus_list_to_expr(ax_qm::dephasing_channel_qubit(args[0].clone(), interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "amplitude_damping_channel" => {
+            if args.len() == 1 {
+                kraus_list_to_expr(ax_qm::amplitude_damping_channel_qubit(
+                    args[0].clone(),
+                    interner,
+                ))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bit_flip_channel" => {
+            if args.len() == 1 {
+                kraus_list_to_expr(ax_qm::bit_flip_channel_qubit(args[0].clone(), interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "phase_flip_channel" => {
+            if args.len() == 1 {
+                kraus_list_to_expr(ax_qm::phase_flip_channel_qubit(args[0].clone(), interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bit_phase_flip_channel" => {
+            if args.len() == 1 {
+                kraus_list_to_expr(ax_qm::bit_phase_flip_channel_qubit(
+                    args[0].clone(),
+                    interner,
+                ))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "compose_channels" => {
+            if args.len() == 2 {
+                match (expr_to_kraus_list(&args[0]), expr_to_kraus_list(&args[1])) {
+                    (Some(left), Some(right)) => ax_qm::compose_kraus_channels(&left, &right)
+                        .map(kraus_list_to_expr)
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension",
+                            ))
+                        }),
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "tensor_product_channel" => {
+            if args.len() == 2 {
+                match (expr_to_kraus_list(&args[0]), expr_to_kraus_list(&args[1])) {
+                    (Some(left), Some(right)) => {
+                        ax_qm::tensor_product_kraus_channels(&left, &right)
+                            .map(kraus_list_to_expr)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(
+                                    "tensor_product_channel expects two non-empty Kraus lists of square matrices",
+                                ))
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "tensor_product_channel expects two non-empty Kraus lists of square matrices",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "trace_preserving_residual" => {
+            if args.len() == 1 {
+                match expr_to_kraus_list(&args[0]) {
+                    Some(kraus) => ax_qm::trace_preserving_residual(&kraus, interner)
+                        .map(Expr::Matrix)
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "trace_preserving_residual expects a non-empty Kraus list of square matrices",
+                            ))
+                        }),
+                    None => Expr::Sym(interner.get_or_intern(
+                        "trace_preserving_residual expects a non-empty Kraus list of square matrices",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "is_trace_preserving" => {
+            if args.len() == 1 {
+                match expr_to_kraus_list(&args[0]) {
+                    Some(kraus) => ax_qm::is_trace_preserving_exact(&kraus, interner)
+                        .map(|value| {
+                            Expr::Sym(interner.get_or_intern(if value { "true" } else { "false" }))
+                        })
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "is_trace_preserving expects a non-empty Kraus list of square matrices",
+                            ))
+                        }),
+                    None => Expr::Sym(interner.get_or_intern(
+                        "is_trace_preserving expects a non-empty Kraus list of square matrices",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "unital_residual" => {
+            if args.len() == 1 {
+                match expr_to_kraus_list(&args[0]) {
+                    Some(kraus) => ax_qm::unital_residual(&kraus, interner)
+                        .map(Expr::Matrix)
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "unital_residual expects a non-empty Kraus list of square matrices",
+                            ))
+                        }),
+                    None => Expr::Sym(interner.get_or_intern(
+                        "unital_residual expects a non-empty Kraus list of square matrices",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "is_unital" => {
+            if args.len() == 1 {
+                match expr_to_kraus_list(&args[0]) {
+                    Some(kraus) => ax_qm::is_unital_exact(&kraus, interner)
+                        .map(|value| {
+                            Expr::Sym(interner.get_or_intern(if value { "true" } else { "false" }))
+                        })
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "is_unital expects a non-empty Kraus list of square matrices",
+                            ))
+                        }),
+                    None => Expr::Sym(interner.get_or_intern(
+                        "is_unital expects a non-empty Kraus list of square matrices",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "choi_distance" => {
+            if args.len() == 2 {
+                match (expr_to_kraus_list(&args[0]), expr_to_kraus_list(&args[1])) {
+                    (Some(left), Some(right)) => ax_qm::choi_frobenius_distance(
+                        &left, &right, interner,
+                    )
+                    .unwrap_or_else(|_| {
+                        Expr::Sym(interner.get_or_intern(
+                            "choi_distance expects two channels of matching dimension",
+                        ))
+                    }),
+                    _ => {
+                        Expr::Sym(interner.get_or_intern(
+                            "choi_distance expects two channels of matching dimension",
+                        ))
+                    }
                 }
             } else {
                 Expr::Call(f, args)
@@ -9609,15 +9792,18 @@ fn builtin_call(
         "participation_ratio" => {
             if args.len() == 1 {
                 match &args[0] {
-                    Expr::Matrix(rows) => match ax_qm::participation_ratio(rows, interner) {
-                        Ok(value) => value,
-                        Err(_) => Expr::Sym(interner.get_or_intern(
-                            "participation_ratio expects a square density matrix",
-                        )),
-                    },
-                    _ => Expr::Sym(interner.get_or_intern(
-                        "participation_ratio expects a square density matrix",
-                    )),
+                    Expr::Matrix(rows) => {
+                        match ax_qm::participation_ratio(rows, interner) {
+                            Ok(value) => value,
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "participation_ratio expects a square density matrix",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(
+                        interner
+                            .get_or_intern("participation_ratio expects a square density matrix"),
+                    ),
                 }
             } else {
                 Expr::Call(f, args)
@@ -9940,7 +10126,7 @@ fn builtin_call(
         }
         "apply_channel" => {
             if args.len() == 2 {
-                match (expr_to_3d(&args[0]), expr_to_matrix(&args[1])) {
+                match (expr_to_kraus_list(&args[0]), expr_to_matrix(&args[1])) {
                     (Some(kraus), Some(rho)) => ax_qm::apply_kraus_channel(&kraus, &rho)
                         .map(Expr::Matrix)
                         .unwrap_or_else(|_| Expr::Call(f, args)),
@@ -10439,6 +10625,20 @@ fn expr_to_3d(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
     }
 }
 
+pub(crate) fn expr_to_kraus_list(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
+    match expr {
+        Expr::List(items) if items.iter().all(|item| matches!(item, Expr::Matrix(_))) => items
+            .iter()
+            .map(|item| match item {
+                Expr::Matrix(rows) => Some(rows.clone()),
+                _ => None,
+            })
+            .collect(),
+        Expr::Group(inner, _) => expr_to_kraus_list(inner),
+        _ => expr_to_3d(expr),
+    }
+}
+
 fn expr_to_matrix(expr: &Expr) -> Option<Vec<Vec<Expr>>> {
     match expr {
         Expr::Matrix(rows) => Some(rows.clone()),
@@ -10460,6 +10660,10 @@ fn expr_3d_to_list(data: Vec<Vec<Vec<Expr>>>) -> Expr {
             .map(|level2| Expr::List(level2.into_iter().map(Expr::List).collect()))
             .collect(),
     )
+}
+
+pub(crate) fn kraus_list_to_expr(data: Vec<Vec<Vec<Expr>>>) -> Expr {
+    Expr::List(data.into_iter().map(Expr::Matrix).collect())
 }
 
 fn expr_to_3d_level(expr: &Expr) -> Option<Vec<Vec<Vec<Expr>>>> {
@@ -13914,6 +14118,189 @@ mod tests {
     }
 
     #[test]
+    fn qm_compose_channels_identity_with_itself_returns_identity_kraus_list() {
+        let (result, _) = eval_src("compose_channels(identity_channel(2), identity_channel(2));");
+        assert_eq!(
+            result,
+            Expr::List(vec![Expr::Matrix(vec![
+                vec![Expr::one(), Expr::zero()],
+                vec![Expr::zero(), Expr::one()],
+            ])])
+        );
+    }
+
+    #[test]
+    fn qm_compose_channels_mismatched_dimensions_return_exact_error_string() {
+        let (result, interner) =
+            eval_src("compose_channels(identity_channel(2), identity_channel(3));");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension"
+        );
+    }
+
+    #[test]
+    fn qm_depolarizing_channel_returns_four_kraus_operators() {
+        let (result, _) = eval_src("depolarizing_channel(p);");
+        let Expr::List(items) = result else {
+            panic!("expected Kraus list");
+        };
+        assert_eq!(items.len(), 4);
+        assert!(items.iter().all(|item| matches!(item, Expr::Matrix(_))));
+    }
+
+    #[test]
+    fn qm_amplitude_damping_channel_is_trace_preserving() {
+        let (result, interner) = eval_src("is_trace_preserving(amplitude_damping_channel(gamma));");
+        assert_eq!(result, Expr::Sym(interner.get_or_intern("true")));
+    }
+
+    #[test]
+    fn qm_tensor_product_channel_identity_with_itself_returns_product_identity_kraus_list() {
+        let (result, _) =
+            eval_src("tensor_product_channel(identity_channel(2), identity_channel(2));");
+        assert_eq!(
+            result,
+            Expr::List(vec![Expr::Matrix(vec![
+                vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::one(), Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero(), Expr::one(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::one()],
+            ])])
+        );
+    }
+
+    #[test]
+    fn qm_tensor_product_channel_empty_input_returns_exact_error_string() {
+        let (result, interner) = eval_src("tensor_product_channel([], identity_channel(2));");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "tensor_product_channel expects two non-empty Kraus lists of square matrices"
+        );
+    }
+
+    #[test]
+    fn qm_tensor_product_channel_malformed_input_returns_exact_error_string() {
+        let (result, interner) = eval_src("tensor_product_channel([1], identity_channel(2));");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "tensor_product_channel expects two non-empty Kraus lists of square matrices"
+        );
+    }
+
+    #[test]
+    fn qm_trace_preserving_residual_identity_channel_returns_zero_matrix() {
+        let (result, _) = eval_src("trace_preserving_residual(identity_channel(2));");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero()],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_trace_preserving_residual_malformed_input_returns_exact_error_string() {
+        let (result, interner) = eval_src("trace_preserving_residual([1]);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "trace_preserving_residual expects a non-empty Kraus list of square matrices"
+        );
+    }
+
+    #[test]
+    fn qm_is_trace_preserving_identity_channel_returns_true() {
+        let (result, interner) = eval_src("is_trace_preserving(identity_channel(2));");
+        assert_eq!(result, Expr::Sym(interner.get_or_intern("true")));
+    }
+
+    #[test]
+    fn qm_is_trace_preserving_malformed_input_returns_exact_error_string() {
+        let (result, interner) = eval_src("is_trace_preserving([1]);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "is_trace_preserving expects a non-empty Kraus list of square matrices"
+        );
+    }
+
+    #[test]
+    fn qm_unital_residual_identity_channel_returns_zero_matrix() {
+        let (result, _) = eval_src("unital_residual(identity_channel(2));");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero()],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_unital_residual_malformed_input_returns_exact_error_string() {
+        let (result, interner) = eval_src("unital_residual([1]);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "unital_residual expects a non-empty Kraus list of square matrices"
+        );
+    }
+
+    #[test]
+    fn qm_is_unital_identity_channel_returns_true() {
+        let (result, interner) = eval_src("is_unital(identity_channel(2));");
+        assert_eq!(result, Expr::Sym(interner.get_or_intern("true")));
+    }
+
+    #[test]
+    fn qm_is_unital_malformed_input_returns_exact_error_string() {
+        let (result, interner) = eval_src("is_unital([1]);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "is_unital expects a non-empty Kraus list of square matrices"
+        );
+    }
+
+    #[test]
+    fn qm_choi_distance_identity_with_itself_returns_zero() {
+        let (result, _) = eval_src("choi_distance(identity_channel(2), identity_channel(2));");
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn qm_choi_distance_mismatched_dimensions_return_exact_error_string() {
+        let (result, interner) =
+            eval_src("choi_distance(identity_channel(2), identity_channel(3));");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "choi_distance expects two channels of matching dimension"
+        );
+    }
+
+    #[test]
     fn qm_partial_trace_space_matches_partial_trace_factor() {
         let (space_result, _) = eval_src(
             "declare_hilbert_space(QA, 2); declare_hilbert_space(QB, 2); declare_composite_space(QAB, [QA, QB]); let rho = density([1/sqrt(2), 0, 0, 1/sqrt(2)]); partial_trace_space(rho, QAB, QB);",
@@ -14034,9 +14421,8 @@ mod tests {
 
     #[test]
     fn qm_renyi2_entropy_factor_of_bell_state_is_log_two() {
-        let (result, interner) = eval_src(
-            "renyi2_entropy_factor(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), [2, 2], 0);",
-        );
+        let (result, interner) =
+            eval_src("renyi2_entropy_factor(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), [2, 2], 0);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert!(rendered == "log(2)" || rendered == "-log(1/2)" || rendered == "-1*log(1/2)");
     }
@@ -14130,8 +14516,7 @@ mod tests {
 
     #[test]
     fn qm_entanglement_spectrum_bell_state_contains_half_twice() {
-        let (result, _) =
-            eval_src("entanglement_spectrum([1/sqrt(2), 0, 0, 1/sqrt(2)], 2, 2);");
+        let (result, _) = eval_src("entanglement_spectrum([1/sqrt(2), 0, 0, 1/sqrt(2)], 2, 2);");
         assert_eq!(
             result,
             Expr::List(vec![
@@ -14180,18 +14565,16 @@ mod tests {
 
     #[test]
     fn qm_negativity_bell_state_is_one_half() {
-        let (result, interner) = eval_src(
-            "negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);",
-        );
+        let (result, interner) =
+            eval_src("negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert_eq!(rendered, "1/2");
     }
 
     #[test]
     fn qm_logarithmic_negativity_bell_state_is_log_two() {
-        let (result, interner) = eval_src(
-            "logarithmic_negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);",
-        );
+        let (result, interner) =
+            eval_src("logarithmic_negativity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2);");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert_eq!(rendered, "log(2)");
     }
@@ -14222,8 +14605,7 @@ mod tests {
 
     #[test]
     fn qm_renyi2_tripartite_information_bad_dims_return_exact_error_string() {
-        let (result, interner) =
-            eval_src("renyi2_tripartite_information([[1,0],[0,0]], 2, 2, 2);");
+        let (result, interner) = eval_src("renyi2_tripartite_information([[1,0],[0,0]], 2, 2, 2);");
         let Expr::Sym(message) = result else {
             panic!("expected interned error string");
         };
