@@ -2,10 +2,28 @@
 let sigma_x = pauli_x()
 let sigma_y = pauli_y()
 let sigma_z = pauli_z()
+let jz_half = jz(1)
+let jx_half = jx(1)
+let jy_half = jy(1)
 // Verify Pauli algebra: [sigma_i, sigma_j] = 2i * epsilon_ijk * sigma_k
 let comm_xy = commutator(sigma_x, sigma_y)
 // Should equal 2i * sigma_z
 comm_xy
+
+// Spin-1 algebra in the m = 1, 0, -1 basis
+let jplus_one = jplus(2)
+let jminus_one = jminus(2)
+let jx_one = jx(2)
+let jy_one = jy(2)
+let jz_one = jz(2)
+
+// Coupled two-spin-1/2 singlet/triplet decomposition in the basis
+// |↑↑>, |↑↓>, |↓↑>, |↓↓>
+let singlet = singlet_state_2spinhalf()
+let triplets = triplet_states_2spinhalf()
+let singlet_projector = singlet_projector_2spinhalf()
+let triplet_projector = triplet_projector_2spinhalf()
+
 let Z = pauli_z()
 let rho0 = density_matrix([1, 0])
 let exp_z = expectation_value(Z, rho0)

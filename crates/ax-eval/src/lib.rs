@@ -62,6 +62,7 @@ pub struct Env {
     pub gradings: HashMap<lasso::Spur, Grading>,
     pub operators: HashMap<lasso::Spur, ax_qm::OperatorKind>,
     pub operator_statistics: HashMap<lasso::Spur, ax_qm::OperatorStatistics>,
+    pub fock_mode_truncations: HashMap<lasso::Spur, usize>,
     pub contractions: HashMap<(lasso::Spur, lasso::Spur), Expr>,
     pub coordinates: HashSet<lasso::Spur>,
     pub component_rule_symbols: HashSet<lasso::Spur>,
@@ -93,6 +94,7 @@ impl Env {
             gradings: HashMap::new(),
             operators: HashMap::new(),
             operator_statistics: HashMap::new(),
+            fock_mode_truncations: HashMap::new(),
             contractions: HashMap::new(),
             coordinates: HashSet::new(),
             component_rule_symbols: HashSet::new(),
@@ -129,6 +131,7 @@ impl Env {
             gradings: self.gradings.clone(),
             operators: self.operators.clone(),
             operator_statistics: self.operator_statistics.clone(),
+            fock_mode_truncations: self.fock_mode_truncations.clone(),
             contractions: self.contractions.clone(),
             coordinates: self.coordinates.clone(),
             component_rule_symbols: self.component_rule_symbols.clone(),
@@ -330,6 +333,11 @@ fn creation_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
 fn annihilation_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(interner.get_or_intern("annihilation"), vec![mode])
 }
+
+const QM_SERIES_ORDER_ERROR: &str =
+    "displacement_series and squeezing_series expect a nonnegative integer truncation order";
+const QM_SPIN_OPERATOR_ERROR: &str =
+    "spin operator constructors expect a nonnegative integer two_j";
 
 fn number_state_expr(mode: Expr, n: usize, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(
@@ -534,6 +542,27 @@ fn hilbert_space_metadata_of_symbol(
         })
 }
 
+fn fock_space_metadata_of_symbol(
+    env: &Env,
+    symbol: lasso::Spur,
+) -> Option<ax_ir::FockSpaceMetadata> {
+    env.property_store
+        .get_all(symbol)
+        .into_iter()
+        .find_map(|prop| match prop {
+            ax_ir::TensorProperty::FockSpaceMeta(metadata) => Some(metadata.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            env.tensor_properties.get(&symbol).and_then(|props| {
+                props.iter().find_map(|prop| match prop {
+                    ax_ir::TensorProperty::FockSpaceMeta(metadata) => Some(metadata.clone()),
+                    _ => None,
+                })
+            })
+        })
+}
+
 fn flatten_hilbert_space_factors(
     env: &Env,
     factors: &[lasso::Spur],
@@ -578,6 +607,16 @@ fn usize_list_from_expr(expr: &Expr) -> Option<Vec<usize>> {
     }
 }
 
+fn nonempty_usize_list_from_expr(expr: &Expr) -> Option<Vec<usize>> {
+    let values = usize_list_from_expr(expr)?;
+    (!values.is_empty()).then_some(values)
+}
+
+fn nonempty_binary_occupation_list_from_expr(expr: &Expr) -> Option<Vec<usize>> {
+    let values = nonempty_usize_list_from_expr(expr)?;
+    values.iter().all(|value| *value <= 1).then_some(values)
+}
+
 fn unique_factor_index(
     metadata: &ax_ir::HilbertSpaceMetadata,
     factor_symbol: lasso::Spur,
@@ -594,6 +633,22 @@ fn unique_factor_index(
     }
 }
 
+/// Parse structured mode statistics metadata from a declaration expression.
+pub fn mode_statistics_from_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_ir::ModeStatistics> {
+    let Expr::Sym(sym) = expr else {
+        return None;
+    };
+    match interner.resolve(*sym).to_ascii_lowercase().as_str() {
+        "bosonic" => Some(ax_ir::ModeStatistics::Bosonic),
+        "fermionic" => Some(ax_ir::ModeStatistics::Fermionic),
+        "spin" => Some(ax_ir::ModeStatistics::Spin),
+        _ => None,
+    }
+}
+
 /// Attach structured Hilbert-space metadata to the evaluator environment.
 pub fn apply_hilbert_space_declaration(
     env: &mut Env,
@@ -605,6 +660,19 @@ pub fn apply_hilbert_space_declaration(
         .or_default()
         .push(ax_ir::TensorProperty::HilbertSpaceMeta(metadata.clone()));
     env.property_store.declare_hilbert_space(symbol, metadata);
+}
+
+/// Attach structured Fock-space metadata to the evaluator environment.
+pub fn apply_fock_space_declaration(
+    env: &mut Env,
+    symbol: lasso::Spur,
+    metadata: ax_ir::FockSpaceMetadata,
+) {
+    env.tensor_properties
+        .entry(symbol)
+        .or_default()
+        .push(ax_ir::TensorProperty::FockSpaceMeta(metadata.clone()));
+    env.property_store.declare_fock_space(symbol, metadata);
 }
 
 /// Attach structured quantum-object metadata and required legacy compatibility markers.
@@ -631,6 +699,179 @@ pub fn apply_quantum_object_declaration(
             .push(ax_ir::TensorProperty::NonCommuting);
     }
     env.property_store.declare_quantum_object(symbol, metadata);
+}
+
+/// Attach structured mode metadata and the required legacy compatibility markers.
+pub fn apply_mode_declaration(env: &mut Env, symbol: lasso::Spur, metadata: ax_ir::ModeMetadata) {
+    for property in crate::property_store::expand_compatible_properties(
+        ax_ir::TensorProperty::ModeMeta(metadata.clone()),
+    ) {
+        env.tensor_properties
+            .entry(symbol)
+            .or_default()
+            .push(property);
+    }
+    env.property_store.declare_mode(symbol, metadata);
+}
+
+fn mode_metadata_of_symbol(env: &Env, symbol: lasso::Spur) -> Option<ax_ir::ModeMetadata> {
+    env.property_store
+        .get_all(symbol)
+        .into_iter()
+        .find_map(|prop| match prop {
+            ax_ir::TensorProperty::ModeMeta(metadata) => Some(metadata.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            env.tensor_properties.get(&symbol).and_then(|props| {
+                props.iter().find_map(|prop| match prop {
+                    ax_ir::TensorProperty::ModeMeta(metadata) => Some(metadata.clone()),
+                    _ => None,
+                })
+            })
+        })
+}
+
+fn operator_statistics_from_mode_metadata(
+    metadata: &ax_ir::ModeMetadata,
+) -> Option<ax_qm::OperatorStatistics> {
+    match metadata.statistics {
+        ax_ir::ModeStatistics::Bosonic => Some(ax_qm::OperatorStatistics::Bosonic),
+        ax_ir::ModeStatistics::Fermionic => Some(ax_qm::OperatorStatistics::Fermionic),
+        ax_ir::ModeStatistics::Spin => None,
+    }
+}
+
+fn resolve_declared_operator_statistics(
+    env: &Env,
+    symbol: lasso::Spur,
+    explicit: Option<ax_qm::OperatorStatistics>,
+) -> Result<ax_qm::OperatorStatistics, String> {
+    if let Some(metadata) = mode_metadata_of_symbol(env, symbol) {
+        let inferred = operator_statistics_from_mode_metadata(&metadata);
+        if let Some(explicit_statistics) = explicit {
+            if inferred != Some(explicit_statistics) {
+                return Err(
+                    "declare_operator statistics disagree with previously declared mode metadata"
+                        .to_string(),
+                );
+            }
+            return Ok(explicit_statistics);
+        }
+        if let Some(inferred_statistics) = inferred {
+            return Ok(inferred_statistics);
+        }
+    }
+    Ok(explicit.unwrap_or(ax_qm::OperatorStatistics::Bosonic))
+}
+
+fn build_fock_space_metadata(
+    env: &Env,
+    symbol: lasso::Spur,
+    mode_symbols: &[lasso::Spur],
+) -> Option<ax_ir::FockSpaceMetadata> {
+    if mode_symbols.is_empty() {
+        return None;
+    }
+    let modes = mode_symbols
+        .iter()
+        .map(|mode_symbol| {
+            let mode = mode_metadata_of_symbol(env, *mode_symbol)?;
+            Some(ax_ir::FockModeFactor {
+                symbol: *mode_symbol,
+                statistics: mode.statistics,
+                truncation: env.fock_mode_truncations.get(mode_symbol).copied(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(ax_ir::FockSpaceMetadata {
+        symbol,
+        modes,
+        basis_order: mode_symbols.to_vec(),
+    })
+}
+
+fn build_bosonic_truncated_mode_metadata(mode_index: usize) -> ax_ir::ModeMetadata {
+    ax_ir::ModeMetadata {
+        statistics: ax_ir::ModeStatistics::Bosonic,
+        subsystem: None,
+        mode_index,
+        label: None,
+    }
+}
+
+fn build_fermionic_mode_metadata(mode_index: usize) -> ax_ir::ModeMetadata {
+    ax_ir::ModeMetadata {
+        statistics: ax_ir::ModeStatistics::Fermionic,
+        subsystem: None,
+        mode_index,
+        label: None,
+    }
+}
+
+pub(crate) fn bosonic_fock_basis_state_for_space(
+    env: &Env,
+    space_symbol: lasso::Spur,
+    occupations: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, String> {
+    let Some(metadata) = fock_space_metadata_of_symbol(env, space_symbol) else {
+        return Err(
+            "bosonic_fock_basis_state occupation list does not match the declared Fock space"
+                .to_string(),
+        );
+    };
+    if occupations.len() != metadata.mode_count()
+        || metadata
+            .modes
+            .iter()
+            .zip(occupations.iter())
+            .any(|(mode, occupation)| {
+                !matches!(mode.statistics, ax_ir::ModeStatistics::Bosonic)
+                    || mode.truncation.is_some_and(|nmax| *occupation > nmax)
+            })
+    {
+        return Err(
+            "bosonic_fock_basis_state occupation list does not match the declared Fock space"
+                .to_string(),
+        );
+    }
+    ax_qm::bosonic_basis_state(occupations, interner).map_err(|_| {
+        "bosonic_fock_basis_state occupation list does not match the declared Fock space"
+            .to_string()
+    })
+}
+
+pub(crate) fn fermionic_fock_basis_state_for_space(
+    env: &Env,
+    space_symbol: lasso::Spur,
+    occupations: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, String> {
+    let Some(metadata) = fock_space_metadata_of_symbol(env, space_symbol) else {
+        return Err(
+            "fermionic_fock_basis_state occupation list does not match the declared Fock space"
+                .to_string(),
+        );
+    };
+    if occupations.len() != metadata.mode_count()
+        || metadata
+            .modes
+            .iter()
+            .zip(occupations.iter())
+            .any(|(mode, occupation)| {
+                !matches!(mode.statistics, ax_ir::ModeStatistics::Fermionic) || *occupation > 1
+            })
+    {
+        return Err(
+            "fermionic_fock_basis_state occupation list does not match the declared Fock space"
+                .to_string(),
+        );
+    }
+    ax_qm::fermionic_basis_state(occupations, interner).map_err(|_| {
+        "fermionic_fock_basis_state occupation list does not match the declared Fock space"
+            .to_string()
+    })
 }
 
 fn name_from_expr<'a>(expr: &Expr, interner: &'a ax_ir::Interner) -> Option<&'a str> {
@@ -2036,10 +2277,11 @@ pub fn apply_operator_declaration(
     let mut declared = Vec::new();
     for arg in args {
         if let Expr::Sym(sym) = arg {
+            let inferred_statistics = resolve_declared_operator_statistics(env, *sym, None).ok()?;
             env.operators.insert(*sym, kind);
             env.operator_statistics
                 .entry(*sym)
-                .or_insert(ax_qm::OperatorStatistics::Bosonic);
+                .or_insert(inferred_statistics);
             declared.push(interner.resolve(*sym).to_string());
         }
     }
@@ -2081,15 +2323,16 @@ pub fn apply_named_operator_declaration(
         },
         _ => return None,
     };
-    let statistics = match args.get(2) {
-        None => ax_qm::OperatorStatistics::Bosonic,
+    let explicit_statistics = match args.get(2) {
+        None => None,
         Some(Expr::Sym(sym)) => match interner.resolve(*sym) {
-            "bosonic" => ax_qm::OperatorStatistics::Bosonic,
-            "fermionic" => ax_qm::OperatorStatistics::Fermionic,
+            "bosonic" => Some(ax_qm::OperatorStatistics::Bosonic),
+            "fermionic" => Some(ax_qm::OperatorStatistics::Fermionic),
             _ => return None,
         },
         Some(_) => return None,
     };
+    let statistics = resolve_declared_operator_statistics(env, symbol, explicit_statistics).ok()?;
 
     env.operators.insert(symbol, kind);
     env.operator_statistics.insert(symbol, statistics);
@@ -2099,6 +2342,34 @@ pub fn apply_named_operator_declaration(
         interner.resolve(symbol),
         statistics
     ))
+}
+
+#[cfg(test)]
+fn named_operator_declaration_error(
+    expr: &Expr,
+    env: &Env,
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    let Expr::Call(f, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*f) != "declare_operator" || !(args.len() == 2 || args.len() == 3) {
+        return None;
+    }
+    let symbol = match &args[0] {
+        Expr::Sym(sym) => *sym,
+        _ => return None,
+    };
+    let explicit_statistics = match args.get(2) {
+        None => None,
+        Some(Expr::Sym(sym)) => match interner.resolve(*sym) {
+            "bosonic" => Some(ax_qm::OperatorStatistics::Bosonic),
+            "fermionic" => Some(ax_qm::OperatorStatistics::Fermionic),
+            _ => return None,
+        },
+        Some(_) => return None,
+    };
+    resolve_declared_operator_statistics(env, symbol, explicit_statistics).err()
 }
 
 pub fn apply_named_contraction_declaration(
@@ -2252,6 +2523,20 @@ pub fn apply_property_declaration(
         }
         "declare_quantum_object" if args.len() == 3 => {
             (&args[0], "declare_quantum_object", &args[1..])
+        }
+        "declare_fock_space" if args.len() == 2 => (&args[0], "declare_fock_space", &args[1..]),
+        "declare_bosonic_truncated_mode" if args.len() == 3 => {
+            (&args[0], "declare_bosonic_truncated_mode", &args[1..])
+        }
+        "declare_fermionic_mode" if args.len() == 2 => {
+            (&args[0], "declare_fermionic_mode", &args[1..])
+        }
+        "declare_mode" if args.len() == 3 => (&args[0], "declare_mode", &args[1..]),
+        "declare_mode_in_subsystem" if args.len() == 4 => {
+            (&args[0], "declare_mode_in_subsystem", &args[1..])
+        }
+        "declare_mode_with_label" if args.len() == 5 => {
+            (&args[0], "declare_mode_with_label", &args[1..])
         }
         _ => return None,
     };
@@ -2524,6 +2809,98 @@ pub fn apply_property_declaration(
             );
             Some(format!(
                 "attached property quantum_object_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_fock_space" => {
+            let mode_symbols = symbol_list_from_expr(&prop_args[0])?;
+            let metadata = build_fock_space_metadata(env, tensor, &mode_symbols)?;
+            apply_fock_space_declaration(env, tensor, metadata);
+            Some(format!(
+                "attached property fock_space_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_bosonic_truncated_mode" => {
+            let mode_index = usize_from_expr(&prop_args[0])?;
+            let truncation = usize_from_expr(&prop_args[1]).filter(|nmax| *nmax > 0)?;
+            env.fock_mode_truncations.insert(tensor, truncation);
+            apply_mode_declaration(
+                env,
+                tensor,
+                build_bosonic_truncated_mode_metadata(mode_index),
+            );
+            Some(format!(
+                "attached property mode_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_fermionic_mode" => {
+            let mode_index = usize_from_expr(&prop_args[0])?;
+            env.fock_mode_truncations.remove(&tensor);
+            apply_mode_declaration(env, tensor, build_fermionic_mode_metadata(mode_index));
+            Some(format!(
+                "attached property mode_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_mode" => {
+            let statistics = mode_statistics_from_expr(&prop_args[0], interner)?;
+            let mode_index = usize_from_expr(&prop_args[1])?;
+            env.fock_mode_truncations.remove(&tensor);
+            apply_mode_declaration(
+                env,
+                tensor,
+                ax_ir::ModeMetadata {
+                    statistics,
+                    subsystem: None,
+                    mode_index,
+                    label: None,
+                },
+            );
+            Some(format!(
+                "attached property mode_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_mode_in_subsystem" => {
+            let statistics = mode_statistics_from_expr(&prop_args[0], interner)?;
+            let subsystem = symbol_from_expr(&prop_args[1])?;
+            let mode_index = usize_from_expr(&prop_args[2])?;
+            env.fock_mode_truncations.remove(&tensor);
+            apply_mode_declaration(
+                env,
+                tensor,
+                ax_ir::ModeMetadata {
+                    statistics,
+                    subsystem: Some(subsystem),
+                    mode_index,
+                    label: None,
+                },
+            );
+            Some(format!(
+                "attached property mode_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_mode_with_label" => {
+            let statistics = mode_statistics_from_expr(&prop_args[0], interner)?;
+            let subsystem = symbol_from_expr(&prop_args[1])?;
+            let mode_index = usize_from_expr(&prop_args[2])?;
+            let label = symbol_from_expr(&prop_args[3])?;
+            env.fock_mode_truncations.remove(&tensor);
+            apply_mode_declaration(
+                env,
+                tensor,
+                ax_ir::ModeMetadata {
+                    statistics,
+                    subsystem: Some(subsystem),
+                    mode_index,
+                    label: Some(label),
+                },
+            );
+            Some(format!(
+                "attached property mode_meta to {}",
                 interner.resolve(tensor)
             ))
         }
@@ -7541,6 +7918,124 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "jz" | "jz_matrix" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Int(two_j) => match two_j.to_usize() {
+                        Some(two_j) => ax_qm::jz_matrix(two_j, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR))
+                            }),
+                        None => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "jplus" | "jplus_matrix" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Int(two_j) => match two_j.to_usize() {
+                        Some(two_j) => ax_qm::jplus_matrix(two_j, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR))
+                            }),
+                        None => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "jminus" | "jminus_matrix" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Int(two_j) => match two_j.to_usize() {
+                        Some(two_j) => ax_qm::jminus_matrix(two_j, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR))
+                            }),
+                        None => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "jx" | "jx_matrix" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Int(two_j) => match two_j.to_usize() {
+                        Some(two_j) => ax_qm::jx_matrix(two_j, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR))
+                            }),
+                        None => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "jy" | "jy_matrix" => {
+            if args.len() == 1 {
+                match &args[0] {
+                    Expr::Int(two_j) => match two_j.to_usize() {
+                        Some(two_j) => ax_qm::jy_matrix(two_j, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR))
+                            }),
+                        None => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "singlet_state_2spinhalf" => {
+            if args.is_empty() {
+                Expr::List(ax_qm::two_spin_half_singlet_state(interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "triplet_states_2spinhalf" => {
+            if args.is_empty() {
+                Expr::List(
+                    ax_qm::two_spin_half_triplet_states(interner)
+                        .into_iter()
+                        .map(Expr::List)
+                        .collect(),
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "singlet_projector_2spinhalf" => {
+            if args.is_empty() {
+                Expr::Matrix(ax_qm::two_spin_half_singlet_projector(interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "triplet_projector_2spinhalf" => {
+            if args.is_empty() {
+                Expr::Matrix(ax_qm::two_spin_half_triplet_projector(interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "gamma" => {
             if args.is_empty() {
                 Expr::List(
@@ -7767,6 +8262,178 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "fock_state" => {
+            if args.len() == 1 {
+                match nonempty_usize_list_from_expr(&args[0]) {
+                    Some(occupations) => ax_qm::bosonic_basis_state(&occupations, interner)
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "fock_state expects a non-empty list of nonnegative integers",
+                            ))
+                        }),
+                    None => Expr::Sym(interner.get_or_intern(
+                        "fock_state expects a non-empty list of nonnegative integers",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "fermion_state" => {
+            if args.len() == 1 {
+                match nonempty_binary_occupation_list_from_expr(&args[0]) {
+                    Some(occupations) => ax_qm::fermionic_basis_state(&occupations, interner)
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(
+                                "fermion_state expects a non-empty list of 0/1 occupations",
+                            ))
+                        }),
+                    None => Expr::Sym(interner.get_or_intern(
+                        "fermion_state expects a non-empty list of 0/1 occupations",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bosonic_fock_basis_state" => {
+            if args.len() == 2 {
+                match (symbol_from_expr(&args[0]), usize_list_from_expr(&args[1])) {
+                    (Some(space_symbol), Some(occupations)) => {
+                        bosonic_fock_basis_state_for_space(env, space_symbol, &occupations, interner)
+                            .unwrap_or_else(|err| Expr::Sym(interner.get_or_intern(&err)))
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "bosonic_fock_basis_state occupation list does not match the declared Fock space",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "fermionic_fock_basis_state" => {
+            if args.len() == 2 {
+                match (symbol_from_expr(&args[0]), usize_list_from_expr(&args[1])) {
+                    (Some(space_symbol), Some(occupations)) => {
+                        fermionic_fock_basis_state_for_space(env, space_symbol, &occupations, interner)
+                            .unwrap_or_else(|err| Expr::Sym(interner.get_or_intern(&err)))
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "fermionic_fock_basis_state occupation list does not match the declared Fock space",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bosonic_creation_action" => {
+            if args.len() == 2 {
+                match (
+                    usize_from_expr(&args[0]),
+                    nonempty_usize_list_from_expr(&args[1]),
+                ) {
+                    (Some(mode), Some(occupations)) => {
+                        match ax_qm::bosonic_creation_on_basis(mode, &occupations, interner) {
+                            Ok(result) => result,
+                            Err(ax_qm::BosonicBasisError::ModeIndexOutOfRange { .. }) => {
+                                Expr::Sym(interner.get_or_intern(
+                                    "bosonic_creation_action mode index is out of range",
+                                ))
+                            }
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "fock_state expects a non-empty list of nonnegative integers",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "fock_state expects a non-empty list of nonnegative integers",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "fermionic_creation_action" => {
+            if args.len() == 2 {
+                match (
+                    usize_from_expr(&args[0]),
+                    nonempty_binary_occupation_list_from_expr(&args[1]),
+                ) {
+                    (Some(mode), Some(occupations)) => {
+                        match ax_qm::fermionic_creation_on_basis(mode, &occupations, interner) {
+                            Ok(result) => result,
+                            Err(ax_qm::FermionicBasisError::ModeIndexOutOfRange { .. }) => {
+                                Expr::Sym(interner.get_or_intern(
+                                    "fermionic_creation_action mode index is out of range",
+                                ))
+                            }
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "fermion_state expects a non-empty list of 0/1 occupations",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "fermion_state expects a non-empty list of 0/1 occupations",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bosonic_annihilation_action" => {
+            if args.len() == 2 {
+                match (
+                    usize_from_expr(&args[0]),
+                    nonempty_usize_list_from_expr(&args[1]),
+                ) {
+                    (Some(mode), Some(occupations)) => {
+                        match ax_qm::bosonic_annihilation_on_basis(mode, &occupations, interner) {
+                            Ok(result) => result,
+                            Err(ax_qm::BosonicBasisError::ModeIndexOutOfRange { .. }) => {
+                                Expr::Sym(interner.get_or_intern(
+                                    "bosonic_annihilation_action mode index is out of range",
+                                ))
+                            }
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "fock_state expects a non-empty list of nonnegative integers",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "fock_state expects a non-empty list of nonnegative integers",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "fermionic_annihilation_action" => {
+            if args.len() == 2 {
+                match (
+                    usize_from_expr(&args[0]),
+                    nonempty_binary_occupation_list_from_expr(&args[1]),
+                ) {
+                    (Some(mode), Some(occupations)) => {
+                        match ax_qm::fermionic_annihilation_on_basis(mode, &occupations, interner) {
+                            Ok(result) => result,
+                            Err(ax_qm::FermionicBasisError::ModeIndexOutOfRange { .. }) => {
+                                Expr::Sym(interner.get_or_intern(
+                                    "fermionic_annihilation_action mode index is out of range",
+                                ))
+                            }
+                            Err(_) => Expr::Sym(interner.get_or_intern(
+                                "fermion_state expects a non-empty list of 0/1 occupations",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(
+                        "fermion_state expects a non-empty list of 0/1 occupations",
+                    )),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "vacuum" => {
             if args.len() == 1 {
                 vacuum_expr(args[0].clone(), interner)
@@ -7824,9 +8491,87 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "time_order" => {
+            if args.len() == 1 {
+                ax_qm::time_ordered(args[0].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "anti_time_order" => {
+            if args.len() == 1 {
+                ax_qm::anti_time_ordered(args[0].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "bch" => {
+            if args.len() == 3 {
+                match &args[2] {
+                    Expr::Int(order) => {
+                        match order.to_usize() {
+                            Some(order) => {
+                                ax_qm::bch_expand(args[0].clone(), args[1].clone(), order, interner)
+                            }
+                            None => Expr::Sym(interner.get_or_intern(
+                                "bch expects a nonnegative integer truncation order",
+                            )),
+                        }
+                    }
+                    _ => Expr::Sym(
+                        interner
+                            .get_or_intern("bch expects a nonnegative integer truncation order"),
+                    ),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "displacement_series" | "displacement_operator_series" => {
+            if args.len() == 3 {
+                match &args[2] {
+                    Expr::Int(order) => match order.to_usize() {
+                        Some(order) => ax_qm::displacement_operator_series(
+                            args[0].clone(),
+                            args[1].clone(),
+                            order,
+                            interner,
+                        ),
+                        None => Expr::Sym(interner.get_or_intern(QM_SERIES_ORDER_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_SERIES_ORDER_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "squeezing_series" | "squeezing_operator_series" => {
+            if args.len() == 3 {
+                match &args[2] {
+                    Expr::Int(order) => match order.to_usize() {
+                        Some(order) => ax_qm::squeezing_operator_series(
+                            args[0].clone(),
+                            args[1].clone(),
+                            order,
+                            interner,
+                        ),
+                        None => Expr::Sym(interner.get_or_intern(QM_SERIES_ORDER_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_SERIES_ORDER_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "normal_order" => {
             if args.len() == 1 {
-                ax_qm::normal_order(&args[0], &env.operators, &env.operator_statistics, interner)
+                ax_qm::normal_order(
+                    &args[0],
+                    &env.operators,
+                    &env.operator_statistics,
+                    &env.property_store,
+                    interner,
+                )
             } else {
                 Expr::Call(f, args)
             }
@@ -7837,9 +8582,17 @@ fn builtin_call(
                     &args[0],
                     &env.operators,
                     &env.operator_statistics,
+                    &env.property_store,
                     &env.contractions,
                     interner,
                 )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "simplify_ccr_car" => {
+            if args.len() == 1 {
+                ax_qm::simplify_ccr_car_full(&args[0], &env.property_store, interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -11290,6 +12043,10 @@ mod tests {
         let mut env = Env::new();
         let mut last = Expr::zero();
         for expr in result.exprs {
+            if let Some(error) = named_operator_declaration_error(&expr, &env, &interner) {
+                last = Expr::Sym(interner.get_or_intern(&error));
+                continue;
+            }
             if apply_set_convention(&expr, &mut env).is_some()
                 || apply_parallel_declaration(&expr, &mut env, &interner).is_some()
                 || apply_graded_declaration(&expr, &mut env, &interner).is_some()
@@ -11312,8 +12069,10 @@ mod tests {
             let _ = register_rule(&result, &mut env, &interner);
             let _ = apply_coordinate_declaration(&result, &mut env, &interner);
             let _ = apply_grassmann_declaration(&result, &mut env, &interner);
-            let _ = apply_operator_declaration(&result, &mut env, &interner);
-            let _ = apply_named_operator_declaration(&result, &mut env, &interner);
+            if named_operator_declaration_error(&result, &env, &interner).is_none() {
+                let _ = apply_operator_declaration(&result, &mut env, &interner);
+                let _ = apply_named_operator_declaration(&result, &mut env, &interner);
+            }
             let _ = apply_named_contraction_declaration(&result, &mut env, &interner);
             if let Expr::Assume(var, assumptions) = &result {
                 env.assumptions
@@ -14110,6 +14869,78 @@ mod tests {
     }
 
     #[test]
+    fn qm_spin_half_jz_matches_pauli_z_over_two() {
+        let (result, _) = eval_src("jz(1);");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    Expr::zero(),
+                ],
+                vec![
+                    Expr::zero(),
+                    Expr::Rational(BigRational::new((-1).into(), 2.into())),
+                ],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_spin_operator_invalid_order_returns_exact_error() {
+        let (negative_result, interner) = eval_src("jx(-1);");
+        assert_eq!(
+            negative_result,
+            Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR))
+        );
+
+        let (invalid_result, interner) = eval_src("jy(x);");
+        assert_eq!(
+            invalid_result,
+            Expr::Sym(interner.get_or_intern(QM_SPIN_OPERATOR_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_singlet_and_triplet_builtins_return_list_and_matrix_exprs() {
+        let (singlet, interner) = eval_src("singlet_state_2spinhalf();");
+        let inv_sqrt_two = Expr::Call(
+            interner.get_or_intern("sqrt"),
+            vec![Expr::Rational(BigRational::new(1.into(), 2.into()))],
+        );
+        assert_eq!(
+            singlet,
+            Expr::List(vec![
+                Expr::zero(),
+                inv_sqrt_two.clone(),
+                Expr::neg(inv_sqrt_two.clone()),
+                Expr::zero(),
+            ])
+        );
+
+        let (triplet_projector, _) = eval_src("triplet_projector_2spinhalf();");
+        assert_eq!(
+            triplet_projector,
+            Expr::Matrix(vec![
+                vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()],
+                vec![
+                    Expr::zero(),
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    Expr::zero(),
+                ],
+                vec![
+                    Expr::zero(),
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    Expr::Rational(BigRational::new(1.into(), 2.into())),
+                    Expr::zero(),
+                ],
+                vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::one()],
+            ])
+        );
+    }
+
+    #[test]
     fn qm_bell_partial_trace_is_maximally_mixed() {
         let (result, interner) =
             eval_src("partial_trace(density([1/sqrt(2), 0, 0, 1/sqrt(2)]), 2, 2, A);");
@@ -14653,6 +15484,37 @@ mod tests {
     }
 
     #[test]
+    fn qm_declare_mode_then_declare_operator_infers_fermionic_statistics() {
+        let (result, interner) = eval_src(
+            "declare_mode(a, fermionic, 0); declare_operator(a, annihilation); normal_order(annihilation(a) * creation(a));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + -1*creation(a)*annihilation(a)");
+    }
+
+    #[test]
+    fn qm_incompatible_operator_statistics_after_mode_declaration_returns_exact_error() {
+        let (result, interner) =
+            eval_src("declare_mode(a, fermionic, 0); declare_operator(a, annihilation, bosonic);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "declare_operator statistics disagree with previously declared mode metadata"
+        );
+    }
+
+    #[test]
+    fn qm_normal_order_prefers_mode_metadata_over_legacy_operator_statistics() {
+        let (result, interner) = eval_src(
+            "declare_mode(a, fermionic, 0); declare_operator(a, annihilation, fermionic); declare_operator(a, annihilation, fermionic); normal_order(annihilation(a) * creation(a));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + -1*creation(a)*annihilation(a)");
+    }
+
+    #[test]
     fn qm_wick_uses_declared_contraction_term() {
         let (result, interner) =
             eval_src("declare_contraction(a, a, 1); wick(annihilation(a) * creation(a));");
@@ -14665,6 +15527,307 @@ mod tests {
         let (result, interner) = eval_src("wick(annihilation(a) * creation(a));");
         let rendered = ax_ir::pretty_print(&result, &interner);
         assert_eq!(rendered, "1 + creation(a)*annihilation(a)");
+    }
+
+    #[test]
+    fn qm_legacy_operator_statistics_without_mode_metadata_still_work() {
+        let (result, interner) = eval_src(
+            "declare_operator(c, annihilation, fermionic); wick(annihilation(c) * creation(c));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + -1*creation(c)*annihilation(c)");
+    }
+
+    #[test]
+    fn qm_wick_fermionic_four_operator_signs_are_correct() {
+        let (result, interner) = eval_src(
+            "declare_mode(c1, fermionic, 0); \
+             declare_mode(c2, fermionic, 1); \
+             declare_contraction(c1, c1, 1); \
+             declare_contraction(c2, c2, 1); \
+             wick(annihilation(c1) * annihilation(c2) * creation(c2) * creation(c1));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(
+            rendered,
+            "1 + creation(c2)*creation(c1)*annihilation(c1)*annihilation(c2) + -1*creation(c1)*annihilation(c1) + -1*creation(c2)*annihilation(c2)"
+        );
+    }
+
+    #[test]
+    fn qm_wick_bosonic_example_is_unchanged() {
+        let (result, interner) =
+            eval_src("declare_contraction(a, a, 1); wick(annihilation(a) * creation(a));");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + creation(a)*annihilation(a)");
+    }
+
+    #[test]
+    fn qm_time_order_builtin_returns_canonical_wrapped_call() {
+        let (result, interner) = eval_src("time_order(a * b);");
+        assert_eq!(
+            result,
+            Expr::Call(
+                interner.get_or_intern("time_order"),
+                vec![Expr::mul(vec![
+                    Expr::Sym(interner.get_or_intern("a")),
+                    Expr::Sym(interner.get_or_intern("b")),
+                ])],
+            )
+        );
+    }
+
+    #[test]
+    fn qm_anti_time_order_builtin_returns_canonical_wrapped_call() {
+        let (result, interner) = eval_src("anti_time_order(a * b);");
+        assert_eq!(
+            result,
+            Expr::Call(
+                interner.get_or_intern("anti_time_order"),
+                vec![Expr::mul(vec![
+                    Expr::Sym(interner.get_or_intern("a")),
+                    Expr::Sym(interner.get_or_intern("b")),
+                ])],
+            )
+        );
+    }
+
+    #[test]
+    fn qm_bch_order_one_is_a_plus_b() {
+        let (result, interner) = eval_src("bch(A, B, 1);");
+        assert_eq!(
+            result,
+            Expr::add(vec![
+                Expr::Sym(interner.get_or_intern("A")),
+                Expr::Sym(interner.get_or_intern("B")),
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_bch_order_two_contains_half_commutator() {
+        let (result, interner) = eval_src("bch(A, B, 2);");
+        let Expr::Add(terms) = result else {
+            panic!("expected additive BCH expansion");
+        };
+        assert!(terms.contains(&Expr::mul(vec![
+            Expr::Rational(BigRational::new(1.into(), 2.into())),
+            ax_qm::commutator_expr(
+                Expr::Sym(interner.get_or_intern("A")),
+                Expr::Sym(interner.get_or_intern("B")),
+                &interner,
+            ),
+        ])));
+    }
+
+    #[test]
+    fn qm_bch_order_four_contains_required_quartic_term() {
+        let (result, interner) = eval_src("bch(A, B, 4);");
+        let Expr::Add(terms) = result else {
+            panic!("expected additive BCH expansion");
+        };
+        let a = Expr::Sym(interner.get_or_intern("A"));
+        let b = Expr::Sym(interner.get_or_intern("B"));
+        let quartic = Expr::mul(vec![
+            Expr::Rational(BigRational::new((-1).into(), 24.into())),
+            ax_qm::commutator_expr(
+                b.clone(),
+                ax_qm::commutator_expr(
+                    a.clone(),
+                    ax_qm::commutator_expr(
+                        a,
+                        ax_qm::commutator_expr(
+                            Expr::Sym(interner.get_or_intern("A")),
+                            Expr::Sym(interner.get_or_intern("B")),
+                            &interner,
+                        ),
+                        &interner,
+                    ),
+                    &interner,
+                ),
+                &interner,
+            ),
+        ]);
+        assert!(terms.contains(&quartic));
+    }
+
+    #[test]
+    fn qm_bch_order_zero_returns_zero() {
+        let (result, _) = eval_src("bch(A, B, 0);");
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn qm_displacement_series_order_zero_returns_one() {
+        let (result, _) = eval_src("displacement_series(alpha, a, 0);");
+        assert_eq!(result, Expr::one());
+    }
+
+    #[test]
+    fn qm_displacement_series_order_one_is_one_plus_generator() {
+        let (result, interner) = eval_src("displacement_series(alpha, a, 1);");
+        let alpha = Expr::Sym(interner.get_or_intern("alpha"));
+        let mode = Expr::Sym(interner.get_or_intern("a"));
+        assert_eq!(
+            result,
+            Expr::add(vec![
+                Expr::one(),
+                Expr::add(vec![
+                    Expr::mul(vec![
+                        alpha.clone(),
+                        Expr::Call(interner.get_or_intern("creation"), vec![mode.clone()]),
+                    ]),
+                    Expr::neg(Expr::mul(vec![
+                        Expr::Call(interner.get_or_intern("conj"), vec![alpha]),
+                        Expr::Call(interner.get_or_intern("annihilation"), vec![mode]),
+                    ])),
+                ]),
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_squeezing_series_order_two_contains_generator_squared_over_two_factorial() {
+        let (result, interner) = eval_src("squeezing_series(zeta, a, 2);");
+        let Expr::Add(terms) = result else {
+            panic!("expected additive squeezing expansion");
+        };
+        let zeta = Expr::Sym(interner.get_or_intern("zeta"));
+        let mode = Expr::Sym(interner.get_or_intern("a"));
+        let creation = Expr::Call(interner.get_or_intern("creation"), vec![mode.clone()]);
+        let annihilation = Expr::Call(interner.get_or_intern("annihilation"), vec![mode]);
+        let generator = Expr::mul(vec![
+            Expr::Rational(BigRational::new(1.into(), 2.into())),
+            Expr::add(vec![
+                Expr::mul(vec![zeta.clone(), creation.clone(), creation]),
+                Expr::neg(Expr::mul(vec![
+                    Expr::Call(interner.get_or_intern("conj"), vec![zeta]),
+                    annihilation.clone(),
+                    annihilation,
+                ])),
+            ]),
+        ]);
+        assert!(terms.contains(&Expr::mul(vec![
+            Expr::Rational(BigRational::new(1.into(), 2.into())),
+            Expr::pow(generator, Expr::Int(2.into())),
+        ])));
+    }
+
+    #[test]
+    fn qm_series_negative_or_invalid_order_returns_exact_error() {
+        let (negative_result, interner) = eval_src("displacement_series(alpha, a, -1);");
+        assert_eq!(
+            negative_result,
+            Expr::Sym(interner.get_or_intern(QM_SERIES_ORDER_ERROR))
+        );
+
+        let (invalid_result, interner) = eval_src("squeezing_series(zeta, a, x);");
+        assert_eq!(
+            invalid_result,
+            Expr::Sym(interner.get_or_intern(QM_SERIES_ORDER_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_simplify_ccr_car_bosonic_same_mode_returns_one_plus_adag_a() {
+        let (result, interner) = eval_src(
+            "declare_mode(a, bosonic, 0); simplify_ccr_car(annihilation(a) * creation(a));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + creation(a)*annihilation(a)");
+    }
+
+    #[test]
+    fn qm_simplify_ccr_car_fermionic_same_mode_returns_one_minus_cdag_c() {
+        let (result, interner) = eval_src(
+            "declare_mode(c, fermionic, 0); simplify_ccr_car(annihilation(c) * creation(c));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "1 + -1*creation(c)*annihilation(c)");
+    }
+
+    #[test]
+    fn qm_simplify_ccr_car_distinct_fermions_swap_with_minus_sign() {
+        let (result, interner) = eval_src(
+            "declare_mode(c0, fermionic, 0); declare_mode(c1, fermionic, 1); simplify_ccr_car(annihilation(c1) * annihilation(c0));",
+        );
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert_eq!(rendered, "-1*annihilation(c0)*annihilation(c1)");
+    }
+
+    #[test]
+    fn qm_fock_state_constructs_multimode_basis_state() {
+        let (result, interner) = eval_src("fock_state([2, 0, 1]);");
+        assert_eq!(
+            result,
+            Expr::Call(
+                interner.get_or_intern("fock_state"),
+                vec![Expr::List(vec![
+                    Expr::Int(2.into()),
+                    Expr::Int(0.into()),
+                    Expr::Int(1.into())
+                ])]
+            )
+        );
+    }
+
+    #[test]
+    fn qm_bosonic_creation_action_raises_selected_mode() {
+        let (result, interner) = eval_src("bosonic_creation_action(1, [2, 0, 1]);");
+        assert_eq!(
+            result,
+            Expr::mul(vec![
+                Expr::Call(interner.get_or_intern("sqrt"), vec![Expr::Int(1.into())]),
+                Expr::Call(
+                    interner.get_or_intern("fock_state"),
+                    vec![Expr::List(vec![
+                        Expr::Int(2.into()),
+                        Expr::Int(1.into()),
+                        Expr::Int(1.into())
+                    ])]
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_bosonic_annihilation_action_mode_out_of_range_returns_exact_error() {
+        let (result, interner) = eval_src("bosonic_annihilation_action(3, [2, 0, 1]);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "bosonic_annihilation_action mode index is out of range"
+        );
+    }
+
+    #[test]
+    fn qm_fermionic_creation_action_applies_jw_sign() {
+        let (result, interner) = eval_src("fermionic_creation_action(1, [1, 0, 0]);");
+        assert_eq!(
+            result,
+            Expr::neg(Expr::Call(
+                interner.get_or_intern("fermion_state"),
+                vec![Expr::List(vec![
+                    Expr::Int(1.into()),
+                    Expr::Int(1.into()),
+                    Expr::Int(0.into())
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn qm_fermion_state_rejects_invalid_occupation() {
+        let (result, interner) = eval_src("fermion_state([1, 2, 0]);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "fermion_state expects a non-empty list of 0/1 occupations"
+        );
     }
 
     #[test]

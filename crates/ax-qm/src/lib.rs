@@ -9,17 +9,329 @@
 )]
 
 use ax_ir::{
-    DiracBarMetadata, Expr, GammaMatrixMetadata, Index, SpinorClass, SpinorMetadata,
-    TensorProperty, Variance,
+    DiracBarMetadata, Expr, GammaMatrixMetadata, Index, ModeMetadata, ModeStatistics, SpinorClass,
+    SpinorMetadata, TensorProperty, Variance,
 };
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::collections::{HashMap, HashSet};
+
+use ax_tensor::PropertyLookup;
 
 pub fn permutation_sector_dimension(shape: &[usize], n: usize) -> anyhow::Result<u64> {
     let diagram = ax_young::YoungDiagram::try_new(shape.to_vec())?;
     Ok(ax_young::dimension_of_representation(&diagram, n))
+}
+
+/// Wrap an expression in the canonical symbolic time-ordering form `time_order(expr)`.
+pub fn time_ordered(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("time_order"), vec![expr])
+}
+
+/// Wrap an expression in the canonical symbolic anti-time-ordering form
+/// `anti_time_order(expr)`.
+pub fn anti_time_ordered(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("anti_time_order"), vec![expr])
+}
+
+/// Construct the canonical symbolic commutator wrapper `commutator(a, b)`.
+pub fn commutator_expr(a: Expr, b: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("commutator"), vec![a, b])
+}
+
+fn creation_operator_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("creation"), vec![mode])
+}
+
+fn annihilation_operator_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("annihilation"), vec![mode])
+}
+
+fn conj_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("conj"), vec![expr])
+}
+
+/// Construct the exact factorial `n!` as an integer expression.
+pub fn factorial_expr(n: usize) -> Expr {
+    Expr::Int(factorial(n))
+}
+
+fn truncated_exponential_series(generator: Expr, order: usize) -> Expr {
+    let mut terms = Vec::with_capacity(order + 1);
+    terms.push(Expr::one());
+    for n in 1..=order {
+        let Expr::Int(factorial) = factorial_expr(n) else {
+            unreachable!("factorial_expr always returns an integer expression");
+        };
+        terms.push(Expr::mul(vec![
+            Expr::Rational(BigRational::new(BigInt::one(), factorial)),
+            Expr::pow(generator.clone(), Expr::Int(BigInt::from(n))),
+        ]));
+    }
+    Expr::add(terms)
+}
+
+/// Construct the truncated symbolic series for the bosonic displacement operator
+/// `D(alpha) = exp(alpha a† - conj(alpha) a)` through the requested order.
+///
+/// Order `0` returns `1`. Higher orders return the exponential power series
+/// `Σ_{n=0}^order generator^n / n!` without attempting operator simplification.
+pub fn displacement_operator_series(
+    alpha: Expr,
+    mode: Expr,
+    order: usize,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let generator = Expr::add(vec![
+        Expr::mul(vec![
+            alpha.clone(),
+            creation_operator_expr(mode.clone(), interner),
+        ]),
+        Expr::neg(Expr::mul(vec![
+            conj_expr(alpha, interner),
+            annihilation_operator_expr(mode, interner),
+        ])),
+    ]);
+    truncated_exponential_series(generator, order)
+}
+
+/// Construct the truncated symbolic series for the bosonic squeezing operator
+/// `S(zeta) = exp(1/2 (zeta a† a† - conj(zeta) a a))` through the requested order.
+///
+/// Order `0` returns `1`. Higher orders return the exponential power series
+/// `Σ_{n=0}^order generator^n / n!` without attempting operator simplification.
+pub fn squeezing_operator_series(
+    zeta: Expr,
+    mode: Expr,
+    order: usize,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let creation = creation_operator_expr(mode.clone(), interner);
+    let annihilation = annihilation_operator_expr(mode, interner);
+    let generator = Expr::mul(vec![
+        Expr::Rational(BigRational::new(BigInt::one(), BigInt::from(2usize))),
+        Expr::add(vec![
+            Expr::mul(vec![zeta.clone(), creation.clone(), creation]),
+            Expr::neg(Expr::mul(vec![
+                conj_expr(zeta, interner),
+                annihilation.clone(),
+                annihilation,
+            ])),
+        ]),
+    ]);
+    truncated_exponential_series(generator, order)
+}
+
+/// Construct the finite-order Baker-Campbell-Hausdorff expansion for `log(exp(A) exp(B))`.
+///
+/// Order `0` returns `0`. Orders `1` through `4` add the standard BCH terms through the
+/// requested truncation order.
+pub fn bch_expand(a: Expr, b: Expr, order: usize, interner: &ax_ir::Interner) -> Expr {
+    fn rational(numer: i64, denom: i64) -> Expr {
+        Expr::Rational(BigRational::new(numer.into(), denom.into()))
+    }
+
+    if order == 0 {
+        return Expr::zero();
+    }
+
+    let ab = commutator_expr(a.clone(), b.clone(), interner);
+    let aab = commutator_expr(a.clone(), ab.clone(), interner);
+    let bba = commutator_expr(
+        b.clone(),
+        commutator_expr(b.clone(), a.clone(), interner),
+        interner,
+    );
+    let baab = commutator_expr(
+        b.clone(),
+        commutator_expr(a.clone(), aab.clone(), interner),
+        interner,
+    );
+
+    let mut terms = vec![a, b];
+    if order >= 2 {
+        terms.push(Expr::mul(vec![rational(1, 2), ab]));
+    }
+    if order >= 3 {
+        terms.push(Expr::mul(vec![rational(1, 12), aab]));
+        terms.push(Expr::mul(vec![rational(1, 12), bba]));
+    }
+    if order >= 4 {
+        terms.push(Expr::mul(vec![rational(-1, 24), baab]));
+    }
+    Expr::add(terms)
+}
+
+fn fock_state_expr(occupations: &[usize], interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(
+        interner.get_or_intern("fock_state"),
+        vec![Expr::List(
+            occupations
+                .iter()
+                .map(|n| Expr::Int(BigInt::from(*n)))
+                .collect(),
+        )],
+    )
+}
+
+fn fermion_state_expr(occupations: &[usize], interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(
+        interner.get_or_intern("fermion_state"),
+        vec![Expr::List(
+            occupations
+                .iter()
+                .map(|n| Expr::Int(BigInt::from(*n)))
+                .collect(),
+        )],
+    )
+}
+
+/// Construct the canonical multimode bosonic occupation-basis state `fock_state([n0, n1, ...])`.
+pub fn bosonic_basis_state(
+    occupations: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, BosonicBasisError> {
+    if occupations.is_empty() {
+        return Err(BosonicBasisError::EmptyOccupationList);
+    }
+    Ok(fock_state_expr(occupations, interner))
+}
+
+/// Apply a bosonic creation operator on the selected mode of a multimode occupation-basis state.
+pub fn bosonic_creation_on_basis(
+    mode: usize,
+    occupations: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, BosonicBasisError> {
+    if occupations.is_empty() {
+        return Err(BosonicBasisError::EmptyOccupationList);
+    }
+    if mode >= occupations.len() {
+        return Err(BosonicBasisError::ModeIndexOutOfRange {
+            index: mode,
+            mode_count: occupations.len(),
+        });
+    }
+    let mut raised = occupations.to_vec();
+    raised[mode] += 1;
+    Ok(Expr::mul(vec![
+        exact_sqrt_expr(Expr::Int(BigInt::from(occupations[mode] + 1)), interner),
+        fock_state_expr(&raised, interner),
+    ]))
+}
+
+/// Apply a bosonic annihilation operator on the selected mode of a multimode occupation-basis state.
+pub fn bosonic_annihilation_on_basis(
+    mode: usize,
+    occupations: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, BosonicBasisError> {
+    if occupations.is_empty() {
+        return Err(BosonicBasisError::EmptyOccupationList);
+    }
+    if mode >= occupations.len() {
+        return Err(BosonicBasisError::ModeIndexOutOfRange {
+            index: mode,
+            mode_count: occupations.len(),
+        });
+    }
+    if occupations[mode] == 0 {
+        return Ok(Expr::zero());
+    }
+    let mut lowered = occupations.to_vec();
+    lowered[mode] -= 1;
+    Ok(Expr::mul(vec![
+        exact_sqrt_expr(Expr::Int(BigInt::from(occupations[mode])), interner),
+        fock_state_expr(&lowered, interner),
+    ]))
+}
+
+fn validate_fermionic_occupations(occupations: &[usize]) -> Result<(), FermionicBasisError> {
+    if occupations.is_empty() {
+        return Err(FermionicBasisError::EmptyOccupationList);
+    }
+    for (index, value) in occupations.iter().copied().enumerate() {
+        if value > 1 {
+            return Err(FermionicBasisError::InvalidOccupation { index, value });
+        }
+    }
+    Ok(())
+}
+
+fn fermionic_sign_expr(mode: usize, occupations: &[usize], _interner: &ax_ir::Interner) -> Expr {
+    let parity = occupations[..mode].iter().copied().sum::<usize>() % 2;
+    let state = Expr::one();
+    if parity == 0 {
+        state
+    } else {
+        Expr::neg(state)
+    }
+}
+
+/// Construct the canonical multimode fermionic occupation-basis state `fermion_state([n0, n1, ...])`.
+pub fn fermionic_basis_state(
+    occupations: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, FermionicBasisError> {
+    validate_fermionic_occupations(occupations)?;
+    Ok(fermion_state_expr(occupations, interner))
+}
+
+/// Apply a fermionic creation operator on the selected mode of a multimode occupation-basis state,
+/// including the exact Jordan-Wigner sign from occupied earlier modes.
+pub fn fermionic_creation_on_basis(
+    mode: usize,
+    occupations: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, FermionicBasisError> {
+    validate_fermionic_occupations(occupations)?;
+    if mode >= occupations.len() {
+        return Err(FermionicBasisError::ModeIndexOutOfRange {
+            index: mode,
+            mode_count: occupations.len(),
+        });
+    }
+    if occupations[mode] == 1 {
+        return Ok(Expr::zero());
+    }
+    let mut raised = occupations.to_vec();
+    raised[mode] = 1;
+    let state = fermion_state_expr(&raised, interner);
+    let sign = fermionic_sign_expr(mode, occupations, interner);
+    Ok(if sign == Expr::one() {
+        state
+    } else {
+        Expr::neg(state)
+    })
+}
+
+/// Apply a fermionic annihilation operator on the selected mode of a multimode occupation-basis
+/// state, including the exact Jordan-Wigner sign from occupied earlier modes.
+pub fn fermionic_annihilation_on_basis(
+    mode: usize,
+    occupations: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Expr, FermionicBasisError> {
+    validate_fermionic_occupations(occupations)?;
+    if mode >= occupations.len() {
+        return Err(FermionicBasisError::ModeIndexOutOfRange {
+            index: mode,
+            mode_count: occupations.len(),
+        });
+    }
+    if occupations[mode] == 0 {
+        return Ok(Expr::zero());
+    }
+    let mut lowered = occupations.to_vec();
+    lowered[mode] = 0;
+    let state = fermion_state_expr(&lowered, interner);
+    let sign = fermionic_sign_expr(mode, occupations, interner);
+    Ok(if sign == Expr::one() {
+        state
+    } else {
+        Expr::neg(state)
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +375,12 @@ pub enum FierzError {
     IncompatibleSpinorMetadata,
     IncompatibleSpinorDimension,
     IncompatibleSpinorChirality,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SpinError {
+    #[error("invalid spin quantum number")]
+    InvalidSpinQuantumNumber,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -161,6 +479,26 @@ pub enum StateFunctionalError {
 pub enum QubitStateError {
     #[error("matrix is not 2x2: rows={rows}, cols={cols}")]
     NotTwoByTwo { rows: usize, cols: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BosonicBasisError {
+    #[error("empty occupation list")]
+    EmptyOccupationList,
+    #[error("negative occupation unsupported")]
+    NegativeOccupationUnsupported,
+    #[error("mode index out of range: index={index}, mode_count={mode_count}")]
+    ModeIndexOutOfRange { index: usize, mode_count: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FermionicBasisError {
+    #[error("empty occupation list")]
+    EmptyOccupationList,
+    #[error("invalid occupation at index {index}: value={value}")]
+    InvalidOccupation { index: usize, value: usize },
+    #[error("mode index out of range: index={index}, mode_count={mode_count}")]
+    ModeIndexOutOfRange { index: usize, mode_count: usize },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -310,6 +648,63 @@ fn declared_diracbar_metadata_of_symbol(
             TensorProperty::DiracBarMeta(metadata) => Some(metadata.clone()),
             _ => None,
         })
+}
+
+/// Return the structured quantum-mode metadata attached to a symbol when available.
+pub fn mode_metadata_of_symbol(
+    symbol: lasso::Spur,
+    props: &dyn PropertyLookup,
+) -> Option<ax_ir::ModeMetadata> {
+    props
+        .get_properties(symbol)
+        .into_iter()
+        .find_map(|prop| match prop {
+            TensorProperty::ModeMeta(metadata) => Some(metadata.clone()),
+            _ => None,
+        })
+}
+
+/// Return the operator statistics associated with an operator or mode expression.
+///
+/// Structured `ModeMeta` metadata takes precedence over any legacy fallback.
+/// Bosonic and fermionic mode metadata map directly to operator statistics,
+/// while spin-mode metadata returns `None` because the operator layer does not
+/// model spin modes as bosonic or fermionic ladder operators.
+pub fn operator_statistics_of_expr(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<OperatorStatistics> {
+    let symbol = match expr {
+        Expr::Call(_, args) if args.len() == 1 => property_sym(&args[0]),
+        _ => property_sym(expr),
+    }?;
+    match mode_metadata_of_symbol(symbol, props).map(|metadata| metadata.statistics) {
+        Some(ModeStatistics::Bosonic) => Some(OperatorStatistics::Bosonic),
+        Some(ModeStatistics::Fermionic) => Some(OperatorStatistics::Fermionic),
+        Some(ModeStatistics::Spin) => None,
+        None => None,
+    }
+}
+
+/// Return the canonical zero-based mode index associated with an operator or mode expression.
+pub fn operator_mode_index_of_expr(expr: &Expr, props: &dyn PropertyLookup) -> Option<usize> {
+    let symbol = match expr {
+        Expr::Call(_, args) if args.len() == 1 => property_sym(&args[0]),
+        _ => property_sym(expr),
+    }?;
+    mode_metadata_of_symbol(symbol, props).map(|metadata| metadata.mode_index)
+}
+
+fn operator_mode_identity_of_expr(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<(Option<lasso::Spur>, usize)> {
+    let symbol = match expr {
+        Expr::Call(_, args) if args.len() == 1 => property_sym(&args[0]),
+        _ => property_sym(expr),
+    }?;
+    let metadata = mode_metadata_of_symbol(symbol, props)?;
+    Some((metadata.subsystem, metadata.mode_index))
 }
 
 /// Return the structured spinor metadata attached to an expression when available.
@@ -672,6 +1067,7 @@ fn operator_info(
     expr: &Expr,
     operators: &HashMap<lasso::Spur, OperatorKind>,
     operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Option<(OperatorKind, Option<Expr>, OperatorStatistics)> {
     match expr {
@@ -679,9 +1075,8 @@ fn operator_info(
             (
                 kind,
                 Some(Expr::Sym(*sym)),
-                operator_statistics
-                    .get(sym)
-                    .copied()
+                operator_statistics_of_expr(&Expr::Sym(*sym), properties)
+                    .or_else(|| operator_statistics.get(sym).copied())
                     .unwrap_or(OperatorStatistics::Bosonic),
             )
         }),
@@ -689,24 +1084,22 @@ fn operator_info(
             "creation" => Some((
                 OperatorKind::Creation,
                 Some(args[0].clone()),
-                match &args[0] {
-                    Expr::Sym(sym) => operator_statistics
-                        .get(sym)
-                        .copied()
-                        .unwrap_or(OperatorStatistics::Bosonic),
-                    _ => OperatorStatistics::Bosonic,
-                },
+                operator_statistics_of_expr(&args[0], properties)
+                    .or_else(|| match &args[0] {
+                        Expr::Sym(sym) => operator_statistics.get(sym).copied(),
+                        _ => None,
+                    })
+                    .unwrap_or(OperatorStatistics::Bosonic),
             )),
             "annihilation" => Some((
                 OperatorKind::Annihilation,
                 Some(args[0].clone()),
-                match &args[0] {
-                    Expr::Sym(sym) => operator_statistics
-                        .get(sym)
-                        .copied()
-                        .unwrap_or(OperatorStatistics::Bosonic),
-                    _ => OperatorStatistics::Bosonic,
-                },
+                operator_statistics_of_expr(&args[0], properties)
+                    .or_else(|| match &args[0] {
+                        Expr::Sym(sym) => operator_statistics.get(sym).copied(),
+                        _ => None,
+                    })
+                    .unwrap_or(OperatorStatistics::Bosonic),
             )),
             _ => None,
         },
@@ -714,19 +1107,356 @@ fn operator_info(
     }
 }
 
-fn modes_match(lhs: &Option<Expr>, rhs: &Option<Expr>) -> bool {
-    matches!((lhs, rhs), (Some(a), Some(b)) if a == b)
+fn modes_match(lhs: &Option<Expr>, rhs: &Option<Expr>, properties: &dyn PropertyLookup) -> bool {
+    match (lhs, rhs) {
+        (Some(a), Some(b)) => {
+            let left_identity = operator_mode_identity_of_expr(a, properties);
+            let right_identity = operator_mode_identity_of_expr(b, properties);
+            if left_identity.is_some() || right_identity.is_some() {
+                left_identity.is_some() && left_identity == right_identity
+            } else {
+                a == b
+            }
+        }
+        _ => false,
+    }
+}
+
+fn mode_metadata_of_expr(expr: &Expr, props: &dyn PropertyLookup) -> Option<ModeMetadata> {
+    let symbol = match expr {
+        Expr::Call(_, args) if args.len() == 1 => property_sym(&args[0]),
+        _ => property_sym(expr),
+    }?;
+    mode_metadata_of_symbol(symbol, props)
+}
+
+fn ccr_car_operator_info(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Option<(OperatorKind, Expr, OperatorStatistics)> {
+    match expr {
+        Expr::Call(f, args) if args.len() == 1 => {
+            let kind = match interner.resolve(*f) {
+                "creation" => OperatorKind::Creation,
+                "annihilation" => OperatorKind::Annihilation,
+                _ => return None,
+            };
+            Some((
+                kind,
+                args[0].clone(),
+                operator_statistics_of_expr(expr, props)?,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn same_mode_for_ccr_car(lhs_mode: &Expr, rhs_mode: &Expr, props: &dyn PropertyLookup) -> bool {
+    match (
+        mode_metadata_of_expr(lhs_mode, props),
+        mode_metadata_of_expr(rhs_mode, props),
+    ) {
+        (Some(lhs), Some(rhs)) => {
+            let subsystem_compatible = match (lhs.subsystem, rhs.subsystem) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            };
+            subsystem_compatible && lhs.mode_index == rhs.mode_index
+        }
+        _ => lhs_mode == rhs_mode,
+    }
+}
+
+fn distinct_mode_for_ccr_car(lhs_mode: &Expr, rhs_mode: &Expr, props: &dyn PropertyLookup) -> bool {
+    let Some(lhs) = mode_metadata_of_expr(lhs_mode, props) else {
+        return false;
+    };
+    let Some(rhs) = mode_metadata_of_expr(rhs_mode, props) else {
+        return false;
+    };
+    if lhs.statistics != rhs.statistics {
+        return false;
+    }
+    match (lhs.subsystem, rhs.subsystem) {
+        (Some(a), Some(b)) if a != b => false,
+        _ => lhs.mode_index != rhs.mode_index,
+    }
+}
+
+fn should_swap_distinct_modes(
+    left_kind: OperatorKind,
+    left_mode: &Expr,
+    right_kind: OperatorKind,
+    right_mode: &Expr,
+    props: &dyn PropertyLookup,
+) -> bool {
+    match (left_kind, right_kind) {
+        (OperatorKind::Annihilation, OperatorKind::Creation) => true,
+        (OperatorKind::Creation, OperatorKind::Annihilation) => false,
+        _ => {
+            let (Some(left_index), Some(right_index)) = (
+                operator_mode_index_of_expr(left_mode, props),
+                operator_mode_index_of_expr(right_mode, props),
+            ) else {
+                return false;
+            };
+            left_index > right_index
+        }
+    }
+}
+
+fn rewrite_ccr_car_pair(
+    left: &Expr,
+    right: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    let (left_kind, left_mode, left_stats) = ccr_car_operator_info(left, props, interner)?;
+    let (right_kind, right_mode, right_stats) = ccr_car_operator_info(right, props, interner)?;
+
+    if left_stats != right_stats {
+        return None;
+    }
+
+    let swapped = Expr::mul(vec![right.clone(), left.clone()]);
+
+    if same_mode_for_ccr_car(&left_mode, &right_mode, props) {
+        return match (left_stats, left_kind, right_kind) {
+            (OperatorStatistics::Bosonic, OperatorKind::Annihilation, OperatorKind::Creation) => {
+                Some(simplify_expr(Expr::add(vec![Expr::one(), swapped])))
+            }
+            (OperatorStatistics::Fermionic, OperatorKind::Annihilation, OperatorKind::Creation) => {
+                Some(simplify_expr(Expr::add(vec![
+                    Expr::one(),
+                    Expr::neg(swapped),
+                ])))
+            }
+            _ => None,
+        };
+    }
+
+    if !distinct_mode_for_ccr_car(&left_mode, &right_mode, props)
+        || !should_swap_distinct_modes(left_kind, &left_mode, right_kind, &right_mode, props)
+    {
+        return None;
+    }
+
+    match left_stats {
+        OperatorStatistics::Bosonic => Some(swapped),
+        OperatorStatistics::Fermionic => Some(simplify_expr(Expr::neg(swapped))),
+    }
+}
+
+fn simplify_ccr_car_mul_once(
+    factors: &[Expr],
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Option<Expr> {
+    for index in 0..factors.len().saturating_sub(1) {
+        let Some(rewritten_pair) =
+            rewrite_ccr_car_pair(&factors[index], &factors[index + 1], props, interner)
+        else {
+            continue;
+        };
+        let mut rebuilt = Vec::with_capacity(factors.len() - 1);
+        rebuilt.extend_from_slice(&factors[..index]);
+        rebuilt.push(rewritten_pair);
+        rebuilt.extend_from_slice(&factors[(index + 2)..]);
+        return Some(simplify_expr(Expr::mul(rebuilt)));
+    }
+    None
+}
+
+/// Apply one explicit CCR/CAR rewrite step to an expression when a graded ladder-operator
+/// relation matches, otherwise return the expression unchanged.
+pub fn simplify_ccr_car_once(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            if let Some(rewritten) = simplify_ccr_car_mul_once(factors, props, interner) {
+                return rewritten;
+            }
+            for (index, factor) in factors.iter().enumerate() {
+                let updated = simplify_ccr_car_once(factor, props, interner);
+                if updated != *factor {
+                    let mut rebuilt = factors.clone();
+                    rebuilt[index] = updated;
+                    return Expr::mul(rebuilt);
+                }
+            }
+            expr.clone()
+        }
+        Expr::Add(terms) => {
+            for (index, term) in terms.iter().enumerate() {
+                let updated = simplify_ccr_car_once(term, props, interner);
+                if updated != *term {
+                    let mut rebuilt = terms.clone();
+                    rebuilt[index] = updated;
+                    return Expr::add(rebuilt);
+                }
+            }
+            expr.clone()
+        }
+        Expr::Pow(base, exp) => {
+            let new_base = simplify_ccr_car_once(base, props, interner);
+            if new_base != **base {
+                return Expr::pow(new_base, (**exp).clone());
+            }
+            let new_exp = simplify_ccr_car_once(exp, props, interner);
+            if new_exp != **exp {
+                return Expr::pow((**base).clone(), new_exp);
+            }
+            expr.clone()
+        }
+        Expr::Neg(inner) => {
+            let updated = simplify_ccr_car_once(inner, props, interner);
+            if updated != **inner {
+                Expr::neg(updated)
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::Complex(re, im) => {
+            let new_re = simplify_ccr_car_once(re, props, interner);
+            if new_re != **re {
+                return Expr::Complex(Box::new(new_re), im.clone());
+            }
+            let new_im = simplify_ccr_car_once(im, props, interner);
+            if new_im != **im {
+                return Expr::Complex(re.clone(), Box::new(new_im));
+            }
+            expr.clone()
+        }
+        Expr::Call(f, args) => {
+            for (index, arg) in args.iter().enumerate() {
+                let updated = simplify_ccr_car_once(arg, props, interner);
+                if updated != *arg {
+                    let mut rebuilt = args.clone();
+                    rebuilt[index] = updated;
+                    return Expr::Call(*f, rebuilt);
+                }
+            }
+            expr.clone()
+        }
+        Expr::FnDef(name, params, body) => {
+            let updated = simplify_ccr_car_once(body, props, interner);
+            if updated != **body {
+                Expr::FnDef(*name, params.clone(), Box::new(updated))
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::Rule(lhs, rhs, trust) => {
+            let new_lhs = simplify_ccr_car_once(lhs, props, interner);
+            if new_lhs != **lhs {
+                return Expr::Rule(Box::new(new_lhs), rhs.clone(), *trust);
+            }
+            let new_rhs = simplify_ccr_car_once(rhs, props, interner);
+            if new_rhs != **rhs {
+                return Expr::Rule(lhs.clone(), Box::new(new_rhs), *trust);
+            }
+            expr.clone()
+        }
+        Expr::Piecewise(cases) => {
+            for (index, (value, condition)) in cases.iter().enumerate() {
+                let updated = simplify_ccr_car_once(value, props, interner);
+                if updated != *value {
+                    let mut rebuilt = cases.clone();
+                    rebuilt[index] = (updated, condition.clone());
+                    return Expr::Piecewise(rebuilt);
+                }
+            }
+            expr.clone()
+        }
+        Expr::Indexed(base, indices) => {
+            let updated = simplify_ccr_car_once(base, props, interner);
+            if updated != **base {
+                Expr::Indexed(Box::new(updated), indices.clone())
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::Let(name, value, body) => {
+            let new_value = simplify_ccr_car_once(value, props, interner);
+            if new_value != **value {
+                return Expr::Let(*name, Box::new(new_value), body.clone());
+            }
+            let new_body = simplify_ccr_car_once(body, props, interner);
+            if new_body != **body {
+                return Expr::Let(*name, value.clone(), Box::new(new_body));
+            }
+            expr.clone()
+        }
+        Expr::List(items) => {
+            for (index, item) in items.iter().enumerate() {
+                let updated = simplify_ccr_car_once(item, props, interner);
+                if updated != *item {
+                    let mut rebuilt = items.clone();
+                    rebuilt[index] = updated;
+                    return Expr::List(rebuilt);
+                }
+            }
+            expr.clone()
+        }
+        Expr::Matrix(rows) => {
+            for (row_index, row) in rows.iter().enumerate() {
+                for (col_index, cell) in row.iter().enumerate() {
+                    let updated = simplify_ccr_car_once(cell, props, interner);
+                    if updated != *cell {
+                        let mut rebuilt = rows.clone();
+                        rebuilt[row_index][col_index] = updated;
+                        return Expr::Matrix(rebuilt);
+                    }
+                }
+            }
+            expr.clone()
+        }
+        _ => expr.clone(),
+    }
+}
+
+/// Repeatedly apply explicit CCR/CAR rewrites until the expression reaches a fixed point.
+pub fn simplify_ccr_car_full(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let mut current = expr.clone();
+    loop {
+        let next = simplify_expr(simplify_ccr_car_once(&current, props, interner));
+        if next == current {
+            return current;
+        }
+        current = next;
+    }
 }
 
 fn graded_reorder_mul(
     factors: Vec<Expr>,
     operators: &HashMap<lasso::Spur, OperatorKind>,
     operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     for i in 0..factors.len().saturating_sub(1) {
-        let left = operator_info(&factors[i], operators, operator_statistics, interner);
-        let right = operator_info(&factors[i + 1], operators, operator_statistics, interner);
+        let left = operator_info(
+            &factors[i],
+            operators,
+            operator_statistics,
+            properties,
+            interner,
+        );
+        let right = operator_info(
+            &factors[i + 1],
+            operators,
+            operator_statistics,
+            properties,
+            interner,
+        );
         if let (
             Some((OperatorKind::Annihilation, _, left_stats)),
             Some((OperatorKind::Creation, _, right_stats)),
@@ -734,7 +1464,13 @@ fn graded_reorder_mul(
         {
             let mut swapped = factors.clone();
             swapped.swap(i, i + 1);
-            let reordered = graded_reorder_mul(swapped, operators, operator_statistics, interner);
+            let reordered = graded_reorder_mul(
+                swapped,
+                operators,
+                operator_statistics,
+                properties,
+                interner,
+            );
             return if left_stats == OperatorStatistics::Fermionic
                 && right_stats == OperatorStatistics::Fermionic
             {
@@ -751,11 +1487,24 @@ fn normal_order_mul(
     factors: Vec<Expr>,
     operators: &HashMap<lasso::Spur, OperatorKind>,
     operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Expr {
     for i in 0..factors.len().saturating_sub(1) {
-        let left = operator_info(&factors[i], operators, operator_statistics, interner);
-        let right = operator_info(&factors[i + 1], operators, operator_statistics, interner);
+        let left = operator_info(
+            &factors[i],
+            operators,
+            operator_statistics,
+            properties,
+            interner,
+        );
+        let right = operator_info(
+            &factors[i + 1],
+            operators,
+            operator_statistics,
+            properties,
+            interner,
+        );
         if let (
             Some((OperatorKind::Annihilation, left_mode, left_stats)),
             Some((OperatorKind::Creation, right_mode, right_stats)),
@@ -763,7 +1512,13 @@ fn normal_order_mul(
         {
             let mut swapped = factors.clone();
             swapped.swap(i, i + 1);
-            let reordered = normal_order_mul(swapped, operators, operator_statistics, interner);
+            let reordered = normal_order_mul(
+                swapped,
+                operators,
+                operator_statistics,
+                properties,
+                interner,
+            );
             let reordered = if left_stats == OperatorStatistics::Fermionic
                 && right_stats == OperatorStatistics::Fermionic
             {
@@ -771,14 +1526,20 @@ fn normal_order_mul(
             } else {
                 reordered
             };
-            if modes_match(&left_mode, &right_mode) && left_stats == right_stats {
+            if modes_match(&left_mode, &right_mode, properties) && left_stats == right_stats {
                 let mut remaining = factors.clone();
                 remaining.remove(i + 1);
                 remaining.remove(i);
                 let contraction = if remaining.is_empty() {
                     Expr::one()
                 } else {
-                    normal_order_mul(remaining, operators, operator_statistics, interner)
+                    normal_order_mul(
+                        remaining,
+                        operators,
+                        operator_statistics,
+                        properties,
+                        interner,
+                    )
                 };
                 return simplify_expr(Expr::add(vec![reordered, contraction]));
             }
@@ -792,30 +1553,48 @@ pub fn normal_order_simple(
     expr: &ax_ir::Expr,
     operators: &HashMap<lasso::Spur, OperatorKind>,
     operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
     match expr {
         Expr::Mul(factors) => {
             let simplified = factors
                 .iter()
-                .map(|factor| normal_order_simple(factor, operators, operator_statistics, interner))
+                .map(|factor| {
+                    normal_order_simple(
+                        factor,
+                        operators,
+                        operator_statistics,
+                        properties,
+                        interner,
+                    )
+                })
                 .collect();
-            normal_order_mul(simplified, operators, operator_statistics, interner)
+            normal_order_mul(
+                simplified,
+                operators,
+                operator_statistics,
+                properties,
+                interner,
+            )
         }
         Expr::Add(terms) => Expr::add(
             terms
                 .iter()
-                .map(|term| normal_order_simple(term, operators, operator_statistics, interner))
+                .map(|term| {
+                    normal_order_simple(term, operators, operator_statistics, properties, interner)
+                })
                 .collect(),
         ),
         Expr::Pow(base, exp) => Expr::pow(
-            normal_order_simple(base, operators, operator_statistics, interner),
-            normal_order_simple(exp, operators, operator_statistics, interner),
+            normal_order_simple(base, operators, operator_statistics, properties, interner),
+            normal_order_simple(exp, operators, operator_statistics, properties, interner),
         ),
         Expr::Neg(inner) => Expr::neg(normal_order_simple(
             inner,
             operators,
             operator_statistics,
+            properties,
             interner,
         )),
         Expr::Complex(re, im) => Expr::Complex(
@@ -823,19 +1602,23 @@ pub fn normal_order_simple(
                 re,
                 operators,
                 operator_statistics,
+                properties,
                 interner,
             )),
             Box::new(normal_order_simple(
                 im,
                 operators,
                 operator_statistics,
+                properties,
                 interner,
             )),
         ),
         Expr::Call(f, args) => Expr::Call(
             *f,
             args.iter()
-                .map(|arg| normal_order_simple(arg, operators, operator_statistics, interner))
+                .map(|arg| {
+                    normal_order_simple(arg, operators, operator_statistics, properties, interner)
+                })
                 .collect(),
         ),
         Expr::FnDef(name, params, body) => Expr::FnDef(
@@ -845,6 +1628,7 @@ pub fn normal_order_simple(
                 body,
                 operators,
                 operator_statistics,
+                properties,
                 interner,
             )),
         ),
@@ -853,12 +1637,14 @@ pub fn normal_order_simple(
                 lhs,
                 operators,
                 operator_statistics,
+                properties,
                 interner,
             )),
             Box::new(normal_order_simple(
                 rhs,
                 operators,
                 operator_statistics,
+                properties,
                 interner,
             )),
             *trust,
@@ -868,7 +1654,13 @@ pub fn normal_order_simple(
                 .iter()
                 .map(|(value, condition)| {
                     (
-                        normal_order_simple(value, operators, operator_statistics, interner),
+                        normal_order_simple(
+                            value,
+                            operators,
+                            operator_statistics,
+                            properties,
+                            interner,
+                        ),
                         condition.clone(),
                     )
                 })
@@ -879,6 +1671,7 @@ pub fn normal_order_simple(
                 base,
                 operators,
                 operator_statistics,
+                properties,
                 interner,
             )),
             indices.clone(),
@@ -889,19 +1682,23 @@ pub fn normal_order_simple(
                 value,
                 operators,
                 operator_statistics,
+                properties,
                 interner,
             )),
             Box::new(normal_order_simple(
                 body,
                 operators,
                 operator_statistics,
+                properties,
                 interner,
             )),
         ),
         Expr::List(items) => Expr::List(
             items
                 .iter()
-                .map(|item| normal_order_simple(item, operators, operator_statistics, interner))
+                .map(|item| {
+                    normal_order_simple(item, operators, operator_statistics, properties, interner)
+                })
                 .collect(),
         ),
         Expr::Matrix(rows) => Expr::Matrix(
@@ -909,7 +1706,13 @@ pub fn normal_order_simple(
                 .map(|row| {
                     row.iter()
                         .map(|cell| {
-                            normal_order_simple(cell, operators, operator_statistics, interner)
+                            normal_order_simple(
+                                cell,
+                                operators,
+                                operator_statistics,
+                                properties,
+                                interner,
+                            )
                         })
                         .collect()
                 })
@@ -923,80 +1726,306 @@ pub fn normal_order(
     expr: &ax_ir::Expr,
     operators: &HashMap<lasso::Spur, OperatorKind>,
     operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
-    normal_order_simple(expr, operators, operator_statistics, interner)
+    normal_order_simple(expr, operators, operator_statistics, properties, interner)
 }
 
 fn contraction_mode_key(
     expr: &Expr,
     operators: &HashMap<lasso::Spur, OperatorKind>,
     operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
     interner: &ax_ir::Interner,
 ) -> Option<(OperatorKind, lasso::Spur, OperatorStatistics)> {
-    let (kind, mode, statistics) = operator_info(expr, operators, operator_statistics, interner)?;
+    let (kind, mode, statistics) =
+        operator_info(expr, operators, operator_statistics, properties, interner)?;
     match mode {
         Some(Expr::Sym(sym)) => Some((kind, sym, statistics)),
         _ => None,
     }
 }
 
-fn fermionic_contraction_sign(
-    factors: &[Expr],
-    left_index: usize,
-    right_index: usize,
-    operators: &HashMap<lasso::Spur, OperatorKind>,
-    operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
-    interner: &ax_ir::Interner,
-) -> Expr {
-    let Some((_, _, right_statistics)) = contraction_mode_key(
-        &factors[right_index],
-        operators,
-        operator_statistics,
-        interner,
-    ) else {
-        return Expr::one();
-    };
-    if right_statistics != OperatorStatistics::Fermionic {
+fn wick_partial_pairings(indices: &[usize]) -> Vec<Vec<(usize, usize)>> {
+    fn recurse(indices: &[usize]) -> Vec<Vec<(usize, usize)>> {
+        let Some((&first, rest)) = indices.split_first() else {
+            return vec![Vec::new()];
+        };
+
+        let mut pairings = Vec::new();
+
+        for mut tail in recurse(rest) {
+            let _ = first;
+            pairings.push(std::mem::take(&mut tail));
+        }
+
+        for partner_offset in 0..rest.len() {
+            let partner = rest[partner_offset];
+            let mut remaining = Vec::with_capacity(rest.len().saturating_sub(1));
+            remaining.extend_from_slice(&rest[..partner_offset]);
+            remaining.extend_from_slice(&rest[(partner_offset + 1)..]);
+            for mut tail in recurse(&remaining) {
+                let mut pairs = Vec::with_capacity(tail.len() + 1);
+                pairs.push((first, partner));
+                pairs.append(&mut tail);
+                pairings.push(pairs);
+            }
+        }
+
+        pairings
+    }
+
+    recurse(indices)
+}
+
+/// Generate every complete pairing of an even-length ordered operator list.
+///
+/// Each returned pairing preserves the input ordering inside each pair, so every tuple is
+/// `(i, j)` with `i < j`.
+pub fn wick_pairings(indices: &[usize]) -> Vec<Vec<(usize, usize)>> {
+    if indices.len() % 2 == 1 {
+        return Vec::new();
+    }
+    if indices.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let first = indices[0];
+    let mut pairings = Vec::new();
+    for partner_offset in 1..indices.len() {
+        let partner = indices[partner_offset];
+        let mut remaining = Vec::with_capacity(indices.len() - 2);
+        remaining.extend_from_slice(&indices[1..partner_offset]);
+        remaining.extend_from_slice(&indices[(partner_offset + 1)..]);
+        for mut tail in wick_pairings(&remaining) {
+            let mut pairs = Vec::with_capacity(tail.len() + 1);
+            pairs.push((first, partner));
+            pairs.append(&mut tail);
+            pairings.push(pairs);
+        }
+    }
+    pairings
+}
+
+/// Return the fermionic sign for a chosen set of Wick contractions on an ordered operator list.
+///
+/// The sign is the parity of the permutation needed to bring each contracted pair adjacent while
+/// preserving pair order and the relative order of any unpaired operators. Equivalently, for
+/// complete pairings this matches the parity of line crossings in the standard pairing diagram.
+pub fn fermionic_pairing_sign(pairs: &[(usize, usize)], operator_count: usize) -> Expr {
+    if pairs.is_empty() || operator_count < 2 {
         return Expr::one();
     }
 
-    let fermionic_crossings = factors[(left_index + 1)..right_index]
-        .iter()
-        .filter_map(|factor| {
-            contraction_mode_key(factor, operators, operator_statistics, interner)
-                .map(|(_, _, statistics)| statistics)
-        })
-        .filter(|statistics| *statistics == OperatorStatistics::Fermionic)
-        .count();
+    let mut pair_by_left = pairs.to_vec();
+    pair_by_left.sort_unstable_by_key(|&(left, _)| left);
 
-    if fermionic_crossings % 2 == 0 {
+    let mut right_by_left = HashMap::with_capacity(pair_by_left.len());
+    let mut paired = HashSet::with_capacity(pair_by_left.len() * 2);
+    for &(left, right) in &pair_by_left {
+        if left >= right || right >= operator_count {
+            return Expr::one();
+        }
+        right_by_left.insert(left, right);
+        paired.insert(left);
+        paired.insert(right);
+    }
+
+    let mut target = Vec::with_capacity(operator_count);
+    for index in 0..operator_count {
+        if let Some(&right) = right_by_left.get(&index) {
+            target.push(index);
+            target.push(right);
+        } else if !paired.contains(&index) {
+            target.push(index);
+        }
+    }
+
+    let mut positions = vec![0usize; operator_count];
+    for (target_index, original_index) in target.iter().copied().enumerate() {
+        positions[original_index] = target_index;
+    }
+
+    let mut inversions = 0usize;
+    for i in 0..operator_count {
+        for j in (i + 1)..operator_count {
+            if positions[i] > positions[j] {
+                inversions += 1;
+            }
+        }
+    }
+
+    if inversions % 2 == 0 {
         Expr::one()
     } else {
         Expr::neg(Expr::one())
     }
 }
 
+fn is_pure_fermionic_operator_product(
+    factors: &[Expr],
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+    operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> bool {
+    !factors.is_empty()
+        && factors.iter().all(|factor| {
+            matches!(
+                contraction_mode_key(factor, operators, operator_statistics, properties, interner,),
+                Some((_, _, OperatorStatistics::Fermionic))
+            )
+        })
+}
+
+fn wick_expand_fermionic_mul(
+    factors: &[ax_ir::Expr],
+    operators: &HashMap<lasso::Spur, OperatorKind>,
+    operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
+    contractions: &HashMap<(lasso::Spur, lasso::Spur), ax_ir::Expr>,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    let mut operator_modes = Vec::with_capacity(factors.len());
+    for factor in factors {
+        let Some((_, mode, _)) =
+            contraction_mode_key(factor, operators, operator_statistics, properties, interner)
+        else {
+            return wick_expand_single(
+                factors,
+                operators,
+                operator_statistics,
+                properties,
+                contractions,
+                interner,
+            );
+        };
+        operator_modes.push(mode);
+    }
+
+    let graded = graded_reorder_mul(
+        factors.to_vec(),
+        operators,
+        operator_statistics,
+        properties,
+        interner,
+    );
+    let mut terms = vec![graded.clone()];
+    let mut found_contraction = false;
+
+    for pairs in wick_partial_pairings(&(0..factors.len()).collect::<Vec<_>>()) {
+        if pairs.is_empty() {
+            continue;
+        }
+
+        let mut contraction_factors = Vec::with_capacity(pairs.len() + 1);
+        contraction_factors.push(fermionic_pairing_sign(&pairs, factors.len()));
+
+        let mut valid = true;
+        let mut paired_positions = HashSet::with_capacity(pairs.len() * 2);
+        for &(left, right) in &pairs {
+            paired_positions.insert(left);
+            paired_positions.insert(right);
+            let lhs = operator_modes[left];
+            let rhs = operator_modes[right];
+            let Some(contraction) = contractions.get(&(lhs, rhs)) else {
+                valid = false;
+                break;
+            };
+            contraction_factors.push(contraction.clone());
+        }
+        if !valid {
+            continue;
+        }
+        found_contraction = true;
+
+        let remaining = factors
+            .iter()
+            .enumerate()
+            .filter_map(|(index, factor)| {
+                if paired_positions.contains(&index) {
+                    None
+                } else {
+                    Some(factor.clone())
+                }
+            })
+            .collect::<Vec<_>>();
+        let remainder = if remaining.is_empty() {
+            Expr::one()
+        } else {
+            graded_reorder_mul(
+                remaining,
+                operators,
+                operator_statistics,
+                properties,
+                interner,
+            )
+        };
+
+        contraction_factors.push(remainder);
+        terms.push(Expr::mul(contraction_factors));
+    }
+
+    if !found_contraction {
+        return normal_order_simple(
+            &Expr::mul(factors.to_vec()),
+            operators,
+            operator_statistics,
+            properties,
+            interner,
+        );
+    }
+
+    simplify_expr(Expr::add(terms))
+}
+
 pub fn wick_expand_single(
     factors: &[ax_ir::Expr],
     operators: &HashMap<lasso::Spur, OperatorKind>,
     operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
     contractions: &HashMap<(lasso::Spur, lasso::Spur), ax_ir::Expr>,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
+    if is_pure_fermionic_operator_product(
+        factors,
+        operators,
+        operator_statistics,
+        properties,
+        interner,
+    ) {
+        return wick_expand_fermionic_mul(
+            factors,
+            operators,
+            operator_statistics,
+            properties,
+            contractions,
+            interner,
+        );
+    }
+
     let mut terms = Vec::new();
     let mut found_contraction = false;
 
     for i in 0..factors.len() {
         for j in (i + 1)..factors.len() {
-            let Some((_, lhs, _)) =
-                contraction_mode_key(&factors[i], operators, operator_statistics, interner)
-            else {
+            let Some((_, lhs, _)) = contraction_mode_key(
+                &factors[i],
+                operators,
+                operator_statistics,
+                properties,
+                interner,
+            ) else {
                 continue;
             };
-            let Some((_, rhs, _)) =
-                contraction_mode_key(&factors[j], operators, operator_statistics, interner)
-            else {
+            let Some((_, rhs, _)) = contraction_mode_key(
+                &factors[j],
+                operators,
+                operator_statistics,
+                properties,
+                interner,
+            ) else {
                 continue;
             };
             if let Some(contraction) = contractions.get(&(lhs, rhs)) {
@@ -1019,21 +2048,13 @@ pub fn wick_expand_single(
                         &Expr::mul(remaining),
                         operators,
                         operator_statistics,
+                        properties,
                         contractions,
                         interner,
                     )
                 };
-                let signed_contraction = simplify_expr(Expr::mul(vec![
-                    fermionic_contraction_sign(
-                        factors,
-                        i,
-                        j,
-                        operators,
-                        operator_statistics,
-                        interner,
-                    ),
-                    contraction.clone(),
-                ]));
+                let signed_contraction =
+                    simplify_expr(Expr::mul(vec![Expr::one(), contraction.clone()]));
                 terms.push(Expr::mul(vec![signed_contraction, ordered_remaining]));
             }
         }
@@ -1044,13 +2065,20 @@ pub fn wick_expand_single(
             &Expr::mul(factors.to_vec()),
             operators,
             operator_statistics,
+            properties,
             interner,
         );
     }
 
     terms.insert(
         0,
-        graded_reorder_mul(factors.to_vec(), operators, operator_statistics, interner),
+        graded_reorder_mul(
+            factors.to_vec(),
+            operators,
+            operator_statistics,
+            properties,
+            interner,
+        ),
     );
 
     simplify_expr(Expr::add(terms))
@@ -1060,6 +2088,7 @@ pub fn wick_expand(
     expr: &ax_ir::Expr,
     operators: &HashMap<lasso::Spur, OperatorKind>,
     operator_statistics: &HashMap<lasso::Spur, OperatorStatistics>,
+    properties: &dyn PropertyLookup,
     contractions: &HashMap<(lasso::Spur, lasso::Spur), ax_ir::Expr>,
     interner: &ax_ir::Interner,
 ) -> ax_ir::Expr {
@@ -1068,6 +2097,7 @@ pub fn wick_expand(
             factors,
             operators,
             operator_statistics,
+            properties,
             contractions,
             interner,
         ),
@@ -1075,22 +2105,44 @@ pub fn wick_expand(
             terms
                 .iter()
                 .map(|term| {
-                    wick_expand(term, operators, operator_statistics, contractions, interner)
+                    wick_expand(
+                        term,
+                        operators,
+                        operator_statistics,
+                        properties,
+                        contractions,
+                        interner,
+                    )
                 })
                 .collect(),
         ),
         Expr::Pow(base, exp) => Expr::pow(
-            wick_expand(base, operators, operator_statistics, contractions, interner),
-            wick_expand(exp, operators, operator_statistics, contractions, interner),
+            wick_expand(
+                base,
+                operators,
+                operator_statistics,
+                properties,
+                contractions,
+                interner,
+            ),
+            wick_expand(
+                exp,
+                operators,
+                operator_statistics,
+                properties,
+                contractions,
+                interner,
+            ),
         ),
         Expr::Neg(inner) => Expr::neg(wick_expand(
             inner,
             operators,
             operator_statistics,
+            properties,
             contractions,
             interner,
         )),
-        _ => normal_order_simple(expr, operators, operator_statistics, interner),
+        _ => normal_order_simple(expr, operators, operator_statistics, properties, interner),
     }
 }
 
@@ -1189,7 +2241,9 @@ fn simplify_expr(expr: Expr) -> Expr {
             let exp = simplify_expr(*exp);
             match (&base, &exp) {
                 // Keep `f(x)^2` consistent with the unary-call collapse already used in `Mul`.
-                (Expr::Call(_, args), Expr::Int(power)) if args.len() == 1 && power == &2.into() => {
+                (Expr::Call(_, args), Expr::Int(power))
+                    if args.len() == 1 && power == &2.into() =>
+                {
                     args[0].clone()
                 }
                 _ => Expr::pow(base, exp),
@@ -2045,6 +3099,128 @@ pub fn pauli_z(_interner: &ax_ir::Interner) -> Vec<Vec<ax_ir::Expr>> {
     ]
 }
 
+fn validate_spin_dimension(two_j: usize) -> Result<usize, SpinError> {
+    two_j
+        .checked_add(1)
+        .ok_or(SpinError::InvalidSpinQuantumNumber)
+}
+
+/// Return the Hilbert-space dimension `2j + 1` for the exact integer label `two_j = 2j`.
+pub fn spin_j_dimension(two_j: usize) -> usize {
+    two_j + 1
+}
+
+/// Construct the exact `J_z` matrix for an arbitrary spin `j`, represented by `two_j = 2j`,
+/// in the standard ordered basis `|j,m⟩` with `m = j, j-1, ..., -j`.
+pub fn jz_matrix(two_j: usize, _interner: &ax_ir::Interner) -> Result<Vec<Vec<Expr>>, SpinError> {
+    let dim = validate_spin_dimension(two_j)?;
+    let mut matrix = zero_matrix(dim);
+    for idx in 0..dim {
+        let two_m = BigInt::from(two_j) - BigInt::from(2usize) * BigInt::from(idx);
+        matrix[idx][idx] = expr_from_exact_rational(BigRational::new(two_m, BigInt::from(2usize)));
+    }
+    Ok(matrix)
+}
+
+/// Construct the exact raising operator `J_+` matrix for an arbitrary spin `j`, represented by
+/// `two_j = 2j`, in the standard ordered basis `|j,m⟩` with `m = j, j-1, ..., -j`.
+pub fn jplus_matrix(two_j: usize, interner: &ax_ir::Interner) -> Result<Vec<Vec<Expr>>, SpinError> {
+    let dim = validate_spin_dimension(two_j)?;
+    let mut matrix = zero_matrix(dim);
+    for idx in 1..dim {
+        let coefficient = BigInt::from(idx) * BigInt::from(two_j - idx + 1);
+        matrix[idx - 1][idx] = simplified_sqrt_expr(Expr::Int(coefficient), interner);
+    }
+    Ok(matrix)
+}
+
+/// Construct the exact lowering operator `J_-` matrix for an arbitrary spin `j`, represented by
+/// `two_j = 2j`, in the standard ordered basis `|j,m⟩` with `m = j, j-1, ..., -j`.
+pub fn jminus_matrix(
+    two_j: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, SpinError> {
+    let dim = validate_spin_dimension(two_j)?;
+    let mut matrix = zero_matrix(dim);
+    for idx in 0..(dim.saturating_sub(1)) {
+        let coefficient = BigInt::from(two_j - idx) * BigInt::from(idx + 1);
+        matrix[idx + 1][idx] = simplified_sqrt_expr(Expr::Int(coefficient), interner);
+    }
+    Ok(matrix)
+}
+
+/// Construct the exact Cartesian angular-momentum operator `J_x = (J_+ + J_-)/2` for an
+/// arbitrary spin `j`, represented by `two_j = 2j`.
+pub fn jx_matrix(two_j: usize, interner: &ax_ir::Interner) -> Result<Vec<Vec<Expr>>, SpinError> {
+    let jp = jplus_matrix(two_j, interner)?;
+    let jm = jminus_matrix(two_j, interner)?;
+    Ok(simplify_matrix(ax_linalg::mat_scale(
+        &half(),
+        &ax_linalg::mat_add(&jp, &jm),
+    )))
+}
+
+/// Construct the exact Cartesian angular-momentum operator `J_y = (J_+ - J_-)/(2i)` for an
+/// arbitrary spin `j`, represented by `two_j = 2j`.
+pub fn jy_matrix(two_j: usize, interner: &ax_ir::Interner) -> Result<Vec<Vec<Expr>>, SpinError> {
+    let jp = jplus_matrix(two_j, interner)?;
+    let jm = jminus_matrix(two_j, interner)?;
+    let minus_i_over_two = Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::neg(half())));
+    Ok(simplify_matrix(ax_linalg::mat_scale(
+        &minus_i_over_two,
+        &ax_linalg::mat_add(&jp, &ax_linalg::mat_scale(&Expr::neg(Expr::one()), &jm)),
+    )))
+}
+
+fn inv_sqrt_two(interner: &ax_ir::Interner) -> Expr {
+    exact_sqrt_expr(half(), interner)
+}
+
+/// Return the explicit two-spin-1/2 singlet state in the computational basis
+/// `|↑↑⟩, |↑↓⟩, |↓↑⟩, |↓↓⟩`.
+///
+/// The state is
+/// `(|↑↓⟩ - |↓↑⟩) / sqrt(2)`.
+pub fn two_spin_half_singlet_state(interner: &ax_ir::Interner) -> Vec<Expr> {
+    let coeff = inv_sqrt_two(interner);
+    vec![Expr::zero(), coeff.clone(), Expr::neg(coeff), Expr::zero()]
+}
+
+/// Return the explicit two-spin-1/2 triplet states in the computational basis
+/// `|↑↑⟩, |↑↓⟩, |↓↑⟩, |↓↓⟩`.
+///
+/// The states are ordered as
+/// `|1,1⟩ = |↑↑⟩`,
+/// `|1,0⟩ = (|↑↓⟩ + |↓↑⟩) / sqrt(2)`,
+/// `|1,-1⟩ = |↓↓⟩`.
+pub fn two_spin_half_triplet_states(interner: &ax_ir::Interner) -> [Vec<Expr>; 3] {
+    let coeff = inv_sqrt_two(interner);
+    [
+        vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), coeff.clone(), coeff, Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::one()],
+    ]
+}
+
+/// Return the exact singlet projector `|S⟩⟨S|` for two spin-1/2 systems in the
+/// computational basis `|↑↑⟩, |↑↓⟩, |↓↑⟩, |↓↓⟩`.
+pub fn two_spin_half_singlet_projector(interner: &ax_ir::Interner) -> Vec<Vec<Expr>> {
+    density_matrix(&two_spin_half_singlet_state(interner))
+}
+
+/// Return the exact triplet projector for two spin-1/2 systems in the
+/// computational basis `|↑↑⟩, |↑↓⟩, |↓↑⟩, |↓↓⟩`.
+///
+/// This projector is the sum of the three rank-one triplet projectors
+/// `|1,1⟩⟨1,1| + |1,0⟩⟨1,0| + |1,-1⟩⟨1,-1|`.
+pub fn two_spin_half_triplet_projector(interner: &ax_ir::Interner) -> Vec<Vec<Expr>> {
+    let mut projector = zero_matrix(4);
+    for state in two_spin_half_triplet_states(interner) {
+        projector = simplify_matrix(ax_linalg::mat_add(&projector, &density_matrix(&state)));
+    }
+    projector
+}
+
 fn imag_unit() -> Expr {
     Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()))
 }
@@ -2331,39 +3507,18 @@ pub fn angular_momentum_matrices(
     Vec<Vec<ax_ir::Expr>>,
     Vec<Vec<ax_ir::Expr>>,
 )> {
-    match j {
-        Expr::Rational(r) if *r == num_rational::BigRational::new(1.into(), 2.into()) => {
-            let hx = ax_linalg::mat_scale(&half(), &pauli_x(interner));
-            let hy = ax_linalg::mat_scale(&half(), &pauli_y(interner));
-            let hz = ax_linalg::mat_scale(&half(), &pauli_z(interner));
-            Some((hx, hy, hz))
+    let two_j = match j {
+        Expr::Rational(r) if r.denom() == &BigInt::from(2usize) && !r.is_negative() => {
+            r.numer().to_usize()?
         }
-        Expr::Int(n) if *n == 1.into() => {
-            let sqrt2 = Expr::Call(interner.get_or_intern("sqrt"), vec![Expr::Int(2.into())]);
-            let jp = vec![
-                vec![Expr::zero(), sqrt2.clone(), Expr::zero()],
-                vec![Expr::zero(), Expr::zero(), sqrt2.clone()],
-                vec![Expr::zero(), Expr::zero(), Expr::zero()],
-            ];
-            let jm = ax_linalg::transpose(&jp);
-            let jx = ax_linalg::mat_scale(&half(), &ax_linalg::mat_add(&jp, &jm));
-            let two_i = Expr::mul(vec![
-                Expr::Int(2.into()),
-                Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one())),
-            ]);
-            let jy = ax_linalg::mat_scale(
-                &Expr::pow(two_i, Expr::Int((-1).into())),
-                &ax_linalg::mat_add(&jp, &ax_linalg::mat_scale(&Expr::neg(Expr::one()), &jm)),
-            );
-            let jz = vec![
-                vec![Expr::Int(1.into()), Expr::zero(), Expr::zero()],
-                vec![Expr::zero(), Expr::zero(), Expr::zero()],
-                vec![Expr::zero(), Expr::zero(), Expr::Int((-1).into())],
-            ];
-            Some((jx, jy, jz))
-        }
-        _ => None,
-    }
+        Expr::Int(n) if !n.is_negative() => n.to_usize()?.checked_mul(2)?,
+        _ => return None,
+    };
+    Some((
+        jx_matrix(two_j, interner).ok()?,
+        jy_matrix(two_j, interner).ok()?,
+        jz_matrix(two_j, interner).ok()?,
+    ))
 }
 
 pub fn density_matrix(state: &[ax_ir::Expr]) -> Vec<Vec<ax_ir::Expr>> {
@@ -6127,9 +7282,10 @@ mod tests {
         operators.insert(a, OperatorKind::Annihilation);
         operators.insert(a_dag, OperatorKind::Creation);
         let statistics = operator_stats();
+        let properties = prop_map();
 
         let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(a_dag)]);
-        let result = normal_order_simple(&expr, &operators, &statistics, &interner);
+        let result = normal_order_simple(&expr, &operators, &statistics, &properties, &interner);
         if let Expr::Mul(factors) = &result {
             assert_eq!(factors.len(), 2);
             assert_eq!(factors[0], Expr::Sym(a_dag));
@@ -6149,9 +7305,10 @@ mod tests {
         operators.insert(a, OperatorKind::Annihilation);
         operators.insert(a_dag, OperatorKind::Creation);
         let statistics = operator_stats();
+        let properties = prop_map();
 
         let expr = Expr::mul(vec![Expr::Int(3.into()), Expr::Sym(a), Expr::Sym(a_dag)]);
-        let result = normal_order_simple(&expr, &operators, &statistics, &interner);
+        let result = normal_order_simple(&expr, &operators, &statistics, &properties, &interner);
         let pp = ax_ir::pretty_print(&result, &interner);
         assert!(pp.contains("3"), "got: {}", pp);
     }
@@ -6161,12 +7318,13 @@ mod tests {
         let interner = ax_ir::Interner::new();
         let operators = HashMap::new();
         let statistics = operator_stats();
+        let properties = prop_map();
         let a = interner.get_or_intern("a");
         let expr = Expr::mul(vec![
             Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(a)]),
             Expr::Call(interner.get_or_intern("creation"), vec![Expr::Sym(a)]),
         ]);
-        let result = normal_order_simple(&expr, &operators, &statistics, &interner);
+        let result = normal_order_simple(&expr, &operators, &statistics, &properties, &interner);
         let expected = Expr::add(vec![
             Expr::one(),
             Expr::mul(vec![
@@ -6184,11 +7342,12 @@ mod tests {
         let c = interner.get_or_intern("c");
         let mut statistics = operator_stats();
         statistics.insert(c, OperatorStatistics::Fermionic);
+        let properties = prop_map();
         let expr = Expr::mul(vec![
             Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c)]),
             Expr::Call(interner.get_or_intern("creation"), vec![Expr::Sym(c)]),
         ]);
-        let result = normal_order_simple(&expr, &operators, &statistics, &interner);
+        let result = normal_order_simple(&expr, &operators, &statistics, &properties, &interner);
         let expected = Expr::add(vec![
             Expr::one(),
             Expr::neg(Expr::mul(vec![
@@ -6197,6 +7356,478 @@ mod tests {
             ])),
         ]);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn normal_order_uses_mode_metadata_before_legacy_operator_statistics() {
+        let interner = ax_ir::Interner::new();
+        let c = interner.get_or_intern("c");
+        let operators = HashMap::new();
+        let mut statistics = operator_stats();
+        statistics.insert(c, OperatorStatistics::Bosonic);
+        let mut properties = prop_map();
+        properties.insert(
+            c,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Fermionic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c)]),
+            Expr::Call(interner.get_or_intern("creation"), vec![Expr::Sym(c)]),
+        ]);
+        let result = normal_order_simple(&expr, &operators, &statistics, &properties, &interner);
+        let expected = Expr::add(vec![
+            Expr::one(),
+            Expr::neg(Expr::mul(vec![
+                Expr::Call(interner.get_or_intern("creation"), vec![Expr::Sym(c)]),
+                Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c)]),
+            ])),
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn wick_pairings_generates_all_complete_pairings() {
+        let pairings = wick_pairings(&[0, 1, 2, 3]);
+        assert_eq!(pairings.len(), 3);
+        assert!(pairings.contains(&vec![(0, 1), (2, 3)]));
+        assert!(pairings.contains(&vec![(0, 2), (1, 3)]));
+        assert!(pairings.contains(&vec![(0, 3), (1, 2)]));
+    }
+
+    #[test]
+    fn fermionic_pairing_sign_flips_for_crossing_pairing() {
+        let noncrossing = fermionic_pairing_sign(&[(0, 1), (2, 3)], 4);
+        let crossing = fermionic_pairing_sign(&[(0, 2), (1, 3)], 4);
+
+        assert_eq!(noncrossing, Expr::one());
+        assert_eq!(crossing, Expr::neg(Expr::one()));
+    }
+
+    #[test]
+    fn wick_expand_fermionic_pairings_include_correct_signs() {
+        let interner = ax_ir::Interner::new();
+        let c1 = interner.get_or_intern("c1");
+        let c2 = interner.get_or_intern("c2");
+        let annihilation = interner.get_or_intern("annihilation");
+        let creation = interner.get_or_intern("creation");
+
+        let operators = HashMap::new();
+        let mut statistics = operator_stats();
+        statistics.insert(c1, OperatorStatistics::Fermionic);
+        statistics.insert(c2, OperatorStatistics::Fermionic);
+        let properties = prop_map();
+
+        let expr = Expr::mul(vec![
+            Expr::Call(annihilation, vec![Expr::Sym(c1)]),
+            Expr::Call(annihilation, vec![Expr::Sym(c2)]),
+            Expr::Call(creation, vec![Expr::Sym(c2)]),
+            Expr::Call(creation, vec![Expr::Sym(c1)]),
+        ]);
+
+        let mut contractions = HashMap::new();
+        contractions.insert((c1, c1), Expr::one());
+        contractions.insert((c2, c2), Expr::one());
+
+        let result = wick_expand(
+            &expr,
+            &operators,
+            &statistics,
+            &properties,
+            &contractions,
+            &interner,
+        );
+
+        let expected = Expr::add(vec![
+            Expr::mul(vec![
+                Expr::Call(creation, vec![Expr::Sym(c2)]),
+                Expr::Call(creation, vec![Expr::Sym(c1)]),
+                Expr::Call(annihilation, vec![Expr::Sym(c1)]),
+                Expr::Call(annihilation, vec![Expr::Sym(c2)]),
+            ]),
+            Expr::neg(Expr::mul(vec![
+                Expr::Call(creation, vec![Expr::Sym(c2)]),
+                Expr::Call(annihilation, vec![Expr::Sym(c2)]),
+            ])),
+            Expr::neg(Expr::mul(vec![
+                Expr::Call(creation, vec![Expr::Sym(c1)]),
+                Expr::Call(annihilation, vec![Expr::Sym(c1)]),
+            ])),
+            Expr::one(),
+        ]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn wick_expand_bosonic_path_is_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let annihilation = interner.get_or_intern("annihilation");
+        let creation = interner.get_or_intern("creation");
+
+        let operators = HashMap::new();
+        let statistics = operator_stats();
+        let properties = prop_map();
+
+        let expr = Expr::mul(vec![
+            Expr::Call(annihilation, vec![Expr::Sym(a)]),
+            Expr::Call(creation, vec![Expr::Sym(a)]),
+        ]);
+
+        let mut contractions = HashMap::new();
+        contractions.insert((a, a), Expr::one());
+
+        let result = wick_expand(
+            &expr,
+            &operators,
+            &statistics,
+            &properties,
+            &contractions,
+            &interner,
+        );
+        let expected = Expr::add(vec![
+            Expr::one(),
+            Expr::mul(vec![
+                Expr::Call(creation, vec![Expr::Sym(a)]),
+                Expr::Call(annihilation, vec![Expr::Sym(a)]),
+            ]),
+        ]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn time_ordered_constructor_uses_canonical_call() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let expr = time_ordered(Expr::Sym(a), &interner);
+
+        assert_eq!(
+            expr,
+            Expr::Call(interner.get_or_intern("time_order"), vec![Expr::Sym(a)])
+        );
+    }
+
+    #[test]
+    fn anti_time_ordered_constructor_uses_canonical_call() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let expr = anti_time_ordered(Expr::Sym(a), &interner);
+
+        assert_eq!(
+            expr,
+            Expr::Call(
+                interner.get_or_intern("anti_time_order"),
+                vec![Expr::Sym(a)]
+            )
+        );
+    }
+
+    #[test]
+    fn bch_expand_order_one_is_a_plus_b() {
+        let interner = ax_ir::Interner::new();
+        let a = Expr::Sym(interner.get_or_intern("A"));
+        let b = Expr::Sym(interner.get_or_intern("B"));
+
+        assert_eq!(
+            bch_expand(a.clone(), b.clone(), 1, &interner),
+            Expr::add(vec![a, b])
+        );
+    }
+
+    #[test]
+    fn bch_expand_order_two_contains_half_commutator() {
+        let interner = ax_ir::Interner::new();
+        let a = Expr::Sym(interner.get_or_intern("A"));
+        let b = Expr::Sym(interner.get_or_intern("B"));
+        let result = bch_expand(a.clone(), b.clone(), 2, &interner);
+        let Expr::Add(terms) = result else {
+            panic!("expected additive BCH expansion");
+        };
+
+        assert!(terms.contains(&Expr::mul(vec![
+            Expr::Rational(BigRational::new(1.into(), 2.into())),
+            commutator_expr(a, b, &interner),
+        ])));
+    }
+
+    #[test]
+    fn bch_expand_order_four_contains_required_quartic_term() {
+        let interner = ax_ir::Interner::new();
+        let a = Expr::Sym(interner.get_or_intern("A"));
+        let b = Expr::Sym(interner.get_or_intern("B"));
+        let result = bch_expand(a.clone(), b.clone(), 4, &interner);
+        let Expr::Add(terms) = result else {
+            panic!("expected additive BCH expansion");
+        };
+
+        let quartic = Expr::mul(vec![
+            Expr::Rational(BigRational::new((-1).into(), 24.into())),
+            commutator_expr(
+                b.clone(),
+                commutator_expr(
+                    a.clone(),
+                    commutator_expr(
+                        a,
+                        commutator_expr(
+                            Expr::Sym(interner.get_or_intern("A")),
+                            Expr::Sym(interner.get_or_intern("B")),
+                            &interner,
+                        ),
+                        &interner,
+                    ),
+                    &interner,
+                ),
+                &interner,
+            ),
+        ]);
+
+        assert!(terms.contains(&quartic));
+    }
+
+    #[test]
+    fn bch_expand_order_zero_is_zero() {
+        let interner = ax_ir::Interner::new();
+        let a = Expr::Sym(interner.get_or_intern("A"));
+        let b = Expr::Sym(interner.get_or_intern("B"));
+
+        assert_eq!(bch_expand(a, b, 0, &interner), Expr::zero());
+    }
+
+    #[test]
+    fn displacement_operator_series_order_zero_is_one() {
+        let interner = ax_ir::Interner::new();
+        let alpha = Expr::Sym(interner.get_or_intern("alpha"));
+        let mode = Expr::Sym(interner.get_or_intern("a"));
+
+        assert_eq!(
+            displacement_operator_series(alpha, mode, 0, &interner),
+            Expr::one()
+        );
+    }
+
+    #[test]
+    fn displacement_operator_series_order_one_is_one_plus_generator() {
+        let interner = ax_ir::Interner::new();
+        let alpha = Expr::Sym(interner.get_or_intern("alpha"));
+        let mode = Expr::Sym(interner.get_or_intern("a"));
+        let generator = Expr::add(vec![
+            Expr::mul(vec![
+                alpha.clone(),
+                Expr::Call(interner.get_or_intern("creation"), vec![mode.clone()]),
+            ]),
+            Expr::neg(Expr::mul(vec![
+                Expr::Call(interner.get_or_intern("conj"), vec![alpha]),
+                Expr::Call(interner.get_or_intern("annihilation"), vec![mode]),
+            ])),
+        ]);
+
+        assert_eq!(
+            displacement_operator_series(
+                Expr::Sym(interner.get_or_intern("alpha")),
+                Expr::Sym(interner.get_or_intern("a")),
+                1,
+                &interner,
+            ),
+            Expr::add(vec![Expr::one(), generator])
+        );
+    }
+
+    #[test]
+    fn squeezing_operator_series_order_two_contains_generator_squared_over_two_factorial() {
+        let interner = ax_ir::Interner::new();
+        let zeta = Expr::Sym(interner.get_or_intern("zeta"));
+        let mode = Expr::Sym(interner.get_or_intern("a"));
+        let result = squeezing_operator_series(zeta.clone(), mode.clone(), 2, &interner);
+        let Expr::Add(terms) = result else {
+            panic!("expected additive squeezing expansion");
+        };
+
+        let creation = Expr::Call(interner.get_or_intern("creation"), vec![mode.clone()]);
+        let annihilation = Expr::Call(interner.get_or_intern("annihilation"), vec![mode]);
+        let generator = Expr::mul(vec![
+            Expr::Rational(BigRational::new(BigInt::one(), BigInt::from(2usize))),
+            Expr::add(vec![
+                Expr::mul(vec![zeta.clone(), creation.clone(), creation]),
+                Expr::neg(Expr::mul(vec![
+                    Expr::Call(interner.get_or_intern("conj"), vec![zeta]),
+                    annihilation.clone(),
+                    annihilation,
+                ])),
+            ]),
+        ]);
+
+        assert!(terms.contains(&Expr::mul(vec![
+            Expr::Rational(BigRational::new(BigInt::one(), BigInt::from(2usize))),
+            Expr::pow(generator, Expr::Int(BigInt::from(2usize))),
+        ])));
+    }
+
+    #[test]
+    fn simplify_ccr_car_bosonic_same_mode_annihilation_creation() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let mut properties = prop_map();
+        properties.insert(
+            a,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Bosonic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(a)]),
+            Expr::Call(interner.get_or_intern("creation"), vec![Expr::Sym(a)]),
+        ]);
+        let result = simplify_ccr_car_full(&expr, &properties, &interner);
+        let expected = Expr::add(vec![
+            Expr::one(),
+            Expr::mul(vec![
+                Expr::Call(interner.get_or_intern("creation"), vec![Expr::Sym(a)]),
+                Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(a)]),
+            ]),
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn simplify_ccr_car_fermionic_same_mode_annihilation_creation() {
+        let interner = ax_ir::Interner::new();
+        let c = interner.get_or_intern("c");
+        let mut properties = prop_map();
+        properties.insert(
+            c,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Fermionic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c)]),
+            Expr::Call(interner.get_or_intern("creation"), vec![Expr::Sym(c)]),
+        ]);
+        let result = simplify_ccr_car_full(&expr, &properties, &interner);
+        let expected = Expr::add(vec![
+            Expr::one(),
+            Expr::neg(Expr::mul(vec![
+                Expr::Call(interner.get_or_intern("creation"), vec![Expr::Sym(c)]),
+                Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c)]),
+            ])),
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn simplify_ccr_car_distinct_bosons_reorder_without_sign() {
+        let interner = ax_ir::Interner::new();
+        let a0 = interner.get_or_intern("a0");
+        let a1 = interner.get_or_intern("a1");
+        let mut properties = prop_map();
+        properties.insert(
+            a0,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Bosonic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        properties.insert(
+            a1,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Bosonic,
+                subsystem: None,
+                mode_index: 1,
+                label: None,
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(a1)]),
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(a0)]),
+        ]);
+        let result = simplify_ccr_car_full(&expr, &properties, &interner);
+        let expected = Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(a0)]),
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(a1)]),
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn simplify_ccr_car_distinct_fermions_reorder_with_minus_sign() {
+        let interner = ax_ir::Interner::new();
+        let c0 = interner.get_or_intern("c0");
+        let c1 = interner.get_or_intern("c1");
+        let mut properties = prop_map();
+        properties.insert(
+            c0,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Fermionic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        properties.insert(
+            c1,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Fermionic,
+                subsystem: None,
+                mode_index: 1,
+                label: None,
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c1)]),
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c0)]),
+        ]);
+        let result = simplify_ccr_car_full(&expr, &properties, &interner);
+        let expected = simplify_expr(Expr::neg(Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c0)]),
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c1)]),
+        ])));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn simplify_ccr_car_mixed_boson_fermion_product_is_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let c = interner.get_or_intern("c");
+        let mut properties = prop_map();
+        properties.insert(
+            a,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Bosonic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        properties.insert(
+            c,
+            vec![TensorProperty::ModeMeta(ModeMetadata {
+                statistics: ModeStatistics::Fermionic,
+                subsystem: None,
+                mode_index: 1,
+                label: None,
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(a)]),
+            Expr::Call(interner.get_or_intern("annihilation"), vec![Expr::Sym(c)]),
+        ]);
+        let result = simplify_ccr_car_full(&expr, &properties, &interner);
+        assert_eq!(result, expr);
     }
 
     #[test]

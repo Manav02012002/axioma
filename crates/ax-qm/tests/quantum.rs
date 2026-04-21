@@ -7,6 +7,71 @@ fn int() -> Interner {
     Interner::new()
 }
 
+fn simplify_test_expr(expr: Expr) -> Expr {
+    fn normalize_rational(value: BigRational) -> Expr {
+        if value.denom() == &1.into() {
+            Expr::Int(value.numer().clone())
+        } else {
+            Expr::Rational(value)
+        }
+    }
+
+    match expr {
+        Expr::Add(terms) => {
+            let simplified = terms
+                .into_iter()
+                .map(simplify_test_expr)
+                .filter(|term| *term != Expr::zero())
+                .collect::<Vec<_>>();
+            if simplified.is_empty() {
+                Expr::zero()
+            } else if simplified
+                .iter()
+                .all(|term| matches!(term, Expr::Rational(_) | Expr::Int(_)))
+            {
+                let sum = simplified.into_iter().fold(
+                    BigRational::from_integer(0.into()),
+                    |acc, term| {
+                        acc + match term {
+                            Expr::Int(value) => BigRational::from_integer(value),
+                            Expr::Rational(value) => value,
+                            _ => unreachable!(),
+                        }
+                    },
+                );
+                normalize_rational(sum)
+            } else {
+                Expr::add(simplified)
+            }
+        }
+        Expr::Pow(base, exp) => {
+            let base = simplify_test_expr(*base);
+            let exp = simplify_test_expr(*exp);
+            match (&base, &exp) {
+                (Expr::Call(_, args), Expr::Int(power))
+                    if args.len() == 1 && power == &2.into() =>
+                {
+                    args[0].clone()
+                }
+                _ => Expr::pow(base, exp),
+            }
+        }
+        Expr::Neg(inner) => match simplify_test_expr(*inner) {
+            Expr::Int(value) => Expr::Int(-value),
+            Expr::Rational(value) => normalize_rational(-value),
+            other => Expr::neg(other),
+        },
+        other => other,
+    }
+}
+
+fn simplify_test_matrix(matrix: Vec<Vec<Expr>>) -> Vec<Vec<Expr>> {
+    matrix
+        .into_iter()
+        .map(|row| row.into_iter().map(simplify_test_expr).collect())
+        .collect()
+}
+
 #[test]
 fn pauli_commutation() {
     // [σ_x, σ_y] = 2i σ_z
@@ -53,6 +118,131 @@ fn pauli_anticommutation() {
         anti[1][1],
         Expr::Int(2.into()),
         "{{σx,σx}}[1,1] should be 2"
+    );
+}
+
+#[test]
+fn spin_half_jz_matches_pauli_z_over_two() {
+    let interner = int();
+    let expected = ax_linalg::mat_scale(
+        &Expr::Rational(BigRational::new(1.into(), 2.into())),
+        &pauli_z(&interner),
+    );
+    assert_eq!(jz_matrix(1, &interner).unwrap(), expected);
+}
+
+#[test]
+fn spin_one_jz_has_entries_1_0_minus1() {
+    let interner = int();
+    assert_eq!(
+        jz_matrix(2, &interner).unwrap(),
+        vec![
+            vec![Expr::Int(1.into()), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::Int((-1).into())],
+        ]
+    );
+}
+
+#[test]
+fn spin_half_commutator_jx_jy_is_i_jz() {
+    let interner = int();
+    let jx = jx_matrix(1, &interner).unwrap();
+    let jy = jy_matrix(1, &interner).unwrap();
+    let jz = jz_matrix(1, &interner).unwrap();
+    let i = Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()));
+    let expected = ax_linalg::mat_scale(&i, &jz);
+    assert_eq!(commutator(&jx, &jy, &interner), expected);
+}
+
+#[test]
+fn spin_operator_rejects_invalid_two_j() {
+    let interner = int();
+    assert_eq!(
+        jz_matrix(usize::MAX, &interner),
+        Err(SpinError::InvalidSpinQuantumNumber)
+    );
+}
+
+#[test]
+fn singlet_state_has_expected_components() {
+    let interner = int();
+    let inv_sqrt_two = Expr::Call(
+        interner.get_or_intern("sqrt"),
+        vec![Expr::Rational(BigRational::new(1.into(), 2.into()))],
+    );
+
+    assert_eq!(
+        two_spin_half_singlet_state(&interner),
+        vec![
+            Expr::zero(),
+            inv_sqrt_two.clone(),
+            Expr::neg(inv_sqrt_two),
+            Expr::zero(),
+        ]
+    );
+}
+
+#[test]
+fn triplet_states_have_expected_components() {
+    let interner = int();
+    let inv_sqrt_two = Expr::Call(
+        interner.get_or_intern("sqrt"),
+        vec![Expr::Rational(BigRational::new(1.into(), 2.into()))],
+    );
+    let [m_plus_one, m_zero, m_minus_one] = two_spin_half_triplet_states(&interner);
+
+    assert_eq!(
+        m_plus_one,
+        vec![Expr::one(), Expr::zero(), Expr::zero(), Expr::zero()]
+    );
+    assert_eq!(
+        m_zero,
+        vec![
+            Expr::zero(),
+            inv_sqrt_two.clone(),
+            inv_sqrt_two,
+            Expr::zero(),
+        ]
+    );
+    assert_eq!(
+        m_minus_one,
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::one()]
+    );
+}
+
+#[test]
+fn singlet_and_triplet_projectors_sum_to_identity_on_four_dim_space() {
+    let interner = int();
+    let total = ax_linalg::mat_add(
+        &two_spin_half_singlet_projector(&interner),
+        &two_spin_half_triplet_projector(&interner),
+    );
+
+    assert_eq!(
+        simplify_test_matrix(total),
+        simplify_test_matrix(identity_matrix(4, &interner))
+    );
+}
+
+#[test]
+fn singlet_projector_annihilates_triplet_m_plus_one() {
+    let interner = int();
+    let projector = two_spin_half_singlet_projector(&interner);
+    let [triplet_m_plus_one, _, _] = two_spin_half_triplet_states(&interner);
+    let triplet_column = triplet_m_plus_one
+        .into_iter()
+        .map(|entry| vec![entry])
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        ax_linalg::mat_mul(&projector, &triplet_column, &interner),
+        vec![
+            vec![Expr::zero()],
+            vec![Expr::zero()],
+            vec![Expr::zero()],
+            vec![Expr::zero()],
+        ]
     );
 }
 
@@ -1672,12 +1862,109 @@ fn normal_order_basic() {
     ops.insert(a, OperatorKind::Annihilation);
     ops.insert(a_dag, OperatorKind::Creation);
     let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(a_dag)]);
-    let result = normal_order(&expr, &ops, &HashMap::new(), &interner);
+    let result = normal_order(&expr, &ops, &HashMap::new(), &HashMap::new(), &interner);
     let result_str = pretty_print(&result, &interner);
     assert!(
         result_str.contains("a_dag"),
         "normal ordered should have a_dag, got {}",
         result_str
+    );
+}
+
+#[test]
+fn bosonic_creation_raises_selected_mode() {
+    let interner = int();
+    let result = bosonic_creation_on_basis(1, &[2, 0, 1], &interner).unwrap();
+    let expected = Expr::mul(vec![
+        Expr::Call(interner.get_or_intern("sqrt"), vec![Expr::Int(1.into())]),
+        Expr::Call(
+            interner.get_or_intern("fock_state"),
+            vec![Expr::List(vec![
+                Expr::Int(2.into()),
+                Expr::Int(1.into()),
+                Expr::Int(1.into()),
+            ])],
+        ),
+    ]);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn bosonic_annihilation_lowers_selected_mode() {
+    let interner = int();
+    let result = bosonic_annihilation_on_basis(0, &[2, 0, 1], &interner).unwrap();
+    let expected = Expr::mul(vec![
+        Expr::Call(interner.get_or_intern("sqrt"), vec![Expr::Int(2.into())]),
+        Expr::Call(
+            interner.get_or_intern("fock_state"),
+            vec![Expr::List(vec![
+                Expr::Int(1.into()),
+                Expr::Int(0.into()),
+                Expr::Int(1.into()),
+            ])],
+        ),
+    ]);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn bosonic_annihilation_of_zero_occupation_is_zero() {
+    let interner = int();
+    let result = bosonic_annihilation_on_basis(1, &[2, 0, 1], &interner).unwrap();
+    assert_eq!(result, Expr::zero());
+}
+
+#[test]
+fn bosonic_basis_state_rejects_empty_list() {
+    let interner = int();
+    let err = bosonic_basis_state(&[], &interner);
+    assert_eq!(err, Err(BosonicBasisError::EmptyOccupationList));
+}
+
+#[test]
+fn fermionic_creation_applies_jw_sign() {
+    let interner = int();
+    let result = fermionic_creation_on_basis(1, &[1, 0, 0], &interner).unwrap();
+    let expected = Expr::neg(Expr::Call(
+        interner.get_or_intern("fermion_state"),
+        vec![Expr::List(vec![
+            Expr::Int(1.into()),
+            Expr::Int(1.into()),
+            Expr::Int(0.into()),
+        ])],
+    ));
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn fermionic_annihilation_applies_jw_sign() {
+    let interner = int();
+    let result = fermionic_annihilation_on_basis(2, &[1, 1, 1], &interner).unwrap();
+    let expected = Expr::Call(
+        interner.get_or_intern("fermion_state"),
+        vec![Expr::List(vec![
+            Expr::Int(1.into()),
+            Expr::Int(1.into()),
+            Expr::Int(0.into()),
+        ])],
+    );
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn fermionic_creation_on_occupied_mode_is_zero() {
+    let interner = int();
+    let result = fermionic_creation_on_basis(0, &[1, 0, 0], &interner).unwrap();
+    assert_eq!(result, Expr::zero());
+}
+
+#[test]
+fn fermion_state_rejects_invalid_occupation() {
+    let interner = int();
+    let err = fermionic_basis_state(&[1, 2, 0], &interner);
+    assert_eq!(
+        err,
+        Err(FermionicBasisError::InvalidOccupation { index: 1, value: 2 })
     );
 }
 

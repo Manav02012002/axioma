@@ -1523,6 +1523,62 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "declare_quantum_object(A, operator, H)",
         ),
         b(
+            "declare_mode",
+            "properties",
+            "declare_mode(symbol, statistics, mode_index)",
+            "Attach structured mode metadata and the legacy commutation markers implied by the mode statistics.",
+            "declare_mode(a, bosonic, 0)",
+        ),
+        b(
+            "declare_mode_in_subsystem",
+            "properties",
+            "declare_mode_in_subsystem(symbol, statistics, subsystem, mode_index)",
+            "Attach structured mode metadata with an explicit subsystem tag and compatible legacy commutation markers.",
+            "declare_mode_in_subsystem(a0, bosonic, QA, 0)",
+        ),
+        b(
+            "declare_mode_with_label",
+            "properties",
+            "declare_mode_with_label(symbol, statistics, subsystem, mode_index, label)",
+            "Attach structured mode metadata with subsystem and symbolic label metadata plus compatible legacy commutation markers.",
+            "declare_mode_with_label(mode0, fermionic, reg, 0, a)",
+        ),
+        b(
+            "declare_bosonic_truncated_mode",
+            "properties",
+            "declare_bosonic_truncated_mode(symbol, mode_index, nmax)",
+            "Attach bosonic ModeMeta and remember a finite occupation cutoff for later Fock-space declarations.",
+            "declare_bosonic_truncated_mode(a0, 0, 3)",
+        ),
+        b(
+            "declare_fermionic_mode",
+            "properties",
+            "declare_fermionic_mode(symbol, mode_index)",
+            "Attach fermionic ModeMeta for a mode used in Fock-space declarations.",
+            "declare_fermionic_mode(c0, 0)",
+        ),
+        b(
+            "declare_fock_space",
+            "properties",
+            "declare_fock_space(symbol, mode_symbols)",
+            "Attach structured Fock-space metadata from previously declared mode symbols, preserving the listed occupation-basis order.",
+            "declare_fock_space(F, [a0, a1])",
+        ),
+        b(
+            "bosonic_fock_basis_state",
+            "qm",
+            "bosonic_fock_basis_state(space_symbol, occupations)",
+            "Build a bosonic occupation-basis state for a declared Fock space after validating mode count and truncations.",
+            "bosonic_fock_basis_state(F, [1, 0])",
+        ),
+        b(
+            "fermionic_fock_basis_state",
+            "qm",
+            "fermionic_fock_basis_state(space_symbol, occupations)",
+            "Build a fermionic occupation-basis state for a declared Fock space after validating mode count and 0/1 occupations.",
+            "fermionic_fock_basis_state(Ff, [1, 0, 1])",
+        ),
+        b(
             "commuting",
             "properties",
             "commuting(symbol)",
@@ -1719,6 +1775,69 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "pauli_z()",
         ),
         b(
+            "jz",
+            "quantum",
+            "jz(two_j)",
+            "Spin-j angular-momentum J_z matrix using the exact integer label two_j = 2j.",
+            "jz(1)",
+        ),
+        b(
+            "jplus",
+            "quantum",
+            "jplus(two_j)",
+            "Spin-j angular-momentum raising operator J_+ using the exact integer label two_j = 2j.",
+            "jplus(2)",
+        ),
+        b(
+            "jminus",
+            "quantum",
+            "jminus(two_j)",
+            "Spin-j angular-momentum lowering operator J_- using the exact integer label two_j = 2j.",
+            "jminus(2)",
+        ),
+        b(
+            "jx",
+            "quantum",
+            "jx(two_j)",
+            "Spin-j angular-momentum J_x matrix using the exact integer label two_j = 2j.",
+            "jx(1)",
+        ),
+        b(
+            "jy",
+            "quantum",
+            "jy(two_j)",
+            "Spin-j angular-momentum J_y matrix using the exact integer label two_j = 2j.",
+            "jy(1)",
+        ),
+        b(
+            "singlet_state_2spinhalf",
+            "quantum",
+            "singlet_state_2spinhalf()",
+            "Explicit two-spin-1/2 singlet state in the basis |↑↑>, |↑↓>, |↓↑>, |↓↓>.",
+            "singlet_state_2spinhalf()",
+        ),
+        b(
+            "triplet_states_2spinhalf",
+            "quantum",
+            "triplet_states_2spinhalf()",
+            "Explicit two-spin-1/2 triplet states in the basis |↑↑>, |↑↓>, |↓↑>, |↓↓>.",
+            "triplet_states_2spinhalf()",
+        ),
+        b(
+            "singlet_projector_2spinhalf",
+            "quantum",
+            "singlet_projector_2spinhalf()",
+            "Projector onto the explicit two-spin-1/2 singlet subspace.",
+            "singlet_projector_2spinhalf()",
+        ),
+        b(
+            "triplet_projector_2spinhalf",
+            "quantum",
+            "triplet_projector_2spinhalf()",
+            "Projector onto the explicit two-spin-1/2 triplet subspace.",
+            "triplet_projector_2spinhalf()",
+        ),
+        b(
             "sigma_z",
             "quantum",
             "sigma_z()",
@@ -1752,6 +1871,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "anticommutator(a, b)",
             "Operator anticommutator {a, b}.",
             "anticommutator(A, B)",
+        ),
+        b(
+            "displacement_series",
+            "quantum",
+            "displacement_series(alpha, mode, order)",
+            "Construct a truncated symbolic power series for the bosonic displacement operator.",
+            "displacement_series(alpha, a, 2)",
+        ),
+        b(
+            "squeezing_series",
+            "quantum",
+            "squeezing_series(zeta, mode, order)",
+            "Construct a truncated symbolic power series for the bosonic squeezing operator.",
+            "squeezing_series(zeta, a, 2)",
         ),
         b(
             "ket",
@@ -2125,6 +2258,48 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "number_state(a, 2)",
         ),
         b(
+            "fock_state",
+            "quantum",
+            "fock_state(occupations)",
+            "Construct a canonical multimode bosonic occupation-basis state `fock_state([n0, n1, ...])`.",
+            "fock_state([2, 0, 1])",
+        ),
+        b(
+            "fermion_state",
+            "quantum",
+            "fermion_state(occupations)",
+            "Construct a canonical multimode fermionic occupation-basis state `fermion_state([n0, n1, ...])`.",
+            "fermion_state([1, 0, 0])",
+        ),
+        b(
+            "bosonic_creation_action",
+            "quantum",
+            "bosonic_creation_action(mode, occupations)",
+            "Apply a bosonic creation operator to one mode of a multimode occupation-basis state.",
+            "bosonic_creation_action(1, [2, 0, 1])",
+        ),
+        b(
+            "fermionic_creation_action",
+            "quantum",
+            "fermionic_creation_action(mode, occupations)",
+            "Apply a fermionic creation operator to one mode of a multimode occupation-basis state with exact Jordan-Wigner signs.",
+            "fermionic_creation_action(1, [1, 0, 0])",
+        ),
+        b(
+            "bosonic_annihilation_action",
+            "quantum",
+            "bosonic_annihilation_action(mode, occupations)",
+            "Apply a bosonic annihilation operator to one mode of a multimode occupation-basis state.",
+            "bosonic_annihilation_action(0, [2, 0, 1])",
+        ),
+        b(
+            "fermionic_annihilation_action",
+            "quantum",
+            "fermionic_annihilation_action(mode, occupations)",
+            "Apply a fermionic annihilation operator to one mode of a multimode occupation-basis state with exact Jordan-Wigner signs.",
+            "fermionic_annihilation_action(2, [1, 1, 1])",
+        ),
+        b(
             "vacuum",
             "quantum",
             "vacuum(mode)",
@@ -2156,15 +2331,43 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "normal_order",
             "quantum",
             "normal_order(expr)",
-            "Reorder ladder operators into graded normal order, using declared bosonic or fermionic statistics when available.",
+            "Reorder ladder operators into graded normal order, preferring structured mode metadata and falling back to declared bosonic or fermionic operator statistics.",
             "normal_order(annihilation(a) * creation(a))",
+        ),
+        b(
+            "time_order",
+            "quantum",
+            "time_order(expr)",
+            "Wrap an expression in the canonical symbolic time-ordering operator without expanding it.",
+            "time_order(a * b)",
+        ),
+        b(
+            "anti_time_order",
+            "quantum",
+            "anti_time_order(expr)",
+            "Wrap an expression in the canonical symbolic anti-time-ordering operator without expanding it.",
+            "anti_time_order(a * b)",
+        ),
+        b(
+            "bch",
+            "quantum",
+            "bch(A, B, order)",
+            "Construct the finite-order symbolic Baker-Campbell-Hausdorff expansion for log(exp(A) exp(B)).",
+            "bch(A, B, 2)",
         ),
         b(
             "wick",
             "quantum",
             "wick(expr)",
-            "Expand products using declared Wick contractions, falling back to graded normal ordering when no contraction applies.",
+            "Expand products using declared Wick contractions, including fermionic pairing signs from operator swaps and crossing parity while preferring structured mode metadata over legacy operator statistics when needed.",
             "wick(annihilation(a) * creation(a))",
+        ),
+        b(
+            "simplify_ccr_car",
+            "quantum",
+            "simplify_ccr_car(expr)",
+            "Apply explicit bosonic CCR and fermionic CAR rewrites using structured mode metadata when available.",
+            "simplify_ccr_car(annihilation(a) * creation(a))",
         ),
         b(
             "declare_contraction",
@@ -2670,7 +2873,9 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("DifferentialFormDegree", "property F differential_form_degree(n)", "Declares the degree of a differential form.", "stored by ax-tensor metadata; differential-form algorithms live outside ax-tensor", "property F differential_form_degree(2)"),
         p("TraceSpaceMeta", "declare_trace_space(Tr, space_symbol, cyclic)", "Attaches structured metadata describing the trace space represented by a trace-like symbol.", "stored by the evaluator property store for help, inspection, and future space-aware trace algorithms", "declare_trace_space(Tr, color, true)"),
         p("HilbertSpaceMeta", "declare_hilbert_space(H, 2) or declare_composite_space(HAB, [HA, HB])", "Attaches structured metadata describing a finite-dimensional Hilbert space and its ordered tensor-product factors.", "stored by the evaluator property store for quantum-space declarations and future space-aware algorithms", "declare_composite_space(HAB, [HA, HB])"),
+        p("FockSpaceMeta", "declare_fock_space(F, [a0, a1])", "Attaches structured metadata describing a Fock space, its declared ordered modes, and the explicit occupation-basis ordering.", "stored by the evaluator property store for Fock-space declarations and basis-state validation", "declare_fock_space(F, [a0, a1])"),
         p("QuantumObjectMeta", "declare_quantum_object(A, operator, H)", "Attaches structured metadata describing a quantum object's kind and Hilbert space.", "stored by the evaluator property store; operator-like kinds also attach the legacy NonCommuting marker", "declare_quantum_object(rho, density_operator, H)"),
+        p("ModeMeta", "declare_mode(a, bosonic, 0), declare_mode_in_subsystem(a0, bosonic, QA, 0), or declare_mode_with_label(mode0, fermionic, reg, 0, a)", "Attaches structured mode metadata describing statistics, optional subsystem grouping, zero-based canonical mode index, and an optional symbolic label.", "stored by the evaluator property store; bosonic and spin modes also attach legacy NonCommuting, while fermionic modes also attach legacy AntiCommuting", "declare_mode_with_label(mode0, fermionic, reg, 0, a)"),
     ]
 }
 
@@ -2753,8 +2958,14 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("decompose_product", "tensor", "decompose_product(expr: &Expr, dim: usize, tensor_properties: &HashMap<Spur, Vec<TensorProperty>>, interner: &Interner) -> Expr", "Decompose indexed tensor products by associative Littlewood-Richardson tableau composition and Young projection.", "The input should be a product containing at least two indexed tensors with inferable shapes; TableauSymmetry, Symmetric, AntiSymmetric, RiemannSymmetry, and generic indexed slots drive shape inference, multiplicities are preserved, and unsupported or inconsistent shapes return a diagnostic expression. When dim is omitted in the public evaluator, Axioma now tries to infer it from index-family metadata.", "decompose_product(T[a-,b-] * S[c-,d-] * V[e-], 4)"),
         a("schouten_reduce", "tensor", "schouten_reduce(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Apply dimension-dependent Schouten-style tensor reduction by inferring a unique index-family dimension, decomposing products into Young irreps, discarding dimensionally forbidden shapes, then canonicalising and melding the result.", "At least one tensor in the expression should carry the DimensionDependentIdentity property, and the expression must carry enough index-family metadata to infer a unique dimension; ambiguous or missing dimensions return a diagnostic expression.", "schouten_reduce(A[a-]*B[b-]*C[c-] - A[a-]*B[c-]*C[b-] + A[b-]*B[c-]*C[a-] - A[b-]*B[a-]*C[c-] + A[c-]*B[a-]*C[b-] - A[c-]*B[b-]*C[a-])"),
         a("expand_implicit", "tensor", "expand_implicit(expr: &Expr, implicit_index_tensors: &HashSet<Spur>, available_indices: &[Spur], n_indices_per_tensor: &HashMap<Spur, usize>, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Recursively make implicit tensor contraction graphs explicit across sums, products, trace wrappers, and call arguments.", "Tensor ranks are read from n_indices_per_tensor or tensor properties; each sum branch receives disjoint fresh graph indices.", "expand_implicit(A * B + C * D)"),
-        a("normal_order", "qm", "normal_order(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, operator_statistics: &HashMap<Spur, OperatorStatistics>, interner: &Interner) -> Expr", "Reorder products of operators into graded normal order using the declared creation/annihilation kinds and bosonic or fermionic statistics.", "Operator kinds must be declared for raw operator symbols; call-style creation(mode)/annihilation(mode) default to bosonic unless the mode has declared operator statistics.", "normal_order(annihilation(a) * creation(a))"),
-        a("wick_expand", "qm", "wick_expand(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, operator_statistics: &HashMap<Spur, OperatorStatistics>, contractions: &HashMap<(Spur, Spur), Expr>, interner: &Interner) -> Expr", "Expand operator products into graded normal-ordered terms plus single contractions.", "Operator kinds and any nonzero contraction values must be provided explicitly; fermionic operator statistics control swap signs.", "wick(psi * psibar)"),
+        a("normal_order", "qm", "normal_order(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, operator_statistics: &HashMap<Spur, OperatorStatistics>, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Reorder products of operators into graded normal order using declared creation/annihilation kinds while preferring structured mode metadata over legacy operator-statistics fallbacks.", "Operator kinds must be declared for raw operator symbols; structured ModeMeta metadata on modes takes precedence when inferring bosonic or fermionic swap signs.", "normal_order(annihilation(a) * creation(a))"),
+        a("time_ordered", "qm", "time_ordered(expr: Expr, interner: &Interner) -> Expr", "Wrap an expression in the canonical symbolic time-ordering form `time_order(expr)` without performing any time-order expansion.", "This is a symbolic constructor only in the current evaluator surface.", "time_order(a * b)"),
+        a("anti_time_ordered", "qm", "anti_time_ordered(expr: Expr, interner: &Interner) -> Expr", "Wrap an expression in the canonical symbolic anti-time-ordering form `anti_time_order(expr)` without performing any expansion.", "This is a symbolic constructor only in the current evaluator surface.", "anti_time_order(a * b)"),
+        a("displacement_operator_series", "qm", "displacement_operator_series(alpha: Expr, mode: Expr, order: usize, interner: &Interner) -> Expr", "Construct the truncated symbolic series for the bosonic displacement operator exp(alpha a† - conj(alpha) a).", "The truncation order must be a nonnegative integer; the result is returned as a raw symbolic series without simplification.", "displacement_series(alpha, a, 2)"),
+        a("squeezing_operator_series", "qm", "squeezing_operator_series(zeta: Expr, mode: Expr, order: usize, interner: &Interner) -> Expr", "Construct the truncated symbolic series for the bosonic squeezing operator exp(1/2 (zeta a† a† - conj(zeta) a a)).", "The truncation order must be a nonnegative integer; the result is returned as a raw symbolic series without simplification.", "squeezing_series(zeta, a, 2)"),
+        a("bch_expand", "qm", "bch_expand(a: Expr, b: Expr, order: usize, interner: &Interner) -> Expr", "Construct the finite-order symbolic Baker-Campbell-Hausdorff expansion through the requested truncation order.", "The truncation order must be a nonnegative integer; orders above four currently return the order-four truncation.", "bch(A, B, 4)"),
+        a("simplify_ccr_car", "qm", "simplify_ccr_car_full(expr: &Expr, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Apply explicit same-mode and distinct-mode CCR/CAR rewrites to ladder-operator products until a fixed point.", "The expression should use creation(mode) and annihilation(mode) forms; structured ModeMeta metadata is used when available to distinguish same and distinct modes.", "simplify_ccr_car(annihilation(a) * creation(a))"),
+        a("wick_expand", "qm", "wick_expand(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, operator_statistics: &HashMap<Spur, OperatorStatistics>, properties: &dyn PropertyLookup, contractions: &HashMap<(Spur, Spur), Expr>, interner: &Interner) -> Expr", "Expand operator products into graded normal-ordered terms plus all declared Wick contraction patterns, with fermionic signs determined by the required operator swaps and pairing crossings.", "Operator kinds and any nonzero contraction values must be provided explicitly; structured ModeMeta metadata takes precedence when determining fermionic swap signs.", "wick(psi * psibar)"),
         a("gamma_trace", "qm", "gamma_trace(indices: &[GammaEntry], metric: &SymbolicMatrix, interner: &Interner) -> Expr", "Trace a gamma-matrix chain, including the special gamma5 epsilon-tensor case.", "The input must already be parsed into GammaEntry values; the implementation assumes the standard four-dimensional Dirac trace normalization.", "gamma_trace([gamma(mu), gamma(nu)])"),
         a("join_gammas_in_expr", "qm", "join_gammas_in_expr(expr: &Expr, gamma_sym: Spur, metric_sym: Spur, interner: &Interner) -> Expr", "Join adjacent gamma-matrix factors into antisymmetrized multi-index gamma objects plus metric contractions.", "Gamma factors must be represented as Call(gamma_sym, [...]) nodes and use a compatible metric symbol.", "join_gamma(gamma(mu) * gamma(nu))"),
         a("split_gamma", "qm", "split_gamma(expr: &Expr, gamma_sym: Spur, metric_sym: Spur, on_back: bool, interner: &Interner) -> Expr", "Split a multi-index antisymmetric gamma matrix into a shorter chain plus contraction terms.", "The input must contain gamma_sym calls with more than one index.", "split_gamma(gamma(mu, nu))"),
@@ -2812,6 +3023,15 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("pauli_x", "qm", "pauli_x(interner: &Interner) -> Vec<Vec<Expr>>", "Return the Pauli sigma_x matrix.", "No extra setup is required.", "pauli_x()"),
         a("pauli_y", "qm", "pauli_y(interner: &Interner) -> Vec<Vec<Expr>>", "Return the Pauli sigma_y matrix.", "No extra setup is required.", "pauli_y()"),
         a("pauli_z", "qm", "pauli_z(interner: &Interner) -> Vec<Vec<Expr>>", "Return the Pauli sigma_z matrix.", "No extra setup is required.", "pauli_z()"),
+        a("jz_matrix", "qm", "jz_matrix(two_j: usize, interner: &Interner) -> Result<Vec<Vec<Expr>>, SpinError>", "Construct the exact spin-j J_z matrix in the standard m = j, j-1, ..., -j basis.", "The argument two_j must be a nonnegative integer representing 2j.", "jz(1)"),
+        a("jplus_matrix", "qm", "jplus_matrix(two_j: usize, interner: &Interner) -> Result<Vec<Vec<Expr>>, SpinError>", "Construct the exact spin-j raising-operator matrix J_+ in the standard m = j, j-1, ..., -j basis.", "The argument two_j must be a nonnegative integer representing 2j.", "jplus(2)"),
+        a("jminus_matrix", "qm", "jminus_matrix(two_j: usize, interner: &Interner) -> Result<Vec<Vec<Expr>>, SpinError>", "Construct the exact spin-j lowering-operator matrix J_- in the standard m = j, j-1, ..., -j basis.", "The argument two_j must be a nonnegative integer representing 2j.", "jminus(2)"),
+        a("jx_matrix", "qm", "jx_matrix(two_j: usize, interner: &Interner) -> Result<Vec<Vec<Expr>>, SpinError>", "Construct the exact spin-j Cartesian operator J_x = (J_+ + J_-)/2.", "The argument two_j must be a nonnegative integer representing 2j.", "jx(1)"),
+        a("jy_matrix", "qm", "jy_matrix(two_j: usize, interner: &Interner) -> Result<Vec<Vec<Expr>>, SpinError>", "Construct the exact spin-j Cartesian operator J_y = (J_+ - J_-)/(2i).", "The argument two_j must be a nonnegative integer representing 2j.", "jy(1)"),
+        a("two_spin_half_singlet_state", "qm", "two_spin_half_singlet_state(interner: &Interner) -> Vec<Expr>", "Return the explicit two-spin-1/2 singlet state in the computational basis.", "No extra setup is required.", "singlet_state_2spinhalf()"),
+        a("two_spin_half_triplet_states", "qm", "two_spin_half_triplet_states(interner: &Interner) -> [Vec<Expr>; 3]", "Return the explicit two-spin-1/2 triplet states in the computational basis.", "No extra setup is required.", "triplet_states_2spinhalf()"),
+        a("two_spin_half_singlet_projector", "qm", "two_spin_half_singlet_projector(interner: &Interner) -> Vec<Vec<Expr>>", "Return the exact singlet projector |S><S| for two spin-1/2 systems.", "No extra setup is required.", "singlet_projector_2spinhalf()"),
+        a("two_spin_half_triplet_projector", "qm", "two_spin_half_triplet_projector(interner: &Interner) -> Vec<Vec<Expr>>", "Return the exact triplet projector for two spin-1/2 systems.", "No extra setup is required.", "triplet_projector_2spinhalf()"),
         a("gamma5", "qm", "gamma5(interner: &Interner) -> Vec<Vec<Expr>>", "Return the standard Dirac gamma_5 matrix.", "No extra setup is required.", "gamma5()"),
         a("outer", "qm", "outer(ket: &[Expr], bra: &[Expr]) -> Vec<Vec<Expr>>", "Build the outer-product operator |ket><bra| from two vectors.", "The two vectors should have finite explicit components.", "outer([1,0], [0,1])"),
         a("determinant", "linalg", "determinant(matrix: &[Vec<Expr>], interner: &Interner) -> Expr", "Compute the determinant of a symbolic square matrix.", "The matrix should be square; symbolic simplification is applied recursively by minors.", "det([[1, 2], [3, 4]])"),
@@ -2889,8 +3109,9 @@ pub fn std_modules() -> Vec<StdModule> {
         m("qft/brst", "BRST cohomology: ghost grading, Yang-Mills BRST setup, nilpotency, and ghost-sector projection.", "setup_brst_ym, brst, ghost_number, brst_check, filter_ghost_number"),
         m("qm/bell", "Constructs a Bell state, its density matrix, and a reduced density matrix by partial trace.", "let up, let down, let phi_plus, let rho, let rho_A"),
         m("qm/channels", "Finite-dimensional Kraus-channel examples including the identity channel, canonical qubit noise channels, channel composition, tensor-product channels, Choi-matrix distance surrogates, and exact trace-preserving and unital checks.", "let I, depolarizing_channel, dephasing_channel, amplitude_damping_channel, bit_flip_channel, phase_flip_channel, bit_phase_flip_channel, compose_channels, choi_distance, tensor_product_channel, trace_preserving_residual, is_trace_preserving, unital_residual, is_unital"),
+        m("qm/fock", "Shows symbolic bosonic displacement and squeezing series examples in Fock-space notation.", "let disp_series, let squeeze_series"),
         m("qm/harmonic_oscillator", "Builds an abstract harmonic-oscillator annihilation operator, creation operator, number operator, Hamiltonian, and sample Fock-state actions.", "let a_op, let adag_op, let n_op, let h_op, let vac, let one, let two, let lowered_two, let number_on_two, let energy_on_one, let normal_reordered"),
-        m("qm/spin", "Builds Pauli matrices and their commutator as a spin-1/2 algebra example.", "let sigma_x, let sigma_y, let sigma_z, let comm_xy"),
+        m("qm/spin", "Builds spin-1/2 and spin-1 angular-momentum matrices, including Pauli and arbitrary spin-j examples.", "let sigma_x, let sigma_y, let sigma_z, let jz_half, let jplus_one, let jz_one"),
         m("tensor/index", "Documents index notation and contraction conventions for tensors.", "documentation comments only"),
         m("tensor/symmetry", "Documents tensor-symmetry declarations and examples.", "documentation comments only"),
         m("trig", "Defines standard exact trigonometric rewrite rules.", "rule pythag, rule pythag_alt1, rule pythag_alt2, rule double_sin, rule double_cos"),
@@ -3282,6 +3503,59 @@ fn flatten_declared_hilbert_factors(
     Some(flattened)
 }
 
+fn mode_metadata_for_symbol(
+    state: &mut dyn EvalState,
+    symbol: lasso::Spur,
+) -> Option<ax_ir::ModeMetadata> {
+    state
+        .env()
+        .property_store
+        .get_all(symbol)
+        .into_iter()
+        .find_map(|prop| match prop {
+            ax_ir::TensorProperty::ModeMeta(metadata) => Some(metadata.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            state
+                .env()
+                .tensor_properties
+                .get(&symbol)
+                .and_then(|props| {
+                    props.iter().find_map(|prop| match prop {
+                        ax_ir::TensorProperty::ModeMeta(metadata) => Some(metadata.clone()),
+                        _ => None,
+                    })
+                })
+        })
+}
+
+fn build_fock_space_metadata_for_state(
+    state: &mut dyn EvalState,
+    symbol: lasso::Spur,
+    mode_symbols: &[lasso::Spur],
+) -> Option<ax_ir::FockSpaceMetadata> {
+    if mode_symbols.is_empty() {
+        return None;
+    }
+    let modes = mode_symbols
+        .iter()
+        .map(|mode_symbol| {
+            let metadata = mode_metadata_for_symbol(state, *mode_symbol)?;
+            Some(ax_ir::FockModeFactor {
+                symbol: *mode_symbol,
+                statistics: metadata.statistics,
+                truncation: state.env().fock_mode_truncations.get(mode_symbol).copied(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(ax_ir::FockSpaceMetadata {
+        symbol,
+        modes,
+        basis_order: mode_symbols.to_vec(),
+    })
+}
+
 fn factor_dimensions_arg(
     args: &[serde_json::Value],
     idx: usize,
@@ -3593,10 +3867,42 @@ pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::In
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        TensorProperty::FockSpaceMeta(metadata) => format!(
+            "FockSpaceMeta(symbol: {}, modes: [{}], basis_order: [{}])",
+            interner.resolve(metadata.symbol),
+            metadata
+                .modes
+                .iter()
+                .map(|mode| {
+                    format!(
+                        "{}:{:?}:{:?}",
+                        interner.resolve(mode.symbol),
+                        mode.statistics,
+                        mode.truncation
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            metadata
+                .basis_order
+                .iter()
+                .map(|sym| interner.resolve(*sym).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         TensorProperty::QuantumObjectMeta(metadata) => format!(
             "QuantumObjectMeta(kind: {:?}, space_symbol: {})",
             metadata.kind,
             interner.resolve(metadata.space_symbol)
+        ),
+        TensorProperty::ModeMeta(metadata) => format!(
+            "ModeMeta(statistics: {:?}, subsystem: {:?}, mode_index: {}, label: {:?})",
+            metadata.statistics,
+            metadata
+                .subsystem
+                .map(|sym| interner.resolve(sym).to_string()),
+            metadata.mode_index,
+            metadata.label.map(|sym| interner.resolve(sym).to_string())
         ),
         TensorProperty::BackgroundClass(sym) => {
             format!("BackgroundClass({})", interner.resolve(*sym))
@@ -3651,7 +3957,14 @@ pub fn property_lookup_aliases(name: &str) -> &'static [&'static str] {
             "declare_hilbert_space",
             "declare_composite_space",
         ],
+        "FockSpaceMeta" => &["fock_space", "declare_fock_space"],
         "QuantumObjectMeta" => &["quantum_object", "declare_quantum_object"],
+        "ModeMeta" => &[
+            "mode_meta",
+            "declare_mode",
+            "declare_mode_in_subsystem",
+            "declare_mode_with_label",
+        ],
         "MajoranaSpinor" => &["majorana_spinor"],
         "WeylSpinor" => &["weyl_spinor"],
         _ => &[],
@@ -6783,6 +7096,107 @@ fn handle_pauli_z(
     let _ = args;
     matrix_response(ax_qm::pauli_z(state.interner()), state)
 }
+
+fn spin_two_j_arg(args: &[serde_json::Value]) -> Result<usize, String> {
+    let two_j = int_arg(args, 0, "two_j")?;
+    usize::try_from(two_j)
+        .map_err(|_| "spin operator constructors expect a nonnegative integer two_j".to_string())
+}
+
+fn handle_jz(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let two_j = spin_two_j_arg(args)?;
+    let matrix = ax_qm::jz_matrix(two_j, state.interner())
+        .map_err(|_| "spin operator constructors expect a nonnegative integer two_j".to_string())?;
+    matrix_response(matrix, state)
+}
+
+fn handle_jplus(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let two_j = spin_two_j_arg(args)?;
+    let matrix = ax_qm::jplus_matrix(two_j, state.interner())
+        .map_err(|_| "spin operator constructors expect a nonnegative integer two_j".to_string())?;
+    matrix_response(matrix, state)
+}
+
+fn handle_jminus(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let two_j = spin_two_j_arg(args)?;
+    let matrix = ax_qm::jminus_matrix(two_j, state.interner())
+        .map_err(|_| "spin operator constructors expect a nonnegative integer two_j".to_string())?;
+    matrix_response(matrix, state)
+}
+
+fn handle_jx(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let two_j = spin_two_j_arg(args)?;
+    let matrix = ax_qm::jx_matrix(two_j, state.interner())
+        .map_err(|_| "spin operator constructors expect a nonnegative integer two_j".to_string())?;
+    matrix_response(matrix, state)
+}
+
+fn handle_jy(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let two_j = spin_two_j_arg(args)?;
+    let matrix = ax_qm::jy_matrix(two_j, state.interner())
+        .map_err(|_| "spin operator constructors expect a nonnegative integer two_j".to_string())?;
+    matrix_response(matrix, state)
+}
+
+fn handle_singlet_state_2spinhalf(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    list_response(ax_qm::two_spin_half_singlet_state(state.interner()), state)
+}
+
+fn handle_triplet_states_2spinhalf(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    list_response(
+        ax_qm::two_spin_half_triplet_states(state.interner())
+            .into_iter()
+            .map(ax_ir::Expr::List)
+            .collect(),
+        state,
+    )
+}
+
+fn handle_singlet_projector_2spinhalf(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    matrix_response(
+        ax_qm::two_spin_half_singlet_projector(state.interner()),
+        state,
+    )
+}
+
+fn handle_triplet_projector_2spinhalf(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    matrix_response(
+        ax_qm::two_spin_half_triplet_projector(state.interner()),
+        state,
+    )
+}
+
 fn handle_gamma5(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -6844,6 +7258,80 @@ fn handle_normal_order_qm(
 ) -> Result<serde_json::Value, String> {
     unary_named_expr_response("normal_order", args, state)
 }
+
+fn handle_time_order_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("time_order", args, state)
+}
+
+fn handle_anti_time_order_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("anti_time_order", args, state)
+}
+
+fn handle_bch_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let a = expr_from_id(args, 0, "A", state)?;
+    let b = expr_from_id(args, 1, "B", state)?;
+    let order = int_arg(args, 2, "order")?;
+    let order = usize::try_from(order)
+        .map_err(|_| "bch expects a nonnegative integer truncation order".to_string())?;
+    expr_or_struct_response_named(
+        ax_qm::bch_expand(a, b, order, state.interner()),
+        "bch",
+        state,
+    )
+}
+
+fn handle_displacement_series_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let alpha = expr_from_id(args, 0, "alpha", state)?;
+    let mode = expr_from_id(args, 1, "mode", state)?;
+    let order = int_arg(args, 2, "order")?;
+    let order = usize::try_from(order).map_err(|_| {
+        "displacement_series and squeezing_series expect a nonnegative integer truncation order"
+            .to_string()
+    })?;
+    expr_or_struct_response_named(
+        ax_qm::displacement_operator_series(alpha, mode, order, state.interner()),
+        "displacement_series",
+        state,
+    )
+}
+
+fn handle_squeezing_series_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let zeta = expr_from_id(args, 0, "zeta", state)?;
+    let mode = expr_from_id(args, 1, "mode", state)?;
+    let order = int_arg(args, 2, "order")?;
+    let order = usize::try_from(order).map_err(|_| {
+        "displacement_series and squeezing_series expect a nonnegative integer truncation order"
+            .to_string()
+    })?;
+    expr_or_struct_response_named(
+        ax_qm::squeezing_operator_series(zeta, mode, order, state.interner()),
+        "squeezing_series",
+        state,
+    )
+}
+
+fn handle_simplify_ccr_car_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    unary_named_expr_response("simplify_ccr_car", args, state)
+}
+
 fn handle_wick_expand_qm(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -6854,6 +7342,7 @@ fn handle_wick_expand_qm(
             &expr,
             &state.env().operators,
             &state.env().operator_statistics,
+            &state.env().property_store,
             &state.env().contractions,
             state.interner(),
         ),
@@ -6883,6 +7372,134 @@ fn handle_number_state_qm(
         "number_state",
         state,
     )
+}
+
+fn handle_fock_state_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let occupations = expr_from_id(args, 0, "occupations", state)?;
+    expr_or_struct_response_named(
+        call_named("fock_state", vec![occupations], state),
+        "fock_state",
+        state,
+    )
+}
+
+fn handle_fermion_state_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let occupations = expr_from_id(args, 0, "occupations", state)?;
+    expr_or_struct_response_named(
+        call_named("fermion_state", vec![occupations], state),
+        "fermion_state",
+        state,
+    )
+}
+
+fn handle_bosonic_creation_action_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mode = int_arg(args, 0, "mode")?;
+    let occupations = expr_from_id(args, 1, "occupations", state)?;
+    expr_or_struct_response_named(
+        call_named(
+            "bosonic_creation_action",
+            vec![ax_ir::Expr::Int(mode.into()), occupations],
+            state,
+        ),
+        "bosonic_creation_action",
+        state,
+    )
+}
+
+fn handle_fermionic_creation_action_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mode = int_arg(args, 0, "mode")?;
+    let occupations = expr_from_id(args, 1, "occupations", state)?;
+    expr_or_struct_response_named(
+        call_named(
+            "fermionic_creation_action",
+            vec![ax_ir::Expr::Int(mode.into()), occupations],
+            state,
+        ),
+        "fermionic_creation_action",
+        state,
+    )
+}
+
+fn handle_bosonic_annihilation_action_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mode = int_arg(args, 0, "mode")?;
+    let occupations = expr_from_id(args, 1, "occupations", state)?;
+    expr_or_struct_response_named(
+        call_named(
+            "bosonic_annihilation_action",
+            vec![ax_ir::Expr::Int(mode.into()), occupations],
+            state,
+        ),
+        "bosonic_annihilation_action",
+        state,
+    )
+}
+
+fn handle_fermionic_annihilation_action_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mode = int_arg(args, 0, "mode")?;
+    let occupations = expr_from_id(args, 1, "occupations", state)?;
+    expr_or_struct_response_named(
+        call_named(
+            "fermionic_annihilation_action",
+            vec![ax_ir::Expr::Int(mode.into()), occupations],
+            state,
+        ),
+        "fermionic_annihilation_action",
+        state,
+    )
+}
+
+fn handle_bosonic_fock_basis_state_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let space_symbol = symbol_arg(args, 0, "space_symbol", state)?;
+    let occupations = factor_dimensions_arg(args, 1, "occupations").map_err(|_| {
+        "bosonic_fock_basis_state occupation list does not match the declared Fock space"
+            .to_string()
+    })?;
+    let expr = crate::bosonic_fock_basis_state_for_space(
+        state.env(),
+        space_symbol,
+        &occupations,
+        state.interner(),
+    )?;
+    expr_or_struct_response_named(expr, "bosonic_fock_basis_state", state)
+}
+
+fn handle_fermionic_fock_basis_state_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let space_symbol = symbol_arg(args, 0, "space_symbol", state)?;
+    let occupations = factor_dimensions_arg(args, 1, "occupations").map_err(|_| {
+        "fermionic_fock_basis_state occupation list does not match the declared Fock space"
+            .to_string()
+    })?;
+    let expr = crate::fermionic_fock_basis_state_for_space(
+        state.env(),
+        space_symbol,
+        &occupations,
+        state.interner(),
+    )?;
+    expr_or_struct_response_named(expr, "fermionic_fock_basis_state", state)
 }
 
 fn handle_vacuum_qm(
@@ -8452,6 +9069,242 @@ fn handle_declare_quantum_object(
     }))
 }
 
+fn parse_mode_statistics_arg(
+    args: &[serde_json::Value],
+    idx: usize,
+    name: &str,
+) -> Result<ax_ir::ModeStatistics, String> {
+    match string_arg(args, idx, name)?.to_ascii_lowercase().as_str() {
+        "bosonic" => Ok(ax_ir::ModeStatistics::Bosonic),
+        "fermionic" => Ok(ax_ir::ModeStatistics::Fermionic),
+        "spin" => Ok(ax_ir::ModeStatistics::Spin),
+        _ => Err("declare_mode statistics must be one of: bosonic, fermionic, spin".to_string()),
+    }
+}
+
+fn parse_mode_index_arg(
+    args: &[serde_json::Value],
+    idx: usize,
+    name: &str,
+) -> Result<usize, String> {
+    require_arg(args, idx, name)?
+        .as_i64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| "declare_mode expects a nonnegative integer mode index".to_string())
+}
+
+fn parse_fock_mode_index_arg(
+    args: &[serde_json::Value],
+    idx: usize,
+    name: &str,
+    error: &str,
+) -> Result<usize, String> {
+    require_arg(args, idx, name)?
+        .as_i64()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| error.to_string())
+}
+
+fn parse_positive_truncation_arg(
+    args: &[serde_json::Value],
+    idx: usize,
+    name: &str,
+    error: &str,
+) -> Result<usize, String> {
+    require_arg(args, idx, name)?
+        .as_i64()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| error.to_string())
+}
+
+fn handle_declare_mode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let statistics = parse_mode_statistics_arg(args, 1, "statistics")?;
+    let mode_index = parse_mode_index_arg(args, 2, "mode_index")?;
+    state.env_mut().fock_mode_truncations.remove(&symbol);
+    let prop = ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+        statistics,
+        subsystem: None,
+        mode_index,
+        label: None,
+    });
+    crate::apply_mode_declaration(
+        state.env_mut(),
+        symbol,
+        match &prop {
+            ax_ir::TensorProperty::ModeMeta(metadata) => metadata.clone(),
+            _ => unreachable!(),
+        },
+    );
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
+fn handle_declare_mode_in_subsystem(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let statistics = parse_mode_statistics_arg(args, 1, "statistics")?;
+    let subsystem = optional_symbol_arg(args, 2, "subsystem", state)?.ok_or_else(|| {
+        "declare_mode_in_subsystem expects a symbol naming the subsystem".to_string()
+    })?;
+    let mode_index = parse_mode_index_arg(args, 3, "mode_index")?;
+    state.env_mut().fock_mode_truncations.remove(&symbol);
+    let prop = ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+        statistics,
+        subsystem: Some(subsystem),
+        mode_index,
+        label: None,
+    });
+    crate::apply_mode_declaration(
+        state.env_mut(),
+        symbol,
+        match &prop {
+            ax_ir::TensorProperty::ModeMeta(metadata) => metadata.clone(),
+            _ => unreachable!(),
+        },
+    );
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
+fn handle_declare_mode_with_label(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let statistics = parse_mode_statistics_arg(args, 1, "statistics")?;
+    let subsystem = optional_symbol_arg(args, 2, "subsystem", state)?.ok_or_else(|| {
+        "declare_mode_in_subsystem expects a symbol naming the subsystem".to_string()
+    })?;
+    let mode_index = parse_mode_index_arg(args, 3, "mode_index")?;
+    let label = optional_symbol_arg(args, 4, "label", state)?
+        .ok_or_else(|| "declare_mode_with_label expects a symbol label".to_string())?;
+    state.env_mut().fock_mode_truncations.remove(&symbol);
+    let prop = ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+        statistics,
+        subsystem: Some(subsystem),
+        mode_index,
+        label: Some(label),
+    });
+    crate::apply_mode_declaration(
+        state.env_mut(),
+        symbol,
+        match &prop {
+            ax_ir::TensorProperty::ModeMeta(metadata) => metadata.clone(),
+            _ => unreachable!(),
+        },
+    );
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
+fn handle_declare_bosonic_truncated_mode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error =
+        "declare_bosonic_truncated_mode expects a nonnegative mode index and positive truncation";
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let mode_index = parse_fock_mode_index_arg(args, 1, "mode_index", error)?;
+    let truncation = parse_positive_truncation_arg(args, 2, "nmax", error)?;
+    state
+        .env_mut()
+        .fock_mode_truncations
+        .insert(symbol, truncation);
+    let prop = ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+        statistics: ax_ir::ModeStatistics::Bosonic,
+        subsystem: None,
+        mode_index,
+        label: None,
+    });
+    crate::apply_mode_declaration(
+        state.env_mut(),
+        symbol,
+        match &prop {
+            ax_ir::TensorProperty::ModeMeta(metadata) => metadata.clone(),
+            _ => unreachable!(),
+        },
+    );
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
+fn handle_declare_fermionic_mode(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error = "declare_fermionic_mode expects a nonnegative mode index";
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let mode_index = parse_fock_mode_index_arg(args, 1, "mode_index", error)?;
+    state.env_mut().fock_mode_truncations.remove(&symbol);
+    let prop = ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+        statistics: ax_ir::ModeStatistics::Fermionic,
+        subsystem: None,
+        mode_index,
+        label: None,
+    });
+    crate::apply_mode_declaration(
+        state.env_mut(),
+        symbol,
+        match &prop {
+            ax_ir::TensorProperty::ModeMeta(metadata) => metadata.clone(),
+            _ => unreachable!(),
+        },
+    );
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
+fn handle_declare_fock_space(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let error = "declare_fock_space expects a non-empty list of previously declared mode symbols";
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let mode_symbols = require_arg(args, 1, "mode_symbols")?
+        .as_array()
+        .ok_or_else(|| error.to_string())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(|name| state.interner_mut().get_or_intern(name))
+        })
+        .collect::<Option<Vec<_>>>()
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| error.to_string())?;
+    let metadata = build_fock_space_metadata_for_state(state, symbol, &mode_symbols)
+        .ok_or_else(|| error.to_string())?;
+    let prop = ax_ir::TensorProperty::FockSpaceMeta(metadata.clone());
+    crate::apply_fock_space_declaration(state.env_mut(), symbol, metadata);
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
 fn handle_riemann_tensor_declaration(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -8570,16 +9423,38 @@ fn handle_declare_operator(
         "annihilation" => ax_qm::OperatorKind::Annihilation,
         _ => return Err("operator kind must be 'creation' or 'annihilation'".to_string()),
     };
-    let statistics = match args.get(2) {
-        None | Some(serde_json::Value::Null) => ax_qm::OperatorStatistics::Bosonic,
-        Some(_) => match string_arg(args, 2, "statistics")?
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "bosonic" => ax_qm::OperatorStatistics::Bosonic,
-            "fermionic" => ax_qm::OperatorStatistics::Fermionic,
-            _ => return Err("operator statistics must be 'bosonic' or 'fermionic'".to_string()),
-        },
+    let explicit_statistics = match args.get(2) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(_) => Some(
+            match string_arg(args, 2, "statistics")?
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "bosonic" => ax_qm::OperatorStatistics::Bosonic,
+                "fermionic" => ax_qm::OperatorStatistics::Fermionic,
+                _ => return Err("operator statistics must be 'bosonic' or 'fermionic'".to_string()),
+            },
+        ),
+    };
+    let statistics = if let Some(metadata) = mode_metadata_for_symbol(state, symbol) {
+        let inferred = match metadata.statistics {
+            ax_ir::ModeStatistics::Bosonic => Some(ax_qm::OperatorStatistics::Bosonic),
+            ax_ir::ModeStatistics::Fermionic => Some(ax_qm::OperatorStatistics::Fermionic),
+            ax_ir::ModeStatistics::Spin => None,
+        };
+        if let Some(explicit) = explicit_statistics {
+            if inferred != Some(explicit) {
+                return Err(
+                    "declare_operator statistics disagree with previously declared mode metadata"
+                        .to_string(),
+                );
+            }
+            explicit
+        } else {
+            inferred.unwrap_or(ax_qm::OperatorStatistics::Bosonic)
+        }
+    } else {
+        explicit_statistics.unwrap_or(ax_qm::OperatorStatistics::Bosonic)
     };
     state.env_mut().operators.insert(symbol, kind);
     state
@@ -10984,6 +11859,24 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("sigma_y", "Return the Pauli sigma_y matrix.", ps(vec![]), handle_pauli_y),
         centry("pauli_z", "Return the Pauli sigma_z matrix.", ps(vec![]), handle_pauli_z),
         centry("sigma_z", "Return the Pauli sigma_z matrix.", ps(vec![]), handle_pauli_z),
+        centry("jz", "Return the exact spin-j J_z matrix.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jz),
+        centry("jz_matrix", "Return the exact spin-j J_z matrix.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jz),
+        centry("jplus", "Return the exact spin-j raising operator J_+.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jplus),
+        centry("jplus_matrix", "Return the exact spin-j raising operator J_+.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jplus),
+        centry("jminus", "Return the exact spin-j lowering operator J_-.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jminus),
+        centry("jminus_matrix", "Return the exact spin-j lowering operator J_-.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jminus),
+        centry("jx", "Return the exact spin-j J_x matrix.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jx),
+        centry("jx_matrix", "Return the exact spin-j J_x matrix.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jx),
+        centry("jy", "Return the exact spin-j J_y matrix.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jy),
+        centry("jy_matrix", "Return the exact spin-j J_y matrix.", ps(vec![pdef("two_j", ParamType::Integer, true, "Exact integer value 2j.")]), handle_jy),
+        centry("singlet_state_2spinhalf", "Return the explicit two-spin-1/2 singlet state.", ps(vec![]), handle_singlet_state_2spinhalf),
+        centry("triplet_states_2spinhalf", "Return the explicit two-spin-1/2 triplet states.", ps(vec![]), handle_triplet_states_2spinhalf),
+        centry("singlet_projector_2spinhalf", "Return the explicit two-spin-1/2 singlet projector.", ps(vec![]), handle_singlet_projector_2spinhalf),
+        centry("triplet_projector_2spinhalf", "Return the explicit two-spin-1/2 triplet projector.", ps(vec![]), handle_triplet_projector_2spinhalf),
+        centry("two_spin_half_singlet_state", "Return the explicit two-spin-1/2 singlet state.", ps(vec![]), handle_singlet_state_2spinhalf),
+        centry("two_spin_half_triplet_states", "Return the explicit two-spin-1/2 triplet states.", ps(vec![]), handle_triplet_states_2spinhalf),
+        centry("two_spin_half_singlet_projector", "Return the explicit two-spin-1/2 singlet projector.", ps(vec![]), handle_singlet_projector_2spinhalf),
+        centry("two_spin_half_triplet_projector", "Return the explicit two-spin-1/2 triplet projector.", ps(vec![]), handle_triplet_projector_2spinhalf),
         centry("gamma5", "Return the Dirac gamma_5 matrix.", ps(vec![]), handle_gamma5),
         centry("gamma_trace", "Trace a gamma-matrix chain.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored gamma expression or index list id.")]), handle_gamma_trace_qm),
         centry("gamma5_trace", "Trace a gamma-matrix chain.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored gamma expression or index list id.")]), handle_gamma_trace_qm),
@@ -11000,6 +11893,20 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("density_matrix", "Build a density matrix from a state vector.", ps(vec![pdef("state", ParamType::ExprId, true, "Stored state-vector expression id.")]), handle_density_matrix_qm),
         centry("density", "Build a density matrix from a state vector.", ps(vec![pdef("state", ParamType::ExprId, true, "Stored state-vector expression id.")]), handle_density_matrix_qm),
         centry("number_state", "Construct a bosonic number state.", ps(vec![pdef("mode", ParamType::Symbol, true, "Oscillator mode symbol."), pdef("n", ParamType::Integer, true, "Occupation number.")]), handle_number_state_qm),
+        centry("bosonic_fock_basis_state", "Construct a validated bosonic basis state for a declared Fock space.", ps(vec![
+            pdef("space_symbol", ParamType::Symbol, true, "Declared Fock-space symbol."),
+            pdef("occupations", ParamType::Code, true, "JSON array of occupations."),
+        ]), handle_bosonic_fock_basis_state_qm),
+        centry("fermionic_fock_basis_state", "Construct a validated fermionic basis state for a declared Fock space.", ps(vec![
+            pdef("space_symbol", ParamType::Symbol, true, "Declared Fock-space symbol."),
+            pdef("occupations", ParamType::Code, true, "JSON array of 0/1 occupations."),
+        ]), handle_fermionic_fock_basis_state_qm),
+        centry("fock_state", "Construct a multimode bosonic occupation-basis state.", ps(vec![pdef("occupations", ParamType::ExprId, true, "Stored list expression id containing occupations.")]), handle_fock_state_qm),
+        centry("fermion_state", "Construct a multimode fermionic occupation-basis state.", ps(vec![pdef("occupations", ParamType::ExprId, true, "Stored list expression id containing 0/1 occupations.")]), handle_fermion_state_qm),
+        centry("bosonic_creation_action", "Apply bosonic creation to one mode of a multimode basis state.", ps(vec![pdef("mode", ParamType::Integer, true, "Zero-based mode index."), pdef("occupations", ParamType::ExprId, true, "Stored list expression id containing occupations.")]), handle_bosonic_creation_action_qm),
+        centry("fermionic_creation_action", "Apply fermionic creation to one mode of a multimode basis state.", ps(vec![pdef("mode", ParamType::Integer, true, "Zero-based mode index."), pdef("occupations", ParamType::ExprId, true, "Stored list expression id containing 0/1 occupations.")]), handle_fermionic_creation_action_qm),
+        centry("bosonic_annihilation_action", "Apply bosonic annihilation to one mode of a multimode basis state.", ps(vec![pdef("mode", ParamType::Integer, true, "Zero-based mode index."), pdef("occupations", ParamType::ExprId, true, "Stored list expression id containing occupations.")]), handle_bosonic_annihilation_action_qm),
+        centry("fermionic_annihilation_action", "Apply fermionic annihilation to one mode of a multimode basis state.", ps(vec![pdef("mode", ParamType::Integer, true, "Zero-based mode index."), pdef("occupations", ParamType::ExprId, true, "Stored list expression id containing 0/1 occupations.")]), handle_fermionic_annihilation_action_qm),
         centry("vacuum", "Construct the oscillator vacuum state.", ps(vec![pdef("mode", ParamType::Symbol, true, "Oscillator mode symbol.")]), handle_vacuum_qm),
         centry("number_operator", "Construct the oscillator number operator.", ps(vec![pdef("mode", ParamType::Symbol, true, "Oscillator mode symbol.")]), handle_number_operator_qm),
         centry("hamiltonian_ho", "Construct the harmonic-oscillator Hamiltonian.", ps(vec![pdef("mode", ParamType::Symbol, true, "Oscillator mode symbol."), pdef("hbar", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional Planck constant expression."), pdef("omega", ParamType::Optional(Box::new(ParamType::Code)), false, "Optional angular-frequency expression.")]), handle_hamiltonian_ho_qm),
@@ -11056,6 +11963,17 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("lindblad_rk4_step", "Take one classical RK4 step for finite-dimensional Lindblad evolution.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("dt", ParamType::ExprId, true, "Stored scalar timestep expression id.")]), handle_lindblad_rk4_step_qm),
         centry("lindblad_steady_state", "Solve for a finite-dimensional Lindblad steady state.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindblad_steady_state_qm),
         centry("normal_order", "Normal-order creation and annihilation operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_normal_order_qm),
+        centry("time_order", "Wrap an expression in the symbolic time-ordering operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_time_order_qm),
+        centry("time_ordered", "Wrap an expression in the symbolic time-ordering operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_time_order_qm),
+        centry("anti_time_order", "Wrap an expression in the symbolic anti-time-ordering operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_anti_time_order_qm),
+        centry("anti_time_ordered", "Wrap an expression in the symbolic anti-time-ordering operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_anti_time_order_qm),
+        centry("displacement_series", "Construct a truncated symbolic displacement-operator series.", ps(vec![pdef("alpha", ParamType::ExprId, true, "Stored displacement amplitude expression id."), pdef("mode", ParamType::ExprId, true, "Stored mode expression id."), pdef("order", ParamType::Integer, true, "Nonnegative truncation order.")]), handle_displacement_series_qm),
+        centry("displacement_operator_series", "Construct a truncated symbolic displacement-operator series.", ps(vec![pdef("alpha", ParamType::ExprId, true, "Stored displacement amplitude expression id."), pdef("mode", ParamType::ExprId, true, "Stored mode expression id."), pdef("order", ParamType::Integer, true, "Nonnegative truncation order.")]), handle_displacement_series_qm),
+        centry("squeezing_series", "Construct a truncated symbolic squeezing-operator series.", ps(vec![pdef("zeta", ParamType::ExprId, true, "Stored squeezing parameter expression id."), pdef("mode", ParamType::ExprId, true, "Stored mode expression id."), pdef("order", ParamType::Integer, true, "Nonnegative truncation order.")]), handle_squeezing_series_qm),
+        centry("squeezing_operator_series", "Construct a truncated symbolic squeezing-operator series.", ps(vec![pdef("zeta", ParamType::ExprId, true, "Stored squeezing parameter expression id."), pdef("mode", ParamType::ExprId, true, "Stored mode expression id."), pdef("order", ParamType::Integer, true, "Nonnegative truncation order.")]), handle_squeezing_series_qm),
+        centry("bch", "Construct a finite-order symbolic BCH expansion.", ps(vec![pdef("A", ParamType::ExprId, true, "Stored left operator expression id."), pdef("B", ParamType::ExprId, true, "Stored right operator expression id."), pdef("order", ParamType::Integer, true, "Nonnegative truncation order.")]), handle_bch_qm),
+        centry("bch_expand", "Construct a finite-order symbolic BCH expansion.", ps(vec![pdef("A", ParamType::ExprId, true, "Stored left operator expression id."), pdef("B", ParamType::ExprId, true, "Stored right operator expression id."), pdef("order", ParamType::Integer, true, "Nonnegative truncation order.")]), handle_bch_qm),
+        centry("simplify_ccr_car", "Apply explicit CCR/CAR rewrites to ladder-operator products.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_simplify_ccr_car_qm),
         centry("wick_expand", "Apply Wick expansion.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_wick_expand_qm),
         centry("wick", "Apply Wick expansion.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_wick_expand_qm),
         centry("grassmann_simplify", "Simplify with Grassmann grading rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_grassmann_simplify_qm),
@@ -11168,6 +12086,37 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("family", ParamType::Optional(Box::new(ParamType::Symbol)), false, "Optional spinor family."),
             pdef("reverse_gamma_order", ParamType::Bool, true, "Whether bar expansion reverses gamma order."),
         ]), handle_declare_dirac_bar_meta),
+        centry("declare_mode", "Attach structured mode metadata and compatible legacy commutation markers.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target mode symbol."),
+            pdef("statistics", ParamType::StringEnum(&["bosonic", "fermionic", "spin"]), true, "Mode statistics."),
+            pdef("mode_index", ParamType::Integer, true, "Zero-based canonical mode position."),
+        ]), handle_declare_mode),
+        centry("declare_mode_in_subsystem", "Attach structured mode metadata within a named subsystem and compatible legacy markers.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target mode symbol."),
+            pdef("statistics", ParamType::StringEnum(&["bosonic", "fermionic", "spin"]), true, "Mode statistics."),
+            pdef("subsystem", ParamType::Symbol, true, "Subsystem or register symbol."),
+            pdef("mode_index", ParamType::Integer, true, "Zero-based canonical mode position inside the subsystem."),
+        ]), handle_declare_mode_in_subsystem),
+        centry("declare_mode_with_label", "Attach structured mode metadata with subsystem and label aliases plus compatible legacy markers.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target mode symbol."),
+            pdef("statistics", ParamType::StringEnum(&["bosonic", "fermionic", "spin"]), true, "Mode statistics."),
+            pdef("subsystem", ParamType::Symbol, true, "Subsystem or register symbol."),
+            pdef("mode_index", ParamType::Integer, true, "Zero-based canonical mode position inside the subsystem."),
+            pdef("label", ParamType::Symbol, true, "Optional symbolic mode alias."),
+        ]), handle_declare_mode_with_label),
+        centry("declare_bosonic_truncated_mode", "Attach bosonic ModeMeta and store a finite truncation for later Fock-space declarations.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target mode symbol."),
+            pdef("mode_index", ParamType::Integer, true, "Zero-based canonical mode position."),
+            pdef("nmax", ParamType::Integer, true, "Positive maximum bosonic occupation."),
+        ]), handle_declare_bosonic_truncated_mode),
+        centry("declare_fermionic_mode", "Attach fermionic ModeMeta for a Fock-space mode.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target mode symbol."),
+            pdef("mode_index", ParamType::Integer, true, "Zero-based canonical mode position."),
+        ]), handle_declare_fermionic_mode),
+        centry("declare_fock_space", "Attach structured Fock-space metadata from previously declared modes.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target Fock-space symbol."),
+            pdef("mode_symbols", ParamType::SymbolList, true, "Non-empty ordered list of previously declared mode symbols."),
+        ]), handle_declare_fock_space),
         centry("declare_trace_space", "Attach structured trace-space metadata.", ps(vec![
             pdef("symbol", ParamType::Symbol, true, "Target trace-like symbol."),
             pdef("space_symbol", ParamType::Symbol, true, "Trace space label."),
