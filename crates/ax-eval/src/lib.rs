@@ -44,6 +44,101 @@ pub use registry::{
     ConventionEntry, EvalState, ParamDef, ParamType, PropertyEntry, StdModule, SyntaxRule,
 };
 
+/// Supported logarithm-base preferences for QM-facing project settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QmLogBase {
+    /// Natural logarithms.
+    E,
+    /// Base-2 logarithms.
+    Two,
+}
+
+impl QmLogBase {
+    /// Parse a project-config value for the QM logarithm-base setting.
+    pub fn from_config_value(value: &str) -> Option<Self> {
+        match value {
+            "e" => Some(Self::E),
+            "2" => Some(Self::Two),
+            _ => None,
+        }
+    }
+}
+
+/// Supported tensor-product basis-order conventions for QM-facing project settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TensorProductBasisOrder {
+    /// Left-to-right lexicographic tensor-product basis ordering.
+    LeftToRightLexicographic,
+}
+
+impl TensorProductBasisOrder {
+    /// Parse a project-config value for the tensor-product basis-order setting.
+    pub fn from_config_value(value: &str) -> Option<Self> {
+        match value {
+            "left_to_right_lexicographic" => Some(Self::LeftToRightLexicographic),
+            _ => None,
+        }
+    }
+}
+
+/// Supported gamma-signature conventions for QM/QFT-facing project settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GammaSignature {
+    /// Mostly-plus Lorentzian signature.
+    MostlyPlus,
+    /// Mostly-minus Lorentzian signature.
+    MostlyMinus,
+    /// Euclidean signature.
+    Euclidean,
+}
+
+impl GammaSignature {
+    /// Parse a project-config value for the gamma-signature setting.
+    pub fn from_config_value(value: &str) -> Option<Self> {
+        match value {
+            "mostly_plus" => Some(Self::MostlyPlus),
+            "mostly_minus" => Some(Self::MostlyMinus),
+            "euclidean" => Some(Self::Euclidean),
+            _ => None,
+        }
+    }
+}
+
+/// Supported Clifford-algebra conventions for QM/QFT-facing project settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CliffordConvention {
+    /// `{\gamma^\mu,\gamma^\nu} = +2 g^{\mu\nu}`.
+    PlusTwoG,
+    /// `{\gamma^\mu,\gamma^\nu} = -2 g^{\mu\nu}`.
+    MinusTwoG,
+}
+
+impl CliffordConvention {
+    /// Parse a project-config value for the Clifford-convention setting.
+    pub fn from_config_value(value: &str) -> Option<Self> {
+        match value {
+            "plus_two_g" => Some(Self::PlusTwoG),
+            "minus_two_g" => Some(Self::MinusTwoG),
+            _ => None,
+        }
+    }
+}
+
+/// Typed project-level QM settings carried in evaluator session state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QmSettings {
+    /// Preferred logarithm base for entropy-style displays.
+    pub log_base: Option<QmLogBase>,
+    /// Canonical tensor-product basis ordering.
+    pub tensor_product_basis_order: Option<TensorProductBasisOrder>,
+    /// Gamma-signature convention for project-local spinor/QFT work.
+    pub gamma_signature: Option<GammaSignature>,
+    /// Clifford algebra convention for project-local gamma work.
+    pub clifford_convention: Option<CliffordConvention>,
+    /// Whether Unicode bra/ket rendering should prefer pretty glyphs.
+    pub pretty_bra_ket_unicode: Option<bool>,
+}
+
 fn find_tensor_symmetry(
     env: &Env,
     sym: lasso::Spur,
@@ -82,10 +177,16 @@ pub struct Env {
     /// Weights assigned to symbols. Map from (symbol, label) to weight value.
     /// Example: x::Weight(value=1, label=field) → weights[(x, "field")] = 1
     pub weights: HashMap<(lasso::Spur, String), i64>,
+    /// Typed project-level QM settings loaded from `axioma.toml`.
+    pub qm: QmSettings,
 }
 
 impl Env {
     pub fn new() -> Self {
+        Self::with_qm_settings(QmSettings::default())
+    }
+
+    pub fn with_qm_settings(qm: QmSettings) -> Self {
         Self {
             bindings: HashMap::new(),
             parent: None,
@@ -111,6 +212,7 @@ impl Env {
             brst_setup: None,
             convention: ax_ir::Convention::default(),
             weights: HashMap::new(),
+            qm,
         }
     }
 
@@ -148,6 +250,7 @@ impl Env {
             brst_setup: self.brst_setup.clone(),
             convention: self.convention.clone(),
             weights: self.weights.clone(),
+            qm: self.qm.clone(),
         }
     }
 
@@ -338,6 +441,85 @@ const QM_SERIES_ORDER_ERROR: &str =
     "displacement_series and squeezing_series expect a nonnegative integer truncation order";
 const QM_SPIN_OPERATOR_ERROR: &str =
     "spin operator constructors expect a nonnegative integer two_j";
+const QM_TIME_EVOLUTION_ERROR: &str =
+    "time_evolution_operator expects a supported square Hermitian Hamiltonian";
+const QM_SCHRODINGER_EVOLVE_ERROR: &str =
+    "schrodinger_evolve expects a supported Hermitian Hamiltonian and a state vector of matching dimension";
+const QM_HEISENBERG_EVOLVE_ERROR: &str =
+    "heisenberg_evolve expects a supported Hermitian Hamiltonian and an operator matrix of matching dimension";
+const QM_LIOUVILLE_RHS_ERROR: &str =
+    "liouville_rhs expects square Hamiltonian and density matrices of matching dimension";
+const QM_PERTURBATION_ERROR: &str =
+    "perturbation-theory helpers expect supported nondegenerate Hermitian H0 and matching-dimension V";
+const QM_DEGENERATE_PERTURBATION_SUBSPACE_ERROR: &str =
+    "degenerate perturbation theory expects a non-empty list of degenerate basis-state indices";
+const QM_DEGENERATE_PERTURBATION_NONDEGENERATE_SUBSPACE_ERROR: &str =
+    "selected subspace is not degenerate in H0";
+const QM_DYSON_SERIES_ERROR: &str = "dyson_series expects a nonnegative integer truncation order";
+const QM_MAGNUS_EXPANSION_ERROR: &str =
+    "magnus_expansion expects a nonnegative integer truncation order";
+const QM_LINDBLADIAN_SUPEROPERATOR_ERROR: &str =
+    "lindbladian_superoperator expects square operators with matching dimensions";
+const QM_LINDBLADIAN_EIGENVALUES_ERROR: &str =
+    "lindbladian_eigenvalues currently supports only low-dimensional cases";
+
+fn qm_diag_message(
+    kind: ax_diagnostics::QuantumDiagnosticKind,
+    detail: impl Into<String>,
+) -> String {
+    crate::diagnostics::qm_diag(kind, detail).to_string()
+}
+
+fn qm_diag_expr(
+    interner: &ax_ir::Interner,
+    kind: ax_diagnostics::QuantumDiagnosticKind,
+    detail: impl Into<String>,
+) -> Expr {
+    Expr::Sym(interner.get_or_intern(&qm_diag_message(kind, detail)))
+}
+
+fn gamma_metric_signature_matches_qm_setting(
+    expected: &GammaSignature,
+    actual: ax_ir::MetricSignature,
+) -> bool {
+    matches!(
+        (expected, actual),
+        (
+            GammaSignature::MostlyPlus,
+            ax_ir::MetricSignature::MostlyPlus
+        ) | (
+            GammaSignature::MostlyMinus,
+            ax_ir::MetricSignature::MostlyMinus
+        ) | (GammaSignature::Euclidean, ax_ir::MetricSignature::Euclidean)
+    )
+}
+
+fn clifford_convention_matches_qm_setting(
+    expected: &CliffordConvention,
+    actual: &ax_ir::CliffordConvention,
+) -> bool {
+    matches!(
+        (expected, actual),
+        (
+            CliffordConvention::PlusTwoG,
+            ax_ir::CliffordConvention::PlusTwoG
+        ) | (
+            CliffordConvention::MinusTwoG,
+            ax_ir::CliffordConvention::MinusTwoG
+        )
+    )
+}
+
+fn spinor_metadata_detail(metadata: &ax_ir::SpinorMetadata) -> Option<&'static str> {
+    match metadata.class {
+        ax_ir::SpinorClass::Weyl | ax_ir::SpinorClass::MajoranaWeyl
+            if metadata.chirality.is_none() =>
+        {
+            Some("Weyl and Majorana-Weyl spinors require explicit chirality")
+        }
+        _ => None,
+    }
+}
 
 fn number_state_expr(mode: Expr, n: usize, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(
@@ -563,6 +745,205 @@ fn fock_space_metadata_of_symbol(
         })
 }
 
+fn quantum_object_metadata_of_symbol(
+    env: &Env,
+    symbol: lasso::Spur,
+) -> Option<ax_ir::QuantumObjectMetadata> {
+    env.property_store
+        .get_all(symbol)
+        .into_iter()
+        .find_map(|prop| match prop {
+            ax_ir::TensorProperty::QuantumObjectMeta(metadata) => Some(metadata.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            env.tensor_properties.get(&symbol).and_then(|props| {
+                props.iter().find_map(|prop| match prop {
+                    ax_ir::TensorProperty::QuantumObjectMeta(metadata) => Some(metadata.clone()),
+                    _ => None,
+                })
+            })
+        })
+}
+
+fn operator_space_metadata_of_symbol(
+    env: &Env,
+    symbol: lasso::Spur,
+) -> Option<ax_ir::OperatorSpaceMetadata> {
+    env.property_store
+        .get_all(symbol)
+        .into_iter()
+        .find_map(|prop| match prop {
+            ax_ir::TensorProperty::OperatorSpaceMeta(metadata) => Some(metadata.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            env.tensor_properties.get(&symbol).and_then(|props| {
+                props.iter().find_map(|prop| match prop {
+                    ax_ir::TensorProperty::OperatorSpaceMeta(metadata) => Some(metadata.clone()),
+                    _ => None,
+                })
+            })
+        })
+        .or_else(|| {
+            quantum_object_metadata_of_symbol(env, symbol).and_then(|metadata| {
+                matches!(
+                    metadata.kind,
+                    ax_ir::QuantumObjectKind::Operator
+                        | ax_ir::QuantumObjectKind::DensityOperator
+                        | ax_ir::QuantumObjectKind::Projector
+                        | ax_ir::QuantumObjectKind::Observable
+                        | ax_ir::QuantumObjectKind::Channel
+                )
+                .then_some(ax_ir::OperatorSpaceMetadata {
+                    domain_space: metadata.space_symbol,
+                    codomain_space: metadata.space_symbol,
+                })
+            })
+        })
+}
+
+fn find_hilbert_space_symbol_with_factors(
+    env: &Env,
+    factors: &[ax_ir::HilbertSpaceFactor],
+) -> Option<lasso::Spur> {
+    env.property_store.symbols().into_iter().find(|symbol| {
+        hilbert_space_metadata_of_symbol(env, *symbol)
+            .is_some_and(|metadata| metadata.factors == factors)
+    })
+}
+
+fn ensure_composite_hilbert_space_symbol(
+    env: &Env,
+    factors: Vec<ax_ir::HilbertSpaceFactor>,
+    interner: &ax_ir::Interner,
+) -> Option<lasso::Spur> {
+    if factors.is_empty() {
+        return None;
+    }
+    if let [factor] = factors.as_slice() {
+        return Some(factor.symbol);
+    }
+    if let Some(existing) = find_hilbert_space_symbol_with_factors(env, &factors) {
+        return Some(existing);
+    }
+
+    let name = format!(
+        "__hilbert_tensor({})",
+        factors
+            .iter()
+            .map(|factor| interner.resolve(factor.symbol))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    Some(interner.get_or_intern(&name))
+}
+
+fn tensor_product_operator_space_metadata(
+    env: &Env,
+    left: ax_ir::OperatorSpaceMetadata,
+    right: ax_ir::OperatorSpaceMetadata,
+    interner: &ax_ir::Interner,
+) -> Option<ax_ir::OperatorSpaceMetadata> {
+    let mut domain_factors = hilbert_space_metadata_of_symbol(env, left.domain_space)?.factors;
+    domain_factors.extend(hilbert_space_metadata_of_symbol(env, right.domain_space)?.factors);
+    let mut codomain_factors = hilbert_space_metadata_of_symbol(env, left.codomain_space)?.factors;
+    codomain_factors.extend(hilbert_space_metadata_of_symbol(env, right.codomain_space)?.factors);
+
+    Some(ax_ir::OperatorSpaceMetadata {
+        domain_space: ensure_composite_hilbert_space_symbol(env, domain_factors, interner)?,
+        codomain_space: ensure_composite_hilbert_space_symbol(env, codomain_factors, interner)?,
+    })
+}
+
+/// Infer operator domain/codomain metadata for an expression from declared Hilbert-space and
+/// quantum-object metadata when possible.
+pub fn operator_space_metadata_of_expr(
+    env: &Env,
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_ir::OperatorSpaceMetadata> {
+    propagate_operator_space_metadata(env, expr, interner)
+        .ok()
+        .flatten()
+}
+
+/// Validate and propagate operator domain/codomain metadata through supported symbolic builtins.
+pub fn propagate_operator_space_metadata(
+    env: &Env,
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Result<Option<ax_ir::OperatorSpaceMetadata>, String> {
+    match expr {
+        Expr::Sym(symbol) => {
+            if let Some(bound) = env.lookup(*symbol).cloned() {
+                return propagate_operator_space_metadata(env, &bound, interner);
+            }
+            Ok(operator_space_metadata_of_symbol(env, *symbol))
+        }
+        Expr::Group(inner, _) => propagate_operator_space_metadata(env, inner, interner),
+        Expr::Call(fun, args) if args.len() == 2 && interner.resolve(*fun) == "tensor_product" => {
+            let left = propagate_operator_space_metadata(env, &args[0], interner)?;
+            let right = propagate_operator_space_metadata(env, &args[1], interner)?;
+            Ok(match (left, right) {
+                (Some(left), Some(right)) => {
+                    tensor_product_operator_space_metadata(env, left, right, interner)
+                }
+                _ => None,
+            })
+        }
+        Expr::Call(fun, args) if args.len() == 1 && interner.resolve(*fun) == "dagger" => Ok(
+            propagate_operator_space_metadata(env, &args[0], interner)?.map(|metadata| {
+                ax_ir::OperatorSpaceMetadata {
+                    domain_space: metadata.codomain_space,
+                    codomain_space: metadata.domain_space,
+                }
+            }),
+        ),
+        Expr::Call(fun, args) if args.len() == 2 && interner.resolve(*fun) == "on_subsystem" => {
+            let Some(space_symbol) = symbol_from_expr(&args[1]) else {
+                return Err(qm_diag_message(
+                    ax_diagnostics::QuantumDiagnosticKind::InvalidSubsystem,
+                    "expected a previously declared Hilbert space symbol",
+                ));
+            };
+            hilbert_space_metadata_of_symbol(env, space_symbol).ok_or_else(|| {
+                qm_diag_message(
+                    ax_diagnostics::QuantumDiagnosticKind::InvalidSubsystem,
+                    "expected a previously declared Hilbert space symbol",
+                )
+            })?;
+            let _ = propagate_operator_space_metadata(env, &args[0], interner)?;
+            Ok(Some(ax_ir::OperatorSpaceMetadata {
+                domain_space: space_symbol,
+                codomain_space: space_symbol,
+            }))
+        }
+        Expr::Call(fun, args)
+            if args.len() == 2 && interner.resolve(*fun) == "compose_operators" =>
+        {
+            let left = propagate_operator_space_metadata(env, &args[0], interner)?;
+            let right = propagate_operator_space_metadata(env, &args[1], interner)?;
+            Ok(match (left, right) {
+                (Some(left), Some(right)) => {
+                    if right.codomain_space != left.domain_space {
+                        return Err(qm_diag_message(
+                            ax_diagnostics::QuantumDiagnosticKind::SpaceMismatch,
+                            "codomain(right) != domain(left)",
+                        ));
+                    }
+                    Some(ax_ir::OperatorSpaceMetadata {
+                        domain_space: right.domain_space,
+                        codomain_space: left.codomain_space,
+                    })
+                }
+                _ => None,
+            })
+        }
+        _ => Ok(None),
+    }
+}
+
 fn flatten_hilbert_space_factors(
     env: &Env,
     factors: &[lasso::Spur],
@@ -675,6 +1056,20 @@ pub fn apply_fock_space_declaration(
     env.property_store.declare_fock_space(symbol, metadata);
 }
 
+/// Attach structured gamma-matrix convention metadata to the evaluator environment.
+pub fn apply_gamma_convention_declaration(
+    env: &mut Env,
+    symbol: lasso::Spur,
+    metadata: ax_ir::GammaConventionMetadata,
+) {
+    env.tensor_properties
+        .entry(symbol)
+        .or_default()
+        .push(ax_ir::TensorProperty::GammaConventionMeta(metadata.clone()));
+    env.property_store
+        .declare_gamma_convention_meta(symbol, metadata);
+}
+
 /// Attach structured quantum-object metadata and required legacy compatibility markers.
 pub fn apply_quantum_object_declaration(
     env: &mut Env,
@@ -699,6 +1094,19 @@ pub fn apply_quantum_object_declaration(
             .push(ax_ir::TensorProperty::NonCommuting);
     }
     env.property_store.declare_quantum_object(symbol, metadata);
+}
+
+/// Attach structured operator domain/codomain metadata to the evaluator environment.
+pub fn apply_operator_space_declaration(
+    env: &mut Env,
+    symbol: lasso::Spur,
+    metadata: ax_ir::OperatorSpaceMetadata,
+) {
+    env.tensor_properties
+        .entry(symbol)
+        .or_default()
+        .push(ax_ir::TensorProperty::OperatorSpaceMeta(metadata.clone()));
+    env.property_store.declare_operator_space(symbol, metadata);
 }
 
 /// Attach structured mode metadata and the required legacy compatibility markers.
@@ -2511,6 +2919,12 @@ pub fn apply_property_declaration(
         "declare_gamma_matrix_meta" if args.len() == 5 => {
             (&args[0], "declare_gamma_matrix_meta", &args[1..])
         }
+        "declare_gamma_convention" if args.len() == 4 => {
+            (&args[0], "declare_gamma_convention", &args[1..])
+        }
+        "declare_gamma5_convention" if args.len() == 6 => {
+            (&args[0], "declare_gamma5_convention", &args[1..])
+        }
         "declare_dirac_bar_meta" if args.len() == 4 => {
             (&args[0], "declare_dirac_bar_meta", &args[1..])
         }
@@ -2523,6 +2937,9 @@ pub fn apply_property_declaration(
         }
         "declare_quantum_object" if args.len() == 3 => {
             (&args[0], "declare_quantum_object", &args[1..])
+        }
+        "declare_operator_space" if args.len() == 3 => {
+            (&args[0], "declare_operator_space", &args[1..])
         }
         "declare_fock_space" if args.len() == 2 => (&args[0], "declare_fock_space", &args[1..]),
         "declare_bosonic_truncated_mode" if args.len() == 3 => {
@@ -2570,6 +2987,8 @@ pub fn apply_property_declaration(
             _ => None,
         }
     };
+    let project_gamma_signature = env.qm.gamma_signature.clone();
+    let project_clifford_convention = env.qm.clifford_convention.clone();
     let mut add_property = |property: ax_ir::TensorProperty| {
         attach_property(env, tensor, &pattern_slots, property);
     };
@@ -2721,6 +3140,12 @@ pub fn apply_property_declaration(
                 chirality: parse_optional_chirality_expr(&prop_args[2], interner)?,
                 index_family: parse_optional_symbol_expr(&prop_args[3], interner)?,
             };
+            if let Some(detail) = spinor_metadata_detail(&metadata) {
+                return Some(qm_diag_message(
+                    ax_diagnostics::QuantumDiagnosticKind::InvalidSpinorMetadata,
+                    detail,
+                ));
+            }
             add_property(ax_ir::TensorProperty::SpinorMeta(metadata));
             Some(format!(
                 "attached property spinor_meta to {}",
@@ -2737,6 +3162,66 @@ pub fn apply_property_declaration(
             add_property(ax_ir::TensorProperty::GammaMatrixMeta(metadata));
             Some(format!(
                 "attached property gamma_matrix_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_gamma_convention" => {
+            let metadata = ax_ir::GammaConventionMetadata {
+                signature: parse_gamma_metric_signature_expr(&prop_args[0], interner)?,
+                clifford: parse_clifford_convention_expr(&prop_args[1], interner)?,
+                gamma5: None,
+                epsilon_symbol: None,
+                dimension: Some(parse_positive_usize_expr(&prop_args[2])?),
+            };
+            if let Some(expected) = project_gamma_signature.as_ref() {
+                if !gamma_metric_signature_matches_qm_setting(expected, metadata.signature) {
+                    return Some(qm_diag_message(
+                        ax_diagnostics::QuantumDiagnosticKind::ConventionMismatch,
+                        "declared gamma signature conflicts with project QM gamma_signature",
+                    ));
+                }
+            }
+            if let Some(expected) = project_clifford_convention.as_ref() {
+                if !clifford_convention_matches_qm_setting(expected, &metadata.clifford) {
+                    return Some(qm_diag_message(
+                        ax_diagnostics::QuantumDiagnosticKind::ConventionMismatch,
+                        "declared Clifford convention conflicts with project QM clifford_convention",
+                    ));
+                }
+            }
+            add_property(ax_ir::TensorProperty::GammaConventionMeta(metadata));
+            Some(format!(
+                "attached property gamma_convention_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_gamma5_convention" => {
+            let metadata = ax_ir::GammaConventionMetadata {
+                signature: parse_gamma_metric_signature_expr(&prop_args[0], interner)?,
+                clifford: parse_clifford_convention_expr(&prop_args[1], interner)?,
+                gamma5: Some(parse_gamma5_convention_expr(&prop_args[2], interner)?),
+                epsilon_symbol: Some(symbol_from_expr(&prop_args[3])?),
+                dimension: Some(parse_positive_usize_expr(&prop_args[4])?),
+            };
+            if let Some(expected) = project_gamma_signature.as_ref() {
+                if !gamma_metric_signature_matches_qm_setting(expected, metadata.signature) {
+                    return Some(qm_diag_message(
+                        ax_diagnostics::QuantumDiagnosticKind::ConventionMismatch,
+                        "declared gamma signature conflicts with project QM gamma_signature",
+                    ));
+                }
+            }
+            if let Some(expected) = project_clifford_convention.as_ref() {
+                if !clifford_convention_matches_qm_setting(expected, &metadata.clifford) {
+                    return Some(qm_diag_message(
+                        ax_diagnostics::QuantumDiagnosticKind::ConventionMismatch,
+                        "declared Clifford convention conflicts with project QM clifford_convention",
+                    ));
+                }
+            }
+            add_property(ax_ir::TensorProperty::GammaConventionMeta(metadata));
+            Some(format!(
+                "attached property gamma_convention_meta to {}",
                 interner.resolve(tensor)
             ))
         }
@@ -2809,6 +3294,27 @@ pub fn apply_property_declaration(
             );
             Some(format!(
                 "attached property quantum_object_meta to {}",
+                interner.resolve(tensor)
+            ))
+        }
+        "declare_operator_space" => {
+            let domain_space = symbol_from_expr(&prop_args[0])?;
+            let codomain_space = symbol_from_expr(&prop_args[1])?;
+            if hilbert_space_metadata_of_symbol(env, domain_space).is_none()
+                || hilbert_space_metadata_of_symbol(env, codomain_space).is_none()
+            {
+                return None;
+            }
+            apply_operator_space_declaration(
+                env,
+                tensor,
+                ax_ir::OperatorSpaceMetadata {
+                    domain_space,
+                    codomain_space,
+                },
+            );
+            Some(format!(
+                "attached property operator_space_meta to {}",
                 interner.resolve(tensor)
             ))
         }
@@ -3096,6 +3602,7 @@ fn parse_metric_signature(value: &str) -> Option<ax_ir::MetricSignature> {
     match value {
         "mostly_plus" => Some(ax_ir::MetricSignature::MostlyPlus),
         "mostly_minus" => Some(ax_ir::MetricSignature::MostlyMinus),
+        "euclidean" => Some(ax_ir::MetricSignature::Euclidean),
         _ => None,
     }
 }
@@ -7891,7 +8398,35 @@ fn builtin_call(
                     (Expr::Matrix(a), Expr::Matrix(b)) => {
                         Expr::Matrix(ax_linalg::tensor_product(a, b))
                     }
-                    _ => Expr::Call(f, args),
+                    _ => {
+                        let expr = Expr::Call(f, args);
+                        match propagate_operator_space_metadata(env, &expr, interner) {
+                            Ok(_) => expr,
+                            Err(err) => Expr::Sym(interner.get_or_intern(&err)),
+                        }
+                    }
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "compose_operators" => {
+            if args.len() == 2 {
+                let expr = Expr::Call(f, args);
+                match propagate_operator_space_metadata(env, &expr, interner) {
+                    Ok(_) => expr,
+                    Err(err) => Expr::Sym(interner.get_or_intern(&err)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "on_subsystem" => {
+            if args.len() == 2 {
+                let expr = Expr::Call(f, args);
+                match propagate_operator_space_metadata(env, &expr, interner) {
+                    Ok(_) => expr,
+                    Err(err) => Expr::Sym(interner.get_or_intern(&err)),
                 }
             } else {
                 Expr::Call(f, args)
@@ -8032,6 +8567,169 @@ fn builtin_call(
         "triplet_projector_2spinhalf" => {
             if args.is_empty() {
                 Expr::Matrix(ax_qm::two_spin_half_triplet_projector(interner))
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "time_evolution_operator" => {
+            if args.len() == 2 {
+                match &args[0] {
+                    Expr::Matrix(matrix) => {
+                        ax_qm::time_evolution_operator(matrix, args[1].clone(), interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_TIME_EVOLUTION_ERROR))
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_TIME_EVOLUTION_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "schrodinger_evolve" => {
+            if args.len() == 3 {
+                match (&args[0], &args[1]) {
+                    (Expr::Matrix(matrix), Expr::List(state)) => {
+                        ax_qm::schrodinger_evolve_state(matrix, state, args[2].clone(), interner)
+                            .map(Expr::List)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_SCHRODINGER_EVOLVE_ERROR))
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_SCHRODINGER_EVOLVE_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "heisenberg_evolve" => {
+            if args.len() == 3 {
+                match (&args[0], &args[1]) {
+                    (Expr::Matrix(matrix), Expr::Matrix(operator)) => {
+                        ax_qm::heisenberg_evolve_operator(
+                            matrix,
+                            operator,
+                            args[2].clone(),
+                            interner,
+                        )
+                        .map(Expr::Matrix)
+                        .unwrap_or_else(|_| {
+                            Expr::Sym(interner.get_or_intern(QM_HEISENBERG_EVOLVE_ERROR))
+                        })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_HEISENBERG_EVOLVE_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "liouville_rhs" => {
+            if args.len() == 2 {
+                match (&args[0], &args[1]) {
+                    (Expr::Matrix(matrix), Expr::Matrix(rho)) => {
+                        ax_qm::liouville_von_neumann_rhs(matrix, rho, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_LIOUVILLE_RHS_ERROR))
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_LIOUVILLE_RHS_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "dyson_series" => {
+            if args.len() == 2 {
+                match &args[1] {
+                    Expr::Int(order) => match order.to_usize() {
+                        Some(order) => ax_qm::dyson_series(args[0].clone(), order, interner),
+                        None => Expr::Sym(interner.get_or_intern(QM_DYSON_SERIES_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_DYSON_SERIES_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "magnus_expansion" => {
+            if args.len() == 2 {
+                match &args[1] {
+                    Expr::Int(order) => match order.to_usize() {
+                        Some(order) => ax_qm::magnus_expansion(args[0].clone(), order, interner),
+                        None => Expr::Sym(interner.get_or_intern(QM_MAGNUS_EXPANSION_ERROR)),
+                    },
+                    _ => Expr::Sym(interner.get_or_intern(QM_MAGNUS_EXPANSION_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "kubo_response" => {
+            if args.len() == 4 {
+                ax_qm::kubo_response_function(
+                    args[0].clone(),
+                    args[1].clone(),
+                    args[2].clone(),
+                    args[3].clone(),
+                    interner,
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "kubo_response_function" => {
+            if args.len() == 4 {
+                ax_qm::kubo_response_function(
+                    args[0].clone(),
+                    args[1].clone(),
+                    args[2].clone(),
+                    args[3].clone(),
+                    interner,
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "susceptibility_fourier" => {
+            if args.len() == 2 {
+                ax_qm::susceptibility_fourier(args[0].clone(), args[1].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "projector_left" | "P_L" => {
+            if args.is_empty() {
+                ax_qm::projector_left(interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "projector_right" | "P_R" => {
+            if args.is_empty() {
+                ax_qm::projector_right(interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "sigma" | "sigma_matrix" => {
+            if args.len() == 2 {
+                ax_qm::sigma_matrix(args[0].clone(), args[1].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "sigma_to_gamma" | "sigma_to_gamma_commutator" => {
+            if args.len() == 1 {
+                ax_qm::sigma_to_gamma_commutator(&args[0], interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "gamma_to_sigma" | "gamma_commutator_to_sigma" => {
+            if args.len() == 1 {
+                ax_qm::gamma_commutator_to_sigma(&args[0], interner)
             } else {
                 Expr::Call(f, args)
             }
@@ -8597,6 +9295,38 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "simplify_chiral" | "simplify_chiral_projectors" => {
+            if args.len() == 1 {
+                ax_qm::simplify_chiral_projectors(&args[0], &env.property_store, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "simplify_spinor_bilinears" | "simplify_spinor_bilinear_selection_rules" => {
+            if args.len() == 1 {
+                ax_qm::simplify_spinor_bilinear_selection_rules(
+                    &args[0],
+                    &env.property_store,
+                    interner,
+                )
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "insert_explicit_spinor_indices" => {
+            if args.len() == 1 {
+                ax_qm::insert_explicit_spinor_indices(&args[0], &env.property_store, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "remove_trivial_spinor_indices" => {
+            if args.len() == 1 {
+                ax_qm::remove_trivial_spinor_indices(&args[0], &env.property_store, interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         "fierz" => {
             if args.len() == 1 {
                 match ax_qm::try_fierz_auto_with_properties(
@@ -8606,6 +9336,22 @@ fn builtin_call(
                     interner,
                 ) {
                     Ok(result) => result,
+                    Err(ax_qm::FierzError::IncompatibleSpinorMetadata)
+                    | Err(ax_qm::FierzError::IncompatibleSpinorChirality) => qm_diag_expr(
+                        interner,
+                        ax_diagnostics::QuantumDiagnosticKind::InvalidSpinorMetadata,
+                        "incompatible structured spinor metadata for Fierz rearrangement",
+                    ),
+                    Err(ax_qm::FierzError::IncompatibleSpinorDimension) => qm_diag_expr(
+                        interner,
+                        ax_diagnostics::QuantumDiagnosticKind::UnsupportedDimension,
+                        "spinor dimensions must agree for Fierz rearrangement",
+                    ),
+                    Err(ax_qm::FierzError::InsufficientConventionData) => qm_diag_expr(
+                        interner,
+                        ax_diagnostics::QuantumDiagnosticKind::ConventionMismatch,
+                        "missing compatible gamma convention metadata for Fierz rearrangement",
+                    ),
                     Err(_) => ax_qm::fierz_auto(&args[0], 4, interner),
                 }
             } else {
@@ -10337,13 +11083,17 @@ fn builtin_call(
                     (Some(left), Some(right)) => ax_qm::compose_kraus_channels(&left, &right)
                         .map(kraus_list_to_expr)
                         .unwrap_or_else(|_| {
-                            Expr::Sym(interner.get_or_intern(
+                            qm_diag_expr(
+                                interner,
+                                ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
                                 "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension",
-                            ))
+                            )
                         }),
-                    _ => Expr::Sym(interner.get_or_intern(
+                    _ => qm_diag_expr(
+                        interner,
+                        ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
                         "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension",
-                    )),
+                    ),
                 }
             } else {
                 Expr::Call(f, args)
@@ -10452,15 +11202,17 @@ fn builtin_call(
                         &left, &right, interner,
                     )
                     .unwrap_or_else(|_| {
-                        Expr::Sym(interner.get_or_intern(
+                        qm_diag_expr(
+                            interner,
+                            ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
                             "choi_distance expects two channels of matching dimension",
-                        ))
+                        )
                     }),
-                    _ => {
-                        Expr::Sym(interner.get_or_intern(
-                            "choi_distance expects two channels of matching dimension",
-                        ))
-                    }
+                    _ => qm_diag_expr(
+                        interner,
+                        ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
+                        "choi_distance expects two channels of matching dimension",
+                    ),
                 }
             } else {
                 Expr::Call(f, args)
@@ -10957,6 +11709,151 @@ fn builtin_call(
                 Expr::Call(f, args)
             }
         }
+        "lindbladian_superoperator" => {
+            if args.len() == 2 {
+                match (expr_to_matrix(&args[0]), expr_to_3d(&args[1])) {
+                    (Some(h), Some(jump_ops)) => {
+                        ax_qm::lindbladian_superoperator(&h, &jump_ops, interner)
+                            .map(Expr::Matrix)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(
+                                    interner.get_or_intern(QM_LINDBLADIAN_SUPEROPERATOR_ERROR),
+                                )
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_LINDBLADIAN_SUPEROPERATOR_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "lindbladian_eigenvalues" => {
+            if args.len() == 2 {
+                match (expr_to_matrix(&args[0]), expr_to_3d(&args[1])) {
+                    (Some(h), Some(jump_ops)) => {
+                        ax_qm::lindbladian_eigenvalues_small(&h, &jump_ops, interner)
+                            .map(Expr::List)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_LINDBLADIAN_EIGENVALUES_ERROR))
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_LINDBLADIAN_EIGENVALUES_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "first_order_energy_shift" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_matrix(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Some(h0), Some(v), Some(state_index)) => {
+                        ax_qm::first_order_energy_shift(&h0, &v, state_index, interner)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_PERTURBATION_ERROR))
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_PERTURBATION_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "second_order_energy_shift" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_matrix(&args[1]),
+                    usize_from_expr(&args[2]),
+                ) {
+                    (Some(h0), Some(v), Some(state_index)) => {
+                        ax_qm::second_order_energy_shift(&h0, &v, state_index, interner)
+                            .unwrap_or_else(|_| {
+                                Expr::Sym(interner.get_or_intern(QM_PERTURBATION_ERROR))
+                            })
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_PERTURBATION_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "degenerate_effective_perturbation" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_matrix(&args[1]),
+                    nonempty_usize_list_from_expr(&args[2]),
+                ) {
+                    (Some(h0), Some(v), Some(subspace)) => {
+                        match ax_qm::degenerate_subspace_effective_perturbation(
+                            &h0, &v, &subspace, interner,
+                        ) {
+                            Ok(matrix) => Expr::Matrix(matrix),
+                            Err(ax_qm::PerturbationError::SelectedSubspaceNotDegenerate) => {
+                                Expr::Sym(interner.get_or_intern(
+                                    QM_DEGENERATE_PERTURBATION_NONDEGENERATE_SUBSPACE_ERROR,
+                                ))
+                            }
+                            Err(_) => Expr::Sym(
+                                interner.get_or_intern(QM_DEGENERATE_PERTURBATION_SUBSPACE_ERROR),
+                            ),
+                        }
+                    }
+                    _ => {
+                        Expr::Sym(interner.get_or_intern(QM_DEGENERATE_PERTURBATION_SUBSPACE_ERROR))
+                    }
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "degenerate_first_order_splittings" => {
+            if args.len() == 3 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_matrix(&args[1]),
+                    nonempty_usize_list_from_expr(&args[2]),
+                ) {
+                    (Some(h0), Some(v), Some(subspace)) => {
+                        match ax_qm::degenerate_first_order_splittings(&h0, &v, &subspace, interner)
+                        {
+                            Ok(values) => Expr::List(values),
+                            Err(ax_qm::PerturbationError::SelectedSubspaceNotDegenerate) => {
+                                Expr::Sym(interner.get_or_intern(
+                                    QM_DEGENERATE_PERTURBATION_NONDEGENERATE_SUBSPACE_ERROR,
+                                ))
+                            }
+                            Err(_) => Expr::Sym(
+                                interner.get_or_intern(QM_DEGENERATE_PERTURBATION_SUBSPACE_ERROR),
+                            ),
+                        }
+                    }
+                    _ => {
+                        Expr::Sym(interner.get_or_intern(QM_DEGENERATE_PERTURBATION_SUBSPACE_ERROR))
+                    }
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "berry_connection" => {
+            if args.len() == 2 {
+                ax_qm::berry_connection(args[0].clone(), args[1].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "geometric_phase" => {
+            if args.len() == 2 {
+                ax_qm::geometric_phase(args[0].clone(), args[1].clone(), interner)
+            } else {
+                Expr::Call(f, args)
+            }
+        }
         _ => Expr::Call(f, args),
     }
 }
@@ -11074,6 +11971,56 @@ fn parse_optional_symbol_expr(
     match expr {
         Expr::Sym(sym) if interner.resolve(*sym).eq_ignore_ascii_case("none") => Some(None),
         Expr::Sym(sym) => Some(Some(*sym)),
+        _ => None,
+    }
+}
+
+fn parse_gamma_metric_signature_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_ir::MetricSignature> {
+    let Expr::Sym(sym) = expr else {
+        return None;
+    };
+    match interner.resolve(*sym).to_ascii_lowercase().as_str() {
+        "mostly_plus" => Some(ax_ir::MetricSignature::MostlyPlus),
+        "mostly_minus" => Some(ax_ir::MetricSignature::MostlyMinus),
+        "euclidean" => Some(ax_ir::MetricSignature::Euclidean),
+        _ => None,
+    }
+}
+
+fn parse_clifford_convention_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_ir::CliffordConvention> {
+    let Expr::Sym(sym) = expr else {
+        return None;
+    };
+    match interner.resolve(*sym).to_ascii_lowercase().as_str() {
+        "plus_two_g" => Some(ax_ir::CliffordConvention::PlusTwoG),
+        "minus_two_g" => Some(ax_ir::CliffordConvention::MinusTwoG),
+        _ => None,
+    }
+}
+
+fn parse_gamma5_convention_expr(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ax_ir::GammaFiveConvention> {
+    let Expr::Sym(sym) = expr else {
+        return None;
+    };
+    match interner.resolve(*sym).to_ascii_lowercase().as_str() {
+        "levi_civita" => Some(ax_ir::GammaFiveConvention::LeviCivita),
+        "abstract_chiral" => Some(ax_ir::GammaFiveConvention::AbstractChiral),
+        _ => None,
+    }
+}
+
+fn parse_positive_usize_expr(expr: &Expr) -> Option<usize> {
+    match expr {
+        Expr::Int(n) => n.to_usize().filter(|value| *value > 0),
         _ => None,
     }
 }
@@ -12027,7 +12974,7 @@ mod tests {
     use super::*;
     use ax_ir::{Index, Variance};
 
-    fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
+    fn eval_src_with_env(src: &str, mut env: Env) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
         let result = ax_core_ir::lower(src, &interner);
         assert!(
@@ -12037,14 +12984,35 @@ mod tests {
         );
         if result.exprs.len() <= 1 {
             let expr = result.expr.expect("expected expression");
-            let env = Env::new();
+            if let Some(error) = named_operator_declaration_error(&expr, &env, &interner) {
+                return (Expr::Sym(interner.get_or_intern(&error)), interner);
+            }
+            if let Some(message) = apply_property_declaration(&expr, &mut env, &interner) {
+                return (Expr::Sym(interner.get_or_intern(&message)), interner);
+            }
+            if apply_set_convention(&expr, &mut env).is_some()
+                || apply_parallel_declaration(&expr, &mut env, &interner).is_some()
+                || apply_graded_declaration(&expr, &mut env, &interner).is_some()
+                || apply_superspace_setup(&expr, &mut env, &interner).is_some()
+                || apply_brst_setup(&expr, &mut env, &interner).is_some()
+                || apply_named_operator_declaration(&expr, &mut env, &interner).is_some()
+                || apply_named_contraction_declaration(&expr, &mut env, &interner).is_some()
+                || apply_coordinate_declaration(&expr, &mut env, &interner).is_some()
+                || apply_index_declaration(&expr, &mut env, &interner).is_some()
+            {
+                return (Expr::zero(), interner);
+            }
             return (eval(&expr, &env, &interner), interner);
         }
-        let mut env = Env::new();
+        let exprs = result.exprs;
         let mut last = Expr::zero();
-        for expr in result.exprs {
+        for expr in exprs {
             if let Some(error) = named_operator_declaration_error(&expr, &env, &interner) {
                 last = Expr::Sym(interner.get_or_intern(&error));
+                continue;
+            }
+            if let Some(message) = apply_property_declaration(&expr, &mut env, &interner) {
+                last = Expr::Sym(interner.get_or_intern(&message));
                 continue;
             }
             if apply_set_convention(&expr, &mut env).is_some()
@@ -12054,7 +13022,6 @@ mod tests {
                 || apply_brst_setup(&expr, &mut env, &interner).is_some()
                 || apply_named_operator_declaration(&expr, &mut env, &interner).is_some()
                 || apply_named_contraction_declaration(&expr, &mut env, &interner).is_some()
-                || apply_property_declaration(&expr, &mut env, &interner).is_some()
                 || apply_coordinate_declaration(&expr, &mut env, &interner).is_some()
                 || apply_index_declaration(&expr, &mut env, &interner).is_some()
             {
@@ -12089,6 +13056,10 @@ mod tests {
             }
         }
         (last, interner)
+    }
+
+    fn eval_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
+        eval_src_with_env(src, Env::new())
     }
 
     fn eval_fixture(path: &str) -> (ax_ir::Expr, ax_ir::Interner) {
@@ -14969,7 +15940,38 @@ mod tests {
         };
         assert_eq!(
             interner.resolve(message),
-            "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension"
+            "invalid quantum channel: compose_channels expects two non-empty Kraus lists of square matrices with matching dimension"
+        );
+    }
+
+    #[test]
+    fn qm_compose_operators_incompatible_spaces_use_normalized_diagnostic() {
+        let (result, interner) = eval_src(
+            "declare_hilbert_space(Hin, 2);
+             declare_hilbert_space(Hmid, 2);
+             declare_hilbert_space(Hother, 2);
+             declare_operator_space(A, Hin, Hmid);
+             declare_operator_space(B, Hother, Hother);
+             compose_operators(A, B);",
+        );
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "quantum space mismatch: codomain(right) != domain(left)"
+        );
+    }
+
+    #[test]
+    fn qm_invalid_subsystem_uses_normalized_diagnostic() {
+        let (result, interner) = eval_src("A@Q;");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "invalid quantum subsystem: expected a previously declared Hilbert space symbol"
         );
     }
 
@@ -15127,7 +16129,7 @@ mod tests {
         };
         assert_eq!(
             interner.resolve(message),
-            "choi_distance expects two channels of matching dimension"
+            "invalid quantum channel: choi_distance expects two channels of matching dimension"
         );
     }
 
@@ -15179,6 +16181,39 @@ mod tests {
     }
 
     #[test]
+    fn qm_lindbladian_superoperator_zero_generator_returns_zero_4x4_matrix() {
+        let (result, _) = eval_src("lindbladian_superoperator([[0,0],[0,0]], []);");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_lindbladian_eigenvalues_zero_generator_are_all_zero() {
+        let (result, _) = eval_src("lindbladian_eigenvalues([[0,0],[0,0]], []);");
+        assert_eq!(
+            result,
+            Expr::List(vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero(),])
+        );
+    }
+
+    #[test]
+    fn qm_lindbladian_eigenvalues_unsupported_case_returns_exact_error_string() {
+        let (result, interner) =
+            eval_src("lindbladian_eigenvalues([[0,0],[0,0]], [[[0,1],[0,0]]]);");
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_LINDBLADIAN_EIGENVALUES_ERROR))
+        );
+    }
+
+    #[test]
     fn qm_purity_of_bell_state_is_one() {
         let (result, _) = eval_src("purity(density([1/sqrt(2), 0, 0, 1/sqrt(2)]));");
         assert_eq!(result, Expr::one());
@@ -15221,6 +16256,111 @@ mod tests {
             interner.resolve(message),
             "hermitian_eigenvalues expects a square Hermitian matrix of supported dimension"
         );
+    }
+
+    #[test]
+    fn qm_first_order_energy_shift_diagonal_two_level_returns_diagonal_entries() {
+        let (result_a, interner_a) =
+            eval_src("first_order_energy_shift([[1,0],[0,2]], [[a,0],[0,b]], 0);");
+        let (result_b, interner_b) =
+            eval_src("first_order_energy_shift([[1,0],[0,2]], [[a,0],[0,b]], 1);");
+        assert_eq!(ax_ir::pretty_print(&result_a, &interner_a), "a");
+        assert_eq!(ax_ir::pretty_print(&result_b, &interner_b), "b");
+    }
+
+    #[test]
+    fn qm_second_order_energy_shift_diagonal_two_level_off_diagonal_coupling_is_exact() {
+        let (result, interner) =
+            eval_src("second_order_energy_shift([[1,0],[0,2]], [[0,g],[g,0]], 0);");
+        let expected = Expr::neg(Expr::pow(
+            Expr::Sym(interner.get_or_intern("g")),
+            Expr::Int(2.into()),
+        ));
+        assert_eq!(
+            result,
+            expected,
+            "got {}",
+            ax_ir::pretty_print(&result, &interner)
+        );
+    }
+
+    #[test]
+    fn qm_perturbation_theory_degenerate_unperturbed_spectrum_returns_exact_error_string() {
+        let (result, interner) =
+            eval_src("first_order_energy_shift([[1,0],[0,1]], [[1,0],[0,1]], 0);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(interner.resolve(message), QM_PERTURBATION_ERROR);
+    }
+
+    #[test]
+    fn qm_degenerate_effective_perturbation_extracts_requested_block() {
+        let (result, interner) = eval_src(
+            "degenerate_effective_perturbation([[1,0,0],[0,1,0],[0,0,2]], [[a,b,0],[c,d,0],[0,0,1]], [0,1]);",
+        );
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![
+                    Expr::Sym(interner.get_or_intern("a")),
+                    Expr::Sym(interner.get_or_intern("b")),
+                ],
+                vec![
+                    Expr::Sym(interner.get_or_intern("c")),
+                    Expr::Sym(interner.get_or_intern("d")),
+                ],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_degenerate_first_order_splittings_two_state_off_diagonal_are_pm_g() {
+        let (result, interner) = eval_src(
+            "degenerate_first_order_splittings([[1,0,0],[0,1,0],[0,0,2]], [[0,g,0],[g,0,0],[0,0,1]], [0,1]);",
+        );
+        assert_eq!(
+            result,
+            Expr::List(vec![
+                Expr::Sym(interner.get_or_intern("g")),
+                Expr::neg(Expr::Sym(interner.get_or_intern("g"))),
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_degenerate_perturbation_theory_nondegenerate_selection_returns_exact_error_string() {
+        let (result, interner) = eval_src(
+            "degenerate_effective_perturbation([[1,0,0],[0,1,0],[0,0,2]], [[1,0,0],[0,1,0],[0,0,1]], [0,2]);",
+        );
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            QM_DEGENERATE_PERTURBATION_NONDEGENERATE_SUBSPACE_ERROR
+        );
+    }
+
+    #[test]
+    fn qm_berry_connection_is_symbolic_one_form_constructor() {
+        let (result, interner) = eval_src("berry_connection(psi(theta), theta);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("one_form_component"), "got {rendered}");
+        assert!(rendered.contains("bra(psi(theta))"), "got {rendered}");
+        assert!(
+            rendered.contains("diff(psi(theta), theta)"),
+            "got {rendered}"
+        );
+        assert!(rendered.contains("i"), "got {rendered}");
+    }
+
+    #[test]
+    fn qm_geometric_phase_is_symbolic_contour_integral_constructor() {
+        let (result, interner) = eval_src("geometric_phase(A, theta);");
+        let rendered = ax_ir::pretty_print(&result, &interner);
+        assert!(rendered.contains("integral"), "got {rendered}");
+        assert!(rendered.contains("closed_path(theta)"), "got {rendered}");
     }
 
     #[test]
@@ -15726,6 +16866,319 @@ mod tests {
             invalid_result,
             Expr::Sym(interner.get_or_intern(QM_SERIES_ORDER_ERROR))
         );
+    }
+
+    #[test]
+    fn qm_time_evolution_operator_diagonal_qubit_returns_expected_phases() {
+        let (result, interner) = eval_src("time_evolution_operator([[1, 0], [0, 2]], t);");
+        let t = Expr::Sym(interner.get_or_intern("t"));
+        let i = Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()));
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![
+                    Expr::Call(
+                        interner.get_or_intern("exp"),
+                        vec![Expr::mul(vec![Expr::neg(i.clone()), t.clone()])]
+                    ),
+                    Expr::zero(),
+                ],
+                vec![
+                    Expr::zero(),
+                    Expr::Call(
+                        interner.get_or_intern("exp"),
+                        vec![Expr::mul(vec![Expr::Int((-2).into()), i, t,])]
+                    ),
+                ],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_time_evolution_operator_nonhermitian_returns_exact_error() {
+        let (result, interner) = eval_src("time_evolution_operator([[0, 1], [2, 0]], t);");
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_TIME_EVOLUTION_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_schrodinger_evolve_pauli_z_on_zero_state_returns_phase_vector() {
+        let (result, interner) = eval_src("schrodinger_evolve(pauli_z(), [1, 0], t);");
+        let t = Expr::Sym(interner.get_or_intern("t"));
+        let i = Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()));
+        assert_eq!(
+            result,
+            Expr::List(vec![
+                Expr::Call(
+                    interner.get_or_intern("exp"),
+                    vec![Expr::mul(vec![Expr::neg(i), t])]
+                ),
+                Expr::zero(),
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_schrodinger_evolve_dimension_mismatch_returns_exact_error() {
+        let (result, interner) = eval_src("schrodinger_evolve(pauli_z(), [1], t);");
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_SCHRODINGER_EVOLVE_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_heisenberg_evolve_pauli_z_preserves_pauli_z() {
+        let (result, interner) = eval_src("heisenberg_evolve(pauli_z(), pauli_z(), t);");
+        assert_eq!(result, Expr::Matrix(ax_qm::pauli_z(&interner)));
+    }
+
+    #[test]
+    fn qm_heisenberg_evolve_dimension_mismatch_returns_exact_error() {
+        let (result, interner) = eval_src("heisenberg_evolve(pauli_z(), [[1]], t);");
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_HEISENBERG_EVOLVE_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_liouville_rhs_commuting_diagonal_case_is_zero() {
+        let (result, _interner) = eval_src("liouville_rhs([[1, 0], [0, 2]], [[1, 0], [0, 0]]);");
+        assert_eq!(
+            result,
+            Expr::Matrix(vec![
+                vec![Expr::zero(), Expr::zero()],
+                vec![Expr::zero(), Expr::zero()],
+            ])
+        );
+    }
+
+    #[test]
+    fn qm_liouville_rhs_dimension_mismatch_returns_exact_error() {
+        let (result, interner) = eval_src("liouville_rhs([[1, 0], [0, 2]], [[1]]);");
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_LIOUVILLE_RHS_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_dyson_series_invalid_order_returns_exact_error_string() {
+        let (result, interner) = eval_src("dyson_series(H(t), -1);");
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_DYSON_SERIES_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_magnus_expansion_invalid_order_returns_exact_error_string() {
+        let (result, interner) = eval_src("magnus_expansion(H(t), -1);");
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_MAGNUS_EXPANSION_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_kubo_response_builtin_returns_canonical_symbolic_form() {
+        let (result, interner) = eval_src("kubo_response(A, B, rho0, t);");
+        assert_eq!(
+            result,
+            ax_qm::kubo_response_function(
+                Expr::Sym(interner.get_or_intern("A")),
+                Expr::Sym(interner.get_or_intern("B")),
+                Expr::Sym(interner.get_or_intern("rho0")),
+                Expr::Sym(interner.get_or_intern("t")),
+                &interner,
+            )
+        );
+    }
+
+    #[test]
+    fn qm_susceptibility_fourier_builtin_returns_canonical_symbolic_form() {
+        let (result, interner) = eval_src("susceptibility_fourier(chi_t, omega);");
+        assert_eq!(
+            result,
+            ax_qm::susceptibility_fourier(
+                Expr::Sym(interner.get_or_intern("chi_t")),
+                Expr::Sym(interner.get_or_intern("omega")),
+                &interner,
+            )
+        );
+    }
+
+    #[test]
+    fn qm_chiral_projector_builtins_return_canonical_forms() {
+        let (left, interner) = eval_src("projector_left();");
+        assert_eq!(left, ax_qm::projector_left(&interner));
+
+        let (right, interner) = eval_src("projector_right();");
+        assert_eq!(right, ax_qm::projector_right(&interner));
+    }
+
+    #[test]
+    fn qm_simplify_chiral_builtin_simplifies_projector_algebra() {
+        let (idempotent, interner) = eval_src("simplify_chiral(projector_left()^2);");
+        assert_eq!(idempotent, ax_qm::projector_left(&interner));
+
+        let (orthogonal, _) = eval_src("simplify_chiral(projector_left() * projector_right());");
+        assert_eq!(orthogonal, Expr::zero());
+
+        let (complete, _) = eval_src("simplify_chiral(projector_left() + projector_right());");
+        assert_eq!(complete, Expr::one());
+    }
+
+    #[test]
+    fn qm_simplify_chiral_builtin_uses_weyl_chirality_metadata() {
+        let (left_result, interner) = eval_src(
+            "declare_spinor_meta(psi_l, 4, Weyl, left, spin); simplify_chiral(projector_left() * psi_l);",
+        );
+        assert_eq!(left_result, Expr::Sym(interner.get_or_intern("psi_l")));
+
+        let (right_result, _) = eval_src(
+            "declare_spinor_meta(psi_l, 4, Weyl, left, spin); simplify_chiral(projector_right() * psi_l);",
+        );
+        assert_eq!(right_result, Expr::zero());
+
+        let (right_keep, interner) = eval_src(
+            "declare_spinor_meta(psi_r, 4, Weyl, right, spin); simplify_chiral(projector_right() * psi_r);",
+        );
+        assert_eq!(right_keep, Expr::Sym(interner.get_or_intern("psi_r")));
+    }
+
+    #[test]
+    fn qm_simplify_spinor_bilinears_builtin_applies_majorana_selection_rule() {
+        let (result, _) = eval_src(
+            "declare_spinor_meta(psi, 4, Majorana, none, spin);
+             declare_gamma_matrix_meta(gamma, 4, eta, spin, true);
+             declare_gamma5_convention(gamma, mostly_plus, plus_two_g, abstract_chiral, eps, 4);
+             declare_dirac_bar_meta(bar, gamma, spin, true);
+             simplify_spinor_bilinears(bar(psi) * gamma(mu) * psi);",
+        );
+        assert_eq!(result, Expr::zero());
+    }
+
+    #[test]
+    fn qft_gamma_convention_project_mismatch_uses_normalized_diagnostic() {
+        let env = Env::with_qm_settings(QmSettings {
+            gamma_signature: Some(GammaSignature::MostlyPlus),
+            ..QmSettings::default()
+        });
+        let (result, interner) = eval_src_with_env(
+            "declare_gamma5_convention(gamma, mostly_minus, plus_two_g, abstract_chiral, eps, 4);",
+            env,
+        );
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "quantum convention mismatch: declared gamma signature conflicts with project QM gamma_signature"
+        );
+    }
+
+    #[test]
+    fn qft_invalid_spinor_metadata_uses_normalized_diagnostic() {
+        let (result, interner) = eval_src("declare_spinor_meta(psi, 4, Weyl, none, spin);");
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "invalid spinor metadata: Weyl and Majorana-Weyl spinors require explicit chirality"
+        );
+    }
+
+    #[test]
+    fn qft_fierz_spinor_metadata_mismatch_uses_normalized_diagnostic() {
+        let (result, interner) = eval_src(
+            "declare_spinor_meta(psi1, 4, Weyl, left, spin);
+             declare_spinor_meta(psi2, 4, Weyl, right, spin);
+             declare_spinor_meta(psi3, 4, Weyl, left, spin);
+             declare_spinor_meta(psi4, 4, Weyl, left, spin);
+             gamma_matrix(gamma);
+             dirac_bar(bar);
+             fierz(bar(psi1) * gamma(mu) * psi2 * bar(psi3) * psi4);",
+        );
+        let Expr::Sym(message) = result else {
+            panic!("expected interned error string");
+        };
+        assert_eq!(
+            interner.resolve(message),
+            "invalid spinor metadata: incompatible structured spinor metadata for Fierz rearrangement"
+        );
+    }
+
+    #[test]
+    fn qm_sigma_to_gamma_builtin_expands_canonical_sigma() {
+        let (result, interner) = eval_src("sigma_to_gamma(sigma(mu, nu));");
+        let expected = ax_qm::sigma_to_gamma_commutator(
+            &ax_qm::sigma_matrix(
+                Expr::Sym(interner.get_or_intern("mu")),
+                Expr::Sym(interner.get_or_intern("nu")),
+                &interner,
+            ),
+            &interner,
+        );
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn qm_gamma_to_sigma_builtin_converts_canonical_commutator_pattern() {
+        let (result, interner) =
+            eval_src("gamma_to_sigma(gamma(mu) * gamma(nu) - gamma(nu) * gamma(mu));");
+        let expected = ax_qm::gamma_commutator_to_sigma(
+            &Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Call(
+                        interner.get_or_intern("gamma"),
+                        vec![Expr::Sym(interner.get_or_intern("mu"))],
+                    ),
+                    Expr::Call(
+                        interner.get_or_intern("gamma"),
+                        vec![Expr::Sym(interner.get_or_intern("nu"))],
+                    ),
+                ]),
+                Expr::neg(Expr::mul(vec![
+                    Expr::Call(
+                        interner.get_or_intern("gamma"),
+                        vec![Expr::Sym(interner.get_or_intern("nu"))],
+                    ),
+                    Expr::Call(
+                        interner.get_or_intern("gamma"),
+                        vec![Expr::Sym(interner.get_or_intern("mu"))],
+                    ),
+                ])),
+            ]),
+            &interner,
+        );
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn qm_gamma_to_sigma_builtin_leaves_nonmatching_input_unchanged() {
+        let (result, interner) = eval_src("gamma_to_sigma(gamma(mu) * gamma(nu) + 1);");
+        let expected = Expr::add(vec![
+            Expr::mul(vec![
+                Expr::Call(
+                    interner.get_or_intern("gamma"),
+                    vec![Expr::Sym(interner.get_or_intern("mu"))],
+                ),
+                Expr::Call(
+                    interner.get_or_intern("gamma"),
+                    vec![Expr::Sym(interner.get_or_intern("nu"))],
+                ),
+            ]),
+            Expr::one(),
+        ]);
+
+        assert_eq!(result, expected);
     }
 
     #[test]

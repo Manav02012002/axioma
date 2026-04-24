@@ -10,6 +10,7 @@ anyhow = "1"
 ax-compare = { path = "../ax-compare" }
 ax-codegen = { path = "../ax-codegen" }
 ax-context = { path = "../ax-context" }
+ax-diagnostics = { path = "../ax-diagnostics" }
 ax-forms = { path = "../ax-forms" }
 ax-graded = { path = "../ax-graded" }
 ax-ir = { path = "../ax-ir" }

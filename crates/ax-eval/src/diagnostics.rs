@@ -1,8 +1,15 @@
 use crate::{registry::format_tensor_property, Env};
+use ax_diagnostics::{quantum_diagnostic_message, QuantumDiagnosticKind};
 use ax_ir::{Expr, Index, Interner, TensorProperty, Variance};
 use num_rational::BigRational;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
+
+/// Construct a normalized QM/QFT evaluator error for high-value convention and space failures.
+pub(crate) fn qm_diag(kind: QuantumDiagnosticKind, detail: impl Into<String>) -> anyhow::Error {
+    let detail = detail.into();
+    anyhow::Error::msg(quantum_diagnostic_message(kind, &detail))
+}
 
 fn numeric_value(expr: &Expr) -> Option<BigRational> {
     match expr {

@@ -1488,6 +1488,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "declare_gamma_matrix_meta(gamma, 4, eta, spin, true)",
         ),
         b(
+            "declare_gamma_convention",
+            "properties",
+            "declare_gamma_convention(symbol, signature, clifford, dimension)",
+            "Attach structured gamma-matrix convention metadata.",
+            "declare_gamma_convention(gamma, mostly_plus, plus_two_g, 4)",
+        ),
+        b(
+            "declare_gamma5_convention",
+            "properties",
+            "declare_gamma5_convention(symbol, signature, clifford, gamma5_kind, epsilon_symbol, dimension)",
+            "Attach structured gamma5 convention metadata.",
+            "declare_gamma5_convention(gamma, mostly_plus, plus_two_g, levi_civita, epsilon, 4)",
+        ),
+        b(
             "declare_dirac_bar_meta",
             "properties",
             "declare_dirac_bar_meta(symbol, gamma_symbol, family, reverse_gamma_order)",
@@ -1523,11 +1537,25 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "declare_quantum_object(A, operator, H)",
         ),
         b(
+            "declare_operator_space",
+            "properties",
+            "declare_operator_space(symbol, domain_space, codomain_space)",
+            "Attach structured operator domain/codomain metadata using previously declared Hilbert spaces.",
+            "declare_operator_space(U, HA, HB)",
+        ),
+        b(
             "declare_mode",
             "properties",
             "declare_mode(symbol, statistics, mode_index)",
             "Attach structured mode metadata and the legacy commutation markers implied by the mode statistics.",
             "declare_mode(a, bosonic, 0)",
+        ),
+        b(
+            "compose_operators",
+            "qm",
+            "compose_operators(left, right)",
+            "Build a symbolic operator composition, checking compatible codomain/domain metadata when available.",
+            "compose_operators(U, V)",
         ),
         b(
             "declare_mode_in_subsystem",
@@ -1719,6 +1747,48 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "hermitian_eigenprojectors(pauli_z())",
         ),
         b(
+            "first_order_energy_shift",
+            "quantum",
+            "first_order_energy_shift(H0, V, n)",
+            "Exact nondegenerate stationary perturbation-theory first-order energy shift in the eigenbasis of H0.",
+            "first_order_energy_shift([[1,0],[0,2]], [[a,0],[0,b]], 0)",
+        ),
+        b(
+            "second_order_energy_shift",
+            "quantum",
+            "second_order_energy_shift(H0, V, n)",
+            "Exact nondegenerate stationary perturbation-theory second-order energy shift in the eigenbasis of H0.",
+            "second_order_energy_shift([[1,0],[0,2]], [[0,g],[g,0]], 0)",
+        ),
+        b(
+            "degenerate_effective_perturbation",
+            "quantum",
+            "degenerate_effective_perturbation(H0, V, subspace)",
+            "Exact effective perturbation matrix inside a chosen degenerate basis-state subspace of a diagonal H0.",
+            "degenerate_effective_perturbation([[1,0,0],[0,1,0],[0,0,2]], [[a,b,0],[c,d,0],[0,0,1]], [0,1])",
+        ),
+        b(
+            "degenerate_first_order_splittings",
+            "quantum",
+            "degenerate_first_order_splittings(H0, V, subspace)",
+            "Exact first-order splittings obtained by diagonalizing the effective perturbation inside a chosen degenerate subspace.",
+            "degenerate_first_order_splittings([[1,0,0],[0,1,0],[0,0,2]], [[0,g,0],[g,0,0],[0,0,1]], [0,1])",
+        ),
+        b(
+            "berry_connection",
+            "quantum",
+            "berry_connection(psi, parameter)",
+            "Construct the symbolic Berry-connection one-form component i <psi | d/dparameter | psi>.",
+            "berry_connection(psi(theta), theta)",
+        ),
+        b(
+            "geometric_phase",
+            "quantum",
+            "geometric_phase(A, parameter)",
+            "Construct the symbolic geometric phase as a contour-style integral of a Berry connection.",
+            "geometric_phase(berry_connection(psi(theta), theta), theta)",
+        ),
+        b(
             "matmul",
             "linear-algebra",
             "matmul(a, b)",
@@ -1836,6 +1906,111 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "triplet_projector_2spinhalf()",
             "Projector onto the explicit two-spin-1/2 triplet subspace.",
             "triplet_projector_2spinhalf()",
+        ),
+        b(
+            "time_evolution_operator",
+            "quantum",
+            "time_evolution_operator(H, t)",
+            "Constant-Hamiltonian unitary propagator U(t) = exp(-i t H) for supported small Hermitian matrices.",
+            "time_evolution_operator(pauli_z(), t)",
+        ),
+        b(
+            "schrodinger_evolve",
+            "quantum",
+            "schrodinger_evolve(H, psi0, t)",
+            "Schrodinger-picture pure-state evolution psi(t) = U(t) psi0 for supported finite-dimensional Hermitian Hamiltonians.",
+            "schrodinger_evolve(pauli_z(), [1, 0], t)",
+        ),
+        b(
+            "heisenberg_evolve",
+            "quantum",
+            "heisenberg_evolve(H, O0, t)",
+            "Heisenberg-picture operator evolution O(t) = U†(t) O0 U(t) for supported finite-dimensional Hermitian Hamiltonians.",
+            "heisenberg_evolve(pauli_z(), pauli_x(), t)",
+        ),
+        b(
+            "liouville_rhs",
+            "quantum",
+            "liouville_rhs(H, rho)",
+            "Closed-system density-matrix right-hand side ρ̇ = -i [H, ρ] for square Hamiltonian and density matrices of matching dimension.",
+            "liouville_rhs([[1, 0], [0, 2]], [[1, 0], [0, 0]])",
+        ),
+        b(
+            "dyson_series",
+            "quantum",
+            "dyson_series(Ht, order)",
+            "Finite-order symbolic Dyson expansion for a time-dependent Hamiltonian using canonical time-order and nested integral placeholders.",
+            "dyson_series(t * pauli_z(), 2)",
+        ),
+        b(
+            "magnus_expansion",
+            "quantum",
+            "magnus_expansion(Ht, order)",
+            "Finite-order symbolic Magnus expansion for a time-dependent Hamiltonian using nested commutator integrals.",
+            "magnus_expansion(t * pauli_z(), 3)",
+        ),
+        b(
+            "kubo_response",
+            "quantum",
+            "kubo_response(A, B, rho0, t)",
+            "Construct the symbolic Kubo linear-response function -i theta(t) Tr(rho0 [A(t), B(0)]).",
+            "kubo_response(x, p, rho0, t)",
+        ),
+        b(
+            "susceptibility_fourier",
+            "quantum",
+            "susceptibility_fourier(chi_t, omega)",
+            "Construct the symbolic Fourier susceptibility integral ∫ dt exp(i omega t) chi_t using canonical integral bounds.",
+            "susceptibility_fourier(kubo_response(x, p, rho0, t), omega)",
+        ),
+        b(
+            "projector_left",
+            "quantum",
+            "projector_left()",
+            "Construct the canonical left chiral projector P_L = (1 - gamma5)/2.",
+            "projector_left()",
+        ),
+        b(
+            "projector_right",
+            "quantum",
+            "projector_right()",
+            "Construct the canonical right chiral projector P_R = (1 + gamma5)/2.",
+            "projector_right()",
+        ),
+        b(
+            "simplify_chiral",
+            "quantum",
+            "simplify_chiral(expr)",
+            "Simplify chiral projector algebra and projector actions on Weyl spinors with explicit chirality metadata.",
+            "simplify_chiral(projector_left() * projector_right())",
+        ),
+        b(
+            "simplify_spinor_bilinears",
+            "quantum",
+            "simplify_spinor_bilinears(expr)",
+            "Apply conservative metadata-driven 4D Majorana and Weyl bilinear selection rules, returning zero only for proven forbidden bilinears.",
+            "simplify_spinor_bilinears(bar(psi) * gamma(mu) * psi)",
+        ),
+        b(
+            "sigma",
+            "quantum",
+            "sigma(mu, nu)",
+            "Construct the canonical sigma^{mu nu} spin-generator basis element with sigma^{mu nu} = (i/2)[gamma^mu, gamma^nu].",
+            "sigma(mu, nu)",
+        ),
+        b(
+            "sigma_to_gamma",
+            "quantum",
+            "sigma_to_gamma(expr)",
+            "Expand sigma(mu,nu) into the exact gamma commutator form (i/2)(gamma(mu) gamma(nu) - gamma(nu) gamma(mu)).",
+            "sigma_to_gamma(sigma(mu, nu))",
+        ),
+        b(
+            "gamma_to_sigma",
+            "quantum",
+            "gamma_to_sigma(expr)",
+            "Convert an exact canonical gamma commutator pattern back to -2i sigma(mu,nu), leaving nonmatching input unchanged.",
+            "gamma_to_sigma(gamma(mu) * gamma(nu) - gamma(nu) * gamma(mu))",
         ),
         b(
             "sigma_z",
@@ -2235,6 +2410,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "lindblad_steady_state(H, jumps)",
             "Solve lindblad_rhs(H, rho, jumps) = 0 together with Tr(rho) = 1 for a finite-dimensional steady state.",
             "lindblad_steady_state([[0,0],[0,0]], [[[0,1],[0,0]]])",
+        ),
+        b(
+            "lindbladian_superoperator",
+            "quantum",
+            "lindbladian_superoperator(H, jumps)",
+            "Construct the exact Lindbladian superoperator acting on column-major vec(rho).",
+            "lindbladian_superoperator([[0,0],[0,0]], [])",
+        ),
+        b(
+            "lindbladian_eigenvalues",
+            "quantum",
+            "lindbladian_eigenvalues(H, jumps)",
+            "Return exact low-dimensional Lindbladian eigenvalues for supported superoperators.",
+            "lindbladian_eigenvalues([[0,0],[0,0]], [])",
         ),
         b(
             "creation",
@@ -2851,6 +3040,7 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("DiracBarMeta", "declare_dirac_bar_meta(psibar, gamma_symbol, family, reverse_gamma_order)", "Attaches structured Dirac-bar metadata linking a bar symbol to its gamma family and spinor family.", "stored by the evaluator property store; automatically also attaches the legacy DiracBar marker", "declare_dirac_bar_meta(psibar, gamma, spin, true)"),
         p("GammaMatrixProp", "property gamma gamma_matrix", "Marks a symbol as a gamma matrix.", "canonicalize_indices antisymmetric gamma-call slots, sort_product local barred-bilinear gamma placement/barrier handling, and ax-qm gamma algorithms", "property gamma gamma_matrix"),
         p("GammaMatrixMeta", "declare_gamma_matrix_meta(gamma, dim, metric, family, has_gamma5)", "Attaches structured gamma-matrix metadata including Clifford dimension, metric symbol, family, and gamma5 support.", "stored by the evaluator property store; automatically also attaches the legacy GammaMatrixProp marker", "declare_gamma_matrix_meta(gamma, 4, eta, spin, true)"),
+        p("GammaConventionMeta", "declare_gamma_convention(gamma, signature, clifford, dimension) or declare_gamma5_convention(gamma, signature, clifford, gamma5_kind, epsilon, dimension)", "Attaches structured gamma-matrix convention metadata including metric signature, Clifford sign, optional gamma5 convention, epsilon symbol, and dimension.", "stored by the evaluator property store for convention-aware Clifford and gamma5 algorithms", "declare_gamma5_convention(gamma, mostly_plus, plus_two_g, levi_civita, epsilon, 4)"),
         p("Commuting", "property A commuting", "Marks an object as commuting.", "stored by ax-tensor metadata; no direct ax-tensor algorithm currently consults it", "property A commuting"),
         p("AntiCommuting", "property psi anticommuting", "Marks an object as anticommuting.", "canonicalise signed dummy/factor exchange and sort_product graded sign handling", "property psi anticommuting"),
         p("NonCommuting", "property A noncommuting", "Marks an object as noncommuting.", "canonicalise/sort_product factor-order barrier; identical noncommuting tensor factors are not exchanged", "property A noncommuting"),
@@ -2875,6 +3065,7 @@ pub fn property_entries() -> Vec<PropertyEntry> {
         p("HilbertSpaceMeta", "declare_hilbert_space(H, 2) or declare_composite_space(HAB, [HA, HB])", "Attaches structured metadata describing a finite-dimensional Hilbert space and its ordered tensor-product factors.", "stored by the evaluator property store for quantum-space declarations and future space-aware algorithms", "declare_composite_space(HAB, [HA, HB])"),
         p("FockSpaceMeta", "declare_fock_space(F, [a0, a1])", "Attaches structured metadata describing a Fock space, its declared ordered modes, and the explicit occupation-basis ordering.", "stored by the evaluator property store for Fock-space declarations and basis-state validation", "declare_fock_space(F, [a0, a1])"),
         p("QuantumObjectMeta", "declare_quantum_object(A, operator, H)", "Attaches structured metadata describing a quantum object's kind and Hilbert space.", "stored by the evaluator property store; operator-like kinds also attach the legacy NonCommuting marker", "declare_quantum_object(rho, density_operator, H)"),
+        p("OperatorSpaceMeta", "declare_operator_space(U, HA, HB)", "Attaches structured metadata describing an operator's domain and codomain Hilbert spaces.", "used by symbolic operator composition, dagger, tensor-product, and subsystem-aware operator-domain checks", "declare_operator_space(U, HA, HB)"),
         p("ModeMeta", "declare_mode(a, bosonic, 0), declare_mode_in_subsystem(a0, bosonic, QA, 0), or declare_mode_with_label(mode0, fermionic, reg, 0, a)", "Attaches structured mode metadata describing statistics, optional subsystem grouping, zero-based canonical mode index, and an optional symbolic label.", "stored by the evaluator property store; bosonic and spin modes also attach legacy NonCommuting, while fermionic modes also attach legacy AntiCommuting", "declare_mode_with_label(mode0, fermionic, reg, 0, a)"),
     ]
 }
@@ -2961,6 +3152,17 @@ pub fn algorithm_entries() -> Vec<AlgorithmEntry> {
         a("normal_order", "qm", "normal_order(expr: &Expr, operators: &HashMap<Spur, OperatorKind>, operator_statistics: &HashMap<Spur, OperatorStatistics>, properties: &dyn PropertyLookup, interner: &Interner) -> Expr", "Reorder products of operators into graded normal order using declared creation/annihilation kinds while preferring structured mode metadata over legacy operator-statistics fallbacks.", "Operator kinds must be declared for raw operator symbols; structured ModeMeta metadata on modes takes precedence when inferring bosonic or fermionic swap signs.", "normal_order(annihilation(a) * creation(a))"),
         a("time_ordered", "qm", "time_ordered(expr: Expr, interner: &Interner) -> Expr", "Wrap an expression in the canonical symbolic time-ordering form `time_order(expr)` without performing any time-order expansion.", "This is a symbolic constructor only in the current evaluator surface.", "time_order(a * b)"),
         a("anti_time_ordered", "qm", "anti_time_ordered(expr: Expr, interner: &Interner) -> Expr", "Wrap an expression in the canonical symbolic anti-time-ordering form `anti_time_order(expr)` without performing any expansion.", "This is a symbolic constructor only in the current evaluator surface.", "anti_time_order(a * b)"),
+        a("kubo_response_function", "qm", "kubo_response_function(a_op: Expr, b_op: Expr, rho0: Expr, t: Expr, interner: &Interner) -> Expr", "Construct the symbolic Kubo response function -i theta(t) trace(rho0 * commutator(A(t), B(0))).", "This is a symbolic constructor only in the current evaluator surface; it does not expand commutators or traces.", "kubo_response(A, B, rho0, t)"),
+        a("susceptibility_fourier", "qm", "susceptibility_fourier(response: Expr, omega: Expr, interner: &Interner) -> Expr", "Construct the symbolic Fourier susceptibility integral integral(t, neg_inf, inf, exp(i*omega*t) * response).", "This is a symbolic constructor only in the current evaluator surface.", "susceptibility_fourier(chi_t, omega)"),
+        a("projector_left", "qm", "projector_left(interner: &Interner) -> Expr", "Construct the canonical left chiral projector P_L = (1 - gamma5)/2.", "No setup required.", "projector_left()"),
+        a("projector_right", "qm", "projector_right(interner: &Interner) -> Expr", "Construct the canonical right chiral projector P_R = (1 + gamma5)/2.", "No setup required.", "projector_right()"),
+        a("simplify_chiral_projectors", "qm", "simplify_chiral_projectors(expr: &Expr, props: &dyn PropertyLookup, interner: &Interner) -> Expr", "Simplify chiral projector idempotence, orthogonality, completeness, and Weyl-spinor chirality actions.", "Weyl spinor action requires SpinorMeta metadata with explicit chirality.", "simplify_chiral(projector_left() * psi_L)"),
+        a("simplify_spinor_bilinear_selection_rules", "qm", "simplify_spinor_bilinear_selection_rules(expr: &Expr, props: &dyn PropertyLookup, interner: &Interner) -> Expr", "Apply supported 4D metadata-driven Majorana and Weyl bilinear selection rules, simplifying proven forbidden bilinears to zero.", "Requires structured SpinorMeta and convention metadata; insufficient metadata leaves the expression unchanged.", "simplify_spinor_bilinears(bar(psi) * gamma(mu) * psi)"),
+        a("insert_explicit_spinor_indices", "qm", "insert_explicit_spinor_indices(expr: &Expr, props: &dyn PropertyLookup, interner: &Interner) -> Expr", "Expand supported implicit spinor bilinears and gamma chains into explicit spinor-index contractions.", "Requires structured DiracBarMeta, SpinorMeta, GammaMatrixMeta, and a common spinor index family.", "insert_explicit_spinor_indices(bar(psi) * gamma(mu) * psi)"),
+        a("remove_trivial_spinor_indices", "qm", "remove_trivial_spinor_indices(expr: &Expr, props: &dyn PropertyLookup, interner: &Interner) -> Expr", "Collapse unambiguous canonical spinor-index contractions back to implicit bilinear or gamma-chain form.", "Only contractions matching the bridge's canonical pattern are removed.", "remove_trivial_spinor_indices(insert_explicit_spinor_indices(bar(psi) * gamma(mu) * psi))"),
+        a("sigma_matrix", "qm", "sigma_matrix(mu: Expr, nu: Expr, interner: &Interner) -> Expr", "Construct the canonical Lorentz-generator spin matrix basis element sigma(mu,nu).", "No setup required.", "sigma(mu, nu)"),
+        a("sigma_to_gamma_commutator", "qm", "sigma_to_gamma_commutator(expr: &Expr, interner: &Interner) -> Expr", "Expand sigma(mu,nu) to (i/2)(gamma(mu) gamma(nu) - gamma(nu) gamma(mu)).", "The input should contain canonical sigma(mu,nu) calls.", "sigma_to_gamma(sigma(mu, nu))"),
+        a("gamma_commutator_to_sigma", "qm", "gamma_commutator_to_sigma(expr: &Expr, interner: &Interner) -> Expr", "Convert exact gamma commutator calls or two-term product differences to -2i sigma(mu,nu).", "The input must match the exact canonical gamma commutator pattern.", "gamma_to_sigma(gamma(mu) * gamma(nu) - gamma(nu) * gamma(mu))"),
         a("displacement_operator_series", "qm", "displacement_operator_series(alpha: Expr, mode: Expr, order: usize, interner: &Interner) -> Expr", "Construct the truncated symbolic series for the bosonic displacement operator exp(alpha a† - conj(alpha) a).", "The truncation order must be a nonnegative integer; the result is returned as a raw symbolic series without simplification.", "displacement_series(alpha, a, 2)"),
         a("squeezing_operator_series", "qm", "squeezing_operator_series(zeta: Expr, mode: Expr, order: usize, interner: &Interner) -> Expr", "Construct the truncated symbolic series for the bosonic squeezing operator exp(1/2 (zeta a† a† - conj(zeta) a a)).", "The truncation order must be a nonnegative integer; the result is returned as a raw symbolic series without simplification.", "squeezing_series(zeta, a, 2)"),
         a("bch_expand", "qm", "bch_expand(a: Expr, b: Expr, order: usize, interner: &Interner) -> Expr", "Construct the finite-order symbolic Baker-Campbell-Hausdorff expansion through the requested truncation order.", "The truncation order must be a nonnegative integer; orders above four currently return the order-four truncation.", "bch(A, B, 4)"),
@@ -3100,18 +3302,26 @@ pub fn std_modules() -> Vec<StdModule> {
         m("physics/klein_gordon", "Sets up a Klein-Gordon Lagrangian and computes its Euler-Lagrange equation.", "let dphi_dt, let dphi_dx, let dphi_dy, let dphi_dz, let L, let EOM"),
         m("physics/maxwell", "Builds a flat-space Maxwell Lagrangian from symbolic field-strength components and computes Gauss-law and Ampere-type Euler-Lagrange equations.", "let F_tx, let F_ty, let F_tz, let F_xy, let F_xz, let F_yz, let L, let gauss_law, let ampere_x"),
         m("physics/variational", "Builds single-field and coupled-field variational examples, including functional derivatives, first variations, and Euler-Lagrange systems.", "let L_mech, let eom_mech, let delta_L_mech, let L_fields, let eoms_fields"),
-        m("qft/dirac", "Dirac / spinor manipulations: Dirac-bar expansion, spinor sorting, and Fierz rearrangement in four dimensions.", "expand_diracbar, sort_spinors, fierz"),
+        m("qft/bilinears", "Majorana and Weyl bilinear selection rules plus explicit/implicit spinor-index bridge examples.", "simplify_spinor_bilinears, insert_explicit_spinor_indices, remove_trivial_spinor_indices"),
+        m("qft/chiral_projectors", "Chiral projector algebra and Weyl-spinor chirality actions under structured metadata.", "projector_left, projector_right, simplify_chiral, simplify_spinor_bilinears"),
+        m("qft/dirac", "Dirac / spinor manipulations: Dirac-bar expansion, spinor sorting, sigma matrices, gamma conversion, and spinor-index bridge examples.", "expand_diracbar, sort_spinors, sigma_to_gamma, gamma_to_sigma, insert_explicit_spinor_indices"),
+        m("qft/fierz", "Fierz rearrangement examples under explicit 4D spinor and gamma metadata.", "fierz, sort_product, join_gamma, split_gamma"),
         m("qft/gamma", "Gamma-matrix algebra: joining/splitting chains and Dirac traces.", "join_gammas_in_expr, split_gamma, gamma_trace, gamma5_trace"),
+        m("qft/gamma_trace", "Convention-aware gamma traces, gamma5 traces, and gamma-chain join/split examples.", "declare_gamma5_convention, gamma_trace, gamma5_trace, join_gamma, split_gamma"),
         m("qft/normal_ordering", "Bosonic normal ordering, Wick expansion, and abstract oscillator actions.", "normal_order, wick, apply_operator"),
         m("qft/scalar_field", "Free scalar-field Klein-Gordon Lagrangian and Euler-Lagrange equation.", "let dphi_dt, let dphi_dx, let dphi_dy, let dphi_dz, let L, let EOM"),
+        m("qft/spinors", "Consolidated spinor/gamma workflows: conventions, chiral projectors, gamma traces, Fierz rearrangements, and bilinear selection rules.", "declare_spinor_meta, declare_gamma_convention, declare_gamma5_convention, simplify_chiral, gamma_trace, fierz, simplify_spinor_bilinears"),
         m("qft/spinor_helicity", "Spinor-helicity formalism: angle/square brackets, Mandelstam invariants, Parke-Taylor amplitudes, BCFW recursion, momentum twistors.", "angle, square, mandelstam, parke_taylor, bcfw_shift, bcfw_decomposition, four_bracket"),
         m("qft/superspace", "N=1 superspace: supercovariant derivatives, chiral/antichiral superfields, Wess-Zumino gauge vector superfields, D-algebra, superspace integration.", "setup_superspace, expand_superfield, chiral_superfield, d_alpha, d_squared, superspace_integrate"),
         m("qft/brst", "BRST cohomology: ghost grading, Yang-Mills BRST setup, nilpotency, and ghost-sector projection.", "setup_brst_ym, brst, ghost_number, brst_check, filter_ghost_number"),
         m("qm/bell", "Constructs a Bell state, its density matrix, and a reduced density matrix by partial trace.", "let up, let down, let phi_plus, let rho, let rho_A"),
         m("qm/channels", "Finite-dimensional Kraus-channel examples including the identity channel, canonical qubit noise channels, channel composition, tensor-product channels, Choi-matrix distance surrogates, and exact trace-preserving and unital checks.", "let I, depolarizing_channel, dephasing_channel, amplitude_damping_channel, bit_flip_channel, phase_flip_channel, bit_phase_flip_channel, compose_channels, choi_distance, tensor_product_channel, trace_preserving_residual, is_trace_preserving, unital_residual, is_unital"),
+        m("qm/dynamics", "Quantum dynamics examples: propagators, Schrödinger and Heisenberg evolution, Liouville/Lindblad generators, and steady states.", "let H_qubit, let U_t, let psi_t, let x_t, let liouville_toy, let lindblad_amp, let rho_steady"),
         m("qm/fock", "Shows symbolic bosonic displacement and squeezing series examples in Fock-space notation.", "let disp_series, let squeeze_series"),
         m("qm/harmonic_oscillator", "Builds an abstract harmonic-oscillator annihilation operator, creation operator, number operator, Hamiltonian, and sample Fock-state actions.", "let a_op, let adag_op, let n_op, let h_op, let vac, let one, let two, let lowered_two, let number_on_two, let energy_on_one, let normal_reordered"),
+        m("qm/info", "Quantum-information examples: entropies, mutual information, entanglement spectrum, Schmidt data, and negativity diagnostics.", "let s_vn_mm, let s_renyi2_mm, let s_vn_A, let mutual_info_bell, let negativity_bell, let log_negativity_bell"),
         m("qm/spin", "Builds spin-1/2 and spin-1 angular-momentum matrices, including Pauli and arbitrary spin-j examples.", "let sigma_x, let sigma_y, let sigma_z, let jz_half, let jplus_one, let jz_one"),
+        m("qm/states", "Quantum-state examples: basis kets/bras, density matrices, Bell-state reductions, subsystem partial traces, and Bloch vectors.", "let ket0, let ket1, let rho0, let rho_plus, let bell_rho, let rho_A, let bloch_rho0"),
         m("tensor/index", "Documents index notation and contraction conventions for tensors.", "documentation comments only"),
         m("tensor/symmetry", "Documents tensor-symmetry declarations and examples.", "documentation comments only"),
         m("trig", "Defines standard exact trigonometric rewrite rules.", "rule pythag, rule pythag_alt1, rule pythag_alt2, rule double_sin, rule double_cos"),
@@ -3605,6 +3815,60 @@ fn parse_quantum_object_kind_name(kind: &str) -> Option<ax_ir::QuantumObjectKind
     }
 }
 
+fn parse_gamma_metric_signature_arg(
+    args: &[serde_json::Value],
+    idx: usize,
+    name: &str,
+) -> Result<ax_ir::MetricSignature, String> {
+    match string_arg(args, idx, name)?.to_ascii_lowercase().as_str() {
+        "mostly_plus" => Ok(ax_ir::MetricSignature::MostlyPlus),
+        "mostly_minus" => Ok(ax_ir::MetricSignature::MostlyMinus),
+        "euclidean" => Ok(ax_ir::MetricSignature::Euclidean),
+        _ => Err(
+            "gamma convention signature must be one of: mostly_plus, mostly_minus, euclidean"
+                .to_string(),
+        ),
+    }
+}
+
+fn parse_clifford_convention_arg(
+    args: &[serde_json::Value],
+    idx: usize,
+    name: &str,
+) -> Result<ax_ir::CliffordConvention, String> {
+    match string_arg(args, idx, name)?.to_ascii_lowercase().as_str() {
+        "plus_two_g" => Ok(ax_ir::CliffordConvention::PlusTwoG),
+        "minus_two_g" => Ok(ax_ir::CliffordConvention::MinusTwoG),
+        _ => Err(
+            "gamma convention clifford sign must be one of: plus_two_g, minus_two_g".to_string(),
+        ),
+    }
+}
+
+fn parse_gamma5_convention_arg(
+    args: &[serde_json::Value],
+    idx: usize,
+    name: &str,
+) -> Result<ax_ir::GammaFiveConvention, String> {
+    match string_arg(args, idx, name)?.to_ascii_lowercase().as_str() {
+        "levi_civita" => Ok(ax_ir::GammaFiveConvention::LeviCivita),
+        "abstract_chiral" => Ok(ax_ir::GammaFiveConvention::AbstractChiral),
+        _ => Err("gamma5 convention kind must be one of: levi_civita, abstract_chiral".to_string()),
+    }
+}
+
+fn positive_gamma_dimension_arg(
+    args: &[serde_json::Value],
+    idx: usize,
+    name: &str,
+) -> Result<usize, String> {
+    require_arg(args, idx, name)?
+        .as_i64()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "gamma convention dimension must be a positive integer".to_string())
+}
+
 fn matrix_code_arg(
     args: &[serde_json::Value],
     idx: usize,
@@ -3800,6 +4064,16 @@ pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::In
                 .map(|sym| interner.resolve(sym).to_string()),
             metadata.has_gamma5
         ),
+        TensorProperty::GammaConventionMeta(metadata) => format!(
+            "GammaConventionMeta(signature: {:?}, clifford: {:?}, gamma5: {:?}, epsilon_symbol: {:?}, dimension: {:?})",
+            metadata.signature,
+            metadata.clifford,
+            metadata.gamma5,
+            metadata
+                .epsilon_symbol
+                .map(|sym| interner.resolve(sym).to_string()),
+            metadata.dimension
+        ),
         TensorProperty::Commuting => "Commuting".to_string(),
         TensorProperty::AntiCommuting => "AntiCommuting".to_string(),
         TensorProperty::NonCommuting => "NonCommuting".to_string(),
@@ -3895,6 +4169,11 @@ pub fn format_tensor_property(prop: &ax_ir::TensorProperty, interner: &ax_ir::In
             metadata.kind,
             interner.resolve(metadata.space_symbol)
         ),
+        TensorProperty::OperatorSpaceMeta(metadata) => format!(
+            "OperatorSpaceMeta(domain_space: {}, codomain_space: {})",
+            interner.resolve(metadata.domain_space),
+            interner.resolve(metadata.codomain_space)
+        ),
         TensorProperty::ModeMeta(metadata) => format!(
             "ModeMeta(statistics: {:?}, subsystem: {:?}, mode_index: {}, label: {:?})",
             metadata.statistics,
@@ -3951,6 +4230,11 @@ pub fn property_lookup_aliases(name: &str) -> &'static [&'static str] {
         "DiracBarMeta" => &["dirac_bar_meta", "declare_dirac_bar_meta"],
         "GammaMatrixProp" => &["gamma_matrix", "gamma"],
         "GammaMatrixMeta" => &["gamma_matrix_meta", "declare_gamma_matrix_meta"],
+        "GammaConventionMeta" => &[
+            "gamma_convention_meta",
+            "declare_gamma_convention",
+            "declare_gamma5_convention",
+        ],
         "TraceSpaceMeta" => &["trace_space", "declare_trace_space"],
         "HilbertSpaceMeta" => &[
             "hilbert_space",
@@ -3959,6 +4243,7 @@ pub fn property_lookup_aliases(name: &str) -> &'static [&'static str] {
         ],
         "FockSpaceMeta" => &["fock_space", "declare_fock_space"],
         "QuantumObjectMeta" => &["quantum_object", "declare_quantum_object"],
+        "OperatorSpaceMeta" => &["operator_space", "declare_operator_space"],
         "ModeMeta" => &[
             "mode_meta",
             "declare_mode",
@@ -7197,6 +7482,214 @@ fn handle_triplet_projector_2spinhalf(
     )
 }
 
+fn handle_time_evolution_operator(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let t = expr_from_id(args, 1, "t", state)?;
+    let matrix = ax_qm::time_evolution_operator(&h, t, state.interner()).map_err(|_| {
+        "time_evolution_operator expects a supported square Hermitian Hamiltonian".to_string()
+    })?;
+    matrix_response(matrix, state)
+}
+
+fn handle_schrodinger_evolve(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let psi0 = list_from_id(args, 1, "psi0", state)?;
+    let t = expr_from_id(args, 2, "t", state)?;
+    let evolved = ax_qm::schrodinger_evolve_state(&h, &psi0, t, state.interner()).map_err(
+        |_| {
+            "schrodinger_evolve expects a supported Hermitian Hamiltonian and a state vector of matching dimension"
+                .to_string()
+        },
+    )?;
+    list_response(evolved, state)
+}
+
+fn handle_heisenberg_evolve(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let op0 = matrix_from_id(args, 1, "O0", state)?;
+    let t = expr_from_id(args, 2, "t", state)?;
+    let evolved = ax_qm::heisenberg_evolve_operator(&h, &op0, t, state.interner()).map_err(
+        |_| {
+            "heisenberg_evolve expects a supported Hermitian Hamiltonian and an operator matrix of matching dimension"
+                .to_string()
+        },
+    )?;
+    matrix_response(evolved, state)
+}
+
+fn handle_liouville_rhs(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let rho = matrix_from_id(args, 1, "rho", state)?;
+    let rhs = ax_qm::liouville_von_neumann_rhs(&h, &rho, state.interner()).map_err(|_| {
+        "liouville_rhs expects square Hamiltonian and density matrices of matching dimension"
+            .to_string()
+    })?;
+    matrix_response(rhs, state)
+}
+
+fn handle_dyson_series(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h_t = expr_from_id(args, 0, "Ht", state)?;
+    let order = int_arg(args, 1, "order")?;
+    let Some(order) = usize::try_from(order).ok() else {
+        return Err("dyson_series expects a nonnegative integer truncation order".to_string());
+    };
+    expr_response(ax_qm::dyson_series(h_t, order, state.interner()), state)
+}
+
+fn handle_magnus_expansion(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h_t = expr_from_id(args, 0, "Ht", state)?;
+    let order = int_arg(args, 1, "order")?;
+    let Some(order) = usize::try_from(order).ok() else {
+        return Err("magnus_expansion expects a nonnegative integer truncation order".to_string());
+    };
+    expr_response(ax_qm::magnus_expansion(h_t, order, state.interner()), state)
+}
+
+fn handle_kubo_response_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let a = expr_from_id(args, 0, "A", state)?;
+    let b = expr_from_id(args, 1, "B", state)?;
+    let rho0 = expr_from_id(args, 2, "rho0", state)?;
+    let t = expr_from_id(args, 3, "t", state)?;
+    expr_response(
+        ax_qm::kubo_response_function(a, b, rho0, t, state.interner()),
+        state,
+    )
+}
+
+fn handle_susceptibility_fourier_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let response = expr_from_id(args, 0, "chi_t", state)?;
+    let omega = expr_from_id(args, 1, "omega", state)?;
+    expr_response(
+        ax_qm::susceptibility_fourier(response, omega, state.interner()),
+        state,
+    )
+}
+
+fn handle_projector_left_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    expr_response(ax_qm::projector_left(state.interner()), state)
+}
+
+fn handle_projector_right_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let _ = args;
+    expr_response(ax_qm::projector_right(state.interner()), state)
+}
+
+fn handle_simplify_chiral_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(
+        ax_qm::simplify_chiral_projectors(&expr, &state.env().property_store, state.interner()),
+        state,
+    )
+}
+
+fn handle_simplify_spinor_bilinears_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response_with_change(
+        &expr,
+        ax_qm::simplify_spinor_bilinear_selection_rules(
+            &expr,
+            &state.env().property_store,
+            state.interner(),
+        ),
+        "simplify_spinor_bilinears",
+        state,
+    )
+}
+
+fn handle_insert_explicit_spinor_indices_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response_with_change(
+        &expr,
+        ax_qm::insert_explicit_spinor_indices(&expr, &state.env().property_store, state.interner()),
+        "insert_explicit_spinor_indices",
+        state,
+    )
+}
+
+fn handle_remove_trivial_spinor_indices_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response_with_change(
+        &expr,
+        ax_qm::remove_trivial_spinor_indices(&expr, &state.env().property_store, state.interner()),
+        "remove_trivial_spinor_indices",
+        state,
+    )
+}
+
+fn handle_sigma_matrix_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let mu = expr_from_id(args, 0, "mu", state)?;
+    let nu = expr_from_id(args, 1, "nu", state)?;
+    expr_response(ax_qm::sigma_matrix(mu, nu, state.interner()), state)
+}
+
+fn handle_sigma_to_gamma_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(
+        ax_qm::sigma_to_gamma_commutator(&expr, state.interner()),
+        state,
+    )
+}
+
+fn handle_gamma_to_sigma_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let expr = expr_from_id(args, 0, "expr", state)?;
+    expr_response(
+        ax_qm::gamma_commutator_to_sigma(&expr, state.interner()),
+        state,
+    )
+}
+
 fn handle_gamma5(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -8192,13 +8685,16 @@ fn handle_compose_channels_qm(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    let error =
-        "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension";
+    let error = crate::diagnostics::qm_diag(
+        ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
+        "compose_channels expects two non-empty Kraus lists of square matrices with matching dimension",
+    )
+    .to_string();
     let left_expr = expr_from_id(args, 0, "left", state)?;
     let right_expr = expr_from_id(args, 1, "right", state)?;
-    let left = expr_to_kraus_list(&left_expr).ok_or_else(|| error.to_string())?;
-    let right = expr_to_kraus_list(&right_expr).ok_or_else(|| error.to_string())?;
-    let result = ax_qm::compose_kraus_channels(&left, &right).map_err(|_| error.to_string())?;
+    let left = expr_to_kraus_list(&left_expr).ok_or_else(|| error.clone())?;
+    let right = expr_to_kraus_list(&right_expr).ok_or_else(|| error.clone())?;
+    let result = ax_qm::compose_kraus_channels(&left, &right).map_err(|_| error.clone())?;
     expr_or_struct_response_named(kraus_list_to_expr(result), "compose_channels", state)
 }
 
@@ -8220,13 +8716,17 @@ fn handle_choi_distance_qm(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
 ) -> Result<serde_json::Value, String> {
-    let error = "choi_distance expects two channels of matching dimension";
+    let error = crate::diagnostics::qm_diag(
+        ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
+        "choi_distance expects two channels of matching dimension",
+    )
+    .to_string();
     let left_expr = expr_from_id(args, 0, "left", state)?;
     let right_expr = expr_from_id(args, 1, "right", state)?;
-    let left = expr_to_kraus_list(&left_expr).ok_or_else(|| error.to_string())?;
-    let right = expr_to_kraus_list(&right_expr).ok_or_else(|| error.to_string())?;
+    let left = expr_to_kraus_list(&left_expr).ok_or_else(|| error.clone())?;
+    let right = expr_to_kraus_list(&right_expr).ok_or_else(|| error.clone())?;
     let distance = ax_qm::choi_frobenius_distance(&left, &right, state.interner())
-        .map_err(|_| error.to_string())?;
+        .map_err(|_| error.clone())?;
     expr_or_struct_response_named(distance, "choi_distance", state)
 }
 
@@ -8316,15 +8816,21 @@ fn handle_apply_channel_qm(
             "apply_channel received an unexpected Choi-recovery error".to_string()
         }
         ax_qm::ChannelError::NonSquareKraus { .. }
-        | ax_qm::ChannelError::KrausDimensionMismatch { .. } => {
-            "apply_channel Kraus operators must be square and share a common dimension".to_string()
-        }
-        ax_qm::ChannelError::CompositionDimensionMismatch { .. } => {
-            "apply_channel received an unexpected channel composition error".to_string()
-        }
-        ax_qm::ChannelError::StateDimensionMismatch { .. } => {
-            "apply_channel state dimension does not match Kraus dimension".to_string()
-        }
+        | ax_qm::ChannelError::KrausDimensionMismatch { .. } => crate::diagnostics::qm_diag(
+            ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
+            "apply_channel Kraus operators must be square and share a common dimension",
+        )
+        .to_string(),
+        ax_qm::ChannelError::CompositionDimensionMismatch { .. } => crate::diagnostics::qm_diag(
+            ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
+            "apply_channel received an unexpected channel composition error",
+        )
+        .to_string(),
+        ax_qm::ChannelError::StateDimensionMismatch { .. } => crate::diagnostics::qm_diag(
+            ax_diagnostics::QuantumDiagnosticKind::InvalidChannel,
+            "apply_channel state dimension does not match Kraus dimension",
+        )
+        .to_string(),
     })?;
     matrix_response(result, state)
 }
@@ -8367,7 +8873,9 @@ fn handle_lindblad_euler_step_qm(
                 ax_ode::QuantumOdeError::ZeroTimeStep => {
                     "lindblad step expects a nonzero dt".to_string()
                 }
-                ax_ode::QuantumOdeError::Lindblad(_) => {
+                ax_ode::QuantumOdeError::Lindblad(_)
+                | ax_ode::QuantumOdeError::Liouville(_)
+                | ax_ode::QuantumOdeError::StateEvolutionDimensionMismatch => {
                     "lindblad step expects square operators with matching dimensions".to_string()
                 }
             }
@@ -8391,7 +8899,9 @@ fn handle_lindblad_rk4_step_qm(
                 ax_ode::QuantumOdeError::ZeroTimeStep => {
                     "lindblad step expects a nonzero dt".to_string()
                 }
-                ax_ode::QuantumOdeError::Lindblad(_) => {
+                ax_ode::QuantumOdeError::Lindblad(_)
+                | ax_ode::QuantumOdeError::Liouville(_)
+                | ax_ode::QuantumOdeError::StateEvolutionDimensionMismatch => {
                     "lindblad step expects square operators with matching dimensions".to_string()
                 }
             }
@@ -8422,8 +8932,39 @@ fn handle_lindblad_steady_state_qm(
                     "lindblad_steady_state system is inconsistent".to_string()
                 }
             }
+    })?;
+    matrix_response(result, state)
+}
+
+fn handle_lindbladian_superoperator_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let jumps_expr = expr_from_id(args, 1, "jumps", state)?;
+    let jump_ops = expr_to_3d(&jumps_expr)
+        .ok_or_else(|| "argument 'jumps' must reference a rank-3 nested list".to_string())?;
+    let result =
+        ax_qm::lindbladian_superoperator(&h, &jump_ops, state.interner()).map_err(|_| {
+            "lindbladian_superoperator expects square operators with matching dimensions"
+                .to_string()
         })?;
     matrix_response(result, state)
+}
+
+fn handle_lindbladian_eigenvalues_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let jumps_expr = expr_from_id(args, 1, "jumps", state)?;
+    let jump_ops = expr_to_3d(&jumps_expr)
+        .ok_or_else(|| "argument 'jumps' must reference a rank-3 nested list".to_string())?;
+    let result =
+        ax_qm::lindbladian_eigenvalues_small(&h, &jump_ops, state.interner()).map_err(|_| {
+            "lindbladian_eigenvalues currently supports only low-dimensional cases".to_string()
+        })?;
+    expr_or_struct_response_named(Expr::List(result), "lindbladian_eigenvalues", state)
 }
 
 fn handle_wedge_forms(
@@ -8833,6 +9374,206 @@ fn handle_hermitian_eigenprojectors_qm(
     )
 }
 
+fn handle_first_order_energy_shift_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h0 = matrix_from_id(args, 0, "H0", state)?;
+    let v = matrix_from_id(args, 1, "V", state)?;
+    let state_index = usize::try_from(int_arg(args, 2, "n")?)
+        .map_err(|_| "argument 'n' must be non-negative".to_string())?;
+    let shift = ax_qm::first_order_energy_shift(&h0, &v, state_index, state.interner()).map_err(
+        |_| {
+            "perturbation-theory helpers expect supported nondegenerate Hermitian H0 and matching-dimension V"
+                .to_string()
+        },
+    )?;
+    expr_response_with_change(
+        &ax_ir::Expr::Call(
+            state
+                .interner_mut()
+                .get_or_intern("first_order_energy_shift"),
+            vec![
+                ax_ir::Expr::Matrix(h0.clone()),
+                ax_ir::Expr::Matrix(v.clone()),
+                ax_ir::Expr::Int((state_index as i64).into()),
+            ],
+        ),
+        shift,
+        "first_order_energy_shift",
+        state,
+    )
+}
+
+fn handle_second_order_energy_shift_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h0 = matrix_from_id(args, 0, "H0", state)?;
+    let v = matrix_from_id(args, 1, "V", state)?;
+    let state_index = usize::try_from(int_arg(args, 2, "n")?)
+        .map_err(|_| "argument 'n' must be non-negative".to_string())?;
+    let shift =
+        ax_qm::second_order_energy_shift(&h0, &v, state_index, state.interner()).map_err(
+            |_| {
+                "perturbation-theory helpers expect supported nondegenerate Hermitian H0 and matching-dimension V"
+                    .to_string()
+            },
+        )?;
+    expr_response_with_change(
+        &ax_ir::Expr::Call(
+            state
+                .interner_mut()
+                .get_or_intern("second_order_energy_shift"),
+            vec![
+                ax_ir::Expr::Matrix(h0.clone()),
+                ax_ir::Expr::Matrix(v.clone()),
+                ax_ir::Expr::Int((state_index as i64).into()),
+            ],
+        ),
+        shift,
+        "second_order_energy_shift",
+        state,
+    )
+}
+
+fn handle_degenerate_effective_perturbation_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h0 = matrix_from_id(args, 0, "H0", state)?;
+    let v = matrix_from_id(args, 1, "V", state)?;
+    let subspace_expr = expr_from_id(args, 2, "subspace", state)?;
+    let subspace = list_from_expr(&subspace_expr)
+        .and_then(|items| {
+            items.into_iter()
+                .map(|item| match item {
+                    ax_ir::Expr::Int(value) => value.to_usize(),
+                    _ => None,
+                })
+                .collect()
+        })
+        .filter(|values: &Vec<usize>| !values.is_empty())
+        .ok_or_else(|| {
+            "degenerate perturbation theory expects a non-empty list of degenerate basis-state indices"
+                .to_string()
+        })?;
+    let effective = ax_qm::degenerate_subspace_effective_perturbation(
+        &h0,
+        &v,
+        &subspace,
+        state.interner(),
+    )
+    .map_err(|err| match err {
+        ax_qm::PerturbationError::SelectedSubspaceNotDegenerate => {
+            "selected subspace is not degenerate in H0".to_string()
+        }
+        _ => {
+            "degenerate perturbation theory expects a non-empty list of degenerate basis-state indices"
+                .to_string()
+        }
+    })?;
+    expr_response_with_change(
+        &ax_ir::Expr::Call(
+            state
+                .interner_mut()
+                .get_or_intern("degenerate_effective_perturbation"),
+            vec![
+                ax_ir::Expr::Matrix(h0.clone()),
+                ax_ir::Expr::Matrix(v.clone()),
+                subspace_expr.clone(),
+            ],
+        ),
+        ax_ir::Expr::Matrix(effective),
+        "degenerate_effective_perturbation",
+        state,
+    )
+}
+
+fn handle_degenerate_first_order_splittings_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h0 = matrix_from_id(args, 0, "H0", state)?;
+    let v = matrix_from_id(args, 1, "V", state)?;
+    let subspace_expr = expr_from_id(args, 2, "subspace", state)?;
+    let subspace = list_from_expr(&subspace_expr)
+        .and_then(|items| {
+            items.into_iter()
+                .map(|item| match item {
+                    ax_ir::Expr::Int(value) => value.to_usize(),
+                    _ => None,
+                })
+                .collect()
+        })
+        .filter(|values: &Vec<usize>| !values.is_empty())
+        .ok_or_else(|| {
+            "degenerate perturbation theory expects a non-empty list of degenerate basis-state indices"
+                .to_string()
+        })?;
+    let splittings =
+        ax_qm::degenerate_first_order_splittings(&h0, &v, &subspace, state.interner()).map_err(
+            |err| match err {
+                ax_qm::PerturbationError::SelectedSubspaceNotDegenerate => {
+                    "selected subspace is not degenerate in H0".to_string()
+                }
+                _ => {
+                    "degenerate perturbation theory expects a non-empty list of degenerate basis-state indices"
+                        .to_string()
+                }
+            },
+        )?;
+    expr_response_with_change(
+        &ax_ir::Expr::Call(
+            state
+                .interner_mut()
+                .get_or_intern("degenerate_first_order_splittings"),
+            vec![
+                ax_ir::Expr::Matrix(h0.clone()),
+                ax_ir::Expr::Matrix(v.clone()),
+                subspace_expr.clone(),
+            ],
+        ),
+        ax_ir::Expr::List(splittings),
+        "degenerate_first_order_splittings",
+        state,
+    )
+}
+
+fn handle_berry_connection_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let psi = expr_from_id(args, 0, "psi", state)?;
+    let parameter = expr_from_id(args, 1, "parameter", state)?;
+    expr_response_with_change(
+        &ax_ir::Expr::Call(
+            state.interner_mut().get_or_intern("berry_connection"),
+            vec![psi.clone(), parameter.clone()],
+        ),
+        ax_qm::berry_connection(psi, parameter, state.interner()),
+        "berry_connection",
+        state,
+    )
+}
+
+fn handle_geometric_phase_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let a = expr_from_id(args, 0, "A", state)?;
+    let parameter = expr_from_id(args, 1, "parameter", state)?;
+    expr_response_with_change(
+        &ax_ir::Expr::Call(
+            state.interner_mut().get_or_intern("geometric_phase"),
+            vec![a.clone(), parameter.clone()],
+        ),
+        ax_qm::geometric_phase(a, parameter, state.interner()),
+        "geometric_phase",
+        state,
+    )
+}
+
 fn handle_tensor_product_linalg(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -8917,6 +9658,49 @@ fn handle_declare_gamma_matrix_meta(
     };
     let prop = ax_ir::TensorProperty::GammaMatrixMeta(metadata);
     attach_compatible_property(state, symbol, prop.clone());
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
+fn handle_declare_gamma_convention(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let metadata = ax_ir::GammaConventionMetadata {
+        signature: parse_gamma_metric_signature_arg(args, 1, "signature")?,
+        clifford: parse_clifford_convention_arg(args, 2, "clifford")?,
+        gamma5: None,
+        epsilon_symbol: None,
+        dimension: Some(positive_gamma_dimension_arg(args, 3, "dimension")?),
+    };
+    let prop = ax_ir::TensorProperty::GammaConventionMeta(metadata.clone());
+    crate::apply_gamma_convention_declaration(state.env_mut(), symbol, metadata);
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
+fn handle_declare_gamma5_convention(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let epsilon_symbol = symbol_arg(args, 4, "epsilon_symbol", state)?;
+    let metadata = ax_ir::GammaConventionMetadata {
+        signature: parse_gamma_metric_signature_arg(args, 1, "signature")?,
+        clifford: parse_clifford_convention_arg(args, 2, "clifford")?,
+        gamma5: Some(parse_gamma5_convention_arg(args, 3, "gamma5_kind")?),
+        epsilon_symbol: Some(epsilon_symbol),
+        dimension: Some(positive_gamma_dimension_arg(args, 5, "dimension")?),
+    };
+    let prop = ax_ir::TensorProperty::GammaConventionMeta(metadata.clone());
+    crate::apply_gamma_convention_declaration(state.env_mut(), symbol, metadata);
     Ok(serde_json::json!({
         "status": "ok",
         "symbol": state.interner().resolve(symbol),
@@ -9067,6 +9851,47 @@ fn handle_declare_quantum_object(
         "symbol": state.interner().resolve(symbol),
         "property": format_tensor_property(&prop, state.interner()),
     }))
+}
+
+fn handle_declare_operator_space(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let symbol = symbol_arg(args, 0, "symbol", state)?;
+    let domain_space = symbol_arg(args, 1, "domain_space", state)?;
+    let codomain_space = symbol_arg(args, 2, "codomain_space", state)?;
+    if hilbert_space_metadata_for_symbol(state, domain_space).is_none()
+        || hilbert_space_metadata_for_symbol(state, codomain_space).is_none()
+    {
+        return Err(
+            "declare_operator_space expects previously declared Hilbert spaces".to_string(),
+        );
+    }
+    let metadata = ax_ir::OperatorSpaceMetadata {
+        domain_space,
+        codomain_space,
+    };
+    let prop = ax_ir::TensorProperty::OperatorSpaceMeta(metadata.clone());
+    crate::apply_operator_space_declaration(state.env_mut(), symbol, metadata);
+    Ok(serde_json::json!({
+        "status": "ok",
+        "symbol": state.interner().resolve(symbol),
+        "property": format_tensor_property(&prop, state.interner()),
+    }))
+}
+
+fn handle_compose_operators_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let left = expr_from_id(args, 0, "left", state)?;
+    let right = expr_from_id(args, 1, "right", state)?;
+    let expr = ax_ir::Expr::Call(
+        state.interner_mut().get_or_intern("compose_operators"),
+        vec![left, right],
+    );
+    crate::propagate_operator_space_metadata(state.env(), &expr, state.interner())?;
+    expr_or_struct_response_named(expr, "compose_operators", state)
 }
 
 fn parse_mode_statistics_arg(
@@ -9499,6 +10324,7 @@ fn handle_set_convention(
             state.env_mut().convention.metric_signature = match value.as_str() {
                 "mostlyplus" | "mostly_plus" => ax_ir::MetricSignature::MostlyPlus,
                 "mostlyminus" | "mostly_minus" => ax_ir::MetricSignature::MostlyMinus,
+                "euclidean" => ax_ir::MetricSignature::Euclidean,
                 _ => return Err(format!("unknown metric_signature '{value}'")),
             };
         }
@@ -11877,6 +12703,31 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("two_spin_half_triplet_states", "Return the explicit two-spin-1/2 triplet states.", ps(vec![]), handle_triplet_states_2spinhalf),
         centry("two_spin_half_singlet_projector", "Return the explicit two-spin-1/2 singlet projector.", ps(vec![]), handle_singlet_projector_2spinhalf),
         centry("two_spin_half_triplet_projector", "Return the explicit two-spin-1/2 triplet projector.", ps(vec![]), handle_triplet_projector_2spinhalf),
+        centry("time_evolution_operator", "Return the constant-Hamiltonian propagator U(t) = exp(-i t H) for supported small Hermitian matrices.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix id."), pdef("t", ParamType::ExprId, true, "Stored time expression id.")]), handle_time_evolution_operator),
+        centry("schrodinger_evolve", "Evolve a pure state vector via psi(t) = U(t) psi0 for supported finite-dimensional Hermitian Hamiltonians.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix id."), pdef("psi0", ParamType::ExprId, true, "Stored initial state-vector expression id."), pdef("t", ParamType::ExprId, true, "Stored time expression id.")]), handle_schrodinger_evolve),
+        centry("heisenberg_evolve", "Evolve an operator via O(t) = U†(t) O0 U(t) for supported finite-dimensional Hermitian Hamiltonians.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix id."), pdef("O0", ParamType::ExprId, true, "Stored initial operator-matrix expression id."), pdef("t", ParamType::ExprId, true, "Stored time expression id.")]), handle_heisenberg_evolve),
+        centry("liouville_rhs", "Return the closed-system density-matrix right-hand side ρ̇ = -i [H, ρ].", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_liouville_rhs),
+        centry("dyson_series", "Return the finite-order symbolic Dyson expansion for a time-dependent Hamiltonian.", ps(vec![pdef("Ht", ParamType::ExprId, true, "Stored time-dependent Hamiltonian expression id."), pdef("order", ParamType::Integer, true, "Nonnegative truncation order.")]), handle_dyson_series),
+        centry("magnus_expansion", "Return the finite-order symbolic Magnus expansion for a time-dependent Hamiltonian.", ps(vec![pdef("Ht", ParamType::ExprId, true, "Stored time-dependent Hamiltonian expression id."), pdef("order", ParamType::Integer, true, "Nonnegative truncation order.")]), handle_magnus_expansion),
+        centry("kubo_response", "Construct the symbolic Kubo linear-response function.", ps(vec![pdef("A", ParamType::ExprId, true, "Stored operator expression id for A."), pdef("B", ParamType::ExprId, true, "Stored operator expression id for B."), pdef("rho0", ParamType::ExprId, true, "Stored reference density operator expression id."), pdef("t", ParamType::ExprId, true, "Stored time expression id.")]), handle_kubo_response_qm),
+        centry("kubo_response_function", "Construct the symbolic Kubo linear-response function.", ps(vec![pdef("A", ParamType::ExprId, true, "Stored operator expression id for A."), pdef("B", ParamType::ExprId, true, "Stored operator expression id for B."), pdef("rho0", ParamType::ExprId, true, "Stored reference density operator expression id."), pdef("t", ParamType::ExprId, true, "Stored time expression id.")]), handle_kubo_response_qm),
+        centry("susceptibility_fourier", "Construct the symbolic Fourier susceptibility integral.", ps(vec![pdef("chi_t", ParamType::ExprId, true, "Stored time-domain response expression id."), pdef("omega", ParamType::ExprId, true, "Stored frequency expression id.")]), handle_susceptibility_fourier_qm),
+        centry("projector_left", "Construct the canonical left chiral projector P_L = (1 - gamma5)/2.", ps(vec![]), handle_projector_left_qm),
+        centry("P_L", "Construct the canonical left chiral projector P_L = (1 - gamma5)/2.", ps(vec![]), handle_projector_left_qm),
+        centry("projector_right", "Construct the canonical right chiral projector P_R = (1 + gamma5)/2.", ps(vec![]), handle_projector_right_qm),
+        centry("P_R", "Construct the canonical right chiral projector P_R = (1 + gamma5)/2.", ps(vec![]), handle_projector_right_qm),
+        centry("simplify_chiral", "Simplify chiral projector algebra and Weyl-spinor projector actions.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_simplify_chiral_qm),
+        centry("simplify_chiral_projectors", "Simplify chiral projector algebra and Weyl-spinor projector actions.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_simplify_chiral_qm),
+        centry("simplify_spinor_bilinears", "Apply metadata-driven 4D Majorana and Weyl bilinear selection rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_simplify_spinor_bilinears_qm),
+        centry("simplify_spinor_bilinear_selection_rules", "Apply metadata-driven 4D Majorana and Weyl bilinear selection rules.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_simplify_spinor_bilinears_qm),
+        centry("insert_explicit_spinor_indices", "Insert explicit spinor indices into supported implicit bilinears and gamma chains.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_insert_explicit_spinor_indices_qm),
+        centry("remove_trivial_spinor_indices", "Collapse unambiguous explicit spinor-index contractions back to implicit form.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_remove_trivial_spinor_indices_qm),
+        centry("sigma", "Construct the canonical sigma(mu,nu) spin-generator basis element.", ps(vec![pdef("mu", ParamType::ExprId, true, "Stored first Lorentz-index expression id."), pdef("nu", ParamType::ExprId, true, "Stored second Lorentz-index expression id.")]), handle_sigma_matrix_qm),
+        centry("sigma_matrix", "Construct the canonical sigma(mu,nu) spin-generator basis element.", ps(vec![pdef("mu", ParamType::ExprId, true, "Stored first Lorentz-index expression id."), pdef("nu", ParamType::ExprId, true, "Stored second Lorentz-index expression id.")]), handle_sigma_matrix_qm),
+        centry("sigma_to_gamma", "Expand sigma(mu,nu) to its gamma commutator definition.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_sigma_to_gamma_qm),
+        centry("sigma_to_gamma_commutator", "Expand sigma(mu,nu) to its gamma commutator definition.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_sigma_to_gamma_qm),
+        centry("gamma_to_sigma", "Convert an exact gamma commutator pattern to the sigma basis.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_gamma_to_sigma_qm),
+        centry("gamma_commutator_to_sigma", "Convert an exact gamma commutator pattern to the sigma basis.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_gamma_to_sigma_qm),
         centry("gamma5", "Return the Dirac gamma_5 matrix.", ps(vec![]), handle_gamma5),
         centry("gamma_trace", "Trace a gamma-matrix chain.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored gamma expression or index list id.")]), handle_gamma_trace_qm),
         centry("gamma5_trace", "Trace a gamma-matrix chain.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored gamma expression or index list id.")]), handle_gamma_trace_qm),
@@ -11940,6 +12791,12 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("renyi2_tripartite_information", "Tripartite Renyi-2 information from a density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored tripartite density-matrix expression id."), pdef("dim_a", ParamType::Integer, true, "Subsystem-A dimension."), pdef("dim_b", ParamType::Integer, true, "Subsystem-B dimension."), pdef("dim_c", ParamType::Integer, true, "Subsystem-C dimension.")]), handle_renyi2_tripartite_information_qm),
         centry("hermitian_eigenvalues", "Exact small Hermitian eigenvalues for supported matrices.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_hermitian_eigenvalues_qm),
         centry("hermitian_eigenprojectors", "Exact small Hermitian spectral projectors for supported nondegenerate matrices.", ps(vec![pdef("matrix", ParamType::ExprId, true, "Stored matrix expression id.")]), handle_hermitian_eigenprojectors_qm),
+        centry("first_order_energy_shift", "Exact nondegenerate stationary perturbation-theory first-order energy shift in the eigenbasis of H0.", ps(vec![pdef("H0", ParamType::ExprId, true, "Stored unperturbed Hamiltonian matrix id."), pdef("V", ParamType::ExprId, true, "Stored perturbation matrix id."), pdef("n", ParamType::Integer, true, "Zero-based unperturbed state index.")]), handle_first_order_energy_shift_qm),
+        centry("second_order_energy_shift", "Exact nondegenerate stationary perturbation-theory second-order energy shift in the eigenbasis of H0.", ps(vec![pdef("H0", ParamType::ExprId, true, "Stored unperturbed Hamiltonian matrix id."), pdef("V", ParamType::ExprId, true, "Stored perturbation matrix id."), pdef("n", ParamType::Integer, true, "Zero-based unperturbed state index.")]), handle_second_order_energy_shift_qm),
+        centry("degenerate_effective_perturbation", "Exact effective perturbation matrix inside a chosen degenerate basis-state subspace of a diagonal H0.", ps(vec![pdef("H0", ParamType::ExprId, true, "Stored unperturbed Hamiltonian matrix id."), pdef("V", ParamType::ExprId, true, "Stored perturbation matrix id."), pdef("subspace", ParamType::ExprId, true, "Stored non-empty list of degenerate basis-state indices.")]), handle_degenerate_effective_perturbation_qm),
+        centry("degenerate_first_order_splittings", "Exact first-order splittings from diagonalizing the effective perturbation inside a chosen degenerate basis-state subspace.", ps(vec![pdef("H0", ParamType::ExprId, true, "Stored unperturbed Hamiltonian matrix id."), pdef("V", ParamType::ExprId, true, "Stored perturbation matrix id."), pdef("subspace", ParamType::ExprId, true, "Stored non-empty list of degenerate basis-state indices.")]), handle_degenerate_first_order_splittings_qm),
+        centry("berry_connection", "Construct the symbolic Berry-connection one-form component.", ps(vec![pdef("psi", ParamType::ExprId, true, "Stored state expression id."), pdef("parameter", ParamType::ExprId, true, "Stored parameter expression id.")]), handle_berry_connection_qm),
+        centry("geometric_phase", "Construct the symbolic geometric phase as a contour-style integral.", ps(vec![pdef("A", ParamType::ExprId, true, "Stored Berry-connection or line-integrand expression id."), pdef("parameter", ParamType::ExprId, true, "Stored parameter expression id.")]), handle_geometric_phase_qm),
         centry("bloch_vector", "Bloch-vector components for a 2x2 density matrix.", ps(vec![pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id.")]), handle_bloch_vector_qm),
         centry("qubit_density_from_bloch", "Qubit density matrix from a Bloch vector.", ps(vec![pdef("r", ParamType::ExprId, true, "Stored length-3 list expression id.")]), handle_qubit_density_from_bloch_qm),
         centry("post_measurement_state", "Normalized post-measurement state for an outcome projector.", ps(vec![pdef("projector", ParamType::ExprId, true, "Stored projector matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("outcome_index", ParamType::Integer, true, "Outcome label used for diagnostics.")]), handle_post_measurement_state_qm),
@@ -11962,6 +12819,8 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("lindblad_euler_step", "Take one explicit Euler step for finite-dimensional Lindblad evolution.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("dt", ParamType::ExprId, true, "Stored scalar timestep expression id.")]), handle_lindblad_euler_step_qm),
         centry("lindblad_rk4_step", "Take one classical RK4 step for finite-dimensional Lindblad evolution.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("rho", ParamType::ExprId, true, "Stored density-matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("dt", ParamType::ExprId, true, "Stored scalar timestep expression id.")]), handle_lindblad_rk4_step_qm),
         centry("lindblad_steady_state", "Solve for a finite-dimensional Lindblad steady state.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindblad_steady_state_qm),
+        centry("lindbladian_superoperator", "Construct the exact Lindbladian superoperator.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindbladian_superoperator_qm),
+        centry("lindbladian_eigenvalues", "Return supported low-dimensional Lindbladian eigenvalues.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindbladian_eigenvalues_qm),
         centry("normal_order", "Normal-order creation and annihilation operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_normal_order_qm),
         centry("time_order", "Wrap an expression in the symbolic time-ordering operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_time_order_qm),
         centry("time_ordered", "Wrap an expression in the symbolic time-ordering operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_time_order_qm),
@@ -12080,6 +12939,20 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("family", ParamType::Optional(Box::new(ParamType::Symbol)), false, "Optional spinor index family."),
             pdef("has_gamma5", ParamType::Bool, true, "Whether the family includes gamma5."),
         ]), handle_declare_gamma_matrix_meta),
+        centry("declare_gamma_convention", "Attach structured gamma-matrix convention metadata.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target symbol."),
+            pdef("signature", ParamType::StringEnum(&["mostly_plus", "mostly_minus", "euclidean"]), true, "Metric signature convention."),
+            pdef("clifford", ParamType::StringEnum(&["plus_two_g", "minus_two_g"]), true, "Clifford relation sign convention."),
+            pdef("dimension", ParamType::Integer, true, "Positive Clifford dimension."),
+        ]), handle_declare_gamma_convention),
+        centry("declare_gamma5_convention", "Attach structured gamma5 convention metadata.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target symbol."),
+            pdef("signature", ParamType::StringEnum(&["mostly_plus", "mostly_minus", "euclidean"]), true, "Metric signature convention."),
+            pdef("clifford", ParamType::StringEnum(&["plus_two_g", "minus_two_g"]), true, "Clifford relation sign convention."),
+            pdef("gamma5_kind", ParamType::StringEnum(&["levi_civita", "abstract_chiral"]), true, "Gamma5 convention kind."),
+            pdef("epsilon_symbol", ParamType::Symbol, true, "Levi-Civita epsilon symbol associated with gamma5."),
+            pdef("dimension", ParamType::Integer, true, "Positive Clifford dimension."),
+        ]), handle_declare_gamma5_convention),
         centry("declare_dirac_bar_meta", "Attach structured Dirac-bar metadata and the legacy DiracBar marker.", ps(vec![
             pdef("symbol", ParamType::Symbol, true, "Target symbol."),
             pdef("gamma_symbol", ParamType::Optional(Box::new(ParamType::Symbol)), false, "Optional gamma symbol family."),
@@ -12135,6 +13008,11 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("kind", ParamType::StringEnum(&["ket", "bra", "operator", "density_operator", "projector", "observable", "channel"]), true, "Quantum-object kind."),
             pdef("space_symbol", ParamType::Symbol, true, "Previously declared Hilbert-space symbol."),
         ]), handle_declare_quantum_object),
+        centry("declare_operator_space", "Attach structured operator domain/codomain metadata from previously declared Hilbert spaces.", ps(vec![
+            pdef("symbol", ParamType::Symbol, true, "Target operator symbol."),
+            pdef("domain_space", ParamType::Symbol, true, "Previously declared domain Hilbert-space symbol."),
+            pdef("codomain_space", ParamType::Symbol, true, "Previously declared codomain Hilbert-space symbol."),
+        ]), handle_declare_operator_space),
         centry("riemann_tensor", "Declare a symbol as an abstract Riemann tensor.", ps(vec![pdef("symbol", ParamType::Symbol, true, "Target tensor symbol.")]), handle_riemann_tensor_declaration),
         centry("declare_indices", "Declare an index family.", ps(vec![pdef("family", ParamType::Symbol, true, "Family name."), pdef("indices", ParamType::SymbolList, true, "Index symbols."), pdef("dimension", ParamType::Integer, false, "Optional family dimension.")]), handle_declare_indices),
         centry("declare_coordinates", "Declare active coordinate symbols.", ps(vec![pdef("coordinates", ParamType::SymbolList, true, "Coordinate symbols.")]), handle_declare_coordinates),
@@ -12145,6 +13023,10 @@ pub fn callable_entries() -> Vec<CallableEntry> {
             pdef("kind", ParamType::StringEnum(&["creation", "annihilation"]), true, "Operator kind."),
             pdef("statistics", ParamType::Optional(Box::new(ParamType::StringEnum(&["bosonic", "fermionic"]))), false, "Optional operator statistics; defaults to bosonic."),
         ]), handle_declare_operator),
+        centry("compose_operators", "Build a symbolic operator composition and validate compatible codomain/domain metadata when available.", ps(vec![
+            pdef("left", ParamType::ExprId, true, "Stored outer operator expression id."),
+            pdef("right", ParamType::ExprId, true, "Stored inner operator expression id."),
+        ]), handle_compose_operators_qm),
         centry("declare_contraction", "Declare a Wick contraction value for an ordered operator-mode pair.", ps(vec![
             pdef("lhs", ParamType::Symbol, true, "Left operator mode symbol."),
             pdef("rhs", ParamType::Symbol, true, "Right operator mode symbol."),

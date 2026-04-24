@@ -248,6 +248,91 @@ fn run_command_executes_file() {
 }
 
 #[test]
+fn run_reports_normalized_invalid_subsystem_diagnostic() {
+    let dir = unique_temp_dir("qm-invalid-subsystem");
+    let src = dir.join("bad.ax");
+    write(&src, "A@Q;");
+
+    let out = bin()
+        .args(["run", src.to_string_lossy().as_ref()])
+        .output()
+        .expect("run invalid subsystem");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(
+            "invalid quantum subsystem: expected a previously declared Hilbert space symbol"
+        ),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn run_reports_normalized_compose_operator_space_mismatch() {
+    let dir = unique_temp_dir("qm-space-mismatch");
+    let src = dir.join("bad.ax");
+    write(
+        &src,
+        "declare_hilbert_space(Hin, 2);
+         declare_hilbert_space(Hmid, 2);
+         declare_hilbert_space(Hother, 2);
+         declare_operator_space(A, Hin, Hmid);
+         declare_operator_space(B, Hother, Hother);
+         compose_operators(A, B);",
+    );
+
+    let out = bin()
+        .args(["run", src.to_string_lossy().as_ref()])
+        .output()
+        .expect("run compose_operators mismatch");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout)
+            .contains("quantum space mismatch: codomain(right) != domain(left)"),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn run_reports_normalized_invalid_channel_diagnostic() {
+    let dir = unique_temp_dir("qm-invalid-channel");
+    let src = dir.join("bad.ax");
+    write(
+        &src,
+        "compose_channels(identity_channel(2), identity_channel(3));",
+    );
+
+    let out = bin()
+        .args(["run", src.to_string_lossy().as_ref()])
+        .output()
+        .expect("run invalid channel");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(
+            "invalid quantum channel: compose_channels expects two non-empty Kraus lists of square matrices with matching dimension"
+        ),
+        "stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
 fn tableau_render_with_slots_matches_exact_stdout() {
     let out = bin()
         .args(["tableau", "render", "--shape", "2,1", "--slots", "0,1,2"])
@@ -319,6 +404,99 @@ fn run_qm_tutorial_executes_end_to_end() {
     assert!(stdout.contains("[[2i, 0], [0, -2i]]"), "stdout:\n{stdout}");
     assert!(stdout.contains("[[1, 0], [0, 0]]"), "stdout:\n{stdout}");
     assert!(stdout.contains("\n1\n"), "stdout:\n{stdout}");
+}
+
+#[test]
+fn qm_entropy_subcommand_reports_log_two_for_maximally_mixed_qubit() {
+    let out = bin()
+        .args(["qm", "entropy", "[[1/2,0],[0,1/2]]"])
+        .output()
+        .expect("run qm entropy");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("log(2)") || stdout.contains("-log(1/2)") || stdout.contains("-1*log(1/2)"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn qm_partial_trace_subcommand_reduces_bell_state() {
+    let out = bin()
+        .args([
+            "qm",
+            "partial-trace",
+            "density([1/sqrt(2), 0, 0, 1/sqrt(2)])",
+            "--dims",
+            "2,2",
+            "--factor",
+            "1",
+        ])
+        .output()
+        .expect("run qm partial-trace");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1/2"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("[[1/2, 0], [0, 1/2]]") || stdout.contains("[[1/2,0],[0,1/2]]"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn qm_bloch_subcommand_reports_001_for_zero_state() {
+    let out = bin()
+        .args(["qm", "bloch", "[[1,0],[0,0]]"])
+        .output()
+        .expect("run qm bloch");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("0"), "stdout:\n{stdout}");
+    assert!(stdout.contains("1"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("[0, 0, 1]") || stdout.contains("[0,0,1]"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn qm_steady_state_subcommand_reports_ground_state_for_amplitude_damping() {
+    let out = bin()
+        .args([
+            "qm",
+            "steady-state",
+            "[[0,0],[0,0]]",
+            "--jumps",
+            "[[0,1],[0,0]]",
+        ])
+        .output()
+        .expect("run qm steady-state");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[[1, 0], [0, 0]]") || stdout.contains("[[1,0],[0,0]]"),
+        "stdout:\n{stdout}"
+    );
 }
 
 #[test]
@@ -417,9 +595,13 @@ fn run_qft_examples_execute_end_to_end() {
 #[test]
 fn run_qft_std_modules_execute_end_to_end() {
     for rel in [
+        "std/qft/bilinears.ax",
         "std/qft/brst.ax",
+        "std/qft/chiral_projectors.ax",
         "std/qft/dirac.ax",
+        "std/qft/fierz.ax",
         "std/qft/gamma.ax",
+        "std/qft/gamma_trace.ax",
         "std/qft/normal_ordering.ax",
         "std/qft/scalar_field.ax",
         "std/qft/spinor_helicity.ax",
@@ -438,6 +620,11 @@ fn run_qft_std_modules_execute_end_to_end() {
         );
         let stdout = String::from_utf8_lossy(&out.stdout);
         match rel {
+            "std/qft/bilinears.ax" => {
+                assert!(stdout.contains("bar(ψ)"), "stdout:\n{stdout}");
+                assert!(stdout.contains("gamma(μ)"), "stdout:\n{stdout}");
+                assert!(stdout.contains("\n0\n"), "stdout:\n{stdout}");
+            }
             "std/qft/brst.ax" => {
                 assert!(
                     stdout.contains("initialized Yang-Mills BRST setup"),
@@ -446,14 +633,30 @@ fn run_qft_std_modules_execute_end_to_end() {
                 assert!(stdout.contains("partial(c)"), "stdout:\n{stdout}");
                 assert!(stdout.contains("\ntrue\n"), "stdout:\n{stdout}");
             }
+            "std/qft/chiral_projectors.ax" => {
+                assert!(stdout.contains("xi_l"), "stdout:\n{stdout}");
+                assert!(stdout.contains("\n0\n"), "stdout:\n{stdout}");
+                assert!(stdout.contains("gamma(μ)"), "stdout:\n{stdout}");
+            }
             "std/qft/dirac.ax" => {
                 assert!(stdout.contains("bar(ψ)"), "stdout:\n{stdout}");
+                assert!(stdout.contains("gamma(μ)"), "stdout:\n{stdout}");
+                assert!(!stdout.contains("fierz("), "stdout:\n{stdout}");
+            }
+            "std/qft/fierz.ax" => {
+                assert!(stdout.contains("psi1"), "stdout:\n{stdout}");
+                assert!(stdout.contains("sigma("), "stdout:\n{stdout}");
                 assert!(stdout.contains("gamma(μ)"), "stdout:\n{stdout}");
                 assert!(!stdout.contains("fierz("), "stdout:\n{stdout}");
             }
             "std/qft/gamma.ax" => {
                 assert!(stdout.contains("gamma(μ, ν)"), "stdout:\n{stdout}");
                 assert!(stdout.contains("4g^μ^ν"), "stdout:\n{stdout}");
+            }
+            "std/qft/gamma_trace.ax" => {
+                assert!(stdout.contains("4η^μ^ν"), "stdout:\n{stdout}");
+                assert!(stdout.contains("-4ε^μ^ν^ρ^σi"), "stdout:\n{stdout}");
+                assert!(stdout.contains("gamma(μ, ν)"), "stdout:\n{stdout}");
             }
             "std/qft/normal_ordering.ax" => {
                 assert!(
@@ -763,6 +966,60 @@ fn run_qm_harmonic_oscillator_module_exposes_abstract_oscillator_algebra() {
     );
     assert!(
         stdout.contains("3/2hbarωnumber_state(ho, 1)"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn run_qm_info_module_executes_end_to_end() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/qm/info.ax").to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run qm info module");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("log(2)") || stdout.contains("½"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("1/2") || stdout.contains("½"),
+        "stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn run_qft_spinors_module_executes_end_to_end() {
+    let out = bin()
+        .current_dir(repo_root())
+        .args([
+            "run",
+            repo_file("std/qft/spinors.ax").to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("run qft spinors module");
+
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("gamma(μ)") || stdout.contains("gamma(mu)"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ε") || stdout.contains("eps"),
         "stdout:\n{stdout}"
     );
 }
