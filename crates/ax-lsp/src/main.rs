@@ -9,7 +9,7 @@ use ax_eval::{
 use ax_ir::{Expr, Interner, TensorProperty};
 use constants::{
     convention_values, greek_to_unicode, property_documentation, qm_snippet_documentation,
-    CPT_CALLABLE_DOCS, GREEK_LETTERS, KEYWORDS, PROPERTY_NAMES, QM_SNIPPETS,
+    CPT_CALLABLE_DOCS, GREEK_LETTERS, KEYWORDS, PROPERTY_NAMES, QFT_SNIPPETS, QM_SNIPPETS,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -365,6 +365,20 @@ fn publish_diagnostics(state: &LspState, uri: &str) -> Value {
         }));
     }
 
+    for diag in lsp_heuristic_diagnostics(state, text) {
+        let (start_line, start_col) = offset_to_position(text, diag.span.start);
+        let (end_line, end_col) = offset_to_position(text, diag.span.end);
+        diagnostics.push(json!({
+            "range": {
+                "start": { "line": start_line, "character": start_col },
+                "end": { "line": end_line, "character": end_col }
+            },
+            "severity": 1,
+            "source": "axioma-lsp",
+            "message": diag.message
+        }));
+    }
+
     json!({
         "jsonrpc": "2.0",
         "method": "textDocument/publishDiagnostics",
@@ -496,6 +510,200 @@ fn syntax_diagnostics(text: &str) -> Vec<ax_syntax::Diagnostic> {
     diags
 }
 
+#[derive(Debug, Clone)]
+struct HeuristicDiagnostic {
+    span: Range<usize>,
+    message: &'static str,
+}
+
+fn lsp_heuristic_diagnostics(state: &LspState, text: &str) -> Vec<HeuristicDiagnostic> {
+    let mut diagnostics = Vec::new();
+    diagnostics.extend(invalid_on_subsystem_diagnostics(state, text));
+    diagnostics.extend(incompatible_compose_operator_diagnostics(state, text));
+    diagnostics
+}
+
+fn invalid_on_subsystem_diagnostics(state: &LspState, text: &str) -> Vec<HeuristicDiagnostic> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] != b'@' {
+            i += 1;
+            continue;
+        }
+
+        let mut rhs_start = i + 1;
+        while rhs_start < bytes.len() && bytes[rhs_start].is_ascii_whitespace() {
+            rhs_start += 1;
+        }
+        if rhs_start >= bytes.len() || !text[rhs_start..].chars().next().is_some_and(is_ident_char)
+        {
+            i += 1;
+            continue;
+        }
+
+        let mut rhs_end = rhs_start;
+        while rhs_end < bytes.len() && text[rhs_end..].chars().next().is_some_and(is_ident_char) {
+            rhs_end += text[rhs_end..].chars().next().unwrap().len_utf8();
+        }
+
+        let rhs = &text[rhs_start..rhs_end];
+        let sym = state.interner.get_or_intern(rhs);
+        let is_hilbert = state
+            .env
+            .property_store
+            .get_all(sym)
+            .into_iter()
+            .any(|prop| matches!(prop, TensorProperty::HilbertSpaceMeta(_)));
+        if !is_hilbert {
+            out.push(HeuristicDiagnostic {
+                span: rhs_start..rhs_end,
+                message: "on_subsystem expects a previously declared Hilbert space symbol",
+            });
+        }
+        i = rhs_end;
+    }
+
+    out
+}
+
+fn incompatible_compose_operator_diagnostics(
+    state: &LspState,
+    text: &str,
+) -> Vec<HeuristicDiagnostic> {
+    let mut out = Vec::new();
+    let needle = "compose_operators(";
+    let mut search_start = 0usize;
+
+    while let Some(relative_start) = text[search_start..].find(needle) {
+        let start = search_start + relative_start;
+        let args_start = start + needle.len();
+        if let Some((left, right, span, next_offset)) =
+            parse_simple_binary_call_args(text, args_start)
+        {
+            let Some(left_meta) = operator_space_metadata_of_name(state, left) else {
+                search_start = next_offset;
+                continue;
+            };
+            let Some(right_meta) = operator_space_metadata_of_name(state, right) else {
+                search_start = next_offset;
+                continue;
+            };
+
+            if right_meta.codomain_space != left_meta.domain_space {
+                out.push(HeuristicDiagnostic {
+                    span,
+                    message: "compose_operators requires codomain(right) = domain(left)",
+                });
+            }
+            search_start = next_offset;
+        } else {
+            search_start = start + needle.len();
+        }
+    }
+
+    out
+}
+
+fn parse_simple_binary_call_args<'a>(
+    text: &'a str,
+    mut offset: usize,
+) -> Option<(&'a str, &'a str, Range<usize>, usize)> {
+    while offset < text.len()
+        && text[offset..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+    {
+        offset += text[offset..].chars().next()?.len_utf8();
+    }
+    let left_start = offset;
+    while offset < text.len() && text[offset..].chars().next().is_some_and(is_ident_char) {
+        offset += text[offset..].chars().next()?.len_utf8();
+    }
+    let left = text.get(left_start..offset)?;
+    if left.is_empty() {
+        return None;
+    }
+
+    while offset < text.len()
+        && text[offset..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+    {
+        offset += text[offset..].chars().next()?.len_utf8();
+    }
+    if text[offset..].chars().next()? != ',' {
+        return None;
+    }
+    offset += 1;
+
+    while offset < text.len()
+        && text[offset..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+    {
+        offset += text[offset..].chars().next()?.len_utf8();
+    }
+    let right_start = offset;
+    while offset < text.len() && text[offset..].chars().next().is_some_and(is_ident_char) {
+        offset += text[offset..].chars().next()?.len_utf8();
+    }
+    let right = text.get(right_start..offset)?;
+    if right.is_empty() {
+        return None;
+    }
+
+    while offset < text.len()
+        && text[offset..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+    {
+        offset += text[offset..].chars().next()?.len_utf8();
+    }
+    if text[offset..].chars().next()? != ')' {
+        return None;
+    }
+
+    Some((left, right, left_start..offset + 1, offset + 1))
+}
+
+fn operator_space_metadata_of_name(
+    state: &LspState,
+    name: &str,
+) -> Option<ax_ir::OperatorSpaceMetadata> {
+    let sym = state.interner.get_or_intern(name);
+    state
+        .env
+        .property_store
+        .get_all(sym)
+        .into_iter()
+        .find_map(|prop| match prop {
+            TensorProperty::OperatorSpaceMeta(metadata) => Some(metadata.clone()),
+            TensorProperty::QuantumObjectMeta(metadata)
+                if matches!(
+                    metadata.kind,
+                    ax_ir::QuantumObjectKind::Operator
+                        | ax_ir::QuantumObjectKind::DensityOperator
+                        | ax_ir::QuantumObjectKind::Projector
+                        | ax_ir::QuantumObjectKind::Observable
+                        | ax_ir::QuantumObjectKind::Channel
+                ) =>
+            {
+                Some(ax_ir::OperatorSpaceMetadata {
+                    domain_space: metadata.space_symbol,
+                    codomain_space: metadata.space_symbol,
+                })
+            }
+            _ => None,
+        })
+}
+
 fn tableau_hover_content(text: &str, offset: usize) -> Option<String> {
     let (root, _diags) = ax_syntax::parser::parse_file(text);
     let tableau = ax_syntax::tableau_symmetry_expr_at_offset(&root, offset)?;
@@ -584,6 +792,17 @@ fn handle_completion(state: &LspState, params: &Value) -> Option<Value> {
                 "label": name,
                 "kind": 15,
                 "detail": "qm snippet",
+                "documentation": { "kind": "markdown", "value": documentation },
+                "insertText": snippet,
+                "insertTextFormat": 2
+            }));
+        }
+
+        for &(name, snippet, documentation) in QFT_SNIPPETS {
+            items.push(json!({
+                "label": name,
+                "kind": 15,
+                "detail": "qft snippet",
                 "documentation": { "kind": "markdown", "value": documentation },
                 "insertText": snippet,
                 "insertTextFormat": 2
@@ -1244,6 +1463,33 @@ mod tests {
     }
 
     #[test]
+    fn completion_includes_qft_surface_snippets() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "".into());
+        let response = handle_completion(&state, &completion_params("test.ax", 0, 0)).unwrap();
+        let items = response.as_array().unwrap();
+
+        let labels = items
+            .iter()
+            .filter_map(|item| item.get("label").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"commutator"));
+        assert!(labels.contains(&"anticommutator"));
+        assert!(labels.contains(&"normal_order"));
+        assert!(labels.contains(&"subsystem_label"));
+        assert!(labels.contains(&"compose_operators"));
+
+        assert!(items.iter().any(|item| {
+            item.get("label").and_then(Value::as_str) == Some("commutator")
+                && item.get("detail").and_then(Value::as_str) == Some("qft snippet")
+        }));
+        assert!(items.iter().any(|item| {
+            item.get("label").and_then(Value::as_str) == Some("normal_order")
+                && item.get("detail").and_then(Value::as_str) == Some("qm snippet")
+        }));
+    }
+
+    #[test]
     fn hover_docs_include_frw_background_spec() {
         let mut state = LspState::new();
         state.upsert_document(
@@ -1271,6 +1517,15 @@ mod tests {
         let response = handle_hover(&state, &hover_params("test.ax", 0, 3)).unwrap();
         let value = response["contents"]["value"].as_str().unwrap();
         assert!(value.contains("Adjoint / Hermitian-conjugate syntax."));
+    }
+
+    #[test]
+    fn hover_docs_include_compose_operators() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "compose_operators".into());
+        let response = handle_hover(&state, &hover_params("test.ax", 0, 3)).unwrap();
+        let value = response["contents"]["value"].as_str().unwrap();
+        assert!(value.contains("Type-aware operator composition."));
     }
 
     #[test]
@@ -1334,5 +1589,46 @@ mod tests {
                 "slots=[1, 2]"
             )
         );
+    }
+
+    #[test]
+    fn diagnostic_reports_invalid_on_subsystem_space() {
+        let mut state = LspState::new();
+        state.upsert_document("test.ax".into(), "A@Qbad;".into());
+        let response = publish_diagnostics(&state, "test.ax");
+        let messages = response["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|diag| diag.get("message").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(
+            messages.contains(&"on_subsystem expects a previously declared Hilbert space symbol")
+        );
+    }
+
+    #[test]
+    fn diagnostic_reports_incompatible_compose_operators() {
+        let mut state = LspState::new();
+        state.upsert_document(
+            "test.ax".into(),
+            concat!(
+                "declare_hilbert_space(HA, 2);\n",
+                "declare_hilbert_space(HB, 2);\n",
+                "declare_hilbert_space(HC, 2);\n",
+                "declare_operator_space(A, HA, HB);\n",
+                "declare_operator_space(B, HC, HC);\n",
+                "compose_operators(A, B);\n"
+            )
+            .into(),
+        );
+        let response = publish_diagnostics(&state, "test.ax");
+        let messages = response["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|diag| diag.get("message").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(messages.contains(&"compose_operators requires codomain(right) = domain(left)"));
     }
 }

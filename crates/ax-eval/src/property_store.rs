@@ -1,5 +1,6 @@
 use ax_ir::{
-    DiracBarMetadata, Expr, GammaMatrixMetadata, HilbertSpaceMetadata, Index, IndexFamily,
+    DiracBarMetadata, Expr, FockSpaceMetadata, GammaConventionMetadata, GammaMatrixMetadata,
+    HilbertSpaceMetadata, Index, IndexFamily, ModeMetadata, ModeStatistics, OperatorSpaceMetadata,
     QuantumObjectKind, QuantumObjectMetadata, SpinorClass, SpinorMetadata, SymmetrySource,
     TableauAttachment, TensorProperty, TensorSymmetry, TraceSpaceMetadata, Variance,
 };
@@ -103,6 +104,14 @@ impl PropertyStore {
         self.declare_simple_with_compatibility(name, TensorProperty::GammaMatrixMeta(metadata));
     }
 
+    pub fn declare_gamma_convention_meta(
+        &mut self,
+        name: lasso::Spur,
+        metadata: GammaConventionMetadata,
+    ) {
+        self.declare_simple(name, TensorProperty::GammaConventionMeta(metadata));
+    }
+
     pub fn declare_dirac_bar_meta(&mut self, name: lasso::Spur, metadata: DiracBarMetadata) {
         self.declare_simple_with_compatibility(name, TensorProperty::DiracBarMeta(metadata));
     }
@@ -114,6 +123,11 @@ impl PropertyStore {
     /// Attach structured Hilbert-space metadata to a symbol.
     pub fn declare_hilbert_space(&mut self, name: lasso::Spur, metadata: HilbertSpaceMetadata) {
         self.declare_simple(name, TensorProperty::HilbertSpaceMeta(metadata));
+    }
+
+    /// Attach structured Fock-space metadata to a symbol.
+    pub fn declare_fock_space(&mut self, name: lasso::Spur, metadata: FockSpaceMetadata) {
+        self.declare_simple(name, TensorProperty::FockSpaceMeta(metadata));
     }
 
     /// Attach structured quantum-object metadata to a symbol and add compatible legacy markers.
@@ -129,6 +143,16 @@ impl PropertyStore {
         ) {
             self.declare_simple(name, TensorProperty::NonCommuting);
         }
+    }
+
+    /// Attach structured operator-domain metadata to a symbol.
+    pub fn declare_operator_space(&mut self, name: lasso::Spur, metadata: OperatorSpaceMetadata) {
+        self.declare_simple(name, TensorProperty::OperatorSpaceMeta(metadata));
+    }
+
+    /// Attach structured mode metadata to a symbol and add compatible legacy commutation markers.
+    pub fn declare_mode(&mut self, name: lasso::Spur, metadata: ModeMetadata) {
+        self.declare_simple_with_compatibility(name, TensorProperty::ModeMeta(metadata));
     }
 
     pub fn add_inheritance(&mut self, rule: InheritanceRule) {
@@ -525,6 +549,12 @@ pub fn expand_compatible_properties(property: TensorProperty) -> Vec<TensorPrope
         }
         TensorProperty::DiracBarMeta(_) => {
             properties.push(TensorProperty::DiracBar);
+        }
+        TensorProperty::ModeMeta(ModeMetadata { statistics, .. }) => {
+            properties.push(TensorProperty::NonCommuting);
+            if matches!(statistics, ModeStatistics::Fermionic) {
+                properties.push(TensorProperty::AntiCommuting);
+            }
         }
         _ => {}
     }

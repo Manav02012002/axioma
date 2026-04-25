@@ -166,6 +166,34 @@ pub const QM_SNIPPETS: &[(&str, &str, &str)] = &[
         "${1:A} ⊗ ${2:B}",
         "Tensor-product syntax.",
     ),
+    (
+        "normal_order",
+        ":${1:expr}:",
+        "Normal-order delimiter syntax.",
+    ),
+    (
+        "subsystem_label",
+        "${1:A}@${2:Q}",
+        "Subsystem-labeled operator syntax.",
+    ),
+    (
+        "compose_operators",
+        "compose_operators(${1:A}, ${2:B})",
+        "Type-aware operator composition.",
+    ),
+];
+
+pub const QFT_SNIPPETS: &[(&str, &str, &str)] = &[
+    (
+        "commutator",
+        "[${1:A}, ${2:B}]",
+        "Native commutator syntax.",
+    ),
+    (
+        "anticommutator",
+        "{${1:A}, ${2:B}}",
+        "Native anticommutator syntax.",
+    ),
 ];
 
 pub fn greek_to_unicode(name: &str) -> Option<&'static str> {
@@ -178,6 +206,11 @@ pub fn qm_snippet_documentation(name: &str) -> Option<&'static str> {
     QM_SNIPPETS
         .iter()
         .find_map(|(entry, _, documentation)| (*entry == name).then_some(*documentation))
+        .or_else(|| {
+            QFT_SNIPPETS
+                .iter()
+                .find_map(|(entry, _, documentation)| (*entry == name).then_some(*documentation))
+        })
 }
 
 pub fn property_documentation(name: &str) -> &'static str {

@@ -12,6 +12,10 @@ pub enum QuantumOdeError {
     ZeroTimeStep,
     #[error(transparent)]
     Lindblad(#[from] ax_qm::LindbladError),
+    #[error(transparent)]
+    Liouville(#[from] ax_qm::LiouvilleError),
+    #[error("state evolution dimension mismatch")]
+    StateEvolutionDimensionMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1208,6 +1212,46 @@ fn rational_expr(numer: i64, denom: i64) -> Expr {
     Expr::Rational(BigRational::new(numer.into(), denom.into()))
 }
 
+fn imag_unit() -> Expr {
+    Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()))
+}
+
+fn matrix_shape(matrix: &[Vec<Expr>]) -> Option<(usize, usize)> {
+    let rows = matrix.len();
+    let cols = matrix.first().map(|row| row.len()).unwrap_or(0);
+    matrix
+        .iter()
+        .all(|row| row.len() == cols)
+        .then_some((rows, cols))
+}
+
+fn vector_add(lhs: &[Expr], rhs: &[Expr]) -> Vec<Expr> {
+    lhs.iter()
+        .zip(rhs.iter())
+        .map(|(lhs_entry, rhs_entry)| Expr::add(vec![lhs_entry.clone(), rhs_entry.clone()]))
+        .collect()
+}
+
+fn vector_scale(scale: &Expr, vec: &[Expr]) -> Vec<Expr> {
+    vec.iter()
+        .map(|entry| Expr::mul(vec![scale.clone(), entry.clone()]))
+        .collect()
+}
+
+fn schrodinger_rhs(h: &[Vec<Expr>], psi: &[Expr]) -> Result<Vec<Expr>, QuantumOdeError> {
+    let Some((rows, cols)) = matrix_shape(h) else {
+        return Err(QuantumOdeError::StateEvolutionDimensionMismatch);
+    };
+    if rows != cols || psi.len() != cols {
+        return Err(QuantumOdeError::StateEvolutionDimensionMismatch);
+    }
+
+    Ok(vector_scale(
+        &Expr::neg(imag_unit()),
+        &ax_qm::matrix_vector_mul(h, psi),
+    ))
+}
+
 /// Add two symbolic matrices entrywise.
 pub fn matrix_add(lhs: &[Vec<Expr>], rhs: &[Vec<Expr>]) -> Vec<Vec<Expr>> {
     lhs.iter()
@@ -1271,6 +1315,102 @@ pub fn lindblad_rk4_step(
     let k3 = ax_qm::lindblad_rhs(h, &rho_k3, jump_ops, interner)?;
     let rho_k4 = matrix_add(rho, &matrix_scale(dt, &k3));
     let k4 = ax_qm::lindblad_rhs(h, &rho_k4, jump_ops, interner)?;
+
+    let k2_twice = matrix_scale(&two, &k2);
+    let k3_twice = matrix_scale(&two, &k3);
+    let sum12 = matrix_add(&k1, &k2_twice);
+    let sum123 = matrix_add(&sum12, &k3_twice);
+    let weighted_sum = matrix_add(&sum123, &k4);
+
+    Ok(matrix_add(rho, &matrix_scale(&sixth_dt, &weighted_sum)))
+}
+
+/// Take one explicit Euler step for the finite-dimensional Schrödinger equation
+/// `dψ/dt = -i H ψ`.
+pub fn schrodinger_euler_step(
+    h: &[Vec<Expr>],
+    psi: &[Expr],
+    dt: &Expr,
+    _interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, QuantumOdeError> {
+    if is_zero_expr(dt) {
+        return Err(QuantumOdeError::ZeroTimeStep);
+    }
+    let rhs = schrodinger_rhs(h, psi)?;
+    Ok(vector_add(psi, &vector_scale(dt, &rhs)))
+}
+
+/// Take one classical RK4 step for the finite-dimensional Schrödinger equation
+/// `dψ/dt = -i H ψ`.
+pub fn schrodinger_rk4_step(
+    h: &[Vec<Expr>],
+    psi: &[Expr],
+    dt: &Expr,
+    _interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, QuantumOdeError> {
+    if is_zero_expr(dt) {
+        return Err(QuantumOdeError::ZeroTimeStep);
+    }
+
+    let half_dt = Expr::mul(vec![dt.clone(), rational_expr(1, 2)]);
+    let sixth_dt = Expr::mul(vec![dt.clone(), rational_expr(1, 6)]);
+    let two = Expr::Int(2.into());
+
+    let k1 = schrodinger_rhs(h, psi)?;
+    let psi_k2 = vector_add(psi, &vector_scale(&half_dt, &k1));
+    let k2 = schrodinger_rhs(h, &psi_k2)?;
+    let psi_k3 = vector_add(psi, &vector_scale(&half_dt, &k2));
+    let k3 = schrodinger_rhs(h, &psi_k3)?;
+    let psi_k4 = vector_add(psi, &vector_scale(dt, &k3));
+    let k4 = schrodinger_rhs(h, &psi_k4)?;
+
+    let k2_twice = vector_scale(&two, &k2);
+    let k3_twice = vector_scale(&two, &k3);
+    let sum12 = vector_add(&k1, &k2_twice);
+    let sum123 = vector_add(&sum12, &k3_twice);
+    let weighted_sum = vector_add(&sum123, &k4);
+
+    Ok(vector_add(psi, &vector_scale(&sixth_dt, &weighted_sum)))
+}
+
+/// Take one explicit Euler step for the finite-dimensional Liouville equation
+/// `ρ̇ = -i [H, ρ]`.
+pub fn liouville_euler_step(
+    h: &[Vec<Expr>],
+    rho: &[Vec<Expr>],
+    dt: &Expr,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, QuantumOdeError> {
+    if is_zero_expr(dt) {
+        return Err(QuantumOdeError::ZeroTimeStep);
+    }
+    let rhs = ax_qm::liouville_von_neumann_rhs(h, rho, interner)?;
+    Ok(matrix_add(rho, &matrix_scale(dt, &rhs)))
+}
+
+/// Take one classical RK4 step for the finite-dimensional Liouville equation
+/// `ρ̇ = -i [H, ρ]`.
+pub fn liouville_rk4_step(
+    h: &[Vec<Expr>],
+    rho: &[Vec<Expr>],
+    dt: &Expr,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, QuantumOdeError> {
+    if is_zero_expr(dt) {
+        return Err(QuantumOdeError::ZeroTimeStep);
+    }
+
+    let half_dt = Expr::mul(vec![dt.clone(), rational_expr(1, 2)]);
+    let sixth_dt = Expr::mul(vec![dt.clone(), rational_expr(1, 6)]);
+    let two = Expr::Int(2.into());
+
+    let k1 = ax_qm::liouville_von_neumann_rhs(h, rho, interner)?;
+    let rho_k2 = matrix_add(rho, &matrix_scale(&half_dt, &k1));
+    let k2 = ax_qm::liouville_von_neumann_rhs(h, &rho_k2, interner)?;
+    let rho_k3 = matrix_add(rho, &matrix_scale(&half_dt, &k2));
+    let k3 = ax_qm::liouville_von_neumann_rhs(h, &rho_k3, interner)?;
+    let rho_k4 = matrix_add(rho, &matrix_scale(dt, &k3));
+    let k4 = ax_qm::liouville_von_neumann_rhs(h, &rho_k4, interner)?;
 
     let k2_twice = matrix_scale(&two, &k2);
     let k3_twice = matrix_scale(&two, &k3);

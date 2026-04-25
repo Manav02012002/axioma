@@ -789,6 +789,18 @@ pub fn form_to_expr(form: &DiffForm) -> Expr {
     }
 }
 
+/// Build a symbolic one-form component placeholder for `coefficient * d(symbol)`.
+pub fn one_form_component(
+    symbol: ax_ir::Expr,
+    coefficient: ax_ir::Expr,
+    interner: &ax_ir::Interner,
+) -> ax_ir::Expr {
+    Expr::Call(
+        interner.get_or_intern("one_form_component"),
+        vec![symbol, coefficient],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,6 +975,20 @@ mod tests {
                     coefficient: -1,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn one_form_component_builds_symbolic_one_form_placeholder() {
+        let interner = ax_ir::Interner::new();
+        let theta = Expr::Sym(interner.get_or_intern("theta"));
+        let coeff = Expr::Sym(interner.get_or_intern("A"));
+        assert_eq!(
+            one_form_component(theta.clone(), coeff.clone(), &interner),
+            Expr::Call(
+                interner.get_or_intern("one_form_component"),
+                vec![theta, coeff]
+            )
         );
     }
 }

@@ -20,3 +20,4 @@ wasmtime = "19.0"
 
 [dev-dependencies]
 axp-echo = { path = "../../plugins/axp-echo" }
+axp-sparse-demo = { path = "../../plugins/axp-sparse-demo" }

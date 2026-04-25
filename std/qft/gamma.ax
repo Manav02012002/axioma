@@ -2,5 +2,6 @@
 property gamma gamma_matrix
 join_gammas_in_expr(gamma(mu) * gamma(nu))
 split_gamma(gamma(mu, nu))
-gamma_trace([mu, nu])
+gamma_trace([mu, nu], g)
 gamma5_trace([mu, nu, rho, sigma])
+4 * g[mu+, nu+]

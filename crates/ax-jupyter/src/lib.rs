@@ -1000,6 +1000,25 @@ fn apply_result_side_effects(
     let _ = ax_eval::apply_set_convention(result, env);
 }
 
+fn preserve_original_qm_surface_expr(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -> bool {
+    match expr {
+        ax_ir::Expr::Call(sym, _) => matches!(
+            interner.resolve(*sym),
+            "von_neumann_entropy"
+                | "measurement_probabilities"
+                | "negativity"
+                | "logarithmic_negativity"
+                | "time_evolution_operator"
+                | "schrodinger_evolve"
+                | "heisenberg_evolve"
+                | "liouville_rhs"
+                | "lindblad_rhs"
+                | "lindbladian_superoperator"
+        ),
+        _ => ax_notebook::output::qm_bloch_summary_bundle(expr, interner).is_some(),
+    }
+}
+
 fn evaluate_code(
     code: &str,
     env: &mut ax_eval::Env,
@@ -1069,13 +1088,8 @@ fn evaluate_code(
                     ))
                 }),
             _ => {
-                let bundle_expr = if ax_notebook::output::qm_entropy_bundle(expr, interner).is_some()
-                    || ax_notebook::output::qm_entanglement_bundle(expr, interner).is_some()
-                {
-                    expr
-                } else {
-                    &display
-                };
+                let preserve_original_expr = preserve_original_qm_surface_expr(expr, interner);
+                let bundle_expr = if preserve_original_expr { expr } else { &display };
                 KernelOutput::ExecuteResult(MimeBundle::from_expr(bundle_expr, interner))
             }
         };
@@ -3344,7 +3358,7 @@ mod tests {
             .expect("execute_result");
         let data = output_data(&execute_result.message);
 
-        assert!(data.contains_key("application/json"));
+        assert!(data.contains_key("application/json"), "{data:?}");
         assert_eq!(data["text/plain"], "|psi⟩");
         assert!(
             data["text/latex"]
@@ -3358,7 +3372,11 @@ mod tests {
     #[test]
     fn qm_density_summary_execute_result_contains_application_json() {
         let mut runtime = KernelRuntime::new(Vec::new());
-        let result = runtime.process_frames(Channel::Shell, execute_frames("[[1,0],[0,0]]"), "");
+        let result = runtime.process_frames(
+            Channel::Shell,
+            execute_frames("[[1, 1, 0], [0, 0, 0], [0, 0, 0]]"),
+            "",
+        );
         let execute_result = result
             .outbound
             .iter()
@@ -3369,9 +3387,29 @@ mod tests {
         let markdown = data["text/markdown"].as_str().expect("markdown");
         let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
 
-        assert!(markdown.contains("Von Neumann entropy"), "{markdown}");
-        assert!(json.contains("\"dimension\":2"), "{json}");
-        assert!(json.contains("\"eigenvalues\":[\"1\",\"0\"]"), "{json}");
+        assert!(markdown.contains("Trace"), "{markdown}");
+        assert!(json.contains("\"dimension\":3"), "{json}");
+        assert!(json.contains("\"is_qubit\":false"), "{json}");
+    }
+
+    #[test]
+    fn qm_svg_plot_bundle_survives_execute_result() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(
+            Channel::Shell,
+            execute_frames("[[1, 0, 0], [0, 2, 0], [0, 0, 3]]"),
+            "",
+        );
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+        let svg = data["image/svg+xml"].as_str().expect("svg");
+
+        assert!(data.contains_key("image/svg+xml"), "{data:?}");
+        assert!(svg.contains("<svg"), "{svg}");
     }
 
     #[test]
@@ -3379,7 +3417,7 @@ mod tests {
         let mut runtime = KernelRuntime::new(Vec::new());
         let result = runtime.process_frames(
             Channel::Shell,
-            execute_frames("von_neumann_entropy([[1/2,0],[0,1/2]])"),
+            execute_frames("von_neumann_entropy(qubit_density_from_bloch([0, 0, 1]))"),
             "",
         );
         let execute_result = result
@@ -3389,7 +3427,7 @@ mod tests {
             .expect("execute_result");
         let data = output_data(&execute_result.message);
 
-        assert!(data.contains_key("application/json"));
+        assert!(data.contains_key("application/json"), "{data:?}");
         let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
         assert!(json.contains("\"kind\":\"von_neumann_entropy\""), "{json}");
     }
@@ -3409,7 +3447,38 @@ mod tests {
             .expect("execute_result");
         let data = output_data(&execute_result.message);
 
-        assert!(data.contains_key("application/json"));
+        assert!(data.contains_key("application/json"), "{data:?}");
+    }
+
+    #[test]
+    fn entanglement_summary_execute_result_contains_json_and_markdown() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(
+            Channel::Shell,
+            execute_frames("[[1/2, 0, 0, 1/2], [0, 0, 0, 0], [0, 0, 0, 0], [1/2, 0, 0, 1/2]]"),
+            "",
+        );
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+        let markdown = data["text/markdown"].as_str().expect("markdown");
+        let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
+
+        assert!(data.contains_key("application/json"), "{data:?}");
+        assert!(data.contains_key("text/markdown"), "{data:?}");
+        assert!(markdown.contains("Reduced spectrum A"), "{markdown}");
+        assert!(
+            json.contains("\"reduced_spectrum_a\":[\"1/2\",\"1/2\"]"),
+            "{json}"
+        );
+        assert!(json.contains("\"negativity\":\"1/2\""), "{json}");
+        assert!(
+            json.contains("\"logarithmic_negativity\":\"log(2)\""),
+            "{json}"
+        );
     }
 
     #[test]
@@ -3417,7 +3486,7 @@ mod tests {
         let mut runtime = KernelRuntime::new(Vec::new());
         let result = runtime.process_frames(
             Channel::Shell,
-            execute_frames("[[1/2,0],[0,1/2]]"),
+            execute_frames("[[1, 0, 0], [0, 2, 0], [0, 0, 3]]"),
             "",
         );
         let execute_result = result
@@ -3429,6 +3498,32 @@ mod tests {
 
         assert!(data.contains_key("text/markdown"));
         assert!(data.contains_key("application/json"));
+    }
+
+    #[test]
+    fn qm_bloch_summary_execute_result_contains_json_and_markdown() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result =
+            runtime.process_frames(
+                Channel::Shell,
+                execute_frames("qubit_density_from_bloch([0, 0, 1])"),
+                "",
+            );
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+
+        assert!(data.contains_key("application/json"), "{data:?}");
+        assert!(data.contains_key("text/markdown"), "{data:?}");
+        let markdown = data["text/markdown"].as_str().expect("markdown");
+        let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
+
+        assert!(markdown.contains("Bloch vector"), "{markdown}");
+        assert!(json.contains("\"bloch_vector\":[\"0\",\"0\",\"1\"]"), "{json}");
+        assert!(json.contains("\"state_class\":\"pure\""), "{json}");
     }
 
     #[test]
@@ -3448,6 +3543,72 @@ mod tests {
         assert_eq!(data["application/json"]["trace_preserving"], true);
         assert_eq!(data["application/json"]["unital"], true);
         assert_eq!(data["application/json"]["choi_dimension"], 4);
+    }
+
+    #[test]
+    fn custom_workflow_mime_survives_execute_result() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(Channel::Shell, execute_frames("identity_channel(2)"), "");
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+        let workflow = &data["application/vnd.axioma.quantum-workflow+json"];
+
+        assert!(
+            data.contains_key("application/vnd.axioma.quantum-workflow+json"),
+            "{data:?}"
+        );
+        assert_eq!(workflow["workflow_kind"], "channel_summary", "{workflow:?}");
+        assert!(
+            workflow["summary_lines"]
+                .as_array()
+                .is_some_and(|lines| !lines.is_empty()),
+            "{workflow:?}"
+        );
+    }
+
+    #[test]
+    fn channel_summary_execute_result_contains_family_hint_json() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(Channel::Shell, execute_frames("identity_channel(2)"), "");
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+        let markdown = data["text/markdown"].as_str().expect("markdown");
+        let json = serde_json::to_string(&data["application/json"]).expect("json encoding");
+
+        assert!(markdown.contains("Family hint"), "{markdown}");
+        assert!(json.contains("\"family_hint\":\"identity\""), "{json}");
+        assert!(json.contains("\"trace_preserving\":true"), "{json}");
+        assert!(json.contains("\"unital\":true"), "{json}");
+    }
+
+    #[test]
+    fn qm_dynamics_summary_execute_result_contains_json_and_markdown() {
+        let mut runtime = KernelRuntime::new(Vec::new());
+        let result = runtime.process_frames(
+            Channel::Shell,
+            execute_frames("time_evolution_operator(pauli_z(), t)"),
+            "",
+        );
+        let execute_result = result
+            .outbound
+            .iter()
+            .find(|outbound| outbound.message.header["msg_type"] == "execute_result")
+            .expect("execute_result");
+        let data = output_data(&execute_result.message);
+
+        assert!(data.contains_key("application/json"), "{data:?}");
+        assert!(data.contains_key("text/markdown"));
+        assert!(data.contains_key("application/json"));
+        assert_eq!(data["application/json"]["object_kind"], "operator");
+        assert_eq!(data["application/json"]["generator_kind"], "hamiltonian");
     }
 
     #[test]

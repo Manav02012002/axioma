@@ -13,12 +13,18 @@ let energy_on_one = apply_operator(h_op, one)
 let normal_reordered = normal_order(annihilation(ho) * creation(ho))
 let h_toy = [[1, 0], [0, 2]]
 let rho_toy = [[1/2, 0], [0, 1/2]]
+let h_td = t * h_op
+let u_dyson = dyson_series(h_td, 2)
+let omega_magnus = magnus_expansion(h_td, 3)
+let chi_response = kubo_response(adag_op, a_op, rho_toy, t)
 let jumps = []
+let rho_liouville = liouville_rhs(h_toy, rho_toy)
 let rho_dot = lindblad_rhs(h_toy, rho_toy, jumps)
+let lindbladian_toy = lindbladian_superoperator(h_toy, jumps)
 let rho_euler = lindblad_euler_step(h_toy, rho_toy, jumps, 1/10)
 let rho_rk4 = lindblad_rk4_step(h_toy, rho_toy, jumps, 1/10)
 let h_amp = [[0, 0], [0, 0]]
 let jumps_amp = [[[0, 1], [0, 0]]]
 let rho_steady = lindblad_steady_state(h_amp, jumps_amp)
 
-[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered, rho_dot, rho_euler, rho_rk4, rho_steady]
+[a_op, adag_op, n_op, h_op, vac, one, two, lowered_two, number_on_two, energy_on_one, normal_reordered, u_dyson, omega_magnus, chi_response, rho_liouville, rho_dot, lindbladian_toy, rho_euler, rho_rk4, rho_steady]

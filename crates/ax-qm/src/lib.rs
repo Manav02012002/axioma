@@ -9,8 +9,8 @@
 )]
 
 use ax_ir::{
-    DiracBarMetadata, Expr, GammaMatrixMetadata, Index, ModeMetadata, ModeStatistics, SpinorClass,
-    SpinorMetadata, TensorProperty, Variance,
+    CliffordConvention, DiracBarMetadata, Expr, GammaConventionMetadata, GammaMatrixMetadata,
+    Index, ModeMetadata, ModeStatistics, SpinorClass, SpinorMetadata, TensorProperty, Variance,
 };
 use num_bigint::BigInt;
 use num_rational::BigRational;
@@ -35,9 +35,311 @@ pub fn anti_time_ordered(expr: Expr, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(interner.get_or_intern("anti_time_order"), vec![expr])
 }
 
+/// Construct the canonical symbolic time variable `t`.
+pub fn time_symbol(interner: &ax_ir::Interner) -> Expr {
+    Expr::Sym(interner.get_or_intern("t"))
+}
+
+fn substitute_symbol(expr: &Expr, target: lasso::Spur, replacement: &Expr) -> Expr {
+    match expr {
+        Expr::Sym(sym) if *sym == target => replacement.clone(),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(substitute_symbol(re, target, replacement)),
+            Box::new(substitute_symbol(im, target, replacement)),
+        ),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| substitute_symbol(term, target, replacement))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| substitute_symbol(factor, target, replacement))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            substitute_symbol(base, target, replacement),
+            substitute_symbol(exp, target, replacement),
+        ),
+        Expr::Neg(inner) => Expr::neg(substitute_symbol(inner, target, replacement)),
+        Expr::Call(name, args) => Expr::Call(
+            *name,
+            args.iter()
+                .map(|arg| substitute_symbol(arg, target, replacement))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(substitute_symbol(body, target, replacement)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(substitute_symbol(lhs, target, replacement)),
+            Box::new(substitute_symbol(rhs, target, replacement)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (
+                        substitute_symbol(value, target, replacement),
+                        condition.clone(),
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(substitute_symbol(base, target, replacement)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(substitute_symbol(inner, target, replacement)),
+            *rel,
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(substitute_symbol(value, target, replacement)),
+            Box::new(substitute_symbol(body, target, replacement)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| substitute_symbol(item, target, replacement))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| substitute_symbol(entry, target, replacement))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+/// Construct a symbolic nested time-integral placeholder of the requested
+/// order using canonical `integral(variable, lower, upper, integrand)` calls.
+///
+/// Order `0` returns `integrand` unchanged. Higher orders wrap the integrand
+/// in nested integrals over `t1, ..., tn`, each spanning the symbolic interval
+/// from `0` to `t`.
+pub fn ordered_time_integral_placeholder(
+    order: usize,
+    integrand: Expr,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let integral = interner.get_or_intern("integral");
+    let mut current = integrand;
+
+    for idx in (1..=order).rev() {
+        current = Expr::Call(
+            integral,
+            vec![
+                Expr::Sym(interner.get_or_intern(&format!("t{idx}"))),
+                Expr::zero(),
+                time_symbol(interner),
+                current,
+            ],
+        );
+    }
+
+    current
+}
+
+/// Construct the finite-order symbolic Dyson expansion for a time-dependent
+/// Hamiltonian `H(t)`.
+///
+/// Order `0` returns `1`. Higher orders add the canonical symbolic terms
+/// `(-i)^n / n!` multiplying nested placeholder time integrals of the
+/// time-ordered product `T(H(t1) ... H(tn))`.
+pub fn dyson_series(h_of_t: Expr, order: usize, interner: &ax_ir::Interner) -> Expr {
+    let mut terms = vec![Expr::one()];
+    let Expr::Sym(t_sym) = time_symbol(interner) else {
+        unreachable!("time_symbol always returns a symbol");
+    };
+
+    for n in 1..=order {
+        let product = Expr::mul(
+            (1..=n)
+                .map(|idx| {
+                    substitute_symbol(
+                        &h_of_t,
+                        t_sym,
+                        &Expr::Sym(interner.get_or_intern(&format!("t{idx}"))),
+                    )
+                })
+                .collect(),
+        );
+        let integrand = if n == 1 {
+            product
+        } else {
+            time_ordered(product, interner)
+        };
+        let integral = ordered_time_integral_placeholder(n, integrand, interner);
+        let Expr::Int(factorial) = factorial_expr(n) else {
+            unreachable!("factorial_expr always returns an integer expression");
+        };
+        let phase = if n == 1 {
+            Expr::neg(imag_unit())
+        } else {
+            Expr::pow(Expr::neg(imag_unit()), Expr::Int(BigInt::from(n)))
+        };
+        terms.push(Expr::mul(vec![
+            phase,
+            Expr::Rational(BigRational::new(BigInt::one(), factorial)),
+            integral,
+        ]));
+    }
+
+    Expr::add(terms)
+}
+
+/// Construct the symbolic Magnus term `Ω_n` for a time-dependent Hamiltonian
+/// `H(t)` through the explicitly supported orders `1`, `2`, and `3`.
+///
+/// The returned expression uses canonical symbolic `integral(...)` and
+/// `commutator(...)` calls. Order `0` and orders above `3` return `0`.
+pub fn magnus_term(h_of_t: Expr, order: usize, interner: &ax_ir::Interner) -> Expr {
+    let Expr::Sym(t_sym) = time_symbol(interner) else {
+        unreachable!("time_symbol always returns a symbol");
+    };
+    let h_at = |idx: usize| {
+        substitute_symbol(
+            &h_of_t,
+            t_sym,
+            &Expr::Sym(interner.get_or_intern(&format!("t{idx}"))),
+        )
+    };
+
+    match order {
+        1 => Expr::mul(vec![
+            Expr::neg(imag_unit()),
+            ordered_time_integral_placeholder(1, h_at(1), interner),
+        ]),
+        2 => Expr::mul(vec![
+            Expr::Rational(BigRational::new(BigInt::from(-1), BigInt::from(2usize))),
+            ordered_time_integral_placeholder(
+                2,
+                commutator_expr(h_at(1), h_at(2), interner),
+                interner,
+            ),
+        ]),
+        3 => {
+            let nested_commutator_sum = Expr::add(vec![
+                commutator_expr(
+                    h_at(1),
+                    commutator_expr(h_at(2), h_at(3), interner),
+                    interner,
+                ),
+                commutator_expr(
+                    h_at(3),
+                    commutator_expr(h_at(2), h_at(1), interner),
+                    interner,
+                ),
+            ]);
+            Expr::mul(vec![
+                imag_unit(),
+                Expr::Rational(BigRational::new(BigInt::one(), BigInt::from(6usize))),
+                ordered_time_integral_placeholder(3, nested_commutator_sum, interner),
+            ])
+        }
+        _ => Expr::zero(),
+    }
+}
+
+/// Construct the finite-order symbolic Magnus expansion for a time-dependent
+/// Hamiltonian `H(t)`.
+///
+/// Order `0` returns `0`. Orders `1`, `2`, and `3` return `Ω1`, `Ω1 + Ω2`,
+/// and `Ω1 + Ω2 + Ω3` respectively using explicit symbolic nested integrals
+/// and commutators. Orders above `3` return the sum of the implemented terms
+/// through `Ω3`.
+pub fn magnus_expansion(h_of_t: Expr, order: usize, interner: &ax_ir::Interner) -> Expr {
+    if order == 0 {
+        return Expr::zero();
+    }
+
+    Expr::add(
+        (1..=order.min(3))
+            .map(|n| magnus_term(h_of_t.clone(), n, interner))
+            .collect(),
+    )
+}
+
 /// Construct the canonical symbolic commutator wrapper `commutator(a, b)`.
 pub fn commutator_expr(a: Expr, b: Expr, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(interner.get_or_intern("commutator"), vec![a, b])
+}
+
+fn theta_expr(t: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("theta"), vec![t])
+}
+
+fn trace_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("trace"), vec![expr])
+}
+
+fn operator_at_time(op: Expr, time: Expr, interner: &ax_ir::Interner) -> Expr {
+    match op {
+        Expr::Sym(sym) => Expr::Call(sym, vec![time]),
+        other => Expr::Call(interner.get_or_intern("at_time"), vec![other, time]),
+    }
+}
+
+/// Construct the canonical symbolic Kubo linear-response function
+/// `-i theta(t) trace(rho0 * commutator(A(t), B(0)))`.
+///
+/// The result is purely symbolic: it introduces the Heaviside step function
+/// as `theta(t)`, the trace as `trace(...)`, and the operator commutator as
+/// `commutator(...)` without attempting any expansion or evaluation.
+pub fn kubo_response_function(
+    a_op: Expr,
+    b_op: Expr,
+    rho0: Expr,
+    t: Expr,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let a_t = operator_at_time(a_op, t.clone(), interner);
+    let b_0 = operator_at_time(b_op, Expr::zero(), interner);
+    Expr::mul(vec![
+        Expr::neg(imag_unit()),
+        theta_expr(t, interner),
+        trace_expr(
+            Expr::mul(vec![rho0, commutator_expr(a_t, b_0, interner)]),
+            interner,
+        ),
+    ])
+}
+
+/// Construct the canonical symbolic Fourier susceptibility
+/// `integral(t, neg_inf, inf, exp(i * omega * t) * response)`.
+///
+/// This helper is symbolic only in the current implementation. It uses the
+/// canonical time variable `t` together with symbolic `neg_inf` and `inf`
+/// bounds.
+pub fn susceptibility_fourier(response: Expr, omega: Expr, interner: &ax_ir::Interner) -> Expr {
+    let t = time_symbol(interner);
+    Expr::Call(
+        interner.get_or_intern("integral"),
+        vec![
+            t.clone(),
+            Expr::Sym(interner.get_or_intern("neg_inf")),
+            Expr::Sym(interner.get_or_intern("inf")),
+            Expr::mul(vec![
+                Expr::Call(
+                    interner.get_or_intern("exp"),
+                    vec![Expr::mul(vec![imag_unit(), omega, t])],
+                ),
+                response,
+            ]),
+        ],
+    )
 }
 
 fn creation_operator_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
@@ -50,6 +352,229 @@ fn annihilation_operator_expr(mode: Expr, interner: &ax_ir::Interner) -> Expr {
 
 fn conj_expr(expr: Expr, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(interner.get_or_intern("conj"), vec![expr])
+}
+
+/// Construct the canonical symbolic Dirac-bar expression `bar(expr)`.
+pub fn diracbar_of(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("bar"), vec![expr])
+}
+
+/// Construct the canonical symbolic adjoint expression `adjoint(expr)`.
+pub fn adjoint_of(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("adjoint"), vec![expr])
+}
+
+/// Return a gamma-chain product in reversed order.
+pub fn reverse_gamma_chain(exprs: &[Expr]) -> Vec<Expr> {
+    exprs.iter().cloned().rev().collect()
+}
+
+/// Construct the canonical left chiral projector `P_L = (1 - gamma5) / 2`.
+pub fn projector_left(interner: &ax_ir::Interner) -> Expr {
+    Expr::mul(vec![
+        Expr::Rational(BigRational::new(BigInt::one(), BigInt::from(2usize))),
+        Expr::add(vec![
+            Expr::one(),
+            Expr::neg(Expr::Sym(interner.get_or_intern("gamma5"))),
+        ]),
+    ])
+}
+
+/// Construct the canonical right chiral projector `P_R = (1 + gamma5) / 2`.
+pub fn projector_right(interner: &ax_ir::Interner) -> Expr {
+    Expr::mul(vec![
+        Expr::Rational(BigRational::new(BigInt::one(), BigInt::from(2usize))),
+        Expr::add(vec![
+            Expr::one(),
+            Expr::Sym(interner.get_or_intern("gamma5")),
+        ]),
+    ])
+}
+
+/// Construct the canonical Lorentz-generator spin matrix `sigma(mu, nu)`.
+///
+/// The symbolic convention is `sigma^{mu nu} = (i/2) [gamma^mu, gamma^nu]`.
+pub fn sigma_matrix(mu: Expr, nu: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("sigma"), vec![mu, nu])
+}
+
+fn gamma_factor(index: Expr, interner: &ax_ir::Interner) -> Expr {
+    Expr::Call(interner.get_or_intern("gamma"), vec![index])
+}
+
+fn i_over_two() -> Expr {
+    Expr::Complex(
+        Box::new(Expr::zero()),
+        Box::new(Expr::Rational(BigRational::new(
+            BigInt::one(),
+            BigInt::from(2usize),
+        ))),
+    )
+}
+
+fn minus_two_i() -> Expr {
+    Expr::Complex(
+        Box::new(Expr::zero()),
+        Box::new(Expr::Int(BigInt::from(-2i32))),
+    )
+}
+
+/// Expand canonical `sigma(mu, nu)` factors into gamma-matrix commutators.
+///
+/// The top-level conversion is `sigma(mu,nu) -> (i/2)(gamma(mu) gamma(nu)
+/// - gamma(nu) gamma(mu))`; other expression structure is traversed so sigma
+/// factors inside sums, products, powers, and calls are converted as well.
+pub fn sigma_to_gamma_commutator(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    match expr {
+        Expr::Call(sym, args) if interner.resolve(*sym) == "sigma" && args.len() == 2 => {
+            let mu = args[0].clone();
+            let nu = args[1].clone();
+            Expr::mul(vec![
+                i_over_two(),
+                Expr::add(vec![
+                    Expr::mul(vec![
+                        gamma_factor(mu.clone(), interner),
+                        gamma_factor(nu.clone(), interner),
+                    ]),
+                    Expr::neg(Expr::mul(vec![
+                        gamma_factor(nu, interner),
+                        gamma_factor(mu, interner),
+                    ])),
+                ]),
+            ])
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| sigma_to_gamma_commutator(term, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| sigma_to_gamma_commutator(factor, interner))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            sigma_to_gamma_commutator(base, interner),
+            sigma_to_gamma_commutator(exp, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(sigma_to_gamma_commutator(inner, interner)),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(sigma_to_gamma_commutator(re, interner)),
+            Box::new(sigma_to_gamma_commutator(im, interner)),
+        ),
+        Expr::Call(sym, args) => Expr::Call(
+            *sym,
+            args.iter()
+                .map(|arg| sigma_to_gamma_commutator(arg, interner))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(sigma_to_gamma_commutator(base, interner)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => {
+            Expr::Group(Box::new(sigma_to_gamma_commutator(inner, interner)), *rel)
+        }
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| sigma_to_gamma_commutator(item, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|item| sigma_to_gamma_commutator(item, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn gamma_call_index(expr: &Expr, interner: &ax_ir::Interner) -> Option<Expr> {
+    match expr {
+        Expr::Call(sym, args) if interner.resolve(*sym) == "gamma" && args.len() == 1 => {
+            Some(args[0].clone())
+        }
+        _ => None,
+    }
+}
+
+fn gamma_product_indices(expr: &Expr, interner: &ax_ir::Interner) -> Option<(Expr, Expr)> {
+    match expr {
+        Expr::Mul(factors) if factors.len() == 2 => Some((
+            gamma_call_index(&factors[0], interner)?,
+            gamma_call_index(&factors[1], interner)?,
+        )),
+        _ => None,
+    }
+}
+
+fn signed_unit_term(expr: &Expr) -> Option<(i8, Expr)> {
+    match expr {
+        Expr::Neg(inner) => Some((-1, inner.as_ref().clone())),
+        Expr::Mul(factors) if !factors.is_empty() => match &factors[0] {
+            Expr::Int(n) if *n == BigInt::from(-1i32) => {
+                Some((-1, Expr::mul(factors[1..].to_vec())))
+            }
+            Expr::Rational(r) if *r == BigRational::from_integer(BigInt::from(-1i32)) => {
+                Some((-1, Expr::mul(factors[1..].to_vec())))
+            }
+            _ => Some((1, expr.clone())),
+        },
+        _ => Some((1, expr.clone())),
+    }
+}
+
+fn gamma_commutator_indices_from_difference(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<(Expr, Expr)> {
+    let Expr::Add(terms) = expr else {
+        return None;
+    };
+    if terms.len() != 2 {
+        return None;
+    }
+    let (sign_a, base_a) = signed_unit_term(&terms[0])?;
+    let (sign_b, base_b) = signed_unit_term(&terms[1])?;
+    let (mu_a, nu_a) = gamma_product_indices(&base_a, interner)?;
+    let (mu_b, nu_b) = gamma_product_indices(&base_b, interner)?;
+
+    match (sign_a, sign_b) {
+        (1, -1) if mu_a == nu_b && nu_a == mu_b => Some((mu_a, nu_a)),
+        (-1, 1) if mu_b == nu_a && nu_b == mu_a => Some((mu_b, nu_b)),
+        _ => None,
+    }
+}
+
+/// Convert an exact gamma-matrix commutator pattern back to the sigma basis.
+///
+/// Recognized forms are `commutator(gamma(mu), gamma(nu))` and the exact
+/// two-term product difference `gamma(mu) gamma(nu) - gamma(nu) gamma(mu)`.
+/// Nonmatching inputs are returned unchanged.
+pub fn gamma_commutator_to_sigma(expr: &Expr, interner: &ax_ir::Interner) -> Expr {
+    let indices = match expr {
+        Expr::Call(sym, args) if interner.resolve(*sym) == "commutator" && args.len() == 2 => {
+            Some((
+                gamma_call_index(&args[0], interner),
+                gamma_call_index(&args[1], interner),
+            ))
+            .and_then(|(mu, nu)| Some((mu?, nu?)))
+        }
+        _ => gamma_commutator_indices_from_difference(expr, interner),
+    };
+
+    if let Some((mu, nu)) = indices {
+        Expr::mul(vec![minus_two_i(), sigma_matrix(mu, nu, interner)])
+    } else {
+        expr.clone()
+    }
 }
 
 /// Construct the exact factorial `n!` as an integer expression.
@@ -375,6 +900,7 @@ pub enum FierzError {
     IncompatibleSpinorMetadata,
     IncompatibleSpinorDimension,
     IncompatibleSpinorChirality,
+    InsufficientConventionData,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -460,6 +986,18 @@ pub enum LindbladError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LindbladianSpectrumError {
+    #[error(transparent)]
+    Lindblad(#[from] LindbladError),
+    #[error("unsupported dimension: dim={dim}")]
+    UnsupportedDimension { dim: usize },
+    #[error("operator contains non-numeric entries")]
+    NonNumericOperator,
+    #[error(transparent)]
+    SparseConversion(#[from] ax_linalg::SparseMatrixError),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ObservableError {
     #[error("operator not square: rows={rows}, cols={cols}")]
     OperatorNotSquare { rows: usize, cols: usize },
@@ -514,6 +1052,44 @@ pub enum SpectralError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum MatrixExponentialError {
+    #[error("matrix is not square: rows={rows}, cols={cols}")]
+    MatrixNotSquare { rows: usize, cols: usize },
+    #[error("matrix is not Hermitian")]
+    MatrixNotHermitian,
+    #[error("unsupported dimension: dim={dim}")]
+    UnsupportedDimension { dim: usize },
+    #[error("degenerate spectrum unsupported")]
+    DegenerateSpectrumUnsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StateEvolutionError {
+    #[error(transparent)]
+    Hamiltonian(#[from] MatrixExponentialError),
+    #[error("state dimension mismatch: expected={expected}, actual={actual}")]
+    StateDimensionMismatch { expected: usize, actual: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum OperatorEvolutionError {
+    #[error(transparent)]
+    Hamiltonian(#[from] MatrixExponentialError),
+    #[error("operator dimension mismatch: expected={expected}, actual={actual}")]
+    OperatorDimensionMismatch { expected: usize, actual: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LiouvilleError {
+    #[error("Hamiltonian not square: rows={rows}, cols={cols}")]
+    HamiltonianNotSquare { rows: usize, cols: usize },
+    #[error("state not square: rows={rows}, cols={cols}")]
+    StateNotSquare { rows: usize, cols: usize },
+    #[error("dimension mismatch: expected={expected}, actual={actual}")]
+    DimensionMismatch { expected: usize, actual: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum EntropyError {
     #[error("state not square: rows={rows}, cols={cols}")]
     StateNotSquare { rows: usize, cols: usize },
@@ -543,6 +1119,28 @@ pub enum NegativityError {
     Spectral(#[from] SpectralError),
     #[error("dimension mismatch: expected={expected}, actual={actual}")]
     DimensionMismatch { expected: usize, actual: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PerturbationError {
+    #[error("unperturbed Hamiltonian is not square: rows={rows}, cols={cols}")]
+    UnperturbedHamiltonianNotSquare { rows: usize, cols: usize },
+    #[error("perturbation is not square: rows={rows}, cols={cols}")]
+    PerturbationNotSquare { rows: usize, cols: usize },
+    #[error("dimension mismatch: expected={expected}, actual={actual}")]
+    DimensionMismatch { expected: usize, actual: usize },
+    #[error(transparent)]
+    UnsupportedSpectrum(#[from] SpectralError),
+    #[error("degenerate unperturbed spectrum")]
+    DegenerateUnperturbedSpectrum,
+    #[error("empty degenerate subspace")]
+    EmptyDegenerateSubspace,
+    #[error("selected subspace is not degenerate in H0")]
+    SelectedSubspaceNotDegenerate,
+    #[error("state index out of range: index={index}, dim={dim}")]
+    StateIndexOutOfRange { index: usize, dim: usize },
+    #[error("degenerate subspace index out of range: index={index}, dim={dim}")]
+    DegenerateSubspaceIndexOutOfRange { index: usize, dim: usize },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -635,6 +1233,39 @@ fn declared_gamma_metadata_of_symbol(
             TensorProperty::GammaMatrixMeta(metadata) => Some(metadata.clone()),
             _ => None,
         })
+}
+
+fn declared_gamma_convention_metadata_of_symbol(
+    sym: lasso::Spur,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> Option<GammaConventionMetadata> {
+    properties
+        .get_properties(sym)
+        .into_iter()
+        .find_map(|prop| match prop {
+            TensorProperty::GammaConventionMeta(metadata) => Some(metadata.clone()),
+            _ => None,
+        })
+}
+
+fn gamma_convention_conflict_of_expr(
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> bool {
+    let Some(sym) = property_sym(expr) else {
+        return false;
+    };
+    let conventions = properties
+        .get_properties(sym)
+        .into_iter()
+        .filter_map(|prop| match prop {
+            TensorProperty::GammaConventionMeta(metadata) => Some(metadata),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    conventions
+        .windows(2)
+        .any(|pair| pair[0].signature != pair[1].signature || pair[0].clifford != pair[1].clifford)
 }
 
 fn declared_diracbar_metadata_of_symbol(
@@ -759,6 +1390,14 @@ pub fn gamma_metadata_of_expr(
     if let Some(metadata) = declared_gamma_metadata_of_symbol(sym, properties) {
         return Some(metadata);
     }
+    if let Some(metadata) = declared_gamma_convention_metadata_of_symbol(sym, properties) {
+        return Some(GammaMatrixMetadata {
+            dimension: metadata.dimension,
+            metric_symbol: None,
+            index_family: None,
+            has_gamma5: metadata.gamma5.is_some(),
+        });
+    }
     properties
         .has_property_kind(sym, &TensorProperty::GammaMatrixProp)
         .then_some(GammaMatrixMetadata {
@@ -767,6 +1406,39 @@ pub fn gamma_metadata_of_expr(
             index_family: None,
             has_gamma5: false,
         })
+}
+
+/// Return the structured gamma/Clifford convention metadata attached to a gamma expression.
+///
+/// This is the primary convention source for gamma algebra. Callers should use
+/// this before falling back to legacy dimension or sign heuristics.
+pub fn gamma_convention_of_expr(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<ax_ir::GammaConventionMetadata> {
+    let sym = property_sym(expr)?;
+    declared_gamma_convention_metadata_of_symbol(sym, props)
+}
+
+/// Return the dimension associated with a gamma expression.
+///
+/// Structured `GammaConventionMeta.dimension` takes precedence over the older
+/// `GammaMatrixMeta.dimension` fallback.
+pub fn gamma_dimension_of_expr(expr: &Expr, props: &dyn PropertyLookup) -> Option<usize> {
+    gamma_convention_of_expr(expr, props)
+        .and_then(|metadata| metadata.dimension)
+        .or_else(|| gamma_declared_dimension(expr, props))
+}
+
+/// Return the Clifford sign convention associated with a gamma expression.
+///
+/// `PlusTwoG` means `{gamma^mu, gamma^nu} = +2 g^{mu nu}`;
+/// `MinusTwoG` means `{gamma^mu, gamma^nu} = -2 g^{mu nu}`.
+pub fn gamma_clifford_sign(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<ax_ir::CliffordConvention> {
+    gamma_convention_of_expr(expr, props).map(|metadata| metadata.clifford)
 }
 
 /// Return the structured Dirac-bar metadata attached to an expression when available.
@@ -1059,6 +1731,7 @@ impl FierzError {
             FierzError::IncompatibleSpinorMetadata => "fierz_incompatible_spinor_metadata",
             FierzError::IncompatibleSpinorDimension => "fierz_incompatible_spinor_dimension",
             FierzError::IncompatibleSpinorChirality => "fierz_incompatible_spinor_chirality",
+            FierzError::InsufficientConventionData => "fierz_insufficient_convention_data",
         }
     }
 }
@@ -1288,7 +1961,12 @@ pub fn simplify_ccr_car_once(
                     return Expr::mul(rebuilt);
                 }
             }
-            expr.clone()
+            let canonical = ax_tensor::canonicalize_noncommutative_product(expr, props, interner);
+            if canonical != *expr {
+                canonical
+            } else {
+                expr.clone()
+            }
         }
         Expr::Add(terms) => {
             for (index, term) in terms.iter().enumerate() {
@@ -2310,6 +2988,14 @@ fn basis_projector_matrix(dim: usize, index: usize) -> Vec<Vec<Expr>> {
     projector
 }
 
+fn trace_of_matrix_product(
+    left: &[Vec<Expr>],
+    right: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Expr {
+    simplify_expr(ax_linalg::trace(&ax_linalg::mat_mul(left, right, interner)))
+}
+
 fn matrix_subtract(left: &[Vec<Expr>], right: &[Vec<Expr>]) -> Vec<Vec<Expr>> {
     simplify_matrix(ax_linalg::mat_add(
         left,
@@ -2586,6 +3272,15 @@ pub fn expr_log(arg: Expr, interner: &ax_ir::Interner) -> Expr {
     Expr::Call(interner.get_or_intern("log"), vec![arg])
 }
 
+/// Construct an exact symbolic exponential expression `exp(arg)`.
+pub fn scalar_exp_expr(arg: Expr, interner: &ax_ir::Interner) -> Expr {
+    if arg == Expr::zero() {
+        Expr::one()
+    } else {
+        Expr::Call(interner.get_or_intern("exp"), vec![arg])
+    }
+}
+
 /// Construct the exact entropy contribution `-λ log(λ)` with `0` handled exactly.
 pub fn entropy_term(lambda: &Expr, interner: &ax_ir::Interner) -> Expr {
     if *lambda == Expr::zero() || *lambda == Expr::one() {
@@ -2722,6 +3417,610 @@ pub fn hermitian_eigenprojectors_small(
     Ok(projectors)
 }
 
+fn map_square_error(matrix: &[Vec<Expr>], is_h0: bool) -> Result<usize, PerturbationError> {
+    is_square_matrix(matrix).map_err(|error| match error {
+        SpectralError::MatrixNotSquare { rows, cols } => {
+            if is_h0 {
+                PerturbationError::UnperturbedHamiltonianNotSquare { rows, cols }
+            } else {
+                PerturbationError::PerturbationNotSquare { rows, cols }
+            }
+        }
+        other => PerturbationError::UnsupportedSpectrum(other),
+    })
+}
+
+fn distinct_unperturbed_eigenvalues(eigenvalues: &[Expr]) -> Result<(), PerturbationError> {
+    if eigenvalues
+        .iter()
+        .enumerate()
+        .any(|(idx, value)| eigenvalues.iter().skip(idx + 1).any(|other| other == value))
+    {
+        return Err(PerturbationError::DegenerateUnperturbedSpectrum);
+    }
+    Ok(())
+}
+
+fn supported_unperturbed_eigenbasis(
+    h0: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<(Vec<Expr>, Option<Vec<Vec<Vec<Expr>>>>), PerturbationError> {
+    if let Some(diagonal) = diagonal_entries(h0) {
+        distinct_unperturbed_eigenvalues(&diagonal)?;
+        return Ok((diagonal, None));
+    }
+
+    let dim = h0.len();
+    if dim != 2 {
+        return Err(PerturbationError::UnsupportedSpectrum(
+            SpectralError::UnsupportedDimension { dim },
+        ));
+    }
+
+    let eigenvalues = hermitian_eigenvalues_small(h0, interner)?;
+    distinct_unperturbed_eigenvalues(&eigenvalues)?;
+    let projectors = hermitian_eigenprojectors_small(h0, interner)?;
+    Ok((eigenvalues, Some(projectors)))
+}
+
+fn diagonal_h0_energies(h0: &[Vec<Expr>]) -> Result<Vec<Expr>, PerturbationError> {
+    let dim = map_square_error(h0, true)?;
+    diagonal_entries(h0).ok_or(PerturbationError::UnsupportedSpectrum(
+        SpectralError::UnsupportedDimension { dim },
+    ))
+}
+
+fn validate_degenerate_subspace(
+    energies: &[Expr],
+    subspace: &[usize],
+) -> Result<(), PerturbationError> {
+    if subspace.is_empty() {
+        return Err(PerturbationError::EmptyDegenerateSubspace);
+    }
+
+    for &index in subspace {
+        if index >= energies.len() {
+            return Err(PerturbationError::DegenerateSubspaceIndexOutOfRange {
+                index,
+                dim: energies.len(),
+            });
+        }
+    }
+
+    let reference = &energies[subspace[0]];
+    if subspace
+        .iter()
+        .skip(1)
+        .any(|&index| energies[index] != *reference)
+    {
+        return Err(PerturbationError::SelectedSubspaceNotDegenerate);
+    }
+
+    Ok(())
+}
+
+/// Return the exact perturbation matrix restricted to a chosen degenerate
+/// subspace of a diagonal unperturbed Hamiltonian `H0`.
+///
+/// The `subspace` slice lists computational-basis indices spanning a
+/// degenerate eigenspace of `H0`. Since this helper is restricted to diagonal
+/// `H0`, the eigenbasis of `H0` is the computational basis, so the effective
+/// perturbation is obtained by extracting the corresponding principal submatrix
+/// of `V`.
+pub fn degenerate_subspace_effective_perturbation(
+    h0: &[Vec<Expr>],
+    v: &[Vec<Expr>],
+    subspace: &[usize],
+    _interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, PerturbationError> {
+    let energies = diagonal_h0_energies(h0)?;
+    let dim = energies.len();
+    let v_dim = map_square_error(v, false)?;
+    if v_dim != dim {
+        return Err(PerturbationError::DimensionMismatch {
+            expected: dim,
+            actual: v_dim,
+        });
+    }
+    validate_degenerate_subspace(&energies, subspace)?;
+
+    Ok(subspace
+        .iter()
+        .map(|&row| {
+            subspace
+                .iter()
+                .map(|&col| simplify_expr(v[row][col].clone()))
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+/// Return the exact first-order level splittings inside a chosen degenerate
+/// subspace by diagonalizing the effective perturbation matrix `V_eff`.
+///
+/// The `subspace` slice lists computational-basis indices spanning a
+/// degenerate eigenspace of a diagonal `H0`. The returned eigenvalues are the
+/// first-order perturbative splittings of that degenerate manifold.
+pub fn degenerate_first_order_splittings(
+    h0: &[Vec<Expr>],
+    v: &[Vec<Expr>],
+    subspace: &[usize],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, PerturbationError> {
+    let effective = degenerate_subspace_effective_perturbation(h0, v, subspace, interner)?;
+    if effective.len() == 1 {
+        return Ok(vec![simplify_expr(effective[0][0].clone())]);
+    }
+    if let Some(diagonal) = diagonal_entries(&effective) {
+        return Ok(diagonal.into_iter().map(simplify_expr).collect());
+    }
+    if effective.len() == 2
+        && effective[0][0] == effective[1][1]
+        && effective[0][1] == effective[1][0]
+        && conjugate_expr(&effective[0][1]) == effective[0][1]
+    {
+        let center = simplify_expr(effective[0][0].clone());
+        let gap = simplify_expr(effective[0][1].clone());
+        return Ok(vec![
+            simplify_expr(Expr::add(vec![center.clone(), gap.clone()])),
+            simplify_expr(Expr::add(vec![center, Expr::neg(gap)])),
+        ]);
+    }
+    let splittings = hermitian_eigenvalues_small(&effective, interner)?;
+    Ok(splittings.into_iter().map(simplify_expr).collect())
+}
+
+/// Return the exact first-order stationary perturbation-theory energy shift
+/// `E_n^(1) = <n|V|n>` for a supported finite-dimensional unperturbed
+/// Hamiltonian `H0`.
+///
+/// Supported `H0` classes are:
+/// - diagonal, nondegenerate matrices of any finite dimension
+/// - nondegenerate Hermitian `2x2` matrices supported by the exact spectral
+///   helpers
+///
+/// The matrix element is evaluated in the eigenbasis of `H0`. Degenerate
+/// unperturbed spectra are rejected explicitly.
+pub fn first_order_energy_shift(
+    h0: &[Vec<Expr>],
+    v: &[Vec<Expr>],
+    state_index: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, PerturbationError> {
+    let dim = map_square_error(h0, true)?;
+    let v_dim = map_square_error(v, false)?;
+    if v_dim != dim {
+        return Err(PerturbationError::DimensionMismatch {
+            expected: dim,
+            actual: v_dim,
+        });
+    }
+    if state_index >= dim {
+        return Err(PerturbationError::StateIndexOutOfRange {
+            index: state_index,
+            dim,
+        });
+    }
+
+    let (_, projectors) = supported_unperturbed_eigenbasis(h0, interner)?;
+    let shift = if let Some(projectors) = projectors {
+        trace_of_matrix_product(&projectors[state_index], v, interner)
+    } else {
+        simplify_expr(v[state_index][state_index].clone())
+    };
+    Ok(shift)
+}
+
+/// Return the exact second-order stationary perturbation-theory energy shift
+/// `E_n^(2) = Σ_{m != n} |V_mn|^2 / (E_n^(0) - E_m^(0))` for a supported
+/// finite-dimensional unperturbed Hamiltonian `H0`.
+///
+/// Supported `H0` classes are:
+/// - diagonal, nondegenerate matrices of any finite dimension
+/// - nondegenerate Hermitian `2x2` matrices supported by the exact spectral
+///   helpers
+///
+/// The sum is evaluated in the eigenbasis of `H0`. The off-diagonal matrix
+/// element magnitude is kept exact as `V_mn * conj(V_mn)`.
+pub fn second_order_energy_shift(
+    h0: &[Vec<Expr>],
+    v: &[Vec<Expr>],
+    state_index: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, PerturbationError> {
+    let dim = map_square_error(h0, true)?;
+    let v_dim = map_square_error(v, false)?;
+    if v_dim != dim {
+        return Err(PerturbationError::DimensionMismatch {
+            expected: dim,
+            actual: v_dim,
+        });
+    }
+    if state_index >= dim {
+        return Err(PerturbationError::StateIndexOutOfRange {
+            index: state_index,
+            dim,
+        });
+    }
+
+    let (eigenvalues, projectors) = supported_unperturbed_eigenbasis(h0, interner)?;
+    let shift = if let Some(projectors) = projectors {
+        let other = 1 - state_index;
+        let v_dag = adjoint_matrix(v);
+        let numerator = ax_linalg::mat_mul(
+            &ax_linalg::mat_mul(&projectors[other], v, interner),
+            &ax_linalg::mat_mul(&projectors[state_index], &v_dag, interner),
+            interner,
+        );
+        let denominator = simplify_expr(Expr::add(vec![
+            eigenvalues[state_index].clone(),
+            Expr::neg(eigenvalues[other].clone()),
+        ]));
+        simplify_expr(Expr::mul(vec![
+            ax_linalg::trace(&numerator),
+            scalar_inverse(denominator),
+        ]))
+    } else {
+        let mut terms = Vec::new();
+        for m in 0..dim {
+            if m == state_index {
+                continue;
+            }
+            let v_mn = simplify_expr(v[m][state_index].clone());
+            let numerator = simplify_expr(Expr::mul(vec![v_mn.clone(), conjugate_expr(&v_mn)]));
+            let denominator = simplify_expr(Expr::add(vec![
+                eigenvalues[state_index].clone(),
+                Expr::neg(eigenvalues[m].clone()),
+            ]));
+            terms.push(simplify_expr(Expr::mul(vec![
+                numerator,
+                scalar_inverse(denominator),
+            ])));
+        }
+        simplify_expr(Expr::add(terms))
+    };
+    Ok(shift)
+}
+
+/// Construct the symbolic Berry-connection one-form component
+/// `A(parameter) = i <psi | d/dparameter | psi>`.
+///
+/// The derivative uses the canonical symbolic `diff(psi, parameter)`
+/// representation. The resulting coefficient is wrapped in the shared
+/// symbolic one-form placeholder from `ax-forms`.
+pub fn berry_connection(psi: Expr, parameter: Expr, interner: &ax_ir::Interner) -> Expr {
+    let bra = Expr::Call(interner.get_or_intern("bra"), vec![psi.clone()]);
+    let derivative = Expr::Call(interner.get_or_intern("diff"), vec![psi, parameter.clone()]);
+    let coefficient = simplify_expr(Expr::mul(vec![imag_unit(), bra, derivative]));
+    ax_forms::one_form_component(parameter, coefficient, interner)
+}
+
+/// Construct the symbolic geometric phase
+/// `γ = ∮ A(parameter) dparameter`.
+///
+/// The contour is represented symbolically by `closed_path(parameter)` while
+/// reusing the canonical `integral(variable, lower, upper, integrand)` call
+/// shape used elsewhere in the codebase.
+pub fn geometric_phase(line_integrand: Expr, parameter: Expr, interner: &ax_ir::Interner) -> Expr {
+    let closed_path = Expr::Call(
+        interner.get_or_intern("closed_path"),
+        vec![parameter.clone()],
+    );
+    Expr::Call(
+        interner.get_or_intern("integral"),
+        vec![parameter, closed_path.clone(), closed_path, line_integrand],
+    )
+}
+
+fn map_spectral_error_to_matrix_exponential_error(error: SpectralError) -> MatrixExponentialError {
+    match error {
+        SpectralError::MatrixNotSquare { rows, cols } => {
+            MatrixExponentialError::MatrixNotSquare { rows, cols }
+        }
+        SpectralError::MatrixNotHermitian => MatrixExponentialError::MatrixNotHermitian,
+        SpectralError::UnsupportedDimension { dim } => {
+            MatrixExponentialError::UnsupportedDimension { dim }
+        }
+        SpectralError::DegenerateSpectrumUnsupported => {
+            MatrixExponentialError::DegenerateSpectrumUnsupported
+        }
+    }
+}
+
+/// Construct `exp(A)` from the exact spectral formula `Σ_i exp(λ_i) P_i`
+/// for supported small Hermitian matrices.
+///
+/// This uses the existing exact small-dimensional Hermitian eigenspectrum and
+/// eigenprojector machinery. Degenerate spectra that prevent projector
+/// construction return `DegenerateSpectrumUnsupported`.
+pub fn matrix_exponential_from_spectral_decomposition(
+    mat: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, MatrixExponentialError> {
+    let dim = is_square_matrix(mat).map_err(map_spectral_error_to_matrix_exponential_error)?;
+    if !matrix_is_exactly_hermitian(mat) {
+        return Err(MatrixExponentialError::MatrixNotHermitian);
+    }
+
+    if dim == 1 {
+        return Ok(vec![vec![scalar_exp_expr(mat[0][0].clone(), interner)]]);
+    }
+
+    let eigenvalues = hermitian_eigenvalues_small(mat, interner)
+        .map_err(map_spectral_error_to_matrix_exponential_error)?;
+    let projectors = hermitian_eigenprojectors_small(mat, interner)
+        .map_err(map_spectral_error_to_matrix_exponential_error)?;
+
+    let mut result = zero_matrix(dim);
+    for (eigenvalue, projector) in eigenvalues.into_iter().zip(projectors.into_iter()) {
+        let weighted = ax_linalg::mat_scale(&scalar_exp_expr(eigenvalue, interner), &projector);
+        result = simplify_matrix(ax_linalg::mat_add(&result, &weighted));
+    }
+    Ok(result)
+}
+
+/// Compute exact small Hermitian matrix exponentials for the supported cases:
+/// `1x1`, diagonal `2x2`, nondegenerate Hermitian `2x2`, and diagonal `3x3`.
+///
+/// The implementation returns explicit symbolic matrices rather than an
+/// unevaluated `exp(A)` wrapper. Non-diagonal `3x3` inputs are rejected as
+/// unsupported, and degenerate non-diagonal `2x2` inputs return
+/// `DegenerateSpectrumUnsupported`.
+pub fn hermitian_matrix_exponential_small(
+    mat: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, MatrixExponentialError> {
+    let dim = is_square_matrix(mat).map_err(map_spectral_error_to_matrix_exponential_error)?;
+    if !matrix_is_exactly_hermitian(mat) {
+        return Err(MatrixExponentialError::MatrixNotHermitian);
+    }
+
+    if let Some(diagonal) = diagonal_entries(mat) {
+        let mut result = zero_matrix(dim);
+        for (idx, entry) in diagonal.into_iter().enumerate() {
+            result[idx][idx] = scalar_exp_expr(entry, interner);
+        }
+        return Ok(result);
+    }
+
+    match dim {
+        2 => matrix_exponential_from_spectral_decomposition(mat, interner),
+        3 => Err(MatrixExponentialError::UnsupportedDimension { dim: 3 }),
+        _ => Err(MatrixExponentialError::UnsupportedDimension { dim }),
+    }
+}
+
+/// Construct the exact constant-Hamiltonian propagator `U(t) = exp(-i t H)`
+/// for the same supported small-matrix classes as
+/// [`hermitian_matrix_exponential_small`].
+///
+/// The Hamiltonian `H` must be square and exactly Hermitian. Diagonal `1x1`,
+/// diagonal `2x2`, nondegenerate Hermitian `2x2`, and diagonal `3x3`
+/// Hamiltonians are supported. The result is returned as an explicit symbolic
+/// matrix with entries built from exact `exp(...)` expressions.
+pub fn time_evolution_operator(
+    h: &[Vec<Expr>],
+    t: Expr,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, MatrixExponentialError> {
+    let dim = is_square_matrix(h).map_err(map_spectral_error_to_matrix_exponential_error)?;
+    if !matrix_is_exactly_hermitian(h) {
+        return Err(MatrixExponentialError::MatrixNotHermitian);
+    }
+
+    let minus_i_t = Expr::mul(vec![Expr::neg(imag_unit()), t]);
+    let _scaled = h
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|entry| simplify_expr(Expr::mul(vec![minus_i_t.clone(), entry.clone()])))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(diagonal) = diagonal_entries(h) {
+        let mut result = zero_matrix(dim);
+        for (idx, entry) in diagonal.into_iter().enumerate() {
+            result[idx][idx] = scalar_exp_expr(
+                simplify_expr(Expr::mul(vec![minus_i_t.clone(), entry])),
+                interner,
+            );
+        }
+        return Ok(result);
+    }
+
+    match dim {
+        2 => {
+            let eigenvalues = hermitian_eigenvalues_small(h, interner)
+                .map_err(map_spectral_error_to_matrix_exponential_error)?;
+            let projectors = hermitian_eigenprojectors_small(h, interner)
+                .map_err(map_spectral_error_to_matrix_exponential_error)?;
+
+            let mut result = zero_matrix(dim);
+            for (eigenvalue, projector) in eigenvalues.into_iter().zip(projectors.into_iter()) {
+                let phase = scalar_exp_expr(
+                    simplify_expr(Expr::mul(vec![minus_i_t.clone(), eigenvalue])),
+                    interner,
+                );
+                let weighted = ax_linalg::mat_scale(&phase, &projector);
+                result = simplify_matrix(ax_linalg::mat_add(&result, &weighted));
+            }
+            Ok(result)
+        }
+        1 => Ok(vec![vec![scalar_exp_expr(
+            simplify_expr(Expr::mul(vec![minus_i_t, h[0][0].clone()])),
+            interner,
+        )]]),
+        3 => Err(MatrixExponentialError::UnsupportedDimension { dim: 3 }),
+        _ => Err(MatrixExponentialError::UnsupportedDimension { dim }),
+    }
+}
+
+/// Multiply an explicit symbolic matrix by an explicit symbolic state vector.
+///
+/// The result is returned as a concrete component vector with each entry
+/// simplified after summing the row-wise products.
+pub fn matrix_vector_mul(mat: &[Vec<Expr>], vec: &[Expr]) -> Vec<Expr> {
+    mat.iter()
+        .map(|row| {
+            simplify_expr(Expr::add(
+                row.iter()
+                    .zip(vec.iter())
+                    .map(|(entry, value)| {
+                        simplify_expr(Expr::mul(vec![entry.clone(), value.clone()]))
+                    })
+                    .collect(),
+            ))
+        })
+        .collect()
+}
+
+/// Evolve a finite-dimensional pure state in the Schrödinger picture under a
+/// constant Hermitian Hamiltonian using `psi(t) = U(t) psi0`.
+///
+/// This returns the explicit evolved state vector rather than an unevaluated
+/// symbolic `U * psi0` wrapper. The Hamiltonian must be a supported square
+/// Hermitian matrix, and the input state vector length must match its
+/// dimension.
+pub fn schrodinger_evolve_state(
+    h: &[Vec<Expr>],
+    psi0: &[Expr],
+    t: Expr,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, StateEvolutionError> {
+    let dim = is_square_matrix(h).map_err(map_spectral_error_to_matrix_exponential_error)?;
+    if psi0.len() != dim {
+        return Err(StateEvolutionError::StateDimensionMismatch {
+            expected: dim,
+            actual: psi0.len(),
+        });
+    }
+
+    let evolution = time_evolution_operator(h, t, interner)?;
+    Ok(matrix_vector_mul(&evolution, psi0))
+}
+
+fn combine_exponential_factors(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    let exp_sym = interner.get_or_intern("exp");
+    match expr {
+        Expr::Add(terms) => simplify_expr(Expr::add(
+            terms
+                .into_iter()
+                .map(|term| combine_exponential_factors(term, interner))
+                .collect(),
+        )),
+        Expr::Mul(factors) => {
+            let mut combined_exp_args = Vec::new();
+            let mut other_factors = Vec::new();
+
+            for factor in factors
+                .into_iter()
+                .map(|factor| combine_exponential_factors(factor, interner))
+            {
+                match factor {
+                    Expr::Call(sym, args) if sym == exp_sym && args.len() == 1 => {
+                        combined_exp_args.push(args[0].clone());
+                    }
+                    other => other_factors.push(other),
+                }
+            }
+
+            if !combined_exp_args.is_empty() {
+                let combined_arg = simplify_expr(Expr::add(combined_exp_args));
+                if combined_arg != Expr::zero() {
+                    other_factors.push(Expr::Call(exp_sym, vec![combined_arg]));
+                }
+            }
+
+            simplify_expr(Expr::mul(other_factors))
+        }
+        Expr::Neg(inner) => simplify_expr(Expr::neg(combine_exponential_factors(*inner, interner))),
+        other => other,
+    }
+}
+
+/// Evolve a finite-dimensional operator in the Heisenberg picture under a
+/// constant Hermitian Hamiltonian using `O(t) = U†(t) O0 U(t)`.
+///
+/// This returns the explicit evolved operator matrix rather than an
+/// unevaluated symbolic `U† O0 U` wrapper. The Hamiltonian must be a
+/// supported square Hermitian matrix, and the input operator must be a square
+/// matrix of matching dimension.
+pub fn heisenberg_evolve_operator(
+    h: &[Vec<Expr>],
+    op0: &[Vec<Expr>],
+    t: Expr,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, OperatorEvolutionError> {
+    let dim = is_square_matrix(h).map_err(map_spectral_error_to_matrix_exponential_error)?;
+    let (rows, cols) =
+        matrix_shape(op0).ok_or(OperatorEvolutionError::OperatorDimensionMismatch {
+            expected: dim,
+            actual: op0.len(),
+        })?;
+    if rows != dim || cols != dim {
+        return Err(OperatorEvolutionError::OperatorDimensionMismatch {
+            expected: dim,
+            actual: rows,
+        });
+    }
+
+    let evolution = time_evolution_operator(h, t, interner)?;
+    let evolution_dag = matrix_conjugate_transpose(&evolution);
+    let left = ax_linalg::mat_mul(&evolution_dag, op0, interner);
+    Ok(
+        simplify_matrix(ax_linalg::mat_mul(&left, &evolution, interner))
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|entry| combine_exponential_factors(entry, interner))
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
+/// Construct the closed-system density-matrix right-hand side
+/// `ρ̇ = -i (Hρ - ρH)` for a finite-dimensional Hamiltonian and density matrix.
+///
+/// Both `H` and `ρ` must be square matrices of the same dimension. The result
+/// is returned as an explicit symbolic matrix with elementwise simplification
+/// applied after the commutator and overall `-i` scaling.
+pub fn liouville_von_neumann_rhs(
+    h: &[Vec<Expr>],
+    rho: &[Vec<Expr>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, LiouvilleError> {
+    let (h_rows, h_cols) = matrix_shape(h).unwrap_or((h.len(), h.first().map_or(0, Vec::len)));
+    if h_rows != h_cols {
+        return Err(LiouvilleError::HamiltonianNotSquare {
+            rows: h_rows,
+            cols: h_cols,
+        });
+    }
+
+    let (rho_rows, rho_cols) =
+        matrix_shape(rho).unwrap_or((rho.len(), rho.first().map_or(0, Vec::len)));
+    if rho_rows != rho_cols {
+        return Err(LiouvilleError::StateNotSquare {
+            rows: rho_rows,
+            cols: rho_cols,
+        });
+    }
+
+    if rho_rows != h_rows {
+        return Err(LiouvilleError::DimensionMismatch {
+            expected: h_rows,
+            actual: rho_rows,
+        });
+    }
+
+    Ok(simplify_matrix(ax_linalg::mat_scale(
+        &Expr::neg(imag_unit()),
+        &commutator(h, rho, interner),
+    )))
+}
+
 fn is_zero_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Int(n) if n.is_zero()) || matches!(expr, Expr::Rational(r) if r.is_zero())
 }
@@ -2739,6 +4038,38 @@ fn numeric_scalar_expr(expr: &Expr) -> Option<f64> {
         Expr::Float(value) => Some(*value),
         _ => None,
     }
+}
+
+/// Convert a numeric scalar expression into an explicit complex `(re, im)` pair.
+///
+/// Accepted forms are integers, rationals, floats, and explicit complex numbers
+/// whose real and imaginary parts are themselves numeric scalar expressions.
+pub fn numeric_complex_from_expr(expr: &Expr) -> Result<(f64, f64), LindbladianSpectrumError> {
+    match expr {
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => numeric_scalar_expr(expr)
+            .map(|value| (value, 0.0))
+            .ok_or(LindbladianSpectrumError::NonNumericOperator),
+        Expr::Complex(re, im) => Ok((
+            numeric_scalar_expr(re).ok_or(LindbladianSpectrumError::NonNumericOperator)?,
+            numeric_scalar_expr(im).ok_or(LindbladianSpectrumError::NonNumericOperator)?,
+        )),
+        _ => Err(LindbladianSpectrumError::NonNumericOperator),
+    }
+}
+
+/// Convert a dense exact expression matrix into numeric complex entries.
+///
+/// Every element must be representable by [`numeric_complex_from_expr`].
+pub fn dense_numeric_matrix_from_expr(
+    mat: &[Vec<Expr>],
+) -> Result<Vec<Vec<(f64, f64)>>, LindbladianSpectrumError> {
+    mat.iter()
+        .map(|row| {
+            row.iter()
+                .map(numeric_complex_from_expr)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect()
 }
 
 fn numeric_complex_expr(expr: &Expr) -> Result<(f64, f64), ChannelError> {
@@ -3884,6 +5215,132 @@ pub fn choi_matrix_from_kraus(kraus: &[Vec<Vec<Expr>>]) -> Result<Vec<Vec<Expr>>
     Ok(simplify_matrix(choi))
 }
 
+fn sqrt_argument<'a>(expr: &'a Expr, interner: &ax_ir::Interner) -> Option<&'a Expr> {
+    let Expr::Call(sym, args) = expr else {
+        return None;
+    };
+    if interner.resolve(*sym) == "sqrt" {
+        let [arg] = args.as_slice() else {
+            return None;
+        };
+        Some(arg)
+    } else {
+        None
+    }
+}
+
+fn one_minus_parameter(expr: &Expr, interner: &ax_ir::Interner) -> Option<Expr> {
+    let arg = sqrt_argument(expr, interner)?;
+    let Expr::Add(terms) = arg else {
+        return None;
+    };
+    let [one, neg_param] = terms.as_slice() else {
+        return None;
+    };
+    if one != &Expr::one() {
+        return None;
+    }
+    match neg_param {
+        Expr::Neg(param) => Some((**param).clone()),
+        _ => None,
+    }
+}
+
+fn scaled_by_one_third_parameter(expr: &Expr, interner: &ax_ir::Interner) -> Option<Expr> {
+    let arg = sqrt_argument(expr, interner)?;
+    let Expr::Mul(factors) = arg else {
+        return None;
+    };
+    let [left, right] = factors.as_slice() else {
+        return None;
+    };
+    let one_third = Expr::Rational(BigRational::new(BigInt::one(), BigInt::from(3usize)));
+    if right == &one_third {
+        Some(left.clone())
+    } else if left == &one_third {
+        Some(right.clone())
+    } else {
+        None
+    }
+}
+
+fn exact_canonical_qubit_family_hint(
+    kraus: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Option<&'static str> {
+    if kraus.len() == 4 {
+        let p = kraus
+            .first()
+            .and_then(|k| k.first())
+            .and_then(|row| row.first())
+            .and_then(|entry| one_minus_parameter(entry, interner))
+            .or_else(|| {
+                kraus
+                    .get(1)
+                    .and_then(|k| k.first())
+                    .and_then(|row| row.get(1))
+                    .and_then(|entry| scaled_by_one_third_parameter(entry, interner))
+            })?;
+        if depolarizing_channel_qubit(p, interner) == kraus {
+            return Some("depolarizing");
+        }
+        return None;
+    }
+
+    if kraus.len() != 2 {
+        return None;
+    }
+
+    let gamma = kraus
+        .get(1)
+        .and_then(|k| k.first())
+        .and_then(|row| row.get(1))
+        .and_then(|entry| sqrt_argument(entry, interner))
+        .cloned();
+    if let Some(gamma) = gamma {
+        if amplitude_damping_channel_qubit(gamma, interner) == kraus {
+            return Some("amplitude_damping");
+        }
+    }
+
+    let p = kraus
+        .first()
+        .and_then(|k| k.first())
+        .and_then(|row| row.first())
+        .and_then(|entry| one_minus_parameter(entry, interner))?;
+    if bit_flip_channel_qubit(p.clone(), interner) == kraus {
+        return Some("bit_flip");
+    }
+    if dephasing_channel_qubit(p.clone(), interner) == kraus {
+        return Some("dephasing");
+    }
+    if phase_flip_channel_qubit(p.clone(), interner) == kraus {
+        return Some("phase_flip");
+    }
+    if bit_phase_flip_channel_qubit(p, interner) == kraus {
+        return Some("bit_phase_flip");
+    }
+    None
+}
+
+/// Return a canonical family hint for Kraus lists produced exactly by this crate.
+///
+/// The recognizer verifies the input against the concrete Kraus operators emitted
+/// by the channel constructors and does not classify structurally similar,
+/// partially matching, or reordered arbitrary Kraus sets.
+pub fn canonical_channel_family_hint(
+    kraus: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Option<String> {
+    if let Ok(dim) = kraus_dimension(kraus) {
+        if identity_channel(dim) == kraus {
+            return Some("identity".to_string());
+        }
+    }
+
+    exact_canonical_qubit_family_hint(kraus, interner).map(str::to_string)
+}
+
 fn matrix_from_column_major_vec(vec: &[Expr], dim: usize) -> Option<Vec<Vec<Expr>>> {
     if vec.len() != dim.checked_mul(dim)? {
         return None;
@@ -4757,6 +6214,98 @@ pub fn post_measurement_state(
     )))
 }
 
+/// Vectorize a density matrix in canonical column-major order.
+///
+/// For a matrix `rho`, this returns
+/// `[rho_00, rho_10, ..., rho_(d-1)0, rho_01, rho_11, ..., rho_(d-1)(d-1)]`.
+pub fn vec_column_major_density(rho: &[Vec<Expr>]) -> Vec<Expr> {
+    let cols = rho.first().map(|row| row.len()).unwrap_or(0);
+    let mut out = Vec::with_capacity(rho.len().saturating_mul(cols));
+    for col in 0..cols {
+        for row in rho {
+            if let Some(entry) = row.get(col) {
+                out.push(entry.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Construct the finite-dimensional Lindbladian as a superoperator acting on
+/// the column-major vectorization `vec(rho)`.
+///
+/// For a Hilbert-space dimension `d`, the returned superoperator has shape
+/// `d^2 x d^2`. It is built exactly by applying `lindblad_rhs` to each
+/// matrix-unit basis density operator `E_ij`, vectorizing the result in
+/// column-major order, and placing that vector in the corresponding
+/// superoperator column.
+pub fn lindbladian_superoperator(
+    h: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Vec<Expr>>, LindbladianSpectrumError> {
+    let dim = validate_lindblad_square_matrix(h, "Hamiltonian")?;
+    validate_lindblad_jump_ops(jump_ops, dim)?;
+
+    let super_dim = dim.saturating_mul(dim);
+    let mut superoperator = vec![vec![Expr::zero(); super_dim]; super_dim];
+
+    for basis_col in 0..dim {
+        for basis_row in 0..dim {
+            let mut basis_density = zero_matrix(dim);
+            basis_density[basis_row][basis_col] = Expr::one();
+            let rhs = lindblad_rhs(h, &basis_density, jump_ops, interner)?;
+            let column = vec_column_major_density(&rhs);
+            let super_col = basis_col * dim + basis_row;
+            for (super_row, entry) in column.into_iter().enumerate() {
+                superoperator[super_row][super_col] = entry;
+            }
+        }
+    }
+
+    Ok(superoperator)
+}
+
+/// Construct a sparse numeric Lindbladian superoperator for finite-dimensional inputs.
+///
+/// This helper first builds the exact dense superoperator using
+/// [`lindbladian_superoperator`], then converts its entries into numeric complex
+/// pairs and finally drops explicit zeros when emitting COO entries.
+pub fn sparse_lindbladian_superoperator_numeric(
+    h: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<ax_linalg::SparseMatrixCoo<(f64, f64)>, LindbladianSpectrumError> {
+    let superoperator = lindbladian_superoperator(h, jump_ops, interner)?;
+    let numeric_superoperator = dense_numeric_matrix_from_expr(&superoperator)?;
+    ax_linalg::dense_to_sparse_coo(&numeric_superoperator, &(0.0, 0.0)).map_err(Into::into)
+}
+
+/// Return exact Lindbladian eigenvalues for explicitly supported low-dimensional cases.
+///
+/// Supported cases:
+/// - `d = 1`
+/// - `d = 2` only when the constructed `4x4` Lindbladian superoperator is diagonal
+///
+/// All other cases return `UnsupportedDimension { dim }`, where `dim` is the
+/// Hilbert-space dimension rather than the superoperator dimension.
+pub fn lindbladian_eigenvalues_small(
+    h: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, LindbladianSpectrumError> {
+    let dim = validate_lindblad_square_matrix(h, "Hamiltonian")?;
+    validate_lindblad_jump_ops(jump_ops, dim)?;
+
+    let superoperator = lindbladian_superoperator(h, jump_ops, interner)?;
+    match dim {
+        1 => Ok(vec![superoperator[0][0].clone()]),
+        2 => diagonal_entries(&superoperator)
+            .ok_or(LindbladianSpectrumError::UnsupportedDimension { dim }),
+        _ => Err(LindbladianSpectrumError::UnsupportedDimension { dim }),
+    }
+}
+
 /// Construct the finite-dimensional Lindblad right-hand side
 /// `ρ̇ = -i [H, ρ] + Σ_k (L_k ρ L_k† - 1/2 {L_k† L_k, ρ})`.
 pub fn lindblad_rhs(
@@ -5323,8 +6872,8 @@ fn gamma_effective_dimension(
     dimension: Option<usize>,
     properties: &dyn ax_tensor::PropertyLookup,
 ) -> Option<usize> {
-    gamma_declared_dimension(gam1, properties)
-        .or_else(|| gamma_declared_dimension(gam2, properties))
+    gamma_dimension_of_expr(gam1, properties)
+        .or_else(|| gamma_dimension_of_expr(gam2, properties))
         .or_else(|| {
             g1.indices
                 .iter()
@@ -5333,6 +6882,37 @@ fn gamma_effective_dimension(
                 .max()
         })
         .or(dimension)
+}
+
+fn gamma_conventions_compatible(
+    gam1: &Expr,
+    gam2: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> bool {
+    if gamma_convention_conflict_of_expr(gam1, properties)
+        || gamma_convention_conflict_of_expr(gam2, properties)
+    {
+        return false;
+    }
+
+    match (
+        gamma_convention_of_expr(gam1, properties),
+        gamma_convention_of_expr(gam2, properties),
+    ) {
+        (Some(lhs), Some(rhs)) => lhs.signature == rhs.signature && lhs.clifford == rhs.clifford,
+        _ => true,
+    }
+}
+
+fn gamma_contraction_sign(
+    expr: &Expr,
+    contraction_count: usize,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> i32 {
+    match gamma_clifford_sign(expr, properties) {
+        Some(CliffordConvention::MinusTwoG) if contraction_count % 2 == 1 => -1,
+        _ => 1,
+    }
 }
 
 fn gamma_effective_families(
@@ -5611,6 +7191,14 @@ pub fn join_gamma_full(
         return Expr::mul(vec![gam1.clone(), gam2.clone()]);
     };
 
+    if !gamma_conventions_compatible(gam1, gam2, properties) {
+        return qm_error_expr(
+            "join_gamma_convention_mismatch",
+            &Expr::mul(vec![gam1.clone(), gam2.clone()]),
+            interner,
+        );
+    }
+
     let rank1 = g1.indices.len();
     let rank2 = g2.indices.len();
     let dim = gamma_effective_dimension(gam1, &g1, gam2, &g2, dimension, properties);
@@ -5660,6 +7248,7 @@ pub fn join_gamma_full(
         let left_choices = combinations_of(rank1, i);
         let right_choices = combinations_of(rank2, i);
         let mut contracted_terms = Vec::new();
+        let clifford_contraction_sign = gamma_contraction_sign(gam1, i, properties);
         for left in &left_choices {
             for right in &right_choices {
                 let left_sign = permutation_parity(left);
@@ -5711,7 +7300,7 @@ pub fn join_gamma_full(
                     continue;
                 }
                 let mut term = Expr::mul(vec![gamma_part, contraction]);
-                if left_sign * right_sign < 0 {
+                if left_sign * right_sign * clifford_contraction_sign < 0 {
                     term = Expr::neg(term);
                 }
                 contracted_terms.push(term);
@@ -5807,6 +7396,130 @@ pub fn fierz_coefficients(dim: usize) -> Vec<(num_rational::BigRational, usize)>
     }
 
     result
+}
+
+fn gamma5_symbol(interner: &ax_ir::Interner) -> Expr {
+    Expr::Sym(interner.get_or_intern("gamma5"))
+}
+
+fn convention_dimension_matches_spinor(
+    spinor_meta: &ax_ir::SpinorMetadata,
+    gamma_meta: &ax_ir::GammaConventionMetadata,
+) -> bool {
+    match (spinor_meta.dimension, gamma_meta.dimension) {
+        (Some(spinor_dim), Some(gamma_dim)) => spinor_dim == gamma_dim,
+        _ => false,
+    }
+}
+
+/// Select the Fierz gamma-basis sectors implied by structured spinor and gamma metadata.
+///
+/// In four dimensions, unconstrained Dirac and Majorana spinors use the full
+/// five-sector basis `1`, `gamma(mu)`, `sigma(mu,nu)`, `gamma(mu) gamma5`,
+/// and `gamma5`. Explicitly chiral Weyl or Majorana-Weyl spinors use a reduced
+/// chiral basis that omits scalar, pseudoscalar, and axial-vector sectors that
+/// are not independent in a fixed chirality sector.
+pub fn fierz_basis_for_metadata(
+    spinor_meta: &ax_ir::SpinorMetadata,
+    gamma_meta: Option<&ax_ir::GammaConventionMetadata>,
+    interner: &ax_ir::Interner,
+) -> Vec<Expr> {
+    let Some(gamma_meta) = gamma_meta else {
+        return Vec::new();
+    };
+    if !convention_dimension_matches_spinor(spinor_meta, gamma_meta)
+        || spinor_meta.dimension != Some(4)
+        || gamma_meta.gamma5.is_none()
+    {
+        return Vec::new();
+    }
+
+    let mu = Expr::Sym(interner.get_or_intern("mu"));
+    let nu = Expr::Sym(interner.get_or_intern("nu"));
+    let gamma_mu = gamma_factor(mu.clone(), interner);
+    let sigma_munu = sigma_matrix(mu.clone(), nu, interner);
+    let gamma5 = gamma5_symbol(interner);
+
+    match &spinor_meta.class {
+        SpinorClass::Dirac | SpinorClass::Majorana if spinor_meta.chirality.is_none() => vec![
+            Expr::one(),
+            gamma_mu.clone(),
+            sigma_munu,
+            Expr::mul(vec![gamma_mu, gamma5.clone()]),
+            gamma5,
+        ],
+        SpinorClass::Weyl | SpinorClass::MajoranaWeyl if spinor_meta.chirality.is_some() => {
+            vec![gamma_mu, sigma_munu]
+        }
+        SpinorClass::Dirac | SpinorClass::Majorana if spinor_meta.chirality.is_some() => {
+            vec![gamma_mu, sigma_munu]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn fierz_basis_rank(expr: &Expr, interner: &ax_ir::Interner) -> Option<usize> {
+    if *expr == Expr::one() {
+        return Some(0);
+    }
+    match expr {
+        Expr::Call(sym, args) if interner.resolve(*sym) == "gamma" && args.len() == 1 => Some(1),
+        Expr::Call(sym, args) if interner.resolve(*sym) == "sigma" && args.len() == 2 => Some(2),
+        Expr::Sym(sym) if interner.resolve(*sym) == "gamma5" => Some(4),
+        Expr::Mul(factors) if factors.len() == 2 => {
+            let has_gamma = factors
+                .iter()
+                .any(|factor| matches!(factor, Expr::Call(sym, args) if interner.resolve(*sym) == "gamma" && args.len() == 1));
+            let has_gamma5 = factors.iter().any(
+                |factor| matches!(factor, Expr::Sym(sym) if interner.resolve(*sym) == "gamma5"),
+            );
+            (has_gamma && has_gamma5).then_some(3)
+        }
+        _ => None,
+    }
+}
+
+/// Return Fierz coefficients for a metadata-selected basis.
+///
+/// Coefficients are returned in the same order as `basis`. The mapping uses the
+/// standard four-dimensional rank table for the corresponding sector:
+/// scalar rank 0, vector rank 1, sigma rank 2, axial-vector rank 3, and
+/// pseudoscalar rank 4. Missing dimension, missing gamma5 convention, or an
+/// unrecognized basis sector returns `InsufficientConventionData`.
+pub fn fierz_coefficients_for_basis(
+    basis: &[Expr],
+    spinor_meta: &ax_ir::SpinorMetadata,
+    gamma_meta: Option<&ax_ir::GammaConventionMetadata>,
+    interner: &ax_ir::Interner,
+) -> Result<Vec<Expr>, FierzError> {
+    let Some(gamma_meta) = gamma_meta else {
+        return Err(FierzError::InsufficientConventionData);
+    };
+    if basis.is_empty()
+        || !convention_dimension_matches_spinor(spinor_meta, gamma_meta)
+        || spinor_meta.dimension != Some(4)
+        || gamma_meta.gamma5.is_none()
+    {
+        return Err(FierzError::InsufficientConventionData);
+    }
+
+    let table = fierz_coefficients(4)
+        .into_iter()
+        .map(|(coefficient, rank)| (rank, coefficient))
+        .collect::<HashMap<_, _>>();
+
+    basis
+        .iter()
+        .map(|sector| {
+            let rank =
+                fierz_basis_rank(sector, interner).ok_or(FierzError::InsufficientConventionData)?;
+            table
+                .get(&rank)
+                .cloned()
+                .map(Expr::Rational)
+                .ok_or(FierzError::InsufficientConventionData)
+        })
+        .collect()
 }
 
 /// Perform a Fierz rearrangement.
@@ -6250,6 +7963,1275 @@ fn is_gamma_expr(expr: &Expr, gamma_sym: lasso::Spur) -> bool {
     gamma_index_count(expr, gamma_sym).is_some()
 }
 
+fn is_diracbar_call(
+    expr: &Expr,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> Option<(lasso::Spur, Expr)> {
+    match expr {
+        Expr::Call(sym, args)
+            if args.len() == 1
+                && diracbar_metadata_of_expr(&Expr::Sym(*sym), properties).is_some() =>
+        {
+            Some((*sym, args[0].clone()))
+        }
+        _ => None,
+    }
+}
+
+fn is_diracbar_scalar_factor(expr: &Expr, properties: &dyn ax_tensor::PropertyLookup) -> bool {
+    if matches!(
+        expr,
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) | Expr::Complex(_, _)
+    ) {
+        return true;
+    }
+    gamma_metadata_of_expr(expr, properties).is_none()
+        && spinor_metadata_of_expr(expr, properties).is_none()
+        && is_diracbar_call(expr, properties).is_none()
+}
+
+fn conjugate_scalar_factor(expr: Expr, interner: &ax_ir::Interner) -> Expr {
+    match expr {
+        Expr::Int(_) | Expr::Rational(_) | Expr::Float(_) => expr,
+        Expr::Complex(re, im) => Expr::Complex(re, Box::new(Expr::neg(*im))),
+        other => conj_expr(other, interner),
+    }
+}
+
+/// Return the canonical Dirac-bar action on a gamma factor.
+///
+/// Gamma factors are represented as `bar_action(gamma(...))` so the operation
+/// is explicit and does not collapse to a sign inferred only from chain length.
+pub fn diracbar_action_on_gamma(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    if gamma_metadata_of_expr(expr, props).is_some() {
+        Expr::Call(interner.get_or_intern("bar_action"), vec![expr.clone()])
+    } else {
+        adjoint_of(expr.clone(), interner)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChiralProjectorKind {
+    Left,
+    Right,
+}
+
+fn chiral_projector_kind(expr: &Expr, interner: &ax_ir::Interner) -> Option<ChiralProjectorKind> {
+    if *expr == projector_left(interner) {
+        return Some(ChiralProjectorKind::Left);
+    }
+    if *expr == projector_right(interner) {
+        return Some(ChiralProjectorKind::Right);
+    }
+    match expr {
+        Expr::Sym(sym) => match interner.resolve(*sym) {
+            "P_L" | "PL" | "projector_left" => Some(ChiralProjectorKind::Left),
+            "P_R" | "PR" | "projector_right" => Some(ChiralProjectorKind::Right),
+            _ => None,
+        },
+        Expr::Call(sym, args) if args.is_empty() => match interner.resolve(*sym) {
+            "P_L" | "PL" | "projector_left" => Some(ChiralProjectorKind::Left),
+            "P_R" | "PR" | "projector_right" => Some(ChiralProjectorKind::Right),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn chiral_projector_expr(kind: ChiralProjectorKind, interner: &ax_ir::Interner) -> Expr {
+    match kind {
+        ChiralProjectorKind::Left => projector_left(interner),
+        ChiralProjectorKind::Right => projector_right(interner),
+    }
+}
+
+fn chiral_projector_body_kind(
+    expr: &Expr,
+    interner: &ax_ir::Interner,
+) -> Option<ChiralProjectorKind> {
+    let gamma5 = Expr::Sym(interner.get_or_intern("gamma5"));
+    if *expr == Expr::add(vec![Expr::one(), Expr::neg(gamma5.clone())]) {
+        Some(ChiralProjectorKind::Left)
+    } else if *expr == Expr::add(vec![Expr::one(), gamma5]) {
+        Some(ChiralProjectorKind::Right)
+    } else {
+        None
+    }
+}
+
+fn chiral_projector_denominator(count: usize) -> BigInt {
+    (0..count).fold(BigInt::one(), |acc, _| acc * BigInt::from(2usize))
+}
+
+fn coalesce_chiral_projector_factors(factors: Vec<Expr>, interner: &ax_ir::Interner) -> Vec<Expr> {
+    let mut numeric_coeff = None;
+    let mut projector_kinds = Vec::new();
+    let mut other = Vec::new();
+
+    for factor in factors {
+        if let Some(kind) = chiral_projector_kind(&factor, interner)
+            .or_else(|| chiral_projector_body_kind(&factor, interner))
+        {
+            projector_kinds.push(kind);
+        } else if let Expr::Rational(coeff) = &factor {
+            numeric_coeff = Some(coeff.clone());
+        } else {
+            other.push(factor);
+        }
+    }
+
+    if projector_kinds.is_empty() {
+        if let Some(coeff) = numeric_coeff {
+            other.insert(0, Expr::Rational(coeff));
+        }
+        return other;
+    }
+
+    let expected = BigRational::new(
+        BigInt::one(),
+        chiral_projector_denominator(projector_kinds.len()),
+    );
+    if numeric_coeff.as_ref() != Some(&expected) {
+        if let Some(coeff) = numeric_coeff {
+            other.insert(0, Expr::Rational(coeff));
+        }
+        other.extend(projector_kinds.into_iter().map(|kind| match kind {
+            ChiralProjectorKind::Left => Expr::add(vec![
+                Expr::one(),
+                Expr::neg(Expr::Sym(interner.get_or_intern("gamma5"))),
+            ]),
+            ChiralProjectorKind::Right => Expr::add(vec![
+                Expr::one(),
+                Expr::Sym(interner.get_or_intern("gamma5")),
+            ]),
+        }));
+        return other;
+    }
+
+    let mut coalesced = projector_kinds
+        .into_iter()
+        .map(|kind| chiral_projector_expr(kind, interner))
+        .collect::<Vec<_>>();
+    coalesced.extend(other);
+    coalesced
+}
+
+fn spinor_chirality_of_expr(expr: &Expr, props: &dyn PropertyLookup) -> Option<ax_ir::Chirality> {
+    let metadata = spinor_metadata_of_expr(expr, props)?;
+    let is_weyl = matches!(
+        metadata.class,
+        SpinorClass::Weyl | SpinorClass::MajoranaWeyl
+    );
+    is_weyl.then_some(metadata.chirality).flatten()
+}
+
+fn apply_chiral_projector_to_spinor(
+    projector: ChiralProjectorKind,
+    spinor: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<Expr> {
+    match (projector, spinor_chirality_of_expr(spinor, props)?) {
+        (ChiralProjectorKind::Left, ax_ir::Chirality::Left)
+        | (ChiralProjectorKind::Right, ax_ir::Chirality::Right) => Some(spinor.clone()),
+        (ChiralProjectorKind::Left, ax_ir::Chirality::Right)
+        | (ChiralProjectorKind::Right, ax_ir::Chirality::Left) => Some(Expr::zero()),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BilinearSector {
+    Scalar,
+    Pseudoscalar,
+    Vector,
+    AxialVector,
+    Tensor,
+}
+
+fn explicit_structured_weyl_chirality(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<ax_ir::Chirality> {
+    let sym = property_sym(expr)?;
+    let metadata = declared_spinor_metadata_of_symbol(sym, props)?;
+    if metadata.dimension != Some(4) {
+        return None;
+    }
+    match metadata.class {
+        SpinorClass::Weyl | SpinorClass::MajoranaWeyl => metadata.chirality,
+        _ => None,
+    }
+}
+
+fn explicit_structured_majorana_4d(expr: &Expr, props: &dyn PropertyLookup) -> Option<lasso::Spur> {
+    let sym = property_sym(expr)?;
+    let metadata = declared_spinor_metadata_of_symbol(sym, props)?;
+    if metadata.dimension != Some(4) {
+        return None;
+    }
+    match metadata.class {
+        SpinorClass::Majorana | SpinorClass::MajoranaWeyl => Some(sym),
+        _ => None,
+    }
+}
+
+fn gamma_factor_has_supported_4d_convention(expr: &Expr, props: &dyn PropertyLookup) -> bool {
+    gamma_convention_of_expr(expr, props).is_some_and(|metadata| metadata.dimension == Some(4))
+}
+
+fn gamma5_factor_has_supported_4d_convention(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: Option<&ax_ir::Interner>,
+) -> bool {
+    match expr {
+        Expr::Sym(sym) | Expr::Call(sym, _) => {
+            if let Some(interner) = interner {
+                let name = interner.resolve(*sym);
+                if name == "gamma5" || name == "Gamma5" || name == "γ5" {
+                    return declared_gamma_convention_metadata_of_symbol(
+                        interner.get_or_intern("gamma"),
+                        props,
+                    )
+                    .is_some_and(|metadata| {
+                        metadata.dimension == Some(4) && metadata.gamma5.is_some()
+                    });
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn bilinear_sector_from_middle(
+    middle: Option<&Expr>,
+    props: &dyn PropertyLookup,
+    interner: Option<&ax_ir::Interner>,
+) -> Option<BilinearSector> {
+    let Some(middle) = middle else {
+        return Some(BilinearSector::Scalar);
+    };
+    if *middle == Expr::one() {
+        return Some(BilinearSector::Scalar);
+    }
+    if gamma5_factor_has_supported_4d_convention(middle, props, interner) {
+        return Some(BilinearSector::Pseudoscalar);
+    }
+    if let Some(data) = gamma_expr_data(middle, props) {
+        if !gamma_factor_has_supported_4d_convention(&data.head, props)
+            && !gamma_factor_has_supported_4d_convention(middle, props)
+        {
+            return None;
+        }
+        return match data.indices.len() {
+            1 => Some(BilinearSector::Vector),
+            2 => Some(BilinearSector::Tensor),
+            _ => None,
+        };
+    }
+    if let Expr::Mul(factors) = middle {
+        if factors.len() == 2 {
+            let gamma_pos = factors
+                .iter()
+                .position(|factor| gamma_expr_data(factor, props).is_some())?;
+            let gamma = &factors[gamma_pos];
+            let gamma5 = &factors[1 - gamma_pos];
+            let data = gamma_expr_data(gamma, props)?;
+            if data.indices.len() == 1
+                && gamma_factor_has_supported_4d_convention(&data.head, props)
+                && gamma5_factor_has_supported_4d_convention(gamma5, props, interner)
+            {
+                return Some(BilinearSector::AxialVector);
+            }
+        }
+    }
+    if let Some(interner) = interner {
+        if let Expr::Call(sym, args) = middle {
+            if interner.resolve(*sym) == "sigma" && args.len() == 2 {
+                return declared_gamma_convention_metadata_of_symbol(
+                    interner.get_or_intern("gamma"),
+                    props,
+                )
+                .is_some_and(|metadata| metadata.dimension == Some(4))
+                .then_some(BilinearSector::Tensor);
+            }
+        }
+    }
+    None
+}
+
+fn diracbar_spinor_arg<'a>(expr: &'a Expr, props: &dyn PropertyLookup) -> Option<&'a Expr> {
+    match expr {
+        Expr::Call(sym, args)
+            if args.len() == 1 && diracbar_metadata_of_expr(&Expr::Sym(*sym), props).is_some() =>
+        {
+            Some(&args[0])
+        }
+        _ => None,
+    }
+}
+
+fn opposite_chirality(chirality: ax_ir::Chirality) -> ax_ir::Chirality {
+    match chirality {
+        ax_ir::Chirality::Left => ax_ir::Chirality::Right,
+        ax_ir::Chirality::Right => ax_ir::Chirality::Left,
+    }
+}
+
+fn projector_forbids_barred_weyl(
+    projector: ChiralProjectorKind,
+    left_chirality: ax_ir::Chirality,
+) -> bool {
+    match (projector, opposite_chirality(left_chirality)) {
+        (ChiralProjectorKind::Left, ax_ir::Chirality::Right)
+        | (ChiralProjectorKind::Right, ax_ir::Chirality::Left) => true,
+        (ChiralProjectorKind::Left, ax_ir::Chirality::Left)
+        | (ChiralProjectorKind::Right, ax_ir::Chirality::Right) => false,
+    }
+}
+
+fn projector_forbids_right_weyl(
+    projector: ChiralProjectorKind,
+    right_chirality: ax_ir::Chirality,
+) -> bool {
+    match (projector, right_chirality) {
+        (ChiralProjectorKind::Left, ax_ir::Chirality::Right)
+        | (ChiralProjectorKind::Right, ax_ir::Chirality::Left) => true,
+        (ChiralProjectorKind::Left, ax_ir::Chirality::Left)
+        | (ChiralProjectorKind::Right, ax_ir::Chirality::Right) => false,
+    }
+}
+
+fn middle_factor_list(middle: Option<&Expr>) -> Vec<&Expr> {
+    match middle {
+        Some(Expr::Mul(factors)) => factors.iter().collect(),
+        Some(expr) => vec![expr],
+        None => Vec::new(),
+    }
+}
+
+fn weyl_bilinear_forbidden(
+    left_spinor: &Expr,
+    middle: Option<&Expr>,
+    right: &Expr,
+    props: &dyn PropertyLookup,
+    interner: Option<&ax_ir::Interner>,
+) -> bool {
+    let (Some(left_chirality), Some(right_chirality)) = (
+        explicit_structured_weyl_chirality(left_spinor, props),
+        explicit_structured_weyl_chirality(right, props),
+    ) else {
+        return false;
+    };
+
+    let middle_factors = middle_factor_list(middle);
+    if let Some(first) = middle_factors.first() {
+        if let Some(projector) = interner.and_then(|i| {
+            chiral_projector_kind(first, i).or_else(|| chiral_projector_body_kind(first, i))
+        }) {
+            if projector_forbids_barred_weyl(projector, left_chirality.clone()) {
+                return true;
+            }
+        }
+    }
+    if let Some(last) = middle_factors.last() {
+        if let Some(projector) = interner.and_then(|i| {
+            chiral_projector_kind(last, i).or_else(|| chiral_projector_body_kind(last, i))
+        }) {
+            if projector_forbids_right_weyl(projector, right_chirality.clone()) {
+                return true;
+            }
+        }
+    }
+
+    let non_projector_middle = middle_factors
+        .iter()
+        .copied()
+        .filter(|factor| {
+            interner
+                .and_then(|i| {
+                    chiral_projector_kind(factor, i)
+                        .or_else(|| chiral_projector_body_kind(factor, i))
+                })
+                .is_none()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let middle_expr = match non_projector_middle.len() {
+        0 => None,
+        1 => non_projector_middle.first().cloned(),
+        _ => return false,
+    };
+    let Some(sector) = bilinear_sector_from_middle(middle_expr.as_ref(), props, interner) else {
+        return false;
+    };
+
+    let same_chirality = left_chirality == right_chirality;
+    match sector {
+        BilinearSector::Scalar | BilinearSector::Pseudoscalar | BilinearSector::Tensor => {
+            same_chirality
+        }
+        BilinearSector::Vector | BilinearSector::AxialVector => !same_chirality,
+    }
+}
+
+fn majorana_self_bilinear_forbidden(
+    left_spinor: &Expr,
+    middle: Option<&Expr>,
+    right: &Expr,
+    props: &dyn PropertyLookup,
+    interner: Option<&ax_ir::Interner>,
+) -> bool {
+    let (Some(left_sym), Some(right_sym)) = (
+        explicit_structured_majorana_4d(left_spinor, props),
+        explicit_structured_majorana_4d(right, props),
+    ) else {
+        return false;
+    };
+    if left_sym != right_sym {
+        return false;
+    }
+    let Some(sector) = bilinear_sector_from_middle(middle, props, interner) else {
+        return false;
+    };
+    matches!(sector, BilinearSector::Vector | BilinearSector::Tensor)
+}
+
+fn bilinear_is_forbidden_by_metadata_impl(
+    left: &Expr,
+    middle: Option<&Expr>,
+    right: &Expr,
+    props: &dyn PropertyLookup,
+    interner: Option<&ax_ir::Interner>,
+) -> bool {
+    let Some(left_spinor) = diracbar_spinor_arg(left, props) else {
+        return false;
+    };
+    weyl_bilinear_forbidden(left_spinor, middle, right, props, interner)
+        || majorana_self_bilinear_forbidden(left_spinor, middle, right, props, interner)
+}
+
+/// Return whether a single barred-spinor bilinear is forbidden by declared metadata.
+///
+/// The check is intentionally conservative: it only returns `true` when the
+/// left factor is a declared Dirac-bar call, the participating spinors carry
+/// structured 4D spinor metadata, and the middle factor can be classified from
+/// structured gamma/convention metadata. If any required metadata is missing,
+/// the bilinear is treated as unknown and this returns `false`.
+pub fn bilinear_is_forbidden_by_metadata(
+    left: &Expr,
+    middle: Option<&Expr>,
+    right: &Expr,
+    props: &dyn PropertyLookup,
+) -> bool {
+    bilinear_is_forbidden_by_metadata_impl(left, middle, right, props, None)
+}
+
+#[derive(Clone, Debug)]
+struct ImplicitSpinorChain {
+    bar_factor: Expr,
+    gamma_factors: Vec<Expr>,
+    right_spinor: Expr,
+    spinor_family: lasso::Spur,
+}
+
+fn compatible_spinor_chain_family(
+    bar_factor: &Expr,
+    left_spinor: &Expr,
+    gamma_factors: &[Expr],
+    right_spinor: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<lasso::Spur> {
+    let left_meta = spinor_metadata_of_expr(left_spinor, props)?;
+    let right_meta = spinor_metadata_of_expr(right_spinor, props)?;
+    let family = left_meta.index_family?;
+    if right_meta.index_family != Some(family) {
+        return None;
+    }
+
+    let bar_meta = diracbar_metadata_of_expr(bar_factor, props)?;
+    if bar_meta
+        .spinor_family
+        .is_some_and(|expected| expected != family)
+    {
+        return None;
+    }
+
+    for gamma in gamma_factors {
+        let gamma_meta = gamma_metadata_of_expr(gamma, props)?;
+        if gamma_meta.index_family != Some(family) {
+            return None;
+        }
+        if let Some(expected_gamma) = bar_meta.gamma_symbol {
+            if property_sym(gamma).is_some_and(|actual| actual != expected_gamma) {
+                return None;
+            }
+        }
+    }
+
+    Some(family)
+}
+
+fn parse_implicit_spinor_chain(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<ImplicitSpinorChain> {
+    let Expr::Mul(factors) = expr else {
+        return None;
+    };
+    if factors.len() < 2 {
+        return None;
+    }
+    if matches!(factors.first(), Some(Expr::Indexed(_, _)))
+        || matches!(factors.last(), Some(Expr::Indexed(_, _)))
+    {
+        return None;
+    }
+    let bar_factor = factors.first()?.clone();
+    let left_spinor = diracbar_spinor_arg(&bar_factor, props)?.clone();
+    let right_spinor = factors.last()?.clone();
+    if spinor_metadata_of_expr(&right_spinor, props).is_none() {
+        return None;
+    }
+
+    let gamma_factors = factors[1..factors.len() - 1].to_vec();
+    if gamma_factors.iter().any(|factor| {
+        matches!(factor, Expr::Indexed(_, _)) || gamma_metadata_of_expr(factor, props).is_none()
+    }) {
+        return None;
+    }
+
+    let spinor_family = compatible_spinor_chain_family(
+        &bar_factor,
+        &left_spinor,
+        &gamma_factors,
+        &right_spinor,
+        props,
+    )?;
+    Some(ImplicitSpinorChain {
+        bar_factor,
+        gamma_factors,
+        right_spinor,
+        spinor_family,
+    })
+}
+
+fn fresh_spinor_chain_indices(
+    count: usize,
+    family_name: lasso::Spur,
+    used: &mut HashSet<lasso::Spur>,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Vec<lasso::Spur> {
+    if let Some(family) = props
+        .index_families()
+        .and_then(|families| families.get(&family_name))
+    {
+        return (0..count)
+            .map(|_| fresh_dummy_from_family(family, used, interner))
+            .collect();
+    }
+
+    let prefix = interner.resolve(family_name).to_string();
+    let mut out = Vec::with_capacity(count);
+    let mut counter = 0usize;
+    while out.len() < count {
+        let candidate = interner.get_or_intern(&format!("{prefix}_{counter}"));
+        counter += 1;
+        if used.insert(candidate) {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+fn spinor_chain_index(name: lasso::Spur, variance: Variance, family: lasso::Spur) -> Index {
+    Index {
+        name,
+        variance,
+        index_type: Some(family),
+    }
+}
+
+fn insert_explicit_spinor_indices_for_chain(
+    chain: ImplicitSpinorChain,
+    used: &mut HashSet<lasso::Spur>,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let names = fresh_spinor_chain_indices(
+        chain.gamma_factors.len() + 1,
+        chain.spinor_family,
+        used,
+        props,
+        interner,
+    );
+    let mut explicit = Vec::with_capacity(chain.gamma_factors.len() + 2);
+    explicit.push(Expr::Indexed(
+        Box::new(chain.bar_factor),
+        vec![spinor_chain_index(
+            names[0],
+            Variance::Down,
+            chain.spinor_family,
+        )],
+    ));
+    for (idx, gamma) in chain.gamma_factors.into_iter().enumerate() {
+        explicit.push(Expr::Indexed(
+            Box::new(gamma),
+            vec![
+                spinor_chain_index(names[idx], Variance::Up, chain.spinor_family),
+                spinor_chain_index(names[idx + 1], Variance::Down, chain.spinor_family),
+            ],
+        ));
+    }
+    explicit.push(Expr::Indexed(
+        Box::new(chain.right_spinor),
+        vec![spinor_chain_index(
+            *names.last().expect("spinor chain has at least one index"),
+            Variance::Up,
+            chain.spinor_family,
+        )],
+    ));
+    Expr::mul(explicit)
+}
+
+/// Insert explicit contracted spinor indices for supported implicit spinor chains.
+///
+/// The bridge recognizes canonical metadata-backed products of the form
+/// `bar(psi) * gamma(...) * ... * chi`, including the no-gamma bilinear
+/// `bar(psi) * chi`. It requires structured Dirac-bar, spinor, gamma, and
+/// common spinor index-family metadata. Fresh dummy names are drawn from the
+/// declared `IndexFamily` when available. Expressions outside this supported
+/// canonical shape are returned unchanged.
+pub fn insert_explicit_spinor_indices(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let mut used = HashSet::new();
+    collect_all_index_names(expr, &mut used);
+    insert_explicit_spinor_indices_inner(expr, props, interner, &mut used)
+}
+
+fn insert_explicit_spinor_indices_inner(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+    used: &mut HashSet<lasso::Spur>,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mapped = Expr::mul(
+                factors
+                    .iter()
+                    .map(|factor| {
+                        insert_explicit_spinor_indices_inner(factor, props, interner, used)
+                    })
+                    .collect(),
+            );
+            if let Some(chain) = parse_implicit_spinor_chain(&mapped, props) {
+                insert_explicit_spinor_indices_for_chain(chain, used, props, interner)
+            } else {
+                mapped
+            }
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| insert_explicit_spinor_indices_inner(term, props, interner, used))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            insert_explicit_spinor_indices_inner(base, props, interner, used),
+            insert_explicit_spinor_indices_inner(exp, props, interner, used),
+        ),
+        Expr::Neg(inner) => Expr::neg(insert_explicit_spinor_indices_inner(
+            inner, props, interner, used,
+        )),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(insert_explicit_spinor_indices_inner(
+                re, props, interner, used,
+            )),
+            Box::new(insert_explicit_spinor_indices_inner(
+                im, props, interner, used,
+            )),
+        ),
+        Expr::Call(sym, args) => Expr::Call(
+            *sym,
+            args.iter()
+                .map(|arg| insert_explicit_spinor_indices_inner(arg, props, interner, used))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(insert_explicit_spinor_indices_inner(
+                base, props, interner, used,
+            )),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(insert_explicit_spinor_indices_inner(
+                inner, props, interner, used,
+            )),
+            *rel,
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(insert_explicit_spinor_indices_inner(
+                value, props, interner, used,
+            )),
+            Box::new(insert_explicit_spinor_indices_inner(
+                body, props, interner, used,
+            )),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| insert_explicit_spinor_indices_inner(item, props, interner, used))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| {
+                            insert_explicit_spinor_indices_inner(entry, props, interner, used)
+                        })
+                        .collect()
+                })
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(insert_explicit_spinor_indices_inner(
+                body, props, interner, used,
+            )),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(insert_explicit_spinor_indices_inner(
+                lhs, props, interner, used,
+            )),
+            Box::new(insert_explicit_spinor_indices_inner(
+                rhs, props, interner, used,
+            )),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (
+                        insert_explicit_spinor_indices_inner(value, props, interner, used),
+                        condition.clone(),
+                    )
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+fn indexed_single_spinor_factor<'a>(
+    expr: &'a Expr,
+    props: &dyn PropertyLookup,
+) -> Option<(&'a Expr, &'a Index)> {
+    let Expr::Indexed(base, indices) = expr else {
+        return None;
+    };
+    if indices.len() != 1 || spinor_metadata_of_expr(base, props).is_none() {
+        return None;
+    }
+    Some((base.as_ref(), &indices[0]))
+}
+
+fn indexed_barred_spinor_factor<'a>(
+    expr: &'a Expr,
+    props: &dyn PropertyLookup,
+) -> Option<(&'a Expr, &'a Expr, &'a Index)> {
+    let Expr::Indexed(base, indices) = expr else {
+        return None;
+    };
+    if indices.len() != 1 {
+        return None;
+    }
+    let spinor = diracbar_spinor_arg(base, props)?;
+    Some((base.as_ref(), spinor, &indices[0]))
+}
+
+fn indexed_gamma_spinor_factor<'a>(
+    expr: &'a Expr,
+    props: &dyn PropertyLookup,
+) -> Option<(&'a Expr, &'a Index, &'a Index)> {
+    let Expr::Indexed(base, indices) = expr else {
+        return None;
+    };
+    if indices.len() != 2 || gamma_metadata_of_expr(base, props).is_none() {
+        return None;
+    }
+    Some((base.as_ref(), &indices[0], &indices[1]))
+}
+
+fn same_spinor_chain_index(
+    left: &Index,
+    left_variance: Variance,
+    right: &Index,
+    right_variance: Variance,
+    family: lasso::Spur,
+) -> bool {
+    left.name == right.name
+        && left.variance == left_variance
+        && right.variance == right_variance
+        && left.index_type == Some(family)
+        && right.index_type == Some(family)
+}
+
+fn remove_explicit_spinor_chain(expr: &Expr, props: &dyn PropertyLookup) -> Option<Expr> {
+    let Expr::Mul(factors) = expr else {
+        return None;
+    };
+    if factors.len() < 2 {
+        return None;
+    }
+    let (bar_factor, left_spinor, bar_index) =
+        indexed_barred_spinor_factor(factors.first()?, props)?;
+    if bar_index.variance != Variance::Down {
+        return None;
+    }
+    let (right_spinor, right_index) = indexed_single_spinor_factor(factors.last()?, props)?;
+    if right_index.variance != Variance::Up {
+        return None;
+    }
+
+    let gamma_factors = factors[1..factors.len() - 1]
+        .iter()
+        .map(|factor| indexed_gamma_spinor_factor(factor, props))
+        .collect::<Option<Vec<_>>>()?;
+    let gamma_bases = gamma_factors
+        .iter()
+        .map(|(base, _, _)| (*base).clone())
+        .collect::<Vec<_>>();
+    let family =
+        compatible_spinor_chain_family(bar_factor, left_spinor, &gamma_bases, right_spinor, props)?;
+
+    if gamma_factors.is_empty() {
+        if !same_spinor_chain_index(bar_index, Variance::Down, right_index, Variance::Up, family) {
+            return None;
+        }
+    } else {
+        let (_, first_in, _) = gamma_factors.first()?;
+        if !same_spinor_chain_index(bar_index, Variance::Down, first_in, Variance::Up, family) {
+            return None;
+        }
+        for adjacent in gamma_factors.windows(2) {
+            let (_, _, prev_out) = adjacent[0];
+            let (_, next_in, _) = adjacent[1];
+            if !same_spinor_chain_index(prev_out, Variance::Down, next_in, Variance::Up, family) {
+                return None;
+            }
+        }
+        let (_, _, last_out) = gamma_factors.last()?;
+        if !same_spinor_chain_index(last_out, Variance::Down, right_index, Variance::Up, family) {
+            return None;
+        }
+    }
+
+    let mut implicit = Vec::with_capacity(factors.len());
+    implicit.push(bar_factor.clone());
+    implicit.extend(gamma_bases);
+    implicit.push(right_spinor.clone());
+    Some(Expr::mul(implicit))
+}
+
+/// Collapse explicit canonical spinor-index contractions back to implicit chains.
+///
+/// This inverse bridge recognizes only the unambiguous contraction pattern
+/// produced by `insert_explicit_spinor_indices`: `bar(psi)_a gamma^a_b ...
+/// chi^b`, with all spinor slots in one declared spinor index family. Any
+/// noncanonical or unsupported indexed expression is returned unchanged.
+pub fn remove_trivial_spinor_indices(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mapped = Expr::mul(
+                factors
+                    .iter()
+                    .map(|factor| remove_trivial_spinor_indices(factor, props, interner))
+                    .collect(),
+            );
+            remove_explicit_spinor_chain(&mapped, props).unwrap_or(mapped)
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| remove_trivial_spinor_indices(term, props, interner))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            remove_trivial_spinor_indices(base, props, interner),
+            remove_trivial_spinor_indices(exp, props, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(remove_trivial_spinor_indices(inner, props, interner)),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(remove_trivial_spinor_indices(re, props, interner)),
+            Box::new(remove_trivial_spinor_indices(im, props, interner)),
+        ),
+        Expr::Call(sym, args) => Expr::Call(
+            *sym,
+            args.iter()
+                .map(|arg| remove_trivial_spinor_indices(arg, props, interner))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(remove_trivial_spinor_indices(base, props, interner)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(remove_trivial_spinor_indices(inner, props, interner)),
+            *rel,
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(remove_trivial_spinor_indices(value, props, interner)),
+            Box::new(remove_trivial_spinor_indices(body, props, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| remove_trivial_spinor_indices(item, props, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| remove_trivial_spinor_indices(entry, props, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(remove_trivial_spinor_indices(body, props, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(remove_trivial_spinor_indices(lhs, props, interner)),
+            Box::new(remove_trivial_spinor_indices(rhs, props, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (
+                        remove_trivial_spinor_indices(value, props, interner),
+                        condition.clone(),
+                    )
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+fn bilinear_window_is_forbidden(
+    factors: &[Expr],
+    start: usize,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Option<usize> {
+    let left = factors.get(start)?;
+    diracbar_spinor_arg(left, props)?;
+    for end in (start + 1)..factors.len() {
+        if spinor_metadata_of_expr(&factors[end], props).is_none() {
+            continue;
+        }
+        let middle = match end - start {
+            1 => None,
+            2 => Some(factors[start + 1].clone()),
+            _ => Some(Expr::mul(factors[(start + 1)..end].to_vec())),
+        };
+        if bilinear_is_forbidden_by_metadata_impl(
+            left,
+            middle.as_ref(),
+            &factors[end],
+            props,
+            Some(interner),
+        ) {
+            return Some(end + 1);
+        }
+        return None;
+    }
+    None
+}
+
+/// Simplify supported 4D Majorana and Weyl spinor bilinears using metadata selection rules.
+///
+/// The simplifier scans products for `bar(psi) [sector/projector] chi`
+/// bilinear windows. It replaces a containing product by exact `0` only when
+/// structured metadata proves that the bilinear is forbidden, including
+/// explicit Weyl-chirality projector/action mismatches and the supported 4D
+/// Majorana self-bilinear sector table (`S`, `P`, `V`, `A`, `T`, with `V` and
+/// `T` forbidden for a self-bilinear in the declared convention). Expressions
+/// with insufficient metadata are returned unchanged.
+pub fn simplify_spinor_bilinear_selection_rules(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| simplify_spinor_bilinear_selection_rules(term, props, interner))
+                .collect(),
+        ),
+        Expr::Mul(factors) => {
+            let simplified = factors
+                .iter()
+                .map(|factor| simplify_spinor_bilinear_selection_rules(factor, props, interner))
+                .collect::<Vec<_>>();
+            let mut idx = 0usize;
+            while idx < simplified.len() {
+                if let Some(_next) = bilinear_window_is_forbidden(&simplified, idx, props, interner)
+                {
+                    return Expr::zero();
+                }
+                idx += 1;
+            }
+            Expr::mul(simplified)
+        }
+        Expr::Pow(base, exp) => Expr::pow(
+            simplify_spinor_bilinear_selection_rules(base, props, interner),
+            simplify_spinor_bilinear_selection_rules(exp, props, interner),
+        ),
+        Expr::Neg(inner) => Expr::neg(simplify_spinor_bilinear_selection_rules(
+            inner, props, interner,
+        )),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                re, props, interner,
+            )),
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                im, props, interner,
+            )),
+        ),
+        Expr::Call(sym, args) => Expr::Call(
+            *sym,
+            args.iter()
+                .map(|arg| simplify_spinor_bilinear_selection_rules(arg, props, interner))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                body, props, interner,
+            )),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                lhs, props, interner,
+            )),
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                rhs, props, interner,
+            )),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, condition)| {
+                    (
+                        simplify_spinor_bilinear_selection_rules(value, props, interner),
+                        condition.clone(),
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                base, props, interner,
+            )),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                inner, props, interner,
+            )),
+            *rel,
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                value, props, interner,
+            )),
+            Box::new(simplify_spinor_bilinear_selection_rules(
+                body, props, interner,
+            )),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| simplify_spinor_bilinear_selection_rules(item, props, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| {
+                            simplify_spinor_bilinear_selection_rules(entry, props, interner)
+                        })
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+/// Simplify canonical chiral projectors and their action on chiral Weyl spinors.
+///
+/// The rules include `P_L^2 = P_L`, `P_R^2 = P_R`, orthogonality
+/// `P_L P_R = P_R P_L = 0`, completeness `P_L + P_R = 1`, and projector
+/// action on Weyl spinors with explicit chirality metadata.
+pub fn simplify_chiral_projectors(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Add(terms) => {
+            let simplified_terms = terms
+                .iter()
+                .map(|term| simplify_chiral_projectors(term, props, interner))
+                .collect::<Vec<_>>();
+            let has_left = simplified_terms.iter().any(|term| {
+                chiral_projector_kind(term, interner) == Some(ChiralProjectorKind::Left)
+            });
+            let has_right = simplified_terms.iter().any(|term| {
+                chiral_projector_kind(term, interner) == Some(ChiralProjectorKind::Right)
+            });
+            if has_left && has_right && simplified_terms.len() == 2 {
+                Expr::one()
+            } else {
+                Expr::add(simplified_terms)
+            }
+        }
+        Expr::Mul(factors) => {
+            let mut out = Vec::new();
+            let simplified = coalesce_chiral_projector_factors(
+                factors
+                    .iter()
+                    .map(|factor| simplify_chiral_projectors(factor, props, interner))
+                    .collect::<Vec<_>>(),
+                interner,
+            );
+            let mut idx = 0usize;
+            while idx < simplified.len() {
+                if idx + 1 < simplified.len() {
+                    let left_kind = chiral_projector_kind(&simplified[idx], interner);
+                    let right_kind = chiral_projector_kind(&simplified[idx + 1], interner);
+                    match (left_kind, right_kind) {
+                        (Some(lhs), Some(rhs)) if lhs == rhs => {
+                            out.push(chiral_projector_expr(lhs, interner));
+                            idx += 2;
+                            continue;
+                        }
+                        (Some(_), Some(_)) => return Expr::zero(),
+                        (Some(projector), None) => {
+                            if let Some(applied) = apply_chiral_projector_to_spinor(
+                                projector,
+                                &simplified[idx + 1],
+                                props,
+                            ) {
+                                if applied == Expr::zero() {
+                                    return Expr::zero();
+                                }
+                                out.push(applied);
+                                idx += 2;
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                out.push(simplified[idx].clone());
+                idx += 1;
+            }
+            Expr::mul(out)
+        }
+        Expr::Pow(base, exp) => {
+            let simplified_base = simplify_chiral_projectors(base, props, interner);
+            if matches!(exp.as_ref(), Expr::Int(n) if *n == BigInt::from(2usize)) {
+                if let Some(kind) = chiral_projector_kind(&simplified_base, interner) {
+                    return chiral_projector_expr(kind, interner);
+                }
+            }
+            Expr::pow(
+                simplified_base,
+                simplify_chiral_projectors(exp, props, interner),
+            )
+        }
+        Expr::Neg(inner) => Expr::neg(simplify_chiral_projectors(inner, props, interner)),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(simplify_chiral_projectors(re, props, interner)),
+            Box::new(simplify_chiral_projectors(im, props, interner)),
+        ),
+        Expr::Call(sym, args) => {
+            if args.is_empty() {
+                if let Some(kind) = chiral_projector_kind(expr, interner) {
+                    return chiral_projector_expr(kind, interner);
+                }
+            }
+            Expr::Call(
+                *sym,
+                args.iter()
+                    .map(|arg| simplify_chiral_projectors(arg, props, interner))
+                    .collect(),
+            )
+        }
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(simplify_chiral_projectors(base, props, interner)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(simplify_chiral_projectors(inner, props, interner)),
+            *rel,
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| simplify_chiral_projectors(item, props, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|entry| simplify_chiral_projectors(entry, props, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => {
+            if let Some(kind) = chiral_projector_kind(expr, interner) {
+                chiral_projector_expr(kind, interner)
+            } else {
+                expr.clone()
+            }
+        }
+    }
+}
+
 fn expand_diracbar_inner(inner: &Expr, diracbar_sym: lasso::Spur, gamma_sym: lasso::Spur) -> Expr {
     if let Expr::Neg(nested) = inner {
         return Expr::neg(expand_diracbar_inner(nested, diracbar_sym, gamma_sym));
@@ -6385,14 +9367,31 @@ fn expand_diracbar_full_inner(
     diracbar_sym: lasso::Spur,
     metadata: &DiracBarMetadata,
     properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
 ) -> Expr {
+    if let Expr::Add(terms) = inner {
+        return Expr::add(
+            terms
+                .iter()
+                .map(|term| {
+                    expand_diracbar_full_inner(term, diracbar_sym, metadata, properties, interner)
+                })
+                .collect(),
+        );
+    }
+
     if let Expr::Neg(nested) = inner {
         return Expr::neg(expand_diracbar_full_inner(
             nested,
             diracbar_sym,
             metadata,
             properties,
+            interner,
         ));
+    }
+
+    if let Some((_nested_bar_sym, nested_inner)) = is_diracbar_call(inner, properties) {
+        return adjoint_of(Expr::Call(diracbar_sym, vec![nested_inner]), interner);
     }
 
     let Expr::Mul(factors) = inner else {
@@ -6407,12 +9406,14 @@ fn expand_diracbar_full_inner(
                     diracbar_sym,
                     metadata,
                     properties,
+                    interner,
                 ));
             }
         }
     }
 
     let mut gamma_chain = Vec::new();
+    let mut scalar_factors = Vec::new();
     let mut spinor = None;
     for factor in factors {
         if gamma_metadata_of_expr(factor, properties).is_some() && spinor.is_none() {
@@ -6422,6 +9423,8 @@ fn expand_diracbar_full_inner(
                 }
             }
             gamma_chain.push(factor.clone());
+        } else if is_diracbar_scalar_factor(factor, properties) && spinor.is_none() {
+            scalar_factors.push(factor.clone());
         } else if spinor.is_none() {
             if let Some(expected_spinor_family) = metadata.spinor_family {
                 if structured_spinor_family(factor, properties)
@@ -6430,6 +9433,72 @@ fn expand_diracbar_full_inner(
                     return Expr::Call(diracbar_sym, vec![inner.clone()]);
                 }
             }
+            spinor = Some(factor.clone());
+        } else {
+            return Expr::Call(diracbar_sym, vec![inner.clone()]);
+        }
+    }
+
+    if gamma_chain.is_empty() && scalar_factors.is_empty() {
+        return Expr::Call(diracbar_sym, vec![inner.clone()]);
+    }
+    let Some(spinor) = spinor else {
+        return Expr::Call(diracbar_sym, vec![inner.clone()]);
+    };
+
+    let ordered_gamma_chain = if metadata.reverse_gamma_order {
+        reverse_gamma_chain(&gamma_chain)
+    } else {
+        gamma_chain
+    };
+    let mut factors = scalar_factors
+        .into_iter()
+        .map(|factor| conjugate_scalar_factor(factor, interner))
+        .collect::<Vec<_>>();
+    factors.push(Expr::Call(diracbar_sym, vec![spinor]));
+    factors.extend(
+        ordered_gamma_chain
+            .iter()
+            .map(|gamma| diracbar_action_on_gamma(gamma, properties, interner)),
+    );
+    Expr::mul(factors)
+}
+
+fn expand_diracbar_full_legacy_inner(
+    inner: &Expr,
+    diracbar_sym: lasso::Spur,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> Expr {
+    if let Expr::Neg(nested) = inner {
+        return Expr::neg(expand_diracbar_full_legacy_inner(
+            nested,
+            diracbar_sym,
+            properties,
+        ));
+    }
+
+    let Expr::Mul(factors) = inner else {
+        return Expr::Call(diracbar_sym, vec![inner.clone()]);
+    };
+
+    if factors.len() > 1 {
+        if let Expr::Int(n) = &factors[0] {
+            if *n == (-1).into() {
+                return Expr::neg(expand_diracbar_full_legacy_inner(
+                    &Expr::mul(factors[1..].to_vec()),
+                    diracbar_sym,
+                    properties,
+                ));
+            }
+        }
+    }
+
+    let mut gamma_chain = Vec::new();
+    let mut spinor = None;
+    for factor in factors {
+        if gamma_metadata_of_expr(factor, properties).is_some() && spinor.is_none() {
+            gamma_chain.push(factor.clone());
+        } else if spinor.is_none() {
             spinor = Some(factor.clone());
         } else {
             return Expr::Call(diracbar_sym, vec![inner.clone()]);
@@ -6447,18 +9516,11 @@ fn expand_diracbar_full_inner(
         .iter()
         .filter_map(|gamma| gamma_expr_data(gamma, properties).map(|data| data.indices.len()))
         .sum();
-    let ordered_gamma_chain = if metadata.reverse_gamma_order {
-        gamma_chain.into_iter().rev().collect::<Vec<_>>()
-    } else {
-        gamma_chain
-    };
     let mut factors = vec![Expr::Call(diracbar_sym, vec![spinor])];
-    factors.extend(ordered_gamma_chain);
+    factors.extend(gamma_chain.into_iter().rev());
     let result = Expr::mul(factors);
 
-    if metadata.reverse_gamma_order
-        && ((total_gamma_indices * (total_gamma_indices + 1)) / 2) % 2 == 1
-    {
+    if ((total_gamma_indices * (total_gamma_indices + 1)) / 2) % 2 == 1 {
         Expr::neg(result)
     } else {
         result
@@ -6472,16 +9534,20 @@ pub fn expand_diracbar_full(
 ) -> Expr {
     match expr {
         Expr::Call(f, args) if args.len() == 1 => {
-            let Some(metadata) = diracbar_metadata_of_expr(&Expr::Sym(*f), properties) else {
+            if let Some(metadata) = declared_diracbar_metadata_of_symbol(*f, properties) {
+                let inner = expand_diracbar_full(&args[0], properties, interner);
+                return expand_diracbar_full_inner(&inner, *f, &metadata, properties, interner);
+            }
+            if !properties.has_property_kind(*f, &TensorProperty::DiracBar) {
                 return Expr::Call(
                     *f,
                     args.iter()
                         .map(|arg| expand_diracbar_full(arg, properties, interner))
                         .collect(),
                 );
-            };
+            }
             let inner = expand_diracbar_full(&args[0], properties, interner);
-            expand_diracbar_full_inner(&inner, *f, &metadata, properties)
+            expand_diracbar_full_legacy_inner(&inner, *f, properties)
         }
         Expr::Add(terms) => Expr::add(
             terms
@@ -6756,6 +9822,9 @@ pub fn split_gamma_full(
     let Some(data) = gamma_expr_data(gamma_expr, properties) else {
         return gamma_expr.clone();
     };
+    if gamma_convention_conflict_of_expr(gamma_expr, properties) {
+        return qm_error_expr("join_gamma_convention_mismatch", gamma_expr, interner);
+    }
     if data.indices.len() <= 1 {
         return gamma_expr.clone();
     }
@@ -6776,7 +9845,7 @@ pub fn split_gamma_full(
     let rhs = build_gamma_expr(&data.head, &right_indices);
     let product = Expr::mul(vec![lhs.clone(), rhs.clone()]);
     let joined = join_gamma_full(&lhs, &rhs, None, true, true, &metric, properties, interner);
-    if matches!(joined, Expr::Call(sym, _) if interner.resolve(sym) == "join_gamma_family_mismatch")
+    if matches!(joined, Expr::Call(sym, _) if interner.resolve(sym) == "join_gamma_family_mismatch" || interner.resolve(sym) == "join_gamma_convention_mismatch")
     {
         return joined;
     }
@@ -6848,6 +9917,79 @@ fn bilinear_expr(
     Expr::mul(factors)
 }
 
+fn replace_fierz_basis_placeholders(
+    expr: &Expr,
+    replacements: &HashMap<lasso::Spur, Expr>,
+) -> Expr {
+    match expr {
+        Expr::Sym(sym) => replacements.get(sym).cloned().unwrap_or(Expr::Sym(*sym)),
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| replace_fierz_basis_placeholders(term, replacements))
+                .collect(),
+        ),
+        Expr::Mul(factors) => Expr::mul(
+            factors
+                .iter()
+                .map(|factor| replace_fierz_basis_placeholders(factor, replacements))
+                .collect(),
+        ),
+        Expr::Pow(base, exp) => Expr::pow(
+            replace_fierz_basis_placeholders(base, replacements),
+            replace_fierz_basis_placeholders(exp, replacements),
+        ),
+        Expr::Neg(inner) => Expr::neg(replace_fierz_basis_placeholders(inner, replacements)),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(replace_fierz_basis_placeholders(re, replacements)),
+            Box::new(replace_fierz_basis_placeholders(im, replacements)),
+        ),
+        Expr::Call(sym, args) => Expr::Call(
+            *sym,
+            args.iter()
+                .map(|arg| replace_fierz_basis_placeholders(arg, replacements))
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(replace_fierz_basis_placeholders(base, replacements)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(replace_fierz_basis_placeholders(inner, replacements)),
+            *rel,
+        ),
+        other => other.clone(),
+    }
+}
+
+fn instantiate_fierz_basis_expr(
+    basis: &Expr,
+    counter: &mut usize,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    let rank = fierz_basis_rank(basis, interner).unwrap_or(0);
+    if rank == 0 || rank == 4 {
+        return basis.clone();
+    }
+    let mut replacements = HashMap::new();
+    let placeholders = ["mu", "nu"];
+    for name in placeholders.iter().take(rank.min(placeholders.len())) {
+        let fresh = interner.get_or_intern(&format!("_f{}", *counter));
+        *counter += 1;
+        replacements.insert(interner.get_or_intern(name), Expr::Sym(fresh));
+    }
+    replace_fierz_basis_placeholders(basis, &replacements)
+}
+
+fn bilinear_expr_with_basis(left: lasso::Spur, basis: Expr, right: lasso::Spur) -> Expr {
+    let mut factors = vec![Expr::Sym(left)];
+    if basis != Expr::one() {
+        factors.push(basis);
+    }
+    factors.push(Expr::Sym(right));
+    Expr::mul(factors)
+}
+
 fn fierz_error_expr(error: &FierzError, expr: &Expr, interner: &ax_ir::Interner) -> Expr {
     let sym = interner.get_or_intern(error.symbol_name());
     Expr::Call(sym, vec![expr.clone()])
@@ -6905,6 +10047,33 @@ fn validate_fierz_spinor_metadata(
     Ok(())
 }
 
+fn structured_fierz_spinor_metadata(
+    pair: &BilinearPair,
+    properties: &dyn ax_tensor::PropertyLookup,
+) -> Result<Option<SpinorMetadata>, FierzError> {
+    let spinors = [pair.psi1, pair.psi2, pair.psi3, pair.psi4]
+        .into_iter()
+        .map(|sym| declared_spinor_metadata_of_symbol(sym, properties))
+        .collect::<Vec<_>>();
+    if spinors.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    let Some(first) = spinors[0].clone() else {
+        return Err(FierzError::InsufficientConventionData);
+    };
+    if spinors.iter().any(Option::is_none) {
+        return Err(FierzError::InsufficientConventionData);
+    }
+    Ok(Some(first))
+}
+
+fn structured_fierz_gamma_convention(
+    properties: &dyn ax_tensor::PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Option<GammaConventionMetadata> {
+    declared_gamma_convention_metadata_of_symbol(interner.get_or_intern("gamma"), properties)
+}
+
 fn build_fierz_sum(
     parsed: ParsedFierzInput,
     dim: usize,
@@ -6948,6 +10117,58 @@ fn build_fierz_sum(
     Ok(ax_ir::Expr::add(terms))
 }
 
+fn build_fierz_sum_with_basis(
+    parsed: ParsedFierzInput,
+    spinor_order: [lasso::Spur; 4],
+    properties: &dyn ax_tensor::PropertyLookup,
+    basis: &[Expr],
+    coefficients: &[Expr],
+    interner: &ax_ir::Interner,
+) -> Result<ax_ir::Expr, FierzError> {
+    let pair = parsed.pair;
+    if basis.len() != coefficients.len() || basis.is_empty() {
+        return Err(FierzError::InsufficientConventionData);
+    }
+
+    let expected = [pair.psi1, pair.psi4, pair.psi3, pair.psi2];
+    let explicit_set: HashSet<_> = spinor_order.iter().copied().collect();
+    if explicit_set.len() != 4 || explicit_set != expected.iter().copied().collect() {
+        return Err(FierzError::SpinorOrderMismatch);
+    }
+
+    let input_order = [pair.psi1, pair.psi2, pair.psi3, pair.psi4];
+    let mut sign =
+        anticommuting_reorder_sign(&input_order, &spinor_order, Some(properties), interner)?;
+    if parsed.sign < 0 {
+        sign = -sign;
+    }
+
+    let [psi1, psi4, psi3, psi2] = spinor_order;
+    let mut counter = 0usize;
+    let terms = basis
+        .iter()
+        .zip(coefficients.iter())
+        .map(|(basis_sector, coefficient)| {
+            let instantiated_basis =
+                instantiate_fierz_basis_expr(basis_sector, &mut counter, interner);
+            let first = bilinear_expr_with_basis(psi1, instantiated_basis.clone(), psi4);
+            let second = bilinear_expr_with_basis(psi3, instantiated_basis, psi2);
+
+            let mut factors = pair.remaining_factors.clone();
+            let signed_coefficient = if sign < 0 {
+                Expr::neg(coefficient.clone())
+            } else {
+                coefficient.clone()
+            };
+            factors.push(signed_coefficient);
+            factors.push(first);
+            factors.push(second);
+            Expr::mul(factors)
+        })
+        .collect();
+    Ok(ax_ir::Expr::add(terms))
+}
+
 pub fn try_fierz(
     expr: &ax_ir::Expr,
     dim: usize,
@@ -6968,6 +10189,24 @@ pub fn try_fierz_with_properties(
 ) -> Result<ax_ir::Expr, FierzError> {
     let parsed = parse_fierz_input(expr, Some(properties), interner)?;
     validate_fierz_spinor_metadata(&parsed.pair, Some(properties))?;
+    if let Some(spinor_meta) = structured_fierz_spinor_metadata(&parsed.pair, properties)? {
+        if spinor_meta.dimension != Some(dim) {
+            return Err(FierzError::IncompatibleSpinorDimension);
+        }
+        let gamma_meta = structured_fierz_gamma_convention(properties, interner)
+            .ok_or(FierzError::InsufficientConventionData)?;
+        let basis = fierz_basis_for_metadata(&spinor_meta, Some(&gamma_meta), interner);
+        let coefficients =
+            fierz_coefficients_for_basis(&basis, &spinor_meta, Some(&gamma_meta), interner)?;
+        return build_fierz_sum_with_basis(
+            parsed,
+            spinor_order,
+            properties,
+            &basis,
+            &coefficients,
+            interner,
+        );
+    }
     build_fierz_sum(parsed, dim, spinor_order, Some(properties), interner)
 }
 
@@ -7027,6 +10266,24 @@ pub fn try_fierz_auto_with_properties(
         parsed.pair.psi3,
         parsed.pair.psi2,
     ];
+    if let Some(spinor_meta) = structured_fierz_spinor_metadata(&parsed.pair, properties)? {
+        if spinor_meta.dimension != Some(dim) {
+            return Err(FierzError::IncompatibleSpinorDimension);
+        }
+        let gamma_meta = structured_fierz_gamma_convention(properties, interner)
+            .ok_or(FierzError::InsufficientConventionData)?;
+        let basis = fierz_basis_for_metadata(&spinor_meta, Some(&gamma_meta), interner);
+        let coefficients =
+            fierz_coefficients_for_basis(&basis, &spinor_meta, Some(&gamma_meta), interner)?;
+        return build_fierz_sum_with_basis(
+            parsed,
+            order,
+            properties,
+            &basis,
+            &coefficients,
+            interner,
+        );
+    }
     build_fierz_sum(parsed, dim, order, Some(properties), interner)
 }
 
@@ -7192,6 +10449,128 @@ mod tests {
 
     fn prop_map() -> HashMap<lasso::Spur, Vec<TensorProperty>> {
         HashMap::new()
+    }
+
+    fn spinor_selection_rule_props(
+        interner: &ax_ir::Interner,
+    ) -> (
+        HashMap<lasso::Spur, Vec<TensorProperty>>,
+        lasso::Spur,
+        lasso::Spur,
+    ) {
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let spin = interner.get_or_intern("spin");
+        let mut props = prop_map();
+        props.insert(
+            bar,
+            vec![TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: Some(gamma),
+                spinor_family: Some(spin),
+                reverse_gamma_order: true,
+            })],
+        );
+        props.insert(
+            gamma,
+            vec![
+                TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                    dimension: Some(4),
+                    metric_symbol: Some(interner.get_or_intern("eta")),
+                    index_family: Some(spin),
+                    has_gamma5: true,
+                }),
+                TensorProperty::GammaConventionMeta(GammaConventionMetadata {
+                    signature: ax_ir::MetricSignature::MostlyPlus,
+                    clifford: CliffordConvention::PlusTwoG,
+                    gamma5: Some(ax_ir::GammaFiveConvention::AbstractChiral),
+                    epsilon_symbol: Some(interner.get_or_intern("eps")),
+                    dimension: Some(4),
+                }),
+            ],
+        );
+        (props, bar, gamma)
+    }
+
+    struct SpinorBridgeProps {
+        props: HashMap<lasso::Spur, Vec<TensorProperty>>,
+        families: HashMap<lasso::Spur, ax_ir::IndexFamily>,
+    }
+
+    impl PropertyLookup for SpinorBridgeProps {
+        fn get_properties(&self, name: lasso::Spur) -> Vec<ax_ir::TensorProperty> {
+            self.props.get(&name).cloned().unwrap_or_default()
+        }
+
+        fn get_properties_with_indices(
+            &self,
+            name: lasso::Spur,
+            _indices: &[ax_ir::Index],
+            _successor: Option<(lasso::Spur, &[ax_ir::Index])>,
+        ) -> Vec<ax_ir::TensorProperty> {
+            self.get_properties(name)
+        }
+
+        fn has_property_kind(&self, name: lasso::Spur, kind: &ax_ir::TensorProperty) -> bool {
+            self.get_properties(name)
+                .into_iter()
+                .any(|prop| std::mem::discriminant(&prop) == std::mem::discriminant(kind))
+        }
+
+        fn index_families(&self) -> Option<&HashMap<lasso::Spur, ax_ir::IndexFamily>> {
+            Some(&self.families)
+        }
+    }
+
+    fn spinor_bridge_props(
+        interner: &ax_ir::Interner,
+    ) -> (SpinorBridgeProps, lasso::Spur, lasso::Spur, lasso::Spur) {
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let spin = interner.get_or_intern("spin");
+        let a = interner.get_or_intern("s_a");
+        let b = interner.get_or_intern("s_b");
+        let c = interner.get_or_intern("s_c");
+        let d = interner.get_or_intern("s_d");
+        let mut props = HashMap::new();
+        props.insert(
+            bar,
+            vec![TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: Some(gamma),
+                spinor_family: Some(spin),
+                reverse_gamma_order: true,
+            })],
+        );
+        props.insert(
+            gamma,
+            vec![TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: Some(4),
+                metric_symbol: Some(interner.get_or_intern("eta")),
+                index_family: Some(spin),
+                has_gamma5: true,
+            })],
+        );
+        props.insert(
+            psi,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Dirac,
+                dimension: Some(4),
+                chirality: None,
+                index_family: Some(spin),
+            })],
+        );
+        let mut families = HashMap::new();
+        families.insert(
+            spin,
+            ax_ir::IndexFamily {
+                name: spin,
+                values: vec![a, b, c, d],
+                position: ax_ir::IndexPosition::Free,
+                dimension: Some(4),
+                parent: None,
+            },
+        );
+        (SpinorBridgeProps { props, families }, bar, gamma, psi)
     }
 
     fn operator_stats() -> HashMap<lasso::Spur, OperatorStatistics> {
@@ -7831,6 +11210,170 @@ mod tests {
     }
 
     #[test]
+    fn spinor_bilinear_selection_rules_weyl_projector_mismatch_vanishes() {
+        let interner = ax_ir::Interner::new();
+        let (mut props, bar, _) = spinor_selection_rule_props(&interner);
+        let spin = interner.get_or_intern("spin");
+        let xi_l = interner.get_or_intern("xi_l");
+        let chi_r = interner.get_or_intern("chi_r");
+        props.insert(
+            xi_l,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(4),
+                chirality: Some(ax_ir::Chirality::Left),
+                index_family: Some(spin),
+            })],
+        );
+        props.insert(
+            chi_r,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(4),
+                chirality: Some(ax_ir::Chirality::Right),
+                index_family: Some(spin),
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(xi_l)]),
+            projector_left(&interner),
+            Expr::Sym(chi_r),
+        ]);
+
+        assert_eq!(
+            simplify_spinor_bilinear_selection_rules(&expr, &props, &interner),
+            Expr::zero()
+        );
+    }
+
+    #[test]
+    fn spinor_bilinear_selection_rules_majorana_self_vector_vanishes() {
+        let interner = ax_ir::Interner::new();
+        let (mut props, bar, gamma) = spinor_selection_rule_props(&interner);
+        let spin = interner.get_or_intern("spin");
+        let psi = interner.get_or_intern("psi");
+        let mu = interner.get_or_intern("mu");
+        props.insert(
+            psi,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Majorana,
+                dimension: Some(4),
+                chirality: None,
+                index_family: Some(spin),
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(mu)]),
+            Expr::Sym(psi),
+        ]);
+
+        assert_eq!(
+            simplify_spinor_bilinear_selection_rules(&expr, &props, &interner),
+            Expr::zero()
+        );
+    }
+
+    #[test]
+    fn spinor_bilinear_selection_rules_insufficient_metadata_leaves_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let mu = interner.get_or_intern("mu");
+        let spin = interner.get_or_intern("spin");
+        let mut props = prop_map();
+        props.insert(bar, vec![TensorProperty::DiracBar]);
+        props.insert(
+            gamma,
+            vec![TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: Some(4),
+                metric_symbol: None,
+                index_family: Some(spin),
+                has_gamma5: true,
+            })],
+        );
+        props.insert(
+            psi,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Majorana,
+                dimension: Some(4),
+                chirality: None,
+                index_family: Some(spin),
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(mu)]),
+            Expr::Sym(psi),
+        ]);
+
+        assert_eq!(
+            simplify_spinor_bilinear_selection_rules(&expr, &props, &interner),
+            expr
+        );
+    }
+
+    #[test]
+    fn spinor_index_bridge_simple_bilinear_round_trips() {
+        let interner = ax_ir::Interner::new();
+        let (props, bar, _, psi) = spinor_bridge_props(&interner);
+        let expr = Expr::mul(vec![Expr::Call(bar, vec![Expr::Sym(psi)]), Expr::Sym(psi)]);
+
+        let explicit = insert_explicit_spinor_indices(&expr, &props, &interner);
+        assert_ne!(explicit, expr, "bridge should insert explicit spinor slots");
+        assert_eq!(
+            remove_trivial_spinor_indices(&explicit, &props, &interner),
+            expr
+        );
+    }
+
+    #[test]
+    fn spinor_index_bridge_gamma_chain_round_trips() {
+        let interner = ax_ir::Interner::new();
+        let (props, bar, gamma, psi) = spinor_bridge_props(&interner);
+        let mu = interner.get_or_intern("mu");
+        let nu = interner.get_or_intern("nu");
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(gamma, vec![Expr::Sym(mu)]),
+            Expr::Call(gamma, vec![Expr::Sym(nu)]),
+            Expr::Sym(psi),
+        ]);
+
+        let explicit = insert_explicit_spinor_indices(&expr, &props, &interner);
+        assert_ne!(
+            explicit, expr,
+            "bridge should expose gamma-chain spinor slots"
+        );
+        assert_eq!(
+            remove_trivial_spinor_indices(&explicit, &props, &interner),
+            expr
+        );
+    }
+
+    #[test]
+    fn spinor_index_bridge_unsupported_noncanonical_is_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let (props, bar, gamma, psi) = spinor_bridge_props(&interner);
+        let mu = interner.get_or_intern("mu");
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Sym(psi),
+            Expr::Call(gamma, vec![Expr::Sym(mu)]),
+        ]);
+
+        assert_eq!(
+            insert_explicit_spinor_indices(&expr, &props, &interner),
+            expr
+        );
+        assert_eq!(
+            remove_trivial_spinor_indices(&expr, &props, &interner),
+            expr
+        );
+    }
+
+    #[test]
     fn join_two_gammas() {
         let interner = ax_ir::Interner::new();
         let gamma = interner.get_or_intern("gamma");
@@ -8220,11 +11763,96 @@ mod tests {
     }
 
     #[test]
+    fn fierz_basis_4d_dirac_metadata_yields_full_five_sector_basis() {
+        let interner = ax_ir::Interner::new();
+        let eps = interner.get_or_intern("eps");
+        let spinor_meta = SpinorMetadata {
+            class: SpinorClass::Dirac,
+            dimension: Some(4),
+            chirality: None,
+            index_family: None,
+        };
+        let gamma_meta = GammaConventionMetadata {
+            signature: ax_ir::MetricSignature::MostlyPlus,
+            clifford: CliffordConvention::PlusTwoG,
+            gamma5: Some(ax_ir::GammaFiveConvention::AbstractChiral),
+            epsilon_symbol: Some(eps),
+            dimension: Some(4),
+        };
+
+        let basis = fierz_basis_for_metadata(&spinor_meta, Some(&gamma_meta), &interner);
+
+        assert_eq!(basis.len(), 5);
+        assert!(basis.contains(&Expr::one()));
+        assert!(
+            basis
+                .iter()
+                .any(|sector| matches!(sector, Expr::Call(sym, args) if interner.resolve(*sym) == "gamma" && args.len() == 1))
+        );
+        assert!(
+            basis
+                .iter()
+                .any(|sector| matches!(sector, Expr::Call(sym, args) if interner.resolve(*sym) == "sigma" && args.len() == 2))
+        );
+        assert!(basis.iter().any(|sector| {
+            matches!(sector, Expr::Mul(factors) if factors.iter().any(|factor| matches!(factor, Expr::Call(sym, args) if interner.resolve(*sym) == "gamma" && args.len() == 1))
+                && factors.iter().any(|factor| matches!(factor, Expr::Sym(sym) if interner.resolve(*sym) == "gamma5")))
+        }));
+        assert!(basis
+            .iter()
+            .any(|sector| matches!(sector, Expr::Sym(sym) if interner.resolve(*sym) == "gamma5")));
+    }
+
+    #[test]
+    fn fierz_basis_chiral_metadata_yields_reduced_basis() {
+        let interner = ax_ir::Interner::new();
+        let eps = interner.get_or_intern("eps");
+        let spinor_meta = SpinorMetadata {
+            class: SpinorClass::Weyl,
+            dimension: Some(4),
+            chirality: Some(ax_ir::Chirality::Left),
+            index_family: None,
+        };
+        let gamma_meta = GammaConventionMetadata {
+            signature: ax_ir::MetricSignature::MostlyPlus,
+            clifford: CliffordConvention::PlusTwoG,
+            gamma5: Some(ax_ir::GammaFiveConvention::AbstractChiral),
+            epsilon_symbol: Some(eps),
+            dimension: Some(4),
+        };
+
+        let basis = fierz_basis_for_metadata(&spinor_meta, Some(&gamma_meta), &interner);
+
+        assert_eq!(basis.len(), 2);
+        assert!(!basis.contains(&Expr::one()));
+        assert!(!basis
+            .iter()
+            .any(|sector| matches!(sector, Expr::Sym(sym) if interner.resolve(*sym) == "gamma5")));
+    }
+
+    #[test]
+    fn fierz_coefficients_missing_convention_data_errors() {
+        let interner = ax_ir::Interner::new();
+        let spinor_meta = SpinorMetadata {
+            class: SpinorClass::Dirac,
+            dimension: Some(4),
+            chirality: None,
+            index_family: None,
+        };
+
+        assert_eq!(
+            fierz_coefficients_for_basis(&[Expr::one()], &spinor_meta, None, &interner),
+            Err(FierzError::InsufficientConventionData)
+        );
+    }
+
+    #[test]
     fn fierz_structured_metadata_compatible_still_succeeds() {
         let interner = ax_ir::Interner::new();
         let bar = interner.get_or_intern("bar");
         let gamma = interner.get_or_intern("gamma");
         let spin = interner.get_or_intern("spin");
+        let eps = interner.get_or_intern("eps");
         let psi1 = interner.get_or_intern("psi1");
         let psi2 = interner.get_or_intern("psi2");
         let psi3 = interner.get_or_intern("psi3");
@@ -8234,12 +11862,21 @@ mod tests {
         props.insert(bar, vec![TensorProperty::DiracBar]);
         props.insert(
             gamma,
-            vec![TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
-                dimension: Some(4),
-                metric_symbol: None,
-                index_family: Some(spin),
-                has_gamma5: true,
-            })],
+            vec![
+                TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                    dimension: Some(4),
+                    metric_symbol: None,
+                    index_family: Some(spin),
+                    has_gamma5: true,
+                }),
+                TensorProperty::GammaConventionMeta(GammaConventionMetadata {
+                    signature: ax_ir::MetricSignature::MostlyPlus,
+                    clifford: CliffordConvention::PlusTwoG,
+                    gamma5: Some(ax_ir::GammaFiveConvention::AbstractChiral),
+                    epsilon_symbol: Some(eps),
+                    dimension: Some(4),
+                }),
+            ],
         );
         for sym in [psi1, psi2, psi3, psi4] {
             props.insert(
@@ -8265,6 +11902,52 @@ mod tests {
         let result = try_fierz_auto_with_properties(&expr, 4, &props, &interner)
             .expect("compatible structured metadata should allow Fierz");
         assert!(matches!(result, Expr::Add(_)));
+    }
+
+    #[test]
+    fn fierz_structured_metadata_missing_convention_fails() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let spin = interner.get_or_intern("spin");
+        let psi1 = interner.get_or_intern("psi1");
+        let psi2 = interner.get_or_intern("psi2");
+        let psi3 = interner.get_or_intern("psi3");
+        let psi4 = interner.get_or_intern("psi4");
+        let mu = interner.get_or_intern("mu");
+        let mut props = prop_map();
+        props.insert(bar, vec![TensorProperty::DiracBar]);
+        props.insert(
+            gamma,
+            vec![TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: Some(4),
+                metric_symbol: None,
+                index_family: Some(spin),
+                has_gamma5: true,
+            })],
+        );
+        for sym in [psi1, psi2, psi3, psi4] {
+            props.insert(
+                sym,
+                vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                    class: SpinorClass::Dirac,
+                    dimension: Some(4),
+                    chirality: None,
+                    index_family: Some(spin),
+                })],
+            );
+        }
+        let expr = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi1)]),
+            Expr::Call(gamma, vec![Expr::Sym(mu)]),
+            Expr::Sym(psi2),
+            Expr::Call(bar, vec![Expr::Sym(psi3)]),
+            Expr::Sym(psi4),
+        ]);
+
+        let error = try_fierz_auto_with_properties(&expr, 4, &props, &interner)
+            .expect_err("structured Fierz requires declared gamma convention");
+        assert_eq!(error, FierzError::InsufficientConventionData);
     }
 
     #[test]
@@ -8919,6 +12602,186 @@ mod tests {
         }
     }
 
+    fn gamma_convention_meta(
+        signature: ax_ir::MetricSignature,
+        clifford: CliffordConvention,
+        dimension: Option<usize>,
+    ) -> TensorProperty {
+        TensorProperty::GammaConventionMeta(GammaConventionMetadata {
+            signature,
+            clifford,
+            gamma5: None,
+            epsilon_symbol: None,
+            dimension,
+        })
+    }
+
+    fn upper_index(name: lasso::Spur) -> Index {
+        Index {
+            name,
+            variance: Variance::Up,
+            index_type: None,
+        }
+    }
+
+    #[test]
+    fn join_gamma_plus_two_g_respects_positive_metric_term() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let eta = interner.get_or_intern("eta");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = prop_map();
+        props.insert(
+            gamma,
+            vec![gamma_convention_meta(
+                ax_ir::MetricSignature::MostlyPlus,
+                CliffordConvention::PlusTwoG,
+                Some(4),
+            )],
+        );
+
+        let result = join_gamma_full(
+            &Expr::Call(gamma, vec![Expr::Sym(a)]),
+            &Expr::Call(gamma, vec![Expr::Sym(b)]),
+            None,
+            true,
+            false,
+            &Expr::Sym(eta),
+            &props,
+            &mut interner,
+        );
+        let expected_metric =
+            build_metric_contraction(&Expr::Sym(eta), &upper_index(a), &upper_index(b));
+
+        let Expr::Add(terms) = result else {
+            panic!("expected additive gamma product");
+        };
+        assert!(
+            terms.contains(&expected_metric),
+            "PlusTwoG should keep a positive metric contraction, got {terms:?}"
+        );
+    }
+
+    #[test]
+    fn join_gamma_minus_two_g_flips_metric_term_sign() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let eta = interner.get_or_intern("eta");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = prop_map();
+        props.insert(
+            gamma,
+            vec![gamma_convention_meta(
+                ax_ir::MetricSignature::MostlyPlus,
+                CliffordConvention::MinusTwoG,
+                Some(4),
+            )],
+        );
+
+        let result = join_gamma_full(
+            &Expr::Call(gamma, vec![Expr::Sym(a)]),
+            &Expr::Call(gamma, vec![Expr::Sym(b)]),
+            None,
+            true,
+            false,
+            &Expr::Sym(eta),
+            &props,
+            &mut interner,
+        );
+        let expected_metric = Expr::neg(build_metric_contraction(
+            &Expr::Sym(eta),
+            &upper_index(a),
+            &upper_index(b),
+        ));
+
+        let Expr::Add(terms) = result else {
+            panic!("expected additive gamma product");
+        };
+        assert!(
+            terms.contains(&expected_metric),
+            "MinusTwoG should flip the metric contraction sign, got {terms:?}"
+        );
+    }
+
+    #[test]
+    fn join_gamma_convention_mismatch_returns_diagnostic() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma_a = interner.get_or_intern("gamma_a");
+        let gamma_b = interner.get_or_intern("gamma_b");
+        let eta = interner.get_or_intern("eta");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = prop_map();
+        props.insert(
+            gamma_a,
+            vec![gamma_convention_meta(
+                ax_ir::MetricSignature::MostlyPlus,
+                CliffordConvention::PlusTwoG,
+                Some(4),
+            )],
+        );
+        props.insert(
+            gamma_b,
+            vec![gamma_convention_meta(
+                ax_ir::MetricSignature::MostlyMinus,
+                CliffordConvention::PlusTwoG,
+                Some(4),
+            )],
+        );
+
+        let result = join_gamma_full(
+            &Expr::Call(gamma_a, vec![Expr::Sym(a)]),
+            &Expr::Call(gamma_b, vec![Expr::Sym(b)]),
+            None,
+            true,
+            false,
+            &Expr::Sym(eta),
+            &props,
+            &mut interner,
+        );
+
+        assert!(
+            matches!(result, Expr::Call(sym, _) if interner.resolve(sym) == "join_gamma_convention_mismatch")
+        );
+    }
+
+    #[test]
+    fn split_gamma_convention_mismatch_returns_diagnostic() {
+        let mut interner = ax_ir::Interner::new();
+        let gamma = interner.get_or_intern("gamma");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = prop_map();
+        props.insert(
+            gamma,
+            vec![
+                gamma_convention_meta(
+                    ax_ir::MetricSignature::MostlyPlus,
+                    CliffordConvention::PlusTwoG,
+                    Some(4),
+                ),
+                gamma_convention_meta(
+                    ax_ir::MetricSignature::MostlyPlus,
+                    CliffordConvention::MinusTwoG,
+                    Some(4),
+                ),
+            ],
+        );
+
+        let result = split_gamma_full(
+            &Expr::Call(gamma, vec![Expr::Sym(a), Expr::Sym(b)]),
+            true,
+            &props,
+            &mut interner,
+        );
+
+        assert!(
+            matches!(result, Expr::Call(sym, _) if interner.resolve(sym) == "join_gamma_convention_mismatch")
+        );
+    }
+
     #[test]
     fn expand_diracbar_sign() {
         let interner = ax_ir::Interner::new();
@@ -8999,12 +12862,381 @@ mod tests {
             ])],
         );
         let result = expand_diracbar_full(&expr, &props, &interner);
-        let expected = Expr::neg(Expr::mul(vec![
+        let expected = Expr::mul(vec![
             Expr::Call(bar, vec![Expr::Sym(psi)]),
-            Expr::Call(gamma, vec![Expr::Sym(b)]),
-            Expr::Call(gamma, vec![Expr::Sym(a)]),
-        ]));
+            Expr::Call(
+                interner.get_or_intern("bar_action"),
+                vec![Expr::Call(gamma, vec![Expr::Sym(b)])],
+            ),
+            Expr::Call(
+                interner.get_or_intern("bar_action"),
+                vec![Expr::Call(gamma, vec![Expr::Sym(a)])],
+            ),
+        ]);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn expand_diracbar_full_distributes_over_sums() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let psi = interner.get_or_intern("psi");
+        let chi = interner.get_or_intern("chi");
+        let spin = interner.get_or_intern("spin");
+        let mut props = prop_map();
+        props.insert(
+            bar,
+            vec![TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: None,
+                spinor_family: Some(spin),
+                reverse_gamma_order: true,
+            })],
+        );
+        for spinor in [psi, chi] {
+            props.insert(
+                spinor,
+                vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                    class: SpinorClass::Dirac,
+                    dimension: Some(4),
+                    chirality: None,
+                    index_family: Some(spin),
+                })],
+            );
+        }
+
+        let expr = Expr::Call(bar, vec![Expr::add(vec![Expr::Sym(psi), Expr::Sym(chi)])]);
+        let expected = Expr::add(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(bar, vec![Expr::Sym(chi)]),
+        ]);
+
+        assert_eq!(expand_diracbar_full(&expr, &props, &interner), expected);
+    }
+
+    #[test]
+    fn expand_diracbar_full_conjugates_scalar_coefficients() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let psi = interner.get_or_intern("psi");
+        let c = interner.get_or_intern("c");
+        let spin = interner.get_or_intern("spin");
+        let mut props = prop_map();
+        props.insert(
+            bar,
+            vec![TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: None,
+                spinor_family: Some(spin),
+                reverse_gamma_order: true,
+            })],
+        );
+        props.insert(
+            psi,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Dirac,
+                dimension: Some(4),
+                chirality: None,
+                index_family: Some(spin),
+            })],
+        );
+
+        let expr = Expr::Call(bar, vec![Expr::mul(vec![Expr::Sym(c), Expr::Sym(psi)])]);
+        let expected = Expr::mul(vec![
+            Expr::Call(interner.get_or_intern("conj"), vec![Expr::Sym(c)]),
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+        ]);
+
+        assert_eq!(expand_diracbar_full(&expr, &props, &interner), expected);
+    }
+
+    #[test]
+    fn expand_diracbar_full_gamma_products_reverse_with_metadata() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let gamma = interner.get_or_intern("gamma");
+        let psi = interner.get_or_intern("psi");
+        let spin = interner.get_or_intern("spin");
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let mut props = prop_map();
+        props.insert(
+            bar,
+            vec![TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: Some(gamma),
+                spinor_family: Some(spin),
+                reverse_gamma_order: true,
+            })],
+        );
+        props.insert(
+            gamma,
+            vec![TensorProperty::GammaMatrixMeta(GammaMatrixMetadata {
+                dimension: Some(4),
+                metric_symbol: None,
+                index_family: Some(spin),
+                has_gamma5: true,
+            })],
+        );
+        props.insert(
+            psi,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Dirac,
+                dimension: Some(4),
+                chirality: None,
+                index_family: Some(spin),
+            })],
+        );
+
+        let expr = Expr::Call(
+            bar,
+            vec![Expr::mul(vec![
+                Expr::Call(gamma, vec![Expr::Sym(a)]),
+                Expr::Call(gamma, vec![Expr::Sym(b)]),
+                Expr::Sym(psi),
+            ])],
+        );
+        let expected = Expr::mul(vec![
+            Expr::Call(bar, vec![Expr::Sym(psi)]),
+            Expr::Call(
+                interner.get_or_intern("bar_action"),
+                vec![Expr::Call(gamma, vec![Expr::Sym(b)])],
+            ),
+            Expr::Call(
+                interner.get_or_intern("bar_action"),
+                vec![Expr::Call(gamma, vec![Expr::Sym(a)])],
+            ),
+        ]);
+
+        assert_eq!(expand_diracbar_full(&expr, &props, &interner), expected);
+    }
+
+    #[test]
+    fn expand_diracbar_full_nested_bars_become_canonical_adjoint_form() {
+        let interner = ax_ir::Interner::new();
+        let bar = interner.get_or_intern("bar");
+        let psi = interner.get_or_intern("psi");
+        let spin = interner.get_or_intern("spin");
+        let mut props = prop_map();
+        props.insert(
+            bar,
+            vec![TensorProperty::DiracBarMeta(DiracBarMetadata {
+                gamma_symbol: None,
+                spinor_family: Some(spin),
+                reverse_gamma_order: true,
+            })],
+        );
+        props.insert(
+            psi,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Dirac,
+                dimension: Some(4),
+                chirality: None,
+                index_family: Some(spin),
+            })],
+        );
+
+        let expr = Expr::Call(bar, vec![Expr::Call(bar, vec![Expr::Sym(psi)])]);
+        let expected = Expr::Call(
+            interner.get_or_intern("adjoint"),
+            vec![Expr::Call(bar, vec![Expr::Sym(psi)])],
+        );
+
+        assert_eq!(expand_diracbar_full(&expr, &props, &interner), expected);
+    }
+
+    #[test]
+    fn chiral_projector_left_is_idempotent() {
+        let interner = ax_ir::Interner::new();
+        let props = prop_map();
+        let pl = projector_left(&interner);
+
+        assert_eq!(
+            simplify_chiral_projectors(
+                &Expr::pow(pl.clone(), Expr::Int(2.into())),
+                &props,
+                &interner
+            ),
+            pl
+        );
+    }
+
+    #[test]
+    fn chiral_projector_right_is_idempotent() {
+        let interner = ax_ir::Interner::new();
+        let props = prop_map();
+        let pr = projector_right(&interner);
+
+        assert_eq!(
+            simplify_chiral_projectors(
+                &Expr::pow(pr.clone(), Expr::Int(2.into())),
+                &props,
+                &interner
+            ),
+            pr
+        );
+    }
+
+    #[test]
+    fn chiral_projector_left_right_product_is_zero() {
+        let interner = ax_ir::Interner::new();
+        let props = prop_map();
+        let expr = Expr::mul(vec![projector_left(&interner), projector_right(&interner)]);
+
+        assert_eq!(
+            simplify_chiral_projectors(&expr, &props, &interner),
+            Expr::zero()
+        );
+    }
+
+    #[test]
+    fn chiral_projector_completeness_sum_is_one() {
+        let interner = ax_ir::Interner::new();
+        let props = prop_map();
+        let expr = Expr::add(vec![projector_left(&interner), projector_right(&interner)]);
+
+        assert_eq!(
+            simplify_chiral_projectors(&expr, &props, &interner),
+            Expr::one()
+        );
+    }
+
+    #[test]
+    fn chiral_projectors_act_on_weyl_spinors_by_metadata() {
+        let interner = ax_ir::Interner::new();
+        let psi_l = interner.get_or_intern("psi_l");
+        let psi_r = interner.get_or_intern("psi_r");
+        let spin = interner.get_or_intern("spin");
+        let mut props = prop_map();
+        props.insert(
+            psi_l,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(4),
+                chirality: Some(ax_ir::Chirality::Left),
+                index_family: Some(spin),
+            })],
+        );
+        props.insert(
+            psi_r,
+            vec![TensorProperty::SpinorMeta(SpinorMetadata {
+                class: SpinorClass::Weyl,
+                dimension: Some(4),
+                chirality: Some(ax_ir::Chirality::Right),
+                index_family: Some(spin),
+            })],
+        );
+
+        assert_eq!(
+            simplify_chiral_projectors(
+                &Expr::mul(vec![projector_left(&interner), Expr::Sym(psi_l)]),
+                &props,
+                &interner,
+            ),
+            Expr::Sym(psi_l)
+        );
+        assert_eq!(
+            simplify_chiral_projectors(
+                &Expr::mul(vec![projector_right(&interner), Expr::Sym(psi_r)]),
+                &props,
+                &interner,
+            ),
+            Expr::Sym(psi_r)
+        );
+        assert_eq!(
+            simplify_chiral_projectors(
+                &Expr::mul(vec![projector_left(&interner), Expr::Sym(psi_r)]),
+                &props,
+                &interner,
+            ),
+            Expr::zero()
+        );
+        assert_eq!(
+            simplify_chiral_projectors(
+                &Expr::mul(vec![projector_right(&interner), Expr::Sym(psi_l)]),
+                &props,
+                &interner,
+            ),
+            Expr::zero()
+        );
+    }
+
+    #[test]
+    fn sigma_matrix_expands_to_gamma_commutator() {
+        let interner = ax_ir::Interner::new();
+        let mu = Expr::Sym(interner.get_or_intern("mu"));
+        let nu = Expr::Sym(interner.get_or_intern("nu"));
+
+        let result =
+            sigma_to_gamma_commutator(&sigma_matrix(mu.clone(), nu.clone(), &interner), &interner);
+        let expected = Expr::mul(vec![
+            i_over_two(),
+            Expr::add(vec![
+                Expr::mul(vec![
+                    Expr::Call(interner.get_or_intern("gamma"), vec![mu.clone()]),
+                    Expr::Call(interner.get_or_intern("gamma"), vec![nu.clone()]),
+                ]),
+                Expr::neg(Expr::mul(vec![
+                    Expr::Call(interner.get_or_intern("gamma"), vec![nu]),
+                    Expr::Call(interner.get_or_intern("gamma"), vec![mu]),
+                ])),
+            ]),
+        ]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn gamma_commutator_pattern_converts_to_sigma_with_correct_factor() {
+        let interner = ax_ir::Interner::new();
+        let mu = Expr::Sym(interner.get_or_intern("mu"));
+        let nu = Expr::Sym(interner.get_or_intern("nu"));
+        let gamma_mu = Expr::Call(interner.get_or_intern("gamma"), vec![mu.clone()]);
+        let gamma_nu = Expr::Call(interner.get_or_intern("gamma"), vec![nu.clone()]);
+        let commutator_pattern = Expr::add(vec![
+            Expr::mul(vec![gamma_mu.clone(), gamma_nu.clone()]),
+            Expr::neg(Expr::mul(vec![gamma_nu, gamma_mu])),
+        ]);
+
+        let result = gamma_commutator_to_sigma(&commutator_pattern, &interner);
+        let expected = Expr::mul(vec![minus_two_i(), sigma_matrix(mu, nu, &interner)]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn gamma_commutator_call_converts_to_sigma_with_correct_factor() {
+        let interner = ax_ir::Interner::new();
+        let mu = Expr::Sym(interner.get_or_intern("mu"));
+        let nu = Expr::Sym(interner.get_or_intern("nu"));
+        let commutator = Expr::Call(
+            interner.get_or_intern("commutator"),
+            vec![
+                Expr::Call(interner.get_or_intern("gamma"), vec![mu.clone()]),
+                Expr::Call(interner.get_or_intern("gamma"), vec![nu.clone()]),
+            ],
+        );
+
+        let result = gamma_commutator_to_sigma(&commutator, &interner);
+        let expected = Expr::mul(vec![minus_two_i(), sigma_matrix(mu, nu, &interner)]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn gamma_to_sigma_leaves_nonmatching_input_unchanged() {
+        let interner = ax_ir::Interner::new();
+        let mu = Expr::Sym(interner.get_or_intern("mu"));
+        let nu = Expr::Sym(interner.get_or_intern("nu"));
+        let nonmatching = Expr::add(vec![
+            Expr::mul(vec![
+                Expr::Call(interner.get_or_intern("gamma"), vec![mu]),
+                Expr::Call(interner.get_or_intern("gamma"), vec![nu]),
+            ]),
+            Expr::one(),
+        ]);
+
+        assert_eq!(
+            gamma_commutator_to_sigma(&nonmatching, &interner),
+            nonmatching
+        );
     }
 
     #[test]
@@ -9069,5 +13301,152 @@ mod tests {
         ];
         let result = fierz_full(&expr, &order, 4, &props, &mut interner);
         assert!(matches!(result, Some(Expr::Add(_))));
+    }
+
+    #[test]
+    fn first_order_energy_shift_diagonal_two_level_returns_diagonal_entries() {
+        let interner = ax_ir::Interner::new();
+        let a = Expr::Sym(interner.get_or_intern("a"));
+        let b = Expr::Sym(interner.get_or_intern("b"));
+        let h0 = vec![
+            vec![Expr::Int(1.into()), Expr::zero()],
+            vec![Expr::zero(), Expr::Int(2.into())],
+        ];
+        let v = vec![vec![a.clone(), Expr::zero()], vec![Expr::zero(), b.clone()]];
+
+        assert_eq!(first_order_energy_shift(&h0, &v, 0, &interner).unwrap(), a);
+        assert_eq!(first_order_energy_shift(&h0, &v, 1, &interner).unwrap(), b);
+    }
+
+    #[test]
+    fn second_order_energy_shift_diagonal_two_level_off_diagonal_coupling_is_exact() {
+        let interner = ax_ir::Interner::new();
+        let g = Expr::Sym(interner.get_or_intern("g"));
+        let h0 = vec![
+            vec![Expr::Int(1.into()), Expr::zero()],
+            vec![Expr::zero(), Expr::Int(2.into())],
+        ];
+        let v = vec![vec![Expr::zero(), g.clone()], vec![g.clone(), Expr::zero()]];
+
+        let shift = second_order_energy_shift(&h0, &v, 0, &interner).unwrap();
+        let expected = Expr::neg(Expr::pow(g, Expr::Int(2.into())));
+        assert_eq!(shift, expected);
+    }
+
+    #[test]
+    fn perturbation_theory_rejects_degenerate_unperturbed_diagonal_spectrum() {
+        let interner = ax_ir::Interner::new();
+        let h0 = identity_matrix(2, &interner);
+        let v = identity_matrix(2, &interner);
+
+        assert_eq!(
+            first_order_energy_shift(&h0, &v, 0, &interner),
+            Err(PerturbationError::DegenerateUnperturbedSpectrum)
+        );
+    }
+
+    #[test]
+    fn degenerate_subspace_effective_perturbation_extracts_requested_block() {
+        let interner = ax_ir::Interner::new();
+        let a = Expr::Sym(interner.get_or_intern("a"));
+        let b = Expr::Sym(interner.get_or_intern("b"));
+        let c = Expr::Sym(interner.get_or_intern("c"));
+        let d = Expr::Sym(interner.get_or_intern("d"));
+        let h0 = vec![
+            vec![Expr::Int(1.into()), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::Int(1.into()), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::Int(2.into())],
+        ];
+        let v = vec![
+            vec![a.clone(), b.clone(), Expr::zero()],
+            vec![c.clone(), d.clone(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::one()],
+        ];
+
+        assert_eq!(
+            degenerate_subspace_effective_perturbation(&h0, &v, &[0, 1], &interner).unwrap(),
+            vec![vec![a, b], vec![c, d]]
+        );
+    }
+
+    #[test]
+    fn degenerate_first_order_splittings_two_state_off_diagonal_are_pm_g() {
+        let interner = ax_ir::Interner::new();
+        let g = Expr::Sym(interner.get_or_intern("g"));
+        let h0 = vec![
+            vec![Expr::Int(1.into()), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::Int(1.into()), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::Int(2.into())],
+        ];
+        let v = vec![
+            vec![Expr::zero(), g.clone(), Expr::zero()],
+            vec![g.clone(), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::one()],
+        ];
+
+        assert_eq!(
+            degenerate_first_order_splittings(&h0, &v, &[0, 1], &interner).unwrap(),
+            vec![g.clone(), Expr::neg(g)]
+        );
+    }
+
+    #[test]
+    fn degenerate_subspace_rejects_nondegenerate_selection() {
+        let interner = ax_ir::Interner::new();
+        let h0 = vec![
+            vec![Expr::Int(1.into()), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::Int(1.into()), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::Int(2.into())],
+        ];
+        let v = identity_matrix(3, &interner);
+
+        assert_eq!(
+            degenerate_subspace_effective_perturbation(&h0, &v, &[0, 2], &interner),
+            Err(PerturbationError::SelectedSubspaceNotDegenerate)
+        );
+    }
+
+    #[test]
+    fn berry_connection_contains_i_bra_and_diff() {
+        let interner = ax_ir::Interner::new();
+        let psi = interner.get_or_intern("psi");
+        let theta = interner.get_or_intern("theta");
+        let psi_theta = Expr::Call(psi, vec![Expr::Sym(theta)]);
+        let result = berry_connection(psi_theta, Expr::Sym(theta), &interner);
+
+        let Expr::Call(form_sym, args) = result else {
+            panic!("expected one_form_component call");
+        };
+        assert_eq!(interner.resolve(form_sym), "one_form_component");
+        assert_eq!(args[0], Expr::Sym(theta));
+
+        let rendered = ax_ir::pretty_print(&args[1], &interner);
+        assert!(rendered.contains("i"), "got {rendered}");
+        assert!(rendered.contains("bra(psi(theta))"), "got {rendered}");
+        assert!(
+            rendered.contains("diff(psi(theta), theta)"),
+            "got {rendered}"
+        );
+    }
+
+    #[test]
+    fn geometric_phase_contains_canonical_integral_representation() {
+        let interner = ax_ir::Interner::new();
+        let theta = interner.get_or_intern("theta");
+        let a = Expr::Sym(interner.get_or_intern("A"));
+        let result = geometric_phase(a, Expr::Sym(theta), &interner);
+
+        let Expr::Call(sym, args) = result else {
+            panic!("expected integral call");
+        };
+        assert_eq!(interner.resolve(sym), "integral");
+        assert_eq!(args.len(), 4);
+        assert_eq!(args[0], Expr::Sym(theta));
+        assert!(
+            matches!(&args[1], Expr::Call(path_sym, inner) if interner.resolve(*path_sym) == "closed_path" && inner == &vec![Expr::Sym(theta)])
+        );
+        assert!(
+            matches!(&args[2], Expr::Call(path_sym, inner) if interner.resolve(*path_sym) == "closed_path" && inner == &vec![Expr::Sym(theta)])
+        );
     }
 }

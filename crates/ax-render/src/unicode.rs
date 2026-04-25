@@ -5,6 +5,7 @@ pub const YOUNG_BOX: &str = "□";
 
 const PREC_TOP: u8 = 0;
 const PREC_ADD: u8 = 50;
+const PREC_LABEL: u8 = 55;
 const PREC_MUL: u8 = 60;
 const PREC_UNARY: u8 = 70;
 const PREC_POW: u8 = 80;
@@ -185,12 +186,70 @@ fn render_unicode_tensor_product(lhs: &Expr, rhs: &Expr, interner: &ax_ir::Inter
     )
 }
 
+/// Render a compact Unicode summary for a canonical Kraus-channel list.
+pub fn render_channel_summary_unicode(expr: &Expr, interner: &ax_ir::Interner) -> Option<String> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    if items.is_empty() || !items.iter().all(|item| matches!(item, Expr::Matrix(_))) {
+        return None;
+    }
+    let labels = items
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("K{}", index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = interner;
+    Some(format!("Channel[{{{labels}}}]"))
+}
+
+/// Render a compact Unicode label for a canonical quantum channel family hint.
+pub fn render_channel_family_hint_unicode(hint: &str) -> String {
+    hint.replace('_', " ")
+}
+
+/// Render a compact Unicode spectrum list from already-formatted scalar strings.
+pub fn render_spectrum_unicode(values: &[String]) -> String {
+    format!("[{}]", values.join(", "))
+}
+
 fn render_call(name: &str, args: &[Expr], interner: &ax_ir::Interner) -> String {
     if let ("ket", [arg]) = (name, args) {
         return render_unicode_ket(arg, interner);
     }
     if let ("bra", [arg]) = (name, args) {
         return render_unicode_bra(arg, interner);
+    }
+    if let ("normal_order", [arg]) = (name, args) {
+        return format!(":{}:", render_with_paren(arg, PREC_TOP, interner));
+    }
+    if let ("on_subsystem", [lhs, rhs]) = (name, args) {
+        return format!(
+            "{}@{}",
+            render_with_paren(lhs, PREC_LABEL, interner),
+            render_with_paren(rhs, PREC_LABEL, interner)
+        );
+    }
+    if let ("compose_operators", [lhs, rhs]) = (name, args) {
+        return format!(
+            "{} ∘ {}",
+            render_with_paren(lhs, PREC_LABEL, interner),
+            render_with_paren(rhs, PREC_LABEL, interner)
+        );
+    }
+    if let ("time_order", [arg]) = (name, args) {
+        return format!("T({})", render_with_paren(arg, PREC_TOP, interner));
+    }
+    if let ("anti_time_order", [arg]) = (name, args) {
+        return format!("T̄({})", render_with_paren(arg, PREC_TOP, interner));
+    }
+    if let ("lindbladian_superoperator", [h, jumps]) = (name, args) {
+        return format!(
+            "𝓛({}, {})",
+            render_with_paren(h, PREC_TOP, interner),
+            render_with_paren(jumps, PREC_TOP, interner)
+        );
     }
     if let ("braket", [lhs, rhs]) = (name, args) {
         if let (Some([bra_inner]), Some([ket_inner])) = (
@@ -623,17 +682,22 @@ fn render(expr: &Expr, interner: &ax_ir::Interner) -> (String, u8) {
             ),
             PREC_TOP,
         ),
-        Expr::List(items) => (
-            format!(
-                "[{}]",
-                items
-                    .iter()
-                    .map(|item| render_with_paren(item, PREC_TOP, interner))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            PREC_TOP,
-        ),
+        Expr::List(items) => {
+            if let Some(summary) = render_channel_summary_unicode(expr, interner) {
+                return (summary, PREC_TOP);
+            }
+            (
+                format!(
+                    "[{}]",
+                    items
+                        .iter()
+                        .map(|item| render_with_paren(item, PREC_TOP, interner))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                PREC_TOP,
+            )
+        }
         Expr::Matrix(rows) => (
             format!(
                 "[{}]",
@@ -672,6 +736,17 @@ pub fn render_eigenvalue_list_unicode(values: &[Expr], interner: &ax_ir::Interne
     )
 }
 
+/// Render a Bloch vector in compact Unicode notation using the same component formatting as
+/// `to_unicode`.
+pub fn render_bloch_vector_unicode(r: &[ax_ir::Expr; 3], interner: &ax_ir::Interner) -> String {
+    format!(
+        "[{}, {}, {}]",
+        to_unicode(&r[0], interner),
+        to_unicode(&r[1], interner),
+        to_unicode(&r[2], interner)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,5 +776,42 @@ mod tests {
         let expr = ax_ir::Expr::Pow(Box::new(ax_ir::Expr::Sym(x)), Box::new(half));
         let s = to_unicode(&expr, &interner);
         assert!(s.contains("√"), "got: {}", s);
+    }
+
+    #[test]
+    fn unicode_time_order_render_uses_t_wrapper() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let time_order = interner.get_or_intern("time_order");
+        let expr = Expr::Call(
+            time_order,
+            vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)])],
+        );
+
+        let rendered = to_unicode(&expr, &interner);
+
+        assert!(rendered.contains("T("), "got: {rendered}");
+    }
+
+    #[test]
+    fn unicode_subsystem_label_render_uses_at_surface() {
+        let interner = ax_ir::Interner::new();
+        let on_subsystem = interner.get_or_intern("on_subsystem");
+        let a = interner.get_or_intern("A");
+        let qa = interner.get_or_intern("QA");
+        let expr = Expr::Call(on_subsystem, vec![Expr::Sym(a), Expr::Sym(qa)]);
+
+        let rendered = to_unicode(&expr, &interner);
+
+        assert!(rendered.contains("@QA"), "got: {rendered}");
+    }
+
+    #[test]
+    fn render_spectrum_unicode_joins_entries() {
+        assert_eq!(
+            render_spectrum_unicode(&["1/2".to_string(), "1/2".to_string()]),
+            "[1/2, 1/2]"
+        );
     }
 }

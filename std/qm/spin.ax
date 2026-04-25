@@ -32,8 +32,37 @@ let bloch_rho0 = bloch_vector(rho0)
 let rho_from_bloch_z = qubit_density_from_bloch([0, 0, 1])
 let z_eigs = hermitian_eigenvalues(pauli_z())
 let z_projectors = hermitian_eigenprojectors(pauli_z())
+let uz = time_evolution_operator(pauli_z(), t)
+let ket0 = [1, 0]
+let psi_t = schrodinger_evolve(pauli_z(), ket0, t)
+let x_t = heisenberg_evolve(pauli_z(), pauli_x(), t)
 exp_z
 var_z
 let projectors = [basis_projector(0, 2), basis_projector(1, 2)]
 let probs = measurement_probabilities(projectors, rho0)
 probs
+
+// Simple stationary perturbation theory for a diagonal two-level Hamiltonian
+let h0_pt = [[1, 0], [0, 2]]
+let v1_pt = [[a, 0], [0, b]]
+let v2_pt = [[0, g], [g, 0]]
+let e0_first = first_order_energy_shift(h0_pt, v1_pt, 0)
+let e1_first = first_order_energy_shift(h0_pt, v1_pt, 1)
+let e0_second = second_order_energy_shift(h0_pt, v2_pt, 0)
+e0_first
+e1_first
+e0_second
+
+// Degenerate perturbation theory in a two-state subspace
+let h0_deg = [[1, 0, 0], [0, 1, 0], [0, 0, 2]]
+let v_deg = [[0, g, 0], [g, 0, 0], [0, 0, 1]]
+let v_eff_deg = degenerate_effective_perturbation(h0_deg, v_deg, [0, 1])
+let split_deg = degenerate_first_order_splittings(h0_deg, v_deg, [0, 1])
+v_eff_deg
+split_deg
+
+// Symbolic Berry connection and geometric phase
+let berry_a_theta = berry_connection(psi(theta), theta)
+let berry_gamma = geometric_phase(berry_a_theta, theta)
+berry_a_theta
+berry_gamma

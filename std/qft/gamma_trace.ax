@@ -1,0 +1,16 @@
+// Convention-aware gamma traces and gamma5 traces.
+indices spin [s0, s1, s2, s3] dim=4 values=[s0, s1, s2, s3]
+declare_gamma_matrix_meta(gamma, 4, eta, spin, true)
+declare_gamma5_convention(gamma, mostly_plus, plus_two_g, levi_civita, eps, 4)
+
+gamma_trace([mu, nu], eta)
+gamma_trace([mu, nu, rho, sigma], eta)
+gamma_trace([mu, nu, rho], eta)
+
+gamma5_trace([mu, nu, rho, sigma])
+gamma5_trace([mu, nu])
+gamma_trace([], eta)
+
+join_gamma(gamma(mu) * gamma(nu))
+join_gamma(gamma(mu, nu) * gamma(rho))
+split_gamma(gamma(mu, nu, rho))

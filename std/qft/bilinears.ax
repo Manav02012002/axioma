@@ -1,0 +1,23 @@
+// Majorana and Weyl bilinear selection rules plus the explicit-index bridge.
+indices spin [s0, s1, s2, s3] dim=4 values=[s0, s1, s2, s3]
+declare_spinor_meta(psi, 4, Majorana, none, spin)
+declare_spinor_meta(chi, 4, Majorana, none, spin)
+declare_spinor_meta(xi_l, 4, Weyl, left, spin)
+declare_spinor_meta(xi_r, 4, Weyl, right, spin)
+declare_spinor_meta(eta_l, 4, Weyl, left, spin)
+declare_spinor_meta(eta_r, 4, Weyl, right, spin)
+declare_gamma_matrix_meta(gamma, 4, eta, spin, true)
+declare_gamma5_convention(gamma, mostly_plus, plus_two_g, abstract_chiral, eps, 4)
+declare_dirac_bar_meta(bar, gamma, spin, true)
+
+simplify_spinor_bilinears(bar(psi) * gamma(mu) * psi)
+simplify_spinor_bilinears(bar(psi) * sigma(mu, nu) * psi)
+simplify_spinor_bilinears(bar(psi) * gamma5 * psi)
+
+simplify_spinor_bilinears(bar(xi_l) * xi_l)
+simplify_spinor_bilinears(bar(xi_l) * gamma(mu) * xi_r)
+simplify_spinor_bilinears(bar(xi_l) * gamma(mu) * eta_l)
+
+insert_explicit_spinor_indices(bar(chi) * chi)
+insert_explicit_spinor_indices(bar(psi) * gamma(mu) * gamma(nu) * psi)
+remove_trivial_spinor_indices(insert_explicit_spinor_indices(bar(psi) * gamma(mu) * psi))

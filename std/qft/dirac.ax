@@ -1,11 +1,22 @@
-// Dirac / spinor manipulations.
+// Dirac / spinor manipulation examples with structured 4D metadata.
+indices spin [s0, s1, s2, s3] dim=4 values=[s0, s1, s2, s3]
 declare_spinor_meta(psi, 4, Majorana, none, spin)
 declare_spinor_meta(psi1, 4, Majorana, none, spin)
 declare_spinor_meta(psi2, 4, Majorana, none, spin)
 declare_spinor_meta(psi3, 4, Majorana, none, spin)
 declare_spinor_meta(psi4, 4, Majorana, none, spin)
 declare_gamma_matrix_meta(gamma, 4, eta, spin, true)
+declare_gamma5_convention(gamma, mostly_plus, plus_two_g, abstract_chiral, eps, 4)
 declare_dirac_bar_meta(bar, gamma, spin, true)
-expand_diracbar(bar(gamma(mu) * psi))
-sort_product(bar(psi) * psi * gamma(mu))
-fierz(bar(psi1) * gamma(mu) * psi2 * bar(psi3) * psi4)
+
+expand_diracbar(bar(gamma(mu) * gamma(nu) * psi))
+expand_diracbar(bar(c * gamma(mu) * psi))
+expand_diracbar(bar(gamma(mu) * gamma(nu) * gamma(rho) * psi))
+
+sort_product(bar(psi2) * psi1 * gamma(mu))
+sigma_to_gamma(sigma(mu, nu))
+gamma_to_sigma(gamma(mu) * gamma(nu) - gamma(nu) * gamma(mu))
+
+insert_explicit_spinor_indices(bar(psi) * gamma(mu) * gamma(nu) * psi)
+remove_trivial_spinor_indices(insert_explicit_spinor_indices(bar(psi) * gamma(mu) * psi))
+simplify_spinor_bilinears(bar(psi) * gamma(mu) * psi)

@@ -219,6 +219,16 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
                 .map(|sym| interner.resolve(sym).to_string()),
             metadata.has_gamma5
         ),
+        ax_ir::TensorProperty::GammaConventionMeta(metadata) => format!(
+            "GammaConventionMeta(signature={:?}, clifford={:?}, gamma5={:?}, epsilon_symbol={:?}, dimension={:?})",
+            metadata.signature,
+            metadata.clifford,
+            metadata.gamma5,
+            metadata
+                .epsilon_symbol
+                .map(|sym| interner.resolve(sym).to_string()),
+            metadata.dimension
+        ),
         ax_ir::TensorProperty::Commuting => "Commuting".to_string(),
         ax_ir::TensorProperty::AntiCommuting => "AntiCommuting".to_string(),
         ax_ir::TensorProperty::NonCommuting => "NonCommuting".to_string(),
@@ -284,10 +294,45 @@ fn property_name(prop: &ax_ir::TensorProperty, interner: &ax_ir::Interner) -> St
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        ax_ir::TensorProperty::FockSpaceMeta(metadata) => format!(
+            "FockSpaceMeta(symbol={}, modes=[{}], basis_order=[{}])",
+            interner.resolve(metadata.symbol),
+            metadata
+                .modes
+                .iter()
+                .map(|mode| format!(
+                    "{}:{:?}:{:?}",
+                    interner.resolve(mode.symbol),
+                    mode.statistics,
+                    mode.truncation
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
+            metadata
+                .basis_order
+                .iter()
+                .map(|sym| interner.resolve(*sym).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         ax_ir::TensorProperty::QuantumObjectMeta(metadata) => format!(
             "QuantumObjectMeta(kind={:?}, space_symbol={})",
             metadata.kind,
             interner.resolve(metadata.space_symbol)
+        ),
+        ax_ir::TensorProperty::OperatorSpaceMeta(metadata) => format!(
+            "OperatorSpaceMeta(domain_space={}, codomain_space={})",
+            interner.resolve(metadata.domain_space),
+            interner.resolve(metadata.codomain_space)
+        ),
+        ax_ir::TensorProperty::ModeMeta(metadata) => format!(
+            "ModeMeta(statistics={:?}, subsystem={:?}, mode_index={}, label={:?})",
+            metadata.statistics,
+            metadata
+                .subsystem
+                .map(|sym| interner.resolve(sym).to_string()),
+            metadata.mode_index,
+            metadata.label.map(|sym| interner.resolve(sym).to_string())
         ),
         ax_ir::TensorProperty::BackgroundClass(sym) => {
             format!("BackgroundClass({})", interner.resolve(*sym))

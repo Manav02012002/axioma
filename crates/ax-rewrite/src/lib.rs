@@ -2,6 +2,7 @@
 
 use anyhow::Context;
 use ax_ir::{Expr, Interner};
+use ax_tensor::PropertyLookup;
 use std::collections::HashMap;
 
 pub type Bindings = HashMap<lasso::Spur, Expr>;
@@ -54,6 +55,96 @@ impl RewriteTrace {
                 ax_ir::TrustLevel::Unverified => 4,
             })
             .unwrap_or(ax_ir::TrustLevel::Exact)
+    }
+}
+
+fn rewrite_expr_head_symbol(expr: &Expr) -> Option<lasso::Spur> {
+    match expr {
+        Expr::Sym(sym) => Some(*sym),
+        Expr::Call(sym, _) => Some(*sym),
+        Expr::Indexed(base, _) => rewrite_expr_head_symbol(base),
+        _ => None,
+    }
+}
+
+fn rewrite_mode_metadata_of_factor(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+) -> Option<ax_ir::ModeMetadata> {
+    let direct = rewrite_expr_head_symbol(expr).and_then(|sym| {
+        props
+            .get_properties(sym)
+            .into_iter()
+            .find_map(|prop| match prop {
+                ax_ir::TensorProperty::ModeMeta(metadata) => Some(metadata),
+                _ => None,
+            })
+    });
+    if direct.is_some() {
+        return direct;
+    }
+
+    match expr {
+        Expr::Call(_, args) if args.len() == 1 => {
+            rewrite_expr_head_symbol(&args[0]).and_then(|sym| {
+                props
+                    .get_properties(sym)
+                    .into_iter()
+                    .find_map(|prop| match prop {
+                        ax_ir::TensorProperty::ModeMeta(metadata) => Some(metadata),
+                        _ => None,
+                    })
+            })
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_has_property_kind(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    kind: &ax_ir::TensorProperty,
+) -> bool {
+    rewrite_expr_head_symbol(expr).is_some_and(|sym| props.has_property_kind(sym, kind))
+}
+
+/// Return the graded sign associated with swapping two declared factors.
+///
+/// The helper is intentionally sign-only: it reports `-1` for metadata-proven
+/// odd/fermionic swaps and `+1` otherwise, without inventing commutator,
+/// anticommutator, delta, or contraction terms.
+pub fn graded_swap_sign(left: &Expr, right: &Expr, props: &dyn PropertyLookup) -> Expr {
+    if let (Some(lhs), Some(rhs)) = (
+        rewrite_mode_metadata_of_factor(left, props),
+        rewrite_mode_metadata_of_factor(right, props),
+    ) {
+        return if lhs.is_fermionic() && rhs.is_fermionic() {
+            Expr::neg(Expr::one())
+        } else {
+            Expr::one()
+        };
+    }
+
+    if let (Some(lhs), Some(rhs)) = (
+        rewrite_expr_head_symbol(left),
+        rewrite_expr_head_symbol(right),
+    ) {
+        if props.pair_commuting_behaviour(lhs, rhs) == Some(-1) {
+            return Expr::neg(Expr::one());
+        }
+    }
+
+    let left_odd = rewrite_has_property_kind(left, props, &ax_ir::TensorProperty::AntiCommuting)
+        || rewrite_has_property_kind(left, props, &ax_ir::TensorProperty::MajoranaSpinor)
+        || rewrite_has_property_kind(left, props, &ax_ir::TensorProperty::WeylSpinor);
+    let right_odd = rewrite_has_property_kind(right, props, &ax_ir::TensorProperty::AntiCommuting)
+        || rewrite_has_property_kind(right, props, &ax_ir::TensorProperty::MajoranaSpinor)
+        || rewrite_has_property_kind(right, props, &ax_ir::TensorProperty::WeylSpinor);
+
+    if left_odd && right_odd {
+        Expr::neg(Expr::one())
+    } else {
+        Expr::one()
     }
 }
 
@@ -867,6 +958,80 @@ mod tests {
                 .ok()
                 .flatten(),
             None
+        );
+    }
+
+    #[test]
+    fn graded_swap_sign_fermionic_mode_metadata_is_negative() {
+        let interner = Interner::new();
+        let c0 = interner.get_or_intern("c0");
+        let c1 = interner.get_or_intern("c1");
+        let annihilation = interner.get_or_intern("annihilation");
+        let props = HashMap::from([
+            (
+                c0,
+                vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                    statistics: ax_ir::ModeStatistics::Fermionic,
+                    subsystem: None,
+                    mode_index: 0,
+                    label: None,
+                })],
+            ),
+            (
+                c1,
+                vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                    statistics: ax_ir::ModeStatistics::Fermionic,
+                    subsystem: None,
+                    mode_index: 1,
+                    label: None,
+                })],
+            ),
+        ]);
+
+        assert_eq!(
+            graded_swap_sign(
+                &Expr::Call(annihilation, vec![Expr::Sym(c0)]),
+                &Expr::Call(annihilation, vec![Expr::Sym(c1)]),
+                &props,
+            ),
+            Expr::neg(Expr::one())
+        );
+    }
+
+    #[test]
+    fn graded_swap_sign_bosonic_mode_metadata_is_positive() {
+        let interner = Interner::new();
+        let a0 = interner.get_or_intern("a0");
+        let a1 = interner.get_or_intern("a1");
+        let creation = interner.get_or_intern("creation");
+        let props = HashMap::from([
+            (
+                a0,
+                vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                    statistics: ax_ir::ModeStatistics::Bosonic,
+                    subsystem: None,
+                    mode_index: 0,
+                    label: None,
+                })],
+            ),
+            (
+                a1,
+                vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                    statistics: ax_ir::ModeStatistics::Bosonic,
+                    subsystem: None,
+                    mode_index: 1,
+                    label: None,
+                })],
+            ),
+        ]);
+
+        assert_eq!(
+            graded_swap_sign(
+                &Expr::Call(creation, vec![Expr::Sym(a0)]),
+                &Expr::Call(creation, vec![Expr::Sym(a1)]),
+                &props,
+            ),
+            Expr::one()
         );
     }
 }

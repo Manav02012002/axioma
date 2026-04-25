@@ -1,0 +1,36 @@
+// Quantum-information functionals for Bell and qubit states.
+declare_hilbert_space(QA, 2)
+declare_hilbert_space(QB, 2)
+declare_composite_space(QAB, [QA, QB])
+
+let rho_mm = [[1/2, 0], [0, 1/2]]
+let s_vn_mm = von_neumann_entropy(rho_mm)
+let s_renyi2_mm = renyi2_entropy(rho_mm)
+
+let bell_phi_plus = [1/sqrt(2), 0, 0, 1/sqrt(2)]
+let rho_bell = density(bell_phi_plus)
+let rho_A = partial_trace(rho_bell, 2, 2, A)
+let rho_A_factor = partial_trace_factor(rho_bell, [2, 2], 1)
+let s_vn_A = von_neumann_entropy(rho_A)
+let s_renyi2_A = renyi2_entropy(rho_A)
+let s_renyi2_factor = renyi2_entropy_factor(rho_bell, [2, 2], 0)
+let mutual_info_bell = mutual_information(rho_bell, 2, 2)
+let conditional_bell = conditional_entropy(rho_bell, 2, 2)
+let negativity_bell = negativity(rho_bell, 2, 2)
+let log_negativity_bell = logarithmic_negativity(rho_bell, 2, 2)
+let entanglement_spec = entanglement_spectrum(bell_phi_plus, 2, 2)
+let schmidt_bell = schmidt_coefficients(bell_phi_plus, 2, 2)
+
+s_vn_mm
+s_renyi2_mm
+rho_A
+rho_A_factor
+s_vn_A
+s_renyi2_A
+s_renyi2_factor
+mutual_info_bell
+conditional_bell
+negativity_bell
+log_negativity_bell
+entanglement_spec
+schmidt_bell

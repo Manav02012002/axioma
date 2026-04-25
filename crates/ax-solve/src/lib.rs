@@ -33,6 +33,41 @@ pub fn can_solve_componentwise_by_symmetry(sym: &ax_ir::TensorSymmetry) -> bool 
     !sym.tableaux.is_empty()
 }
 
+/// Backend selected for finite-dimensional quantum workflows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuantumBackendChoice {
+    /// Use exact dense symbolic evaluators.
+    ExactDense,
+    /// Use sparse numeric plugin evaluators.
+    PluginSparse,
+}
+
+/// Choose the quantum workflow backend from dimension, numeric status, and project config.
+///
+/// Explicit `exact_dense` and `plugin_sparse` settings always win. In `auto`
+/// mode, numeric systems with `dim >= sparse_threshold_dim.unwrap_or(4)` use
+/// the sparse plugin backend; symbolic systems and smaller numeric systems use
+/// exact dense evaluation.
+pub fn choose_quantum_backend(
+    dim: usize,
+    numeric: bool,
+    configured_backend: Option<&str>,
+    sparse_threshold_dim: Option<usize>,
+) -> QuantumBackendChoice {
+    match configured_backend {
+        Some("exact_dense") => return QuantumBackendChoice::ExactDense,
+        Some("plugin_sparse") => return QuantumBackendChoice::PluginSparse,
+        Some("auto") | None => {}
+        Some(_) => {}
+    }
+
+    if numeric && dim >= sparse_threshold_dim.unwrap_or(4) {
+        QuantumBackendChoice::PluginSparse
+    } else {
+        QuantumBackendChoice::ExactDense
+    }
+}
+
 fn matrix_shape(matrix: &[Vec<Expr>]) -> Option<(usize, usize)> {
     let rows = matrix.len();
     let cols = matrix.first().map(|row| row.len()).unwrap_or(0);
@@ -1132,5 +1167,45 @@ mod tests {
 
         assert!(!crate::can_solve_componentwise_by_symmetry(&empty));
         assert!(crate::can_solve_componentwise_by_symmetry(&nonempty));
+    }
+
+    #[test]
+    fn quantum_backend_chooser_uses_plugin_for_numeric_dim_at_or_above_threshold() {
+        assert_eq!(
+            crate::choose_quantum_backend(4, true, None, None),
+            crate::QuantumBackendChoice::PluginSparse
+        );
+        assert_eq!(
+            crate::choose_quantum_backend(8, true, Some("auto"), Some(8)),
+            crate::QuantumBackendChoice::PluginSparse
+        );
+    }
+
+    #[test]
+    fn quantum_backend_chooser_keeps_exact_for_small_or_symbolic_systems() {
+        assert_eq!(
+            crate::choose_quantum_backend(3, true, None, None),
+            crate::QuantumBackendChoice::ExactDense
+        );
+        assert_eq!(
+            crate::choose_quantum_backend(4, false, Some("auto"), None),
+            crate::QuantumBackendChoice::ExactDense
+        );
+        assert_eq!(
+            crate::choose_quantum_backend(7, true, Some("auto"), Some(8)),
+            crate::QuantumBackendChoice::ExactDense
+        );
+    }
+
+    #[test]
+    fn quantum_backend_chooser_respects_explicit_configured_backend() {
+        assert_eq!(
+            crate::choose_quantum_backend(100, true, Some("exact_dense"), None),
+            crate::QuantumBackendChoice::ExactDense
+        );
+        assert_eq!(
+            crate::choose_quantum_backend(1, false, Some("plugin_sparse"), None),
+            crate::QuantumBackendChoice::PluginSparse
+        );
     }
 }

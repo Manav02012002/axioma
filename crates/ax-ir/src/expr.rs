@@ -85,6 +85,38 @@ pub struct GammaMatrixMetadata {
     pub has_gamma5: bool,
 }
 
+/// Metric signature convention used by gamma-matrix and Clifford-algebra metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MetricSignature {
+    MostlyPlus,
+    MostlyMinus,
+    Euclidean,
+}
+
+/// Clifford-algebra normalization convention for gamma matrices.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CliffordConvention {
+    PlusTwoG,
+    MinusTwoG,
+}
+
+/// Convention used to interpret gamma5 or its higher-dimensional analogue.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum GammaFiveConvention {
+    LeviCivita,
+    AbstractChiral,
+}
+
+/// Structured metadata describing gamma-matrix signature, Clifford sign, and optional gamma5 data.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GammaConventionMetadata {
+    pub signature: MetricSignature,
+    pub clifford: CliffordConvention,
+    pub gamma5: Option<GammaFiveConvention>,
+    pub epsilon_symbol: Option<Sym>,
+    pub dimension: Option<usize>,
+}
+
 /// Structured metadata describing how a Dirac-bar operation is related to spinors and gamma matrices.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DiracBarMetadata {
@@ -136,6 +168,86 @@ pub struct QuantumObjectMetadata {
     pub space_symbol: Sym,
 }
 
+/// Structured metadata describing the domain and codomain Hilbert spaces of an operator.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct OperatorSpaceMetadata {
+    pub domain_space: Sym,
+    pub codomain_space: Sym,
+}
+
+/// Classifies the statistics family of a structured quantum mode.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ModeStatistics {
+    Bosonic,
+    Fermionic,
+    Spin,
+}
+
+/// Structured metadata describing one declared factor in a Fock space.
+///
+/// `symbol` names the mode, `statistics` records whether it is bosonic, fermionic, or spin-like,
+/// and `truncation` stores a finite bosonic occupation cutoff `nmax` when present. Fermionic and
+/// spin modes, as well as unbounded bosonic modes, use `None`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FockModeFactor {
+    pub symbol: Sym,
+    pub statistics: ModeStatistics,
+    pub truncation: Option<usize>,
+}
+
+/// Structured metadata describing a named Fock space and its ordered occupation basis.
+///
+/// `modes` lists each declared mode in canonical order, while `basis_order` stores the explicit
+/// ordering of mode symbols used in the occupation basis. `symbol` names the overall Fock space.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FockSpaceMetadata {
+    pub symbol: Sym,
+    pub modes: Vec<FockModeFactor>,
+    pub basis_order: Vec<Sym>,
+}
+
+/// Structured metadata describing a mode's statistics, canonical subsystem position, and aliases.
+///
+/// `mode_index` is the zero-based canonical position of the mode within its declared subsystem
+/// or Fock space ordering. `subsystem` optionally tags a grouping such as a register or factor,
+/// while `label` optionally stores a symbolic alias such as `a`, `b`, or `c1`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ModeMetadata {
+    pub statistics: ModeStatistics,
+    pub subsystem: Option<Sym>,
+    pub mode_index: usize,
+    pub label: Option<Sym>,
+}
+
+impl ModeMetadata {
+    /// Return `true` when this mode carries bosonic statistics metadata.
+    pub fn is_bosonic(&self) -> bool {
+        matches!(self.statistics, ModeStatistics::Bosonic)
+    }
+
+    /// Return `true` when this mode carries fermionic statistics metadata.
+    pub fn is_fermionic(&self) -> bool {
+        matches!(self.statistics, ModeStatistics::Fermionic)
+    }
+
+    /// Return `true` when this mode carries spin-mode metadata.
+    pub fn is_spin(&self) -> bool {
+        matches!(self.statistics, ModeStatistics::Spin)
+    }
+}
+
+impl FockSpaceMetadata {
+    /// Return the number of declared modes in this Fock space metadata.
+    pub fn mode_count(&self) -> usize {
+        self.modes.len()
+    }
+
+    /// Return the declared mode symbols in canonical mode order.
+    pub fn mode_symbols(&self) -> Vec<Sym> {
+        self.modes.iter().map(|mode| mode.symbol).collect()
+    }
+}
+
 impl HilbertSpaceMetadata {
     /// Return `true` when this Hilbert space has more than one ordered tensor factor.
     pub fn is_composite(&self) -> bool {
@@ -176,6 +288,7 @@ pub enum TensorProperty {
     DiracBarMeta(DiracBarMetadata),
     GammaMatrixProp,
     GammaMatrixMeta(GammaMatrixMetadata),
+    GammaConventionMeta(GammaConventionMetadata),
     Commuting,
     AntiCommuting,
     NonCommuting,
@@ -206,7 +319,10 @@ pub enum TensorProperty {
     DifferentialFormDegree(usize),
     TraceSpaceMeta(TraceSpaceMetadata),
     HilbertSpaceMeta(HilbertSpaceMetadata),
+    FockSpaceMeta(FockSpaceMetadata),
     QuantumObjectMeta(QuantumObjectMetadata),
+    OperatorSpaceMeta(OperatorSpaceMetadata),
+    ModeMeta(ModeMetadata),
     /// Generic marker for a background class or background geometry family.
     BackgroundClass(Sym),
     /// Generic perturbation-family metadata tagged by family symbol and order.
@@ -244,12 +360,6 @@ pub struct Convention {
     pub ricci_contraction: RicciContraction,
     pub levi_civita_norm: LeviCivitaNorm,
     pub fourier_sign: FourierSign,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MetricSignature {
-    MostlyPlus,
-    MostlyMinus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -970,6 +1080,203 @@ mod tests {
     }
 
     #[test]
+    fn equal_gamma_convention_metadata_compares_equal() {
+        let epsilon = lasso::Spur::try_from_usize(5).unwrap();
+        let lhs = GammaConventionMetadata {
+            signature: MetricSignature::MostlyPlus,
+            clifford: CliffordConvention::PlusTwoG,
+            gamma5: Some(GammaFiveConvention::LeviCivita),
+            epsilon_symbol: Some(epsilon),
+            dimension: Some(4),
+        };
+        let rhs = GammaConventionMetadata {
+            signature: MetricSignature::MostlyPlus,
+            clifford: CliffordConvention::PlusTwoG,
+            gamma5: Some(GammaFiveConvention::LeviCivita),
+            epsilon_symbol: Some(epsilon),
+            dimension: Some(4),
+        };
+
+        assert_eq!(lhs, rhs);
+        assert_eq!(
+            TensorProperty::GammaConventionMeta(lhs.clone()),
+            TensorProperty::GammaConventionMeta(rhs)
+        );
+    }
+
+    #[test]
+    fn changing_gamma_convention_metadata_fields_changes_equality() {
+        let epsilon = lasso::Spur::try_from_usize(5).unwrap();
+        let other_epsilon = lasso::Spur::try_from_usize(6).unwrap();
+        let base = GammaConventionMetadata {
+            signature: MetricSignature::MostlyPlus,
+            clifford: CliffordConvention::PlusTwoG,
+            gamma5: Some(GammaFiveConvention::LeviCivita),
+            epsilon_symbol: Some(epsilon),
+            dimension: Some(4),
+        };
+
+        assert_ne!(
+            base,
+            GammaConventionMetadata {
+                signature: MetricSignature::MostlyMinus,
+                ..base.clone()
+            }
+        );
+        assert_ne!(
+            base,
+            GammaConventionMetadata {
+                clifford: CliffordConvention::MinusTwoG,
+                ..base.clone()
+            }
+        );
+        assert_ne!(
+            base,
+            GammaConventionMetadata {
+                gamma5: Some(GammaFiveConvention::AbstractChiral),
+                ..base.clone()
+            }
+        );
+        assert_ne!(
+            base,
+            GammaConventionMetadata {
+                epsilon_symbol: Some(other_epsilon),
+                ..base.clone()
+            }
+        );
+        assert_ne!(
+            base.clone(),
+            GammaConventionMetadata {
+                dimension: Some(6),
+                ..base
+            }
+        );
+    }
+
+    #[test]
+    fn equal_bosonic_mode_metadata_compares_equal() {
+        let subsystem = lasso::Spur::try_from_usize(6).unwrap();
+        let label = lasso::Spur::try_from_usize(7).unwrap();
+        let lhs = ModeMetadata {
+            statistics: ModeStatistics::Bosonic,
+            subsystem: Some(subsystem),
+            mode_index: 0,
+            label: Some(label),
+        };
+        let rhs = ModeMetadata {
+            statistics: ModeStatistics::Bosonic,
+            subsystem: Some(subsystem),
+            mode_index: 0,
+            label: Some(label),
+        };
+
+        assert_eq!(lhs, rhs);
+        assert!(lhs.is_bosonic());
+        assert!(!lhs.is_fermionic());
+        assert!(!lhs.is_spin());
+    }
+
+    #[test]
+    fn changing_mode_metadata_fields_changes_equality() {
+        let subsystem = lasso::Spur::try_from_usize(8).unwrap();
+        let other_subsystem = lasso::Spur::try_from_usize(9).unwrap();
+        let label = lasso::Spur::try_from_usize(10).unwrap();
+        let other_label = lasso::Spur::try_from_usize(11).unwrap();
+        let base = ModeMetadata {
+            statistics: ModeStatistics::Bosonic,
+            subsystem: Some(subsystem),
+            mode_index: 1,
+            label: Some(label),
+        };
+
+        assert_ne!(
+            base,
+            ModeMetadata {
+                statistics: ModeStatistics::Fermionic,
+                subsystem: Some(subsystem),
+                mode_index: 1,
+                label: Some(label),
+            }
+        );
+        assert_ne!(
+            base,
+            ModeMetadata {
+                statistics: ModeStatistics::Bosonic,
+                subsystem: Some(other_subsystem),
+                mode_index: 1,
+                label: Some(label),
+            }
+        );
+        assert_ne!(
+            base,
+            ModeMetadata {
+                statistics: ModeStatistics::Bosonic,
+                subsystem: Some(subsystem),
+                mode_index: 2,
+                label: Some(label),
+            }
+        );
+        assert_ne!(
+            base,
+            ModeMetadata {
+                statistics: ModeStatistics::Bosonic,
+                subsystem: Some(subsystem),
+                mode_index: 1,
+                label: Some(other_label),
+            }
+        );
+    }
+
+    #[test]
+    fn mode_meta_is_distinct_from_legacy_statistics_variants() {
+        let property = TensorProperty::ModeMeta(ModeMetadata {
+            statistics: ModeStatistics::Fermionic,
+            subsystem: None,
+            mode_index: 0,
+            label: None,
+        });
+
+        assert_ne!(property, TensorProperty::NonCommuting);
+        assert_ne!(property, TensorProperty::AntiCommuting);
+        assert_ne!(property, TensorProperty::SelfNonCommuting);
+        assert_ne!(property, TensorProperty::SelfAntiCommuting);
+    }
+
+    #[test]
+    fn mode_metadata_helper_methods_match_statistics() {
+        let bosonic = ModeMetadata {
+            statistics: ModeStatistics::Bosonic,
+            subsystem: None,
+            mode_index: 0,
+            label: None,
+        };
+        let fermionic = ModeMetadata {
+            statistics: ModeStatistics::Fermionic,
+            subsystem: None,
+            mode_index: 1,
+            label: None,
+        };
+        let spin = ModeMetadata {
+            statistics: ModeStatistics::Spin,
+            subsystem: None,
+            mode_index: 2,
+            label: None,
+        };
+
+        assert!(bosonic.is_bosonic());
+        assert!(!bosonic.is_fermionic());
+        assert!(!bosonic.is_spin());
+
+        assert!(!fermionic.is_bosonic());
+        assert!(fermionic.is_fermionic());
+        assert!(!fermionic.is_spin());
+
+        assert!(!spin.is_bosonic());
+        assert!(!spin.is_fermionic());
+        assert!(spin.is_spin());
+    }
+
+    #[test]
     fn elementary_hilbert_space_meta_equality() {
         let h = lasso::Spur::try_from_usize(5).unwrap();
         let lhs = TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
@@ -1072,6 +1379,174 @@ mod tests {
     }
 
     #[test]
+    fn equal_fock_space_metadata_compares_equal() {
+        let f = lasso::Spur::try_from_usize(13).unwrap();
+        let a = lasso::Spur::try_from_usize(14).unwrap();
+        let b = lasso::Spur::try_from_usize(15).unwrap();
+
+        let lhs = TensorProperty::FockSpaceMeta(FockSpaceMetadata {
+            symbol: f,
+            modes: vec![
+                FockModeFactor {
+                    symbol: a,
+                    statistics: ModeStatistics::Bosonic,
+                    truncation: Some(3),
+                },
+                FockModeFactor {
+                    symbol: b,
+                    statistics: ModeStatistics::Fermionic,
+                    truncation: None,
+                },
+            ],
+            basis_order: vec![a, b],
+        });
+        let rhs = TensorProperty::FockSpaceMeta(FockSpaceMetadata {
+            symbol: f,
+            modes: vec![
+                FockModeFactor {
+                    symbol: a,
+                    statistics: ModeStatistics::Bosonic,
+                    truncation: Some(3),
+                },
+                FockModeFactor {
+                    symbol: b,
+                    statistics: ModeStatistics::Fermionic,
+                    truncation: None,
+                },
+            ],
+            basis_order: vec![a, b],
+        });
+
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn changing_fock_mode_order_changes_equality() {
+        let f = lasso::Spur::try_from_usize(16).unwrap();
+        let a = lasso::Spur::try_from_usize(17).unwrap();
+        let b = lasso::Spur::try_from_usize(18).unwrap();
+
+        assert_ne!(
+            TensorProperty::FockSpaceMeta(FockSpaceMetadata {
+                symbol: f,
+                modes: vec![
+                    FockModeFactor {
+                        symbol: a,
+                        statistics: ModeStatistics::Bosonic,
+                        truncation: Some(2),
+                    },
+                    FockModeFactor {
+                        symbol: b,
+                        statistics: ModeStatistics::Spin,
+                        truncation: None,
+                    },
+                ],
+                basis_order: vec![a, b],
+            }),
+            TensorProperty::FockSpaceMeta(FockSpaceMetadata {
+                symbol: f,
+                modes: vec![
+                    FockModeFactor {
+                        symbol: b,
+                        statistics: ModeStatistics::Spin,
+                        truncation: None,
+                    },
+                    FockModeFactor {
+                        symbol: a,
+                        statistics: ModeStatistics::Bosonic,
+                        truncation: Some(2),
+                    },
+                ],
+                basis_order: vec![b, a],
+            })
+        );
+    }
+
+    #[test]
+    fn changing_fock_truncation_changes_equality() {
+        let f = lasso::Spur::try_from_usize(19).unwrap();
+        let a = lasso::Spur::try_from_usize(20).unwrap();
+
+        assert_ne!(
+            TensorProperty::FockSpaceMeta(FockSpaceMetadata {
+                symbol: f,
+                modes: vec![FockModeFactor {
+                    symbol: a,
+                    statistics: ModeStatistics::Bosonic,
+                    truncation: Some(4),
+                }],
+                basis_order: vec![a],
+            }),
+            TensorProperty::FockSpaceMeta(FockSpaceMetadata {
+                symbol: f,
+                modes: vec![FockModeFactor {
+                    symbol: a,
+                    statistics: ModeStatistics::Bosonic,
+                    truncation: Some(5),
+                }],
+                basis_order: vec![a],
+            })
+        );
+    }
+
+    #[test]
+    fn fock_space_metadata_helpers_return_declared_modes() {
+        let f = lasso::Spur::try_from_usize(21).unwrap();
+        let a = lasso::Spur::try_from_usize(22).unwrap();
+        let b = lasso::Spur::try_from_usize(23).unwrap();
+        let c = lasso::Spur::try_from_usize(24).unwrap();
+        let meta = FockSpaceMetadata {
+            symbol: f,
+            modes: vec![
+                FockModeFactor {
+                    symbol: a,
+                    statistics: ModeStatistics::Bosonic,
+                    truncation: None,
+                },
+                FockModeFactor {
+                    symbol: b,
+                    statistics: ModeStatistics::Fermionic,
+                    truncation: None,
+                },
+                FockModeFactor {
+                    symbol: c,
+                    statistics: ModeStatistics::Spin,
+                    truncation: None,
+                },
+            ],
+            basis_order: vec![c, a, b],
+        };
+
+        assert_eq!(meta.mode_count(), 3);
+        assert_eq!(meta.mode_symbols(), vec![a, b, c]);
+    }
+
+    #[test]
+    fn fock_space_meta_is_distinct_from_hilbert_space_meta() {
+        let h = lasso::Spur::try_from_usize(25).unwrap();
+        let a = lasso::Spur::try_from_usize(26).unwrap();
+
+        assert_ne!(
+            TensorProperty::FockSpaceMeta(FockSpaceMetadata {
+                symbol: h,
+                modes: vec![FockModeFactor {
+                    symbol: a,
+                    statistics: ModeStatistics::Bosonic,
+                    truncation: Some(2),
+                }],
+                basis_order: vec![a],
+            }),
+            TensorProperty::HilbertSpaceMeta(HilbertSpaceMetadata {
+                dimension: 3,
+                factors: vec![HilbertSpaceFactor {
+                    symbol: h,
+                    dimension: 3,
+                }],
+            })
+        );
+    }
+
+    #[test]
     fn quantum_object_meta_equality_depends_on_kind_and_space() {
         let ha = lasso::Spur::try_from_usize(10).unwrap();
         let hb = lasso::Spur::try_from_usize(11).unwrap();
@@ -1104,6 +1579,34 @@ mod tests {
             TensorProperty::QuantumObjectMeta(QuantumObjectMetadata {
                 kind: QuantumObjectKind::Operator,
                 space_symbol: hb,
+            })
+        );
+    }
+
+    #[test]
+    fn operator_space_meta_equality_depends_on_domain_and_codomain() {
+        let ha = lasso::Spur::try_from_usize(27).unwrap();
+        let hb = lasso::Spur::try_from_usize(28).unwrap();
+        let hc = lasso::Spur::try_from_usize(29).unwrap();
+
+        assert_eq!(
+            TensorProperty::OperatorSpaceMeta(OperatorSpaceMetadata {
+                domain_space: ha,
+                codomain_space: hb,
+            }),
+            TensorProperty::OperatorSpaceMeta(OperatorSpaceMetadata {
+                domain_space: ha,
+                codomain_space: hb,
+            })
+        );
+        assert_ne!(
+            TensorProperty::OperatorSpaceMeta(OperatorSpaceMetadata {
+                domain_space: ha,
+                codomain_space: hb,
+            }),
+            TensorProperty::OperatorSpaceMeta(OperatorSpaceMetadata {
+                domain_space: ha,
+                codomain_space: hc,
             })
         );
     }

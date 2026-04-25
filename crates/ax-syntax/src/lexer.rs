@@ -74,6 +74,8 @@ enum RawTok {
     Greater,
     #[token("|")]
     Pipe,
+    #[token("@")]
+    At,
     #[token(",")]
     Comma,
     #[token(".")]
@@ -131,6 +133,7 @@ fn map_kind(t: RawTok) -> SyntaxKind {
         RawTok::Less => SyntaxKind::Less,
         RawTok::Greater => SyntaxKind::Greater,
         RawTok::Pipe => SyntaxKind::Pipe,
+        RawTok::At => SyntaxKind::At,
         RawTok::Comma => SyntaxKind::Comma,
         RawTok::Dot => SyntaxKind::Dot,
         RawTok::Colon => SyntaxKind::Colon,

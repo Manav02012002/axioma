@@ -319,6 +319,17 @@ version = "0.1.0"
 spec_dir = "spec"
 build_dir = "build"
 
+[qm]
+log_base = "e"
+tensor_product_basis_order = "left_to_right_lexicographic"
+gamma_signature = "mostly_plus"
+clifford_convention = "plus_two_g"
+pretty_bra_ket_unicode = true
+solver_backend = "auto"
+sparse_threshold_dim = 4
+abs_tolerance = 1e-10
+rel_tolerance = 1e-10
+
 [plugins.axp-echo]
 wasm = "target/wasm32-unknown-unknown/debug/axp_echo.wasm"
 allow = []
@@ -328,6 +339,13 @@ Important fields:
 
 - `paths.spec_dir`: where schema/spec assets live
 - `paths.build_dir`: where generated traces and intermediate outputs are written
+- `[qm]`: project-level QM/QFT conventions loaded into CLI evaluator sessions
+  Accepted values:
+  `log_base = "e" | "2"`,
+  `tensor_product_basis_order = "left_to_right_lexicographic"`,
+  `gamma_signature = "mostly_plus" | "mostly_minus" | "euclidean"`,
+  `clifford_convention = "plus_two_g" | "minus_two_g"`,
+  plus `pretty_bra_ket_unicode = true | false`
 - `[plugins.<id>]`: plugin registry used by `axioma plugin list` and `axioma plugin run`
 
 ## Standard Library
@@ -345,8 +363,8 @@ The standard library lives under [`std/`](./std). The search path logic in [`cmd
 |---|---|
 | top-level algebra/calculus/trig | `std/algebra.ax`, `std/calculus.ax`, `std/trig.ax` |
 | GR | `std/gr/de_sitter.ax`, `std/gr/frw.ax`, `std/gr/kerr_newman.ax`, `std/gr/minkowski.ax`, `std/gr/schwarzschild.ax` |
-| QFT | `std/qft/brst.ax`, `std/qft/dirac.ax`, `std/qft/gamma.ax`, `std/qft/normal_ordering.ax`, `std/qft/scalar_field.ax`, `std/qft/superspace.ax` |
-| QM | `std/qm/bell.ax`, `std/qm/harmonic_oscillator.ax`, `std/qm/spin.ax` |
+| QFT | `std/qft/bilinears.ax`, `std/qft/brst.ax`, `std/qft/chiral_projectors.ax`, `std/qft/dirac.ax`, `std/qft/fierz.ax`, `std/qft/gamma.ax`, `std/qft/gamma_trace.ax`, `std/qft/normal_ordering.ax`, `std/qft/scalar_field.ax`, `std/qft/spinor_helicity.ax`, `std/qft/spinors.ax`, `std/qft/superspace.ax` |
+| QM | `std/qm/bell.ax`, `std/qm/channels.ax`, `std/qm/dynamics.ax`, `std/qm/harmonic_oscillator.ax`, `std/qm/info.ax`, `std/qm/spin.ax`, `std/qm/states.ax` |
 | Tensor helpers | `std/tensor/index.ax`, `std/tensor/symmetry.ax` |
 | Units | `std/units/cgs.ax`, `std/units/natural.ax`, `std/units/si.ax` |
 | Conventions | `std/conventions/landau.ax`, `std/conventions/mtw.ax`, `std/conventions/particle_physics.ax`, `std/conventions/weinberg.ax` |
@@ -365,6 +383,13 @@ import std.units.natural
 ## Examples
 
 The `examples/` directory is the quickest map of what the current evaluator is expected to do in practice.
+
+The standard-library examples are organized into thematic QM/QFT packs:
+[`std/qm/states.ax`](./std/qm/states.ax),
+[`std/qm/channels.ax`](./std/qm/channels.ax),
+[`std/qm/dynamics.ax`](./std/qm/dynamics.ax),
+[`std/qm/info.ax`](./std/qm/info.ax), and
+[`std/qft/spinors.ax`](./std/qft/spinors.ax).
 
 | File | Focus |
 |---|---|

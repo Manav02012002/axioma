@@ -152,6 +152,27 @@ pub struct QuantumChannelSummaryPacket {
     pub trace_preserving: bool,
     pub unital: bool,
     pub choi_dimension: usize,
+    pub family_hint: Option<String>,
+    pub choi_trace: String,
+    pub completely_positive: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumDynamicsSummaryPacket {
+    pub object_kind: String,
+    pub dimension: usize,
+    pub generator_kind: String,
+    pub trace_preserving: Option<bool>,
+    pub purity_preserving: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumBlochSummaryPacket {
+    pub dimension: usize,
+    pub bloch_vector: [String; 3],
+    pub purity: String,
+    pub linear_entropy: String,
+    pub state_class: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -179,6 +200,25 @@ pub struct QuantumEntanglementPacket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumEntanglementSummaryPacket {
+    pub subsystem_dims: Vec<usize>,
+    pub reduced_spectrum_a: Vec<String>,
+    pub reduced_spectrum_b: Vec<String>,
+    pub von_neumann_entropy_a: Option<String>,
+    pub von_neumann_entropy_b: Option<String>,
+    pub renyi2_entropy_a: Option<String>,
+    pub renyi2_entropy_b: Option<String>,
+    pub negativity: Option<String>,
+    pub logarithmic_negativity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumPlotPacket {
+    pub title: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QuantumSpectralSummaryPacket {
     pub dimension: usize,
     pub eigenvalues: Vec<String>,
@@ -186,6 +226,20 @@ pub struct QuantumSpectralSummaryPacket {
     pub renyi2_entropy: Option<String>,
     pub negativity: Option<String>,
     pub logarithmic_negativity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumWorkflowPacket {
+    pub workflow_kind: String,
+    pub title: String,
+    pub summary_lines: Vec<String>,
+    pub json_payload_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumNarrativePacket {
+    pub workflow_kind: String,
+    pub explanation_steps: Vec<String>,
 }
 
 #[cfg(test)]
@@ -254,6 +308,21 @@ mod tests {
     }
 
     #[test]
+    fn quantum_dynamics_summary_packet_round_trips() {
+        let payload = QuantumDynamicsSummaryPacket {
+            object_kind: "operator".to_string(),
+            dimension: 2,
+            generator_kind: "hamiltonian".to_string(),
+            trace_preserving: None,
+            purity_preserving: Some(true),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumDynamicsSummaryPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
     fn quantum_entropy_packet_round_trips() {
         let payload = QuantumEntropyPacket {
             kind: "von_neumann_entropy".to_string(),
@@ -274,6 +343,9 @@ mod tests {
             trace_preserving: true,
             unital: true,
             choi_dimension: 4,
+            family_hint: Some("identity".to_string()),
+            choi_trace: "2".to_string(),
+            completely_positive: Some(true),
         };
 
         let json = serde_json::to_string(&payload).unwrap();
@@ -291,6 +363,37 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         let reparsed: QuantumEntanglementPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_entanglement_summary_packet_round_trips() {
+        let payload = QuantumEntanglementSummaryPacket {
+            subsystem_dims: vec![2, 2],
+            reduced_spectrum_a: vec!["1/2".to_string(), "1/2".to_string()],
+            reduced_spectrum_b: vec!["1/2".to_string(), "1/2".to_string()],
+            von_neumann_entropy_a: Some("log(2)".to_string()),
+            von_neumann_entropy_b: Some("log(2)".to_string()),
+            renyi2_entropy_a: Some("log(2)".to_string()),
+            renyi2_entropy_b: Some("log(2)".to_string()),
+            negativity: Some("1/2".to_string()),
+            logarithmic_negativity: Some("log(2)".to_string()),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumEntanglementSummaryPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_plot_packet_round_trips() {
+        let payload = QuantumPlotPacket {
+            title: "Measurement probabilities".to_string(),
+            kind: "probability_bar_chart".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumPlotPacket = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed, payload);
     }
 
@@ -365,6 +468,21 @@ mod tests {
     }
 
     #[test]
+    fn quantum_bloch_summary_packet_round_trips() {
+        let payload = QuantumBlochSummaryPacket {
+            dimension: 2,
+            bloch_vector: ["0".to_string(), "0".to_string(), "1".to_string()],
+            purity: "1".to_string(),
+            linear_entropy: "0".to_string(),
+            state_class: "pure".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumBlochSummaryPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
     fn quantum_spectral_summary_packet_round_trips() {
         let payload = QuantumSpectralSummaryPacket {
             dimension: 2,
@@ -377,6 +495,38 @@ mod tests {
 
         let json = serde_json::to_string(&payload).unwrap();
         let reparsed: QuantumSpectralSummaryPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_workflow_packet_round_trips() {
+        let payload = QuantumWorkflowPacket {
+            workflow_kind: "spectral_summary".to_string(),
+            title: "Quantum spectral summary".to_string(),
+            summary_lines: vec![
+                "Dimension 2 with eigenvalues [1/2, 1/2].".to_string(),
+                "Von Neumann entropy is log(2).".to_string(),
+            ],
+            json_payload_kind: "QuantumSpectralSummaryPacket".to_string(),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumWorkflowPacket = serde_json::from_str(&json).unwrap();
+        assert_eq!(reparsed, payload);
+    }
+
+    #[test]
+    fn quantum_narrative_packet_round_trips() {
+        let payload = QuantumNarrativePacket {
+            workflow_kind: "channel_summary".to_string(),
+            explanation_steps: vec![
+                "The Choi matrix was evaluated.".to_string(),
+                "The TP and unital checks were evaluated.".to_string(),
+            ],
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let reparsed: QuantumNarrativePacket = serde_json::from_str(&json).unwrap();
         assert_eq!(reparsed, payload);
     }
 }

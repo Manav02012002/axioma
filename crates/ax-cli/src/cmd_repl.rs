@@ -979,7 +979,8 @@ pub fn is_complete(input: &str) -> bool {
 
 pub fn run() -> Result<()> {
     let interner = ax_ir::Interner::new();
-    let mut env = ax_eval::Env::new();
+    let session_qm_settings = crate::cmd_run::load_project_qm_settings(None)?;
+    let mut env = ax_eval::Env::with_qm_settings(session_qm_settings.clone());
     let use_color = supports_color();
     let helper = AxiomaHelper::new(use_color);
     let config = rustyline::Config::builder().auto_add_history(false).build();
@@ -1098,7 +1099,7 @@ pub fn run() -> Result<()> {
                 continue;
             }
             ":reset" => {
-                env = ax_eval::Env::new();
+                env = ax_eval::Env::with_qm_settings(session_qm_settings.clone());
                 last_result = None;
                 last_trust = None;
                 session_cells.clear();

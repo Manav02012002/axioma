@@ -186,6 +186,96 @@ fn unicode_tensor_product_render() {
 }
 
 #[test]
+fn unicode_normal_order_render() {
+    let interner = int();
+    let normal_order = interner.get_or_intern("normal_order");
+    let a = interner.get_or_intern("a");
+    let b = interner.get_or_intern("b");
+    let expr = Expr::Call(
+        normal_order,
+        vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)])],
+    );
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains(":ab:"), "got {}", unicode);
+}
+
+#[test]
+fn unicode_subsystem_label_render() {
+    let interner = int();
+    let on_subsystem = interner.get_or_intern("on_subsystem");
+    let a = interner.get_or_intern("A");
+    let qa = interner.get_or_intern("QA");
+    let expr = Expr::Call(on_subsystem, vec![Expr::Sym(a), Expr::Sym(qa)]);
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains("@QA"), "got {}", unicode);
+}
+
+#[test]
+fn unicode_compose_operators_render() {
+    let interner = int();
+    let compose_operators = interner.get_or_intern("compose_operators");
+    let a = interner.get_or_intern("A");
+    let b = interner.get_or_intern("B");
+    let expr = Expr::Call(compose_operators, vec![Expr::Sym(a), Expr::Sym(b)]);
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains('∘'), "got {}", unicode);
+}
+
+#[test]
+fn unicode_on_subsystem_render() {
+    let interner = int();
+    let on_subsystem = interner.get_or_intern("on_subsystem");
+    let a = interner.get_or_intern("A");
+    let qa = interner.get_or_intern("QA");
+    let expr = Expr::Call(on_subsystem, vec![Expr::Sym(a), Expr::Sym(qa)]);
+    let unicode = to_unicode(&expr, &interner);
+    assert!(unicode.contains('@'), "got {}", unicode);
+}
+
+#[test]
+fn unicode_lindbladian_superoperator_render() {
+    let interner = int();
+    let lindbladian_superoperator = interner.get_or_intern("lindbladian_superoperator");
+    let h = interner.get_or_intern("H");
+    let expr = Expr::Call(
+        lindbladian_superoperator,
+        vec![Expr::Sym(h), Expr::List(vec![])],
+    );
+    let unicode = to_unicode(&expr, &interner);
+    assert!(
+        unicode.contains('𝓛') || unicode.contains("L_super"),
+        "got {}",
+        unicode
+    );
+}
+
+#[test]
+fn channel_summary_unicode_render_is_compact() {
+    let interner = int();
+    let expr = Expr::List(vec![
+        Expr::Matrix(vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::one()],
+        ]),
+        Expr::Matrix(vec![
+            vec![Expr::zero(), Expr::one()],
+            vec![Expr::one(), Expr::zero()],
+        ]),
+    ]);
+    let unicode = ax_render::unicode::render_channel_summary_unicode(&expr, &interner)
+        .expect("expected compact channel summary");
+    assert_eq!(unicode, "Channel[{K1, K2}]");
+}
+
+#[test]
+fn channel_family_hint_unicode_render_is_compact() {
+    assert_eq!(
+        ax_render::unicode::render_channel_family_hint_unicode("amplitude_damping"),
+        "amplitude damping"
+    );
+}
+
+#[test]
 fn latex_matrix() {
     let interner = int();
     let expr = Expr::Matrix(vec![
@@ -255,6 +345,31 @@ fn latex_tensor_product_render() {
     let expr = Expr::Call(tensor_product, vec![Expr::Sym(a), Expr::Sym(b)]);
     let latex = to_latex(&expr, &interner);
     assert!(latex.contains("\\otimes"), "got {}", latex);
+}
+
+#[test]
+fn latex_time_order_render() {
+    let interner = int();
+    let time_order = interner.get_or_intern("time_order");
+    let a = interner.get_or_intern("A");
+    let b = interner.get_or_intern("B");
+    let expr = Expr::Call(
+        time_order,
+        vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)])],
+    );
+    let latex = to_latex(&expr, &interner);
+    assert!(latex.contains("T\\!\\left("), "got {}", latex);
+}
+
+#[test]
+fn latex_compose_operators_render() {
+    let interner = int();
+    let compose_operators = interner.get_or_intern("compose_operators");
+    let a = interner.get_or_intern("A");
+    let b = interner.get_or_intern("B");
+    let expr = Expr::Call(compose_operators, vec![Expr::Sym(a), Expr::Sym(b)]);
+    let latex = to_latex(&expr, &interner);
+    assert!(latex.contains("\\circ"), "got {}", latex);
 }
 
 #[test]

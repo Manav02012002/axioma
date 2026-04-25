@@ -17,6 +17,7 @@ fn plugin_list_includes_axp_echo() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
     let plugins = v["plugins"].as_array().expect("plugins array");
     assert!(plugins.iter().any(|x| x["id"] == "axp-echo"));
+    assert!(plugins.iter().any(|x| x["id"] == "axp-sparse-demo"));
 }
 
 #[test]
@@ -57,4 +58,56 @@ fn plugin_run_by_id_works() {
     assert_eq!(v["ok"], true);
     assert_eq!(v["result"]["plugin"], "axp-echo");
     assert_eq!(v["result"]["echo"]["foo"], 123);
+}
+
+#[test]
+fn sparse_demo_plugin_run_returns_numeric_eigenvalues() {
+    let st = Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "axp-sparse-demo",
+            "--target",
+            "wasm32-unknown-unknown",
+        ])
+        .status()
+        .expect("cargo build axp-sparse-demo");
+    assert!(st.success());
+
+    let out = bin()
+        .args([
+            "plugin",
+            "run",
+            "--plugin",
+            "axp-sparse-demo",
+            "--op",
+            "sparse_eigenpairs",
+            "--args",
+            r#"{"matrix":[[[1.0,0.0],[0.0,0.0]],[[0.0,0.0],[2.0,0.0]]],"k":2,"which":"SM"}"#,
+            "--no-trace",
+        ])
+        .output()
+        .expect("run sparse demo plugin");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(v["ok"], true);
+    let eigenpairs = v["result"]["eigenpairs"]
+        .as_array()
+        .expect("eigenpairs array");
+    let mut eigenvalues = eigenpairs
+        .iter()
+        .map(|pair| {
+            pair["eigenvalue"][0]
+                .as_f64()
+                .expect("real eigenvalue component")
+        })
+        .collect::<Vec<_>>();
+    eigenvalues.sort_by(|a, b| a.total_cmp(b));
+    assert_eq!(eigenvalues, vec![1.0, 2.0]);
+    assert_eq!(v["result"]["converged"], true);
 }

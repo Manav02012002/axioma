@@ -2,6 +2,62 @@ use anyhow::{anyhow, Result};
 use ax_ir::Expr;
 use std::path::{Path, PathBuf};
 
+fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
+    let mut current = start_dir.to_path_buf();
+    loop {
+        if current.join("axioma.toml").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn qm_settings_from_config(qm: Option<&ax_context::QmSection>) -> ax_eval::QmSettings {
+    let Some(qm) = qm else {
+        return ax_eval::QmSettings::default();
+    };
+
+    ax_eval::QmSettings {
+        log_base: qm
+            .log_base
+            .as_deref()
+            .and_then(ax_eval::QmLogBase::from_config_value),
+        tensor_product_basis_order: qm
+            .tensor_product_basis_order
+            .as_deref()
+            .and_then(ax_eval::TensorProductBasisOrder::from_config_value),
+        gamma_signature: qm
+            .gamma_signature
+            .as_deref()
+            .and_then(ax_eval::GammaSignature::from_config_value),
+        clifford_convention: qm
+            .clifford_convention
+            .as_deref()
+            .and_then(ax_eval::CliffordConvention::from_config_value),
+        pretty_bra_ket_unicode: qm.pretty_bra_ket_unicode,
+        solver_backend: qm.solver_backend.clone(),
+        sparse_threshold_dim: qm.sparse_threshold_dim,
+        abs_tolerance: qm.abs_tolerance,
+        rel_tolerance: qm.rel_tolerance,
+    }
+}
+
+pub(crate) fn load_project_qm_settings(start_dir: Option<&Path>) -> Result<ax_eval::QmSettings> {
+    let start_dir = match start_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    let Some(root) = find_project_root(&start_dir) else {
+        return Ok(ax_eval::QmSettings::default());
+    };
+
+    let project_paths = ax_context::load_project_paths(Some(root.to_string_lossy().as_ref()))?;
+    let config = ax_context::load_config(&project_paths)?;
+    Ok(qm_settings_from_config(config.qm.as_ref()))
+}
+
 pub fn default_search_paths(current_file: Option<&Path>) -> Vec<PathBuf> {
     let mut search_paths =
         ax_context::build_import_search_paths(&ax_context::ImportSearchPathConfig {
@@ -253,7 +309,8 @@ pub fn execute_expr(
 pub fn run(file: &Path) -> Result<i32> {
     let source = std::fs::read_to_string(file)?;
     let interner = ax_ir::Interner::new();
-    let mut env = ax_eval::Env::new();
+    let qm_settings = load_project_qm_settings(file.parent())?;
+    let mut env = ax_eval::Env::with_qm_settings(qm_settings);
     let lowered = ax_core_ir::lower(&source, &interner);
     let search_paths = default_search_paths(Some(file));
 
@@ -279,6 +336,19 @@ mod tests {
     use ax_eval::registry::{
         algorithm_entries, builtin_entries, property_entries, std_modules, syntax_rules,
     };
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after the unix epoch")
+            .as_nanos();
+        path.push(format!("axioma-{label}-{nanos}"));
+        fs::create_dir_all(&path).expect("temporary directory should be created");
+        path
+    }
 
     fn sweep_search_paths() -> Vec<PathBuf> {
         let mut search_paths = default_search_paths(None);
@@ -435,5 +505,59 @@ mod tests {
             "std module import failures:\n{}",
             failures.join("\n")
         );
+    }
+
+    #[test]
+    fn load_project_qm_settings_populates_evaluator_env() {
+        let root = unique_temp_dir("qm-config");
+        let nested = root.join("src").join("examples");
+        fs::create_dir_all(&nested).expect("nested temp directory should be created");
+        fs::write(
+            root.join("axioma.toml"),
+            r#"[axioma]
+version = "0.1.0"
+
+[paths]
+spec_dir = "spec"
+build_dir = "build"
+
+[qm]
+log_base = "2"
+tensor_product_basis_order = "left_to_right_lexicographic"
+gamma_signature = "mostly_minus"
+clifford_convention = "minus_two_g"
+pretty_bra_ket_unicode = false
+solver_backend = "plugin_sparse"
+sparse_threshold_dim = 12
+abs_tolerance = 1e-11
+rel_tolerance = 1e-8
+"#,
+        )
+        .expect("test axioma.toml should be written");
+
+        let qm = load_project_qm_settings(Some(&nested)).expect("qm settings should load");
+        assert_eq!(qm.log_base, Some(ax_eval::QmLogBase::Two));
+        assert_eq!(
+            qm.tensor_product_basis_order,
+            Some(ax_eval::TensorProductBasisOrder::LeftToRightLexicographic)
+        );
+        assert_eq!(
+            qm.gamma_signature,
+            Some(ax_eval::GammaSignature::MostlyMinus)
+        );
+        assert_eq!(
+            qm.clifford_convention,
+            Some(ax_eval::CliffordConvention::MinusTwoG)
+        );
+        assert_eq!(qm.pretty_bra_ket_unicode, Some(false));
+        assert_eq!(qm.solver_backend.as_deref(), Some("plugin_sparse"));
+        assert_eq!(qm.sparse_threshold_dim, Some(12));
+        assert_eq!(qm.abs_tolerance, Some(1e-11));
+        assert_eq!(qm.rel_tolerance, Some(1e-8));
+
+        let env = ax_eval::Env::with_qm_settings(qm.clone());
+        assert_eq!(env.qm, qm);
+
+        fs::remove_dir_all(&root).expect("temporary directory should be removed");
     }
 }

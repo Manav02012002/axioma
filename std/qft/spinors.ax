@@ -1,0 +1,38 @@
+// Spinor/gamma workflows: conventions, projectors, traces, Fierz, and bilinear selection rules.
+indices spin [s0, s1, s2, s3] dim=4 values=[s0, s1, s2, s3]
+declare_spinor_meta(psi, 4, Majorana, none, spin)
+declare_spinor_meta(chi, 4, Majorana, none, spin)
+declare_spinor_meta(psi1, 4, Majorana, none, spin)
+declare_spinor_meta(psi2, 4, Majorana, none, spin)
+declare_spinor_meta(psi3, 4, Majorana, none, spin)
+declare_spinor_meta(psi4, 4, Majorana, none, spin)
+declare_spinor_meta(xi_l, 4, Weyl, left, spin)
+declare_spinor_meta(xi_r, 4, Weyl, right, spin)
+declare_spinor_meta(eta_l, 4, Weyl, left, spin)
+declare_spinor_meta(eta_r, 4, Weyl, right, spin)
+declare_gamma_matrix_meta(gamma, 4, eta, spin, true)
+declare_gamma_convention(gamma, mostly_plus, plus_two_g, 4)
+declare_gamma5_convention(gamma, mostly_plus, plus_two_g, levi_civita, eps, 4)
+declare_dirac_bar_meta(bar, gamma, spin, true)
+
+expand_diracbar(bar(gamma(mu) * gamma(nu) * psi))
+sigma_to_gamma(sigma(mu, nu))
+gamma_to_sigma(gamma(mu) * gamma(nu) - gamma(nu) * gamma(mu))
+
+simplify_chiral(projector_left() * projector_right() * xi_l)
+simplify_chiral(projector_left() + projector_right())
+simplify_chiral(projector_right() * eta_r)
+
+gamma_trace([mu, nu], eta)
+gamma_trace([mu, nu, rho], eta)
+gamma5_trace([mu, nu, rho, sigma])
+join_gamma(gamma(mu) * gamma(nu))
+split_gamma(gamma(mu, nu, rho))
+
+fierz(bar(psi1) * gamma(mu) * psi2 * bar(psi3) * psi4)
+simplify_spinor_bilinears(bar(psi) * gamma(mu) * psi)
+simplify_spinor_bilinears(bar(psi) * sigma(mu, nu) * psi)
+simplify_spinor_bilinears(bar(xi_l) * xi_l)
+simplify_spinor_bilinears(bar(xi_l) * gamma(mu) * eta_l)
+insert_explicit_spinor_indices(bar(chi) * chi)
+remove_trivial_spinor_indices(insert_explicit_spinor_indices(bar(psi) * gamma(mu) * psi))

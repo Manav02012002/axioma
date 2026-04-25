@@ -1,0 +1,37 @@
+// Quantum-state workflows: basis states, density matrices, partial traces, and Bloch vectors.
+declare_hilbert_space(QA, 2)
+declare_hilbert_space(QB, 2)
+declare_composite_space(QAB, [QA, QB])
+
+let ket0 = ket(0)
+let ket1 = ket(1)
+let bra0 = bra(0)
+let bra1 = bra(1)
+let computational_overlap = braket(bra0, ket0)
+
+let rho0 = density_matrix([1, 0])
+let rho1 = density_matrix([0, 1])
+let rho_plus = density_matrix([1/sqrt(2), 1/sqrt(2)])
+let bloch_rho0 = bloch_vector(rho0)
+let bloch_rho_plus = bloch_vector(rho_plus)
+
+let bell_phi_plus = [1/sqrt(2), 0, 0, 1/sqrt(2)]
+let bell_rho = density(bell_phi_plus)
+let rho_A = partial_trace(bell_rho, 2, 2, A)
+let rho_A_space = partial_trace_space(bell_rho, QAB, QB)
+let rho_B_space = partial_trace_space(bell_rho, QAB, QA)
+let rho_A_factor = partial_trace_factor(bell_rho, [2, 2], 1)
+let bell_swapped = permute_subsystems(bell_rho, [2, 2], [1, 0])
+
+ket0
+ket1
+computational_overlap
+rho0
+rho_plus
+bloch_rho0
+bloch_rho_plus
+rho_A
+rho_A_space
+rho_B_space
+rho_A_factor
+bell_swapped

@@ -2426,6 +2426,20 @@ pub fn builtin_entries() -> Vec<BuiltinEntry> {
             "lindbladian_eigenvalues([[0,0],[0,0]], [])",
         ),
         b(
+            "sparse_steady_state",
+            "quantum",
+            "sparse_steady_state(H, jumps, tolerance, max_iterations)",
+            "Solve a numeric Lindblad steady-state problem using the sparse plugin backend when the backend selector chooses sparse mode.",
+            "sparse_steady_state([[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]], [], 1e-8, 1000)",
+        ),
+        b(
+            "sparse_lindbladian_spectrum",
+            "quantum",
+            "sparse_lindbladian_spectrum(H, jumps, k, which, tolerance, max_iterations)",
+            "Compute selected eigenvalues of a numeric Lindbladian superoperator using the sparse plugin backend.",
+            "sparse_lindbladian_spectrum([[0,0],[0,0]], [], 2, LR, 1e-8, 1000)",
+        ),
+        b(
             "creation",
             "quantum",
             "creation(sym)",
@@ -8967,6 +8981,53 @@ fn handle_lindbladian_eigenvalues_qm(
     expr_or_struct_response_named(Expr::List(result), "lindbladian_eigenvalues", state)
 }
 
+fn handle_sparse_steady_state_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let jumps_expr = expr_from_id(args, 1, "jumps", state)?;
+    let jump_ops = expr_to_3d(&jumps_expr)
+        .ok_or_else(|| "argument 'jumps' must reference a rank-3 nested list".to_string())?;
+    let tolerance = float_arg(args, 2, "tolerance")?;
+    let max_iterations = usize::try_from(int_arg(args, 3, "max_iterations")?)
+        .map_err(|_| "argument 'max_iterations' must be a nonnegative integer".to_string())?;
+    let result = crate::sparse_steady_state_expr(
+        &h,
+        &jump_ops,
+        tolerance,
+        max_iterations,
+        state.interner(),
+    )?;
+    expr_or_struct_response_named(result, "sparse_steady_state", state)
+}
+
+fn handle_sparse_lindbladian_spectrum_qm(
+    args: &[serde_json::Value],
+    state: &mut dyn EvalState,
+) -> Result<serde_json::Value, String> {
+    let h = matrix_from_id(args, 0, "H", state)?;
+    let jumps_expr = expr_from_id(args, 1, "jumps", state)?;
+    let jump_ops = expr_to_3d(&jumps_expr)
+        .ok_or_else(|| "argument 'jumps' must reference a rank-3 nested list".to_string())?;
+    let k = usize::try_from(int_arg(args, 2, "k")?)
+        .map_err(|_| "argument 'k' must be a nonnegative integer".to_string())?;
+    let which = string_arg(args, 3, "which")?;
+    let tolerance = float_arg(args, 4, "tolerance")?;
+    let max_iterations = usize::try_from(int_arg(args, 5, "max_iterations")?)
+        .map_err(|_| "argument 'max_iterations' must be a nonnegative integer".to_string())?;
+    let result = crate::sparse_lindbladian_spectrum_expr(
+        &h,
+        &jump_ops,
+        k,
+        which,
+        tolerance,
+        max_iterations,
+        state.interner(),
+    )?;
+    expr_or_struct_response_named(result, "sparse_lindbladian_spectrum", state)
+}
+
 fn handle_wedge_forms(
     args: &[serde_json::Value],
     state: &mut dyn EvalState,
@@ -12821,6 +12882,8 @@ pub fn callable_entries() -> Vec<CallableEntry> {
         centry("lindblad_steady_state", "Solve for a finite-dimensional Lindblad steady state.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindblad_steady_state_qm),
         centry("lindbladian_superoperator", "Construct the exact Lindbladian superoperator.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindbladian_superoperator_qm),
         centry("lindbladian_eigenvalues", "Return supported low-dimensional Lindbladian eigenvalues.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id.")]), handle_lindbladian_eigenvalues_qm),
+        centry("sparse_steady_state", "Plugin-backed sparse Lindblad steady state for numeric operators.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("tolerance", ParamType::Float, true, "Solver tolerance."), pdef("max_iterations", ParamType::Integer, true, "Maximum solver iterations.")]), handle_sparse_steady_state_qm),
+        centry("sparse_lindbladian_spectrum", "Plugin-backed sparse Lindbladian spectrum for numeric operators.", ps(vec![pdef("H", ParamType::ExprId, true, "Stored Hamiltonian matrix expression id."), pdef("jumps", ParamType::ExprId, true, "Stored rank-3 jump-operator list expression id."), pdef("k", ParamType::Integer, true, "Number of requested eigenvalues."), pdef("which", ParamType::StringEnum(&["LR", "SR", "LM", "SM"]), true, "Eigenvalue selection rule."), pdef("tolerance", ParamType::Float, true, "Solver tolerance."), pdef("max_iterations", ParamType::Integer, true, "Maximum solver iterations.")]), handle_sparse_lindbladian_spectrum_qm),
         centry("normal_order", "Normal-order creation and annihilation operators.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_normal_order_qm),
         centry("time_order", "Wrap an expression in the symbolic time-ordering operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_time_order_qm),
         centry("time_ordered", "Wrap an expression in the symbolic time-ordering operator.", ps(vec![pdef("expr", ParamType::ExprId, true, "Stored expression id.")]), handle_time_order_qm),

@@ -32,6 +32,7 @@ members = [
   "crates/ax-plugin-host",
   "crates/ax-plugin-api",
   "plugins/axp-echo",
+  "plugins/axp-sparse-demo",
   "crates/ax-ir",
   "crates/ax-syntax",
   "crates/ax-ai-proto",

@@ -109,7 +109,10 @@ fn all_properties_have_entries() {
         "DifferentialFormDegree",
         "TraceSpaceMeta",
         "HilbertSpaceMeta",
+        "FockSpaceMeta",
         "QuantumObjectMeta",
+        "OperatorSpaceMeta",
+        "ModeMeta",
     ];
     for e in &expected {
         assert!(prop_names.contains(e), "missing property entry for {}", e);

@@ -25,6 +25,30 @@ pub struct TableauSymmetryExpr {
     syntax: SyntaxNode,
 }
 
+/// AST wrapper for commutator expressions such as `[A, B]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommutatorExpr {
+    syntax: SyntaxNode,
+}
+
+/// AST wrapper for anticommutator expressions such as `{A, B}`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AntiCommutatorExpr {
+    syntax: SyntaxNode,
+}
+
+/// AST wrapper for normal-order expressions such as `:a*b:`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NormalOrderExpr {
+    syntax: SyntaxNode,
+}
+
+/// AST wrapper for subsystem-label expressions such as `A@QA`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubsystemLabelExpr {
+    syntax: SyntaxNode,
+}
+
 /// AST wrapper for Dirac ket expressions such as `|psi>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KetExpr {
@@ -60,6 +84,70 @@ impl AstNode for TableauSymmetryExpr {
 
     fn can_cast(kind: SyntaxKind) -> bool {
         kind == SyntaxKind::TableauSymmetryExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for CommutatorExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::CommutatorExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for AntiCommutatorExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::AntiCommutatorExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for NormalOrderExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::NormalOrderExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl AstNode for SubsystemLabelExpr {
+    type Language = AxLanguage;
+
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::SubsystemLabelExpr
     }
 
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -267,6 +355,30 @@ pub fn syntax_node_from_green(green: GreenNode) -> SyntaxNode {
 pub fn tableau_symmetry_exprs(root: &SyntaxNode) -> Vec<TableauSymmetryExpr> {
     root.descendants()
         .filter_map(TableauSymmetryExpr::cast)
+        .collect()
+}
+
+pub fn commutator_exprs(root: &SyntaxNode) -> Vec<CommutatorExpr> {
+    root.descendants()
+        .filter_map(CommutatorExpr::cast)
+        .collect()
+}
+
+pub fn anticommutator_exprs(root: &SyntaxNode) -> Vec<AntiCommutatorExpr> {
+    root.descendants()
+        .filter_map(AntiCommutatorExpr::cast)
+        .collect()
+}
+
+pub fn normal_order_exprs(root: &SyntaxNode) -> Vec<NormalOrderExpr> {
+    root.descendants()
+        .filter_map(NormalOrderExpr::cast)
+        .collect()
+}
+
+pub fn subsystem_label_exprs(root: &SyntaxNode) -> Vec<SubsystemLabelExpr> {
+    root.descendants()
+        .filter_map(SubsystemLabelExpr::cast)
         .collect()
 }
 

@@ -108,6 +108,124 @@ fn call_registry(
 }
 
 #[test]
+fn evaluator_declare_gamma_convention_stores_gamma_convention_meta() {
+    let mut state = TestState::default();
+    let result = call_registry(
+        &mut state,
+        "declare_gamma5_convention",
+        vec![
+            serde_json::json!("gamma"),
+            serde_json::json!("mostly_plus"),
+            serde_json::json!("plus_two_g"),
+            serde_json::json!("levi_civita"),
+            serde_json::json!("epsilon"),
+            serde_json::json!(4),
+        ],
+    )
+    .expect("gamma convention declaration should succeed");
+    assert_eq!(result["status"], "ok");
+
+    let gamma = state.interner.get_or_intern("gamma");
+    let epsilon = state.interner.get_or_intern("epsilon");
+    let props = state.env.property_store.get_all(gamma);
+    assert!(props.iter().any(|prop| {
+        matches!(
+            prop,
+            TensorProperty::GammaConventionMeta(GammaConventionMetadata {
+                signature: MetricSignature::MostlyPlus,
+                clifford: CliffordConvention::PlusTwoG,
+                gamma5: Some(GammaFiveConvention::LeviCivita),
+                epsilon_symbol: Some(sym),
+                dimension: Some(4),
+            }) if *sym == epsilon
+        )
+    }));
+}
+
+#[test]
+fn evaluator_gamma_convention_invalid_signature_returns_exact_error() {
+    let mut state = TestState::default();
+    let err = call_registry(
+        &mut state,
+        "declare_gamma_convention",
+        vec![
+            serde_json::json!("gamma"),
+            serde_json::json!("bad_signature"),
+            serde_json::json!("plus_two_g"),
+            serde_json::json!(4),
+        ],
+    )
+    .expect_err("invalid signature should fail");
+
+    assert_eq!(
+        err,
+        "gamma convention signature must be one of: mostly_plus, mostly_minus, euclidean"
+    );
+}
+
+#[test]
+fn evaluator_gamma_convention_invalid_clifford_returns_exact_error() {
+    let mut state = TestState::default();
+    let err = call_registry(
+        &mut state,
+        "declare_gamma_convention",
+        vec![
+            serde_json::json!("gamma"),
+            serde_json::json!("mostly_plus"),
+            serde_json::json!("bad_clifford"),
+            serde_json::json!(4),
+        ],
+    )
+    .expect_err("invalid clifford convention should fail");
+
+    assert_eq!(
+        err,
+        "gamma convention clifford sign must be one of: plus_two_g, minus_two_g"
+    );
+}
+
+#[test]
+fn evaluator_gamma5_convention_invalid_kind_returns_exact_error() {
+    let mut state = TestState::default();
+    let err = call_registry(
+        &mut state,
+        "declare_gamma5_convention",
+        vec![
+            serde_json::json!("gamma"),
+            serde_json::json!("mostly_plus"),
+            serde_json::json!("plus_two_g"),
+            serde_json::json!("bad_gamma5"),
+            serde_json::json!("epsilon"),
+            serde_json::json!(4),
+        ],
+    )
+    .expect_err("invalid gamma5 convention should fail");
+
+    assert_eq!(
+        err,
+        "gamma5 convention kind must be one of: levi_civita, abstract_chiral"
+    );
+}
+
+#[test]
+fn evaluator_gamma_convention_invalid_dimension_returns_exact_error() {
+    let mut state = TestState::default();
+    let err = call_registry(
+        &mut state,
+        "declare_gamma_convention",
+        vec![
+            serde_json::json!("gamma"),
+            serde_json::json!("mostly_plus"),
+            serde_json::json!("plus_two_g"),
+            serde_json::json!(0),
+        ],
+    )
+    .expect_err("non-positive dimension should fail");
+
+    assert_eq!(err, "gamma convention dimension must be a positive integer");
+}
+
+#[test]
 fn simple_declare_and_get() {
     let interner = Interner::new();
     let g = interner.get_or_intern("g");
@@ -479,6 +597,255 @@ fn structured_trace_space_metadata_is_stored() {
 }
 
 #[test]
+fn bosonic_mode_declaration_stores_mode_meta_and_noncommuting() {
+    let mut state = TestState::default();
+    call_registry(
+        &mut state,
+        "declare_mode",
+        vec![
+            serde_json::json!("a0"),
+            serde_json::json!("bosonic"),
+            serde_json::json!(0),
+        ],
+    )
+    .unwrap();
+
+    let a0 = state.interner.get_or_intern("a0");
+    let props = state.env.property_store.get_all(a0);
+    assert!(props.iter().any(|prop| matches!(
+        prop,
+        TensorProperty::ModeMeta(ModeMetadata {
+            statistics: ModeStatistics::Bosonic,
+            subsystem: None,
+            mode_index: 0,
+            label: None,
+        })
+    )));
+    assert!(props
+        .iter()
+        .any(|prop| matches!(prop, TensorProperty::NonCommuting)));
+}
+
+#[test]
+fn fermionic_mode_declaration_stores_mode_meta_noncommuting_and_anticommuting() {
+    let mut state = TestState::default();
+    call_registry(
+        &mut state,
+        "declare_mode",
+        vec![
+            serde_json::json!("c1"),
+            serde_json::json!("fermionic"),
+            serde_json::json!(1),
+        ],
+    )
+    .unwrap();
+
+    let c1 = state.interner.get_or_intern("c1");
+    let props = state.env.property_store.get_all(c1);
+    assert!(props.iter().any(|prop| matches!(
+        prop,
+        TensorProperty::ModeMeta(ModeMetadata {
+            statistics: ModeStatistics::Fermionic,
+            subsystem: None,
+            mode_index: 1,
+            label: None,
+        })
+    )));
+    assert!(props
+        .iter()
+        .any(|prop| matches!(prop, TensorProperty::NonCommuting)));
+    assert!(props
+        .iter()
+        .any(|prop| matches!(prop, TensorProperty::AntiCommuting)));
+}
+
+#[test]
+fn mode_declaration_subsystem_and_label_are_stored_correctly() {
+    let mut state = TestState::default();
+    call_registry(
+        &mut state,
+        "declare_mode_with_label",
+        vec![
+            serde_json::json!("m0"),
+            serde_json::json!("spin"),
+            serde_json::json!("reg"),
+            serde_json::json!(0),
+            serde_json::json!("a"),
+        ],
+    )
+    .unwrap();
+
+    let reg = state.interner.get_or_intern("reg");
+    let a = state.interner.get_or_intern("a");
+    let m0 = state.interner.get_or_intern("m0");
+    let props = state.env.property_store.get_all(m0);
+    assert!(props.iter().any(|prop| matches!(
+        prop,
+        TensorProperty::ModeMeta(ModeMetadata {
+            statistics: ModeStatistics::Spin,
+            subsystem: Some(subsystem),
+            mode_index: 0,
+            label: Some(label),
+        }) if *subsystem == reg && *label == a
+    )));
+}
+
+#[test]
+fn invalid_mode_statistics_string_returns_exact_error() {
+    let mut state = TestState::default();
+    let err = call_registry(
+        &mut state,
+        "declare_mode",
+        vec![
+            serde_json::json!("x"),
+            serde_json::json!("anyon"),
+            serde_json::json!(0),
+        ],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        "declare_mode statistics must be one of: bosonic, fermionic, spin"
+    );
+}
+
+#[test]
+fn bosonic_truncated_two_mode_fock_space_stores_fock_space_meta() {
+    let mut state = TestState::default();
+    call_registry(
+        &mut state,
+        "declare_bosonic_truncated_mode",
+        vec![
+            serde_json::json!("a0"),
+            serde_json::json!(0),
+            serde_json::json!(2),
+        ],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_bosonic_truncated_mode",
+        vec![
+            serde_json::json!("a1"),
+            serde_json::json!(1),
+            serde_json::json!(3),
+        ],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_fock_space",
+        vec![serde_json::json!("F"), serde_json::json!(["a0", "a1"])],
+    )
+    .unwrap();
+
+    let f = state.interner.get_or_intern("F");
+    let a0 = state.interner.get_or_intern("a0");
+    let a1 = state.interner.get_or_intern("a1");
+    let props = state.env.property_store.get_all(f);
+    assert!(props.iter().any(|prop| matches!(
+        prop,
+        TensorProperty::FockSpaceMeta(FockSpaceMetadata {
+            symbol,
+            modes,
+            basis_order,
+        }) if *symbol == f
+            && basis_order == &vec![a0, a1]
+            && modes == &vec![
+                FockModeFactor {
+                    symbol: a0,
+                    statistics: ModeStatistics::Bosonic,
+                    truncation: Some(2),
+                },
+                FockModeFactor {
+                    symbol: a1,
+                    statistics: ModeStatistics::Bosonic,
+                    truncation: Some(3),
+                },
+            ]
+    )));
+}
+
+#[test]
+fn bosonic_fock_basis_builder_enforces_occupation_list_length() {
+    let mut state = TestState::default();
+    call_registry(
+        &mut state,
+        "declare_bosonic_truncated_mode",
+        vec![
+            serde_json::json!("a0"),
+            serde_json::json!(0),
+            serde_json::json!(2),
+        ],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_bosonic_truncated_mode",
+        vec![
+            serde_json::json!("a1"),
+            serde_json::json!(1),
+            serde_json::json!(2),
+        ],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_fock_space",
+        vec![serde_json::json!("F"), serde_json::json!(["a0", "a1"])],
+    )
+    .unwrap();
+
+    let err = call_registry(
+        &mut state,
+        "bosonic_fock_basis_state",
+        vec![serde_json::json!("F"), serde_json::json!([1])],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        "bosonic_fock_basis_state occupation list does not match the declared Fock space"
+    );
+}
+
+#[test]
+fn fermionic_fock_basis_builder_enforces_binary_occupations() {
+    let mut state = TestState::default();
+    call_registry(
+        &mut state,
+        "declare_fermionic_mode",
+        vec![serde_json::json!("c0"), serde_json::json!(0)],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_fermionic_mode",
+        vec![serde_json::json!("c1"), serde_json::json!(1)],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_fock_space",
+        vec![serde_json::json!("Ff"), serde_json::json!(["c0", "c1"])],
+    )
+    .unwrap();
+
+    let err = call_registry(
+        &mut state,
+        "fermionic_fock_basis_state",
+        vec![serde_json::json!("Ff"), serde_json::json!([1, 2])],
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        err,
+        "fermionic_fock_basis_state occupation list does not match the declared Fock space"
+    );
+}
+
+#[test]
 fn elementary_hilbert_space_declaration_stores_hilbert_space_meta() {
     let mut state = TestState::default();
     call_registry(
@@ -665,4 +1032,188 @@ fn operator_density_projector_observable_channel_declarations_also_attach_noncom
             .iter()
             .any(|prop| matches!(prop, TensorProperty::NonCommuting)));
     }
+}
+
+#[test]
+fn valid_operator_space_declaration_stores_operator_space_meta() {
+    let mut state = TestState::default();
+    call_registry(
+        &mut state,
+        "declare_hilbert_space",
+        vec![serde_json::json!("HA"), serde_json::json!(2)],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_hilbert_space",
+        vec![serde_json::json!("HB"), serde_json::json!(3)],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_operator_space",
+        vec![
+            serde_json::json!("U"),
+            serde_json::json!("HA"),
+            serde_json::json!("HB"),
+        ],
+    )
+    .unwrap();
+
+    let ha = state.interner.get_or_intern("HA");
+    let hb = state.interner.get_or_intern("HB");
+    let u = state.interner.get_or_intern("U");
+    let props = state.env.property_store.get_all(u);
+    assert!(props.iter().any(|prop| matches!(
+        prop,
+        TensorProperty::OperatorSpaceMeta(OperatorSpaceMetadata {
+            domain_space,
+            codomain_space,
+        }) if *domain_space == ha && *codomain_space == hb
+    )));
+}
+
+#[test]
+fn composing_compatible_operators_succeeds_and_propagates_metadata() {
+    let mut state = TestState::default();
+    for (symbol, dim) in [("HA", 2), ("HB", 3), ("HC", 5)] {
+        call_registry(
+            &mut state,
+            "declare_hilbert_space",
+            vec![serde_json::json!(symbol), serde_json::json!(dim)],
+        )
+        .unwrap();
+    }
+    for (symbol, domain, codomain) in [("U", "HB", "HC"), ("V", "HA", "HB")] {
+        call_registry(
+            &mut state,
+            "declare_operator_space",
+            vec![
+                serde_json::json!(symbol),
+                serde_json::json!(domain),
+                serde_json::json!(codomain),
+            ],
+        )
+        .unwrap();
+    }
+
+    let u = Expr::Sym(state.interner.get_or_intern("U"));
+    let v = Expr::Sym(state.interner.get_or_intern("V"));
+    let u_id = state.store_expr(u);
+    let v_id = state.store_expr(v);
+    let result = call_registry(
+        &mut state,
+        "compose_operators",
+        vec![serde_json::json!(u_id), serde_json::json!(v_id)],
+    )
+    .expect("compatible operator composition should succeed");
+    let expr_id = result["expr_id"]
+        .as_str()
+        .expect("compose_operators should return expr_id");
+    let composed = state
+        .get_expr(expr_id)
+        .expect("stored composed expression should exist")
+        .clone();
+    assert_eq!(
+        composed,
+        Expr::Call(
+            state.interner.get_or_intern("compose_operators"),
+            vec![
+                Expr::Sym(state.interner.get_or_intern("U")),
+                Expr::Sym(state.interner.get_or_intern("V")),
+            ],
+        )
+    );
+
+    let ha = state.interner.get_or_intern("HA");
+    let hc = state.interner.get_or_intern("HC");
+    let meta = ax_eval::operator_space_metadata_of_expr(&mut state.env, &composed, &state.interner)
+        .expect("compatible composition should carry propagated metadata");
+    assert_eq!(
+        meta,
+        OperatorSpaceMetadata {
+            domain_space: ha,
+            codomain_space: hc,
+        }
+    );
+}
+
+#[test]
+fn composing_incompatible_operators_returns_exact_error_string() {
+    let mut state = TestState::default();
+    for (symbol, dim) in [("HA", 2), ("HB", 3), ("HC", 5)] {
+        call_registry(
+            &mut state,
+            "declare_hilbert_space",
+            vec![serde_json::json!(symbol), serde_json::json!(dim)],
+        )
+        .unwrap();
+    }
+    for (symbol, domain, codomain) in [("U", "HA", "HB"), ("V", "HC", "HC")] {
+        call_registry(
+            &mut state,
+            "declare_operator_space",
+            vec![
+                serde_json::json!(symbol),
+                serde_json::json!(domain),
+                serde_json::json!(codomain),
+            ],
+        )
+        .unwrap();
+    }
+
+    let u_id = state.store_expr(Expr::Sym(state.interner.get_or_intern("U")));
+    let v_id = state.store_expr(Expr::Sym(state.interner.get_or_intern("V")));
+    let err = call_registry(
+        &mut state,
+        "compose_operators",
+        vec![serde_json::json!(u_id), serde_json::json!(v_id)],
+    )
+    .expect_err("incompatible operator composition should fail");
+
+    assert_eq!(
+        err,
+        "compose_operators requires codomain(right) = domain(left)"
+    );
+}
+
+#[test]
+fn dagger_swaps_domain_and_codomain_metadata() {
+    let mut state = TestState::default();
+    call_registry(
+        &mut state,
+        "declare_hilbert_space",
+        vec![serde_json::json!("HA"), serde_json::json!(2)],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_hilbert_space",
+        vec![serde_json::json!("HB"), serde_json::json!(3)],
+    )
+    .unwrap();
+    call_registry(
+        &mut state,
+        "declare_operator_space",
+        vec![
+            serde_json::json!("U"),
+            serde_json::json!("HA"),
+            serde_json::json!("HB"),
+        ],
+    )
+    .unwrap();
+
+    let ha = state.interner.get_or_intern("HA");
+    let hb = state.interner.get_or_intern("HB");
+    let u = Expr::Sym(state.interner.get_or_intern("U"));
+    let dagger = Expr::Call(state.interner.get_or_intern("dagger"), vec![u]);
+    let meta = ax_eval::operator_space_metadata_of_expr(&mut state.env, &dagger, &state.interner)
+        .expect("dagger should swap operator-space metadata");
+    assert_eq!(
+        meta,
+        OperatorSpaceMetadata {
+            domain_space: hb,
+            codomain_space: ha,
+        }
+    );
 }

@@ -1,5 +1,6 @@
 use ax_ir::*;
 use ax_qm::*;
+use num_bigint::BigInt;
 use num_rational::BigRational;
 use std::collections::HashMap;
 
@@ -161,6 +162,653 @@ fn spin_operator_rejects_invalid_two_j() {
     assert_eq!(
         jz_matrix(usize::MAX, &interner),
         Err(SpinError::InvalidSpinQuantumNumber)
+    );
+}
+
+#[test]
+fn hermitian_matrix_exponential_small_zero_matrix_is_identity() {
+    let interner = int();
+    let zero = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+
+    assert_eq!(
+        hermitian_matrix_exponential_small(&zero, &interner).unwrap(),
+        vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::one()],
+        ]
+    );
+}
+
+#[test]
+fn hermitian_matrix_exponential_small_diagonal_qubit_exponentiates_entries() {
+    let interner = int();
+    let matrix = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ];
+
+    assert_eq!(
+        hermitian_matrix_exponential_small(&matrix, &interner).unwrap(),
+        vec![
+            vec![
+                Expr::Call(interner.get_or_intern("exp"), vec![Expr::one()]),
+                Expr::zero()
+            ],
+            vec![
+                Expr::zero(),
+                Expr::Call(interner.get_or_intern("exp"), vec![Expr::Int(2.into())]),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn hermitian_matrix_exponential_small_diagonal_qutrit_exponentiates_entries() {
+    let interner = int();
+    let matrix = vec![
+        vec![Expr::one(), Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into()), Expr::zero()],
+        vec![Expr::zero(), Expr::zero(), Expr::Int(3.into())],
+    ];
+
+    assert_eq!(
+        hermitian_matrix_exponential_small(&matrix, &interner).unwrap(),
+        vec![
+            vec![
+                Expr::Call(interner.get_or_intern("exp"), vec![Expr::one()]),
+                Expr::zero(),
+                Expr::zero(),
+            ],
+            vec![
+                Expr::zero(),
+                Expr::Call(interner.get_or_intern("exp"), vec![Expr::Int(2.into())]),
+                Expr::zero(),
+            ],
+            vec![
+                Expr::zero(),
+                Expr::zero(),
+                Expr::Call(interner.get_or_intern("exp"), vec![Expr::Int(3.into())]),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn hermitian_matrix_exponential_small_rejects_nonhermitian_input() {
+    let interner = int();
+    let matrix = vec![
+        vec![Expr::zero(), Expr::one()],
+        vec![Expr::Int(2.into()), Expr::zero()],
+    ];
+
+    assert_eq!(
+        hermitian_matrix_exponential_small(&matrix, &interner),
+        Err(MatrixExponentialError::MatrixNotHermitian)
+    );
+}
+
+#[test]
+fn time_evolution_operator_zero_matrix_returns_identity() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+    let zero = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+
+    assert_eq!(
+        time_evolution_operator(&zero, t, &interner).unwrap(),
+        vec![
+            vec![Expr::one(), Expr::zero()],
+            vec![Expr::zero(), Expr::one()],
+        ]
+    );
+}
+
+#[test]
+fn time_evolution_operator_diagonal_qubit_returns_expected_phases() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+    let i = Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()));
+    let h = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ];
+
+    assert_eq!(
+        time_evolution_operator(&h, t.clone(), &interner).unwrap(),
+        vec![
+            vec![
+                Expr::Call(
+                    interner.get_or_intern("exp"),
+                    vec![Expr::mul(vec![Expr::neg(i.clone()), t.clone()])]
+                ),
+                Expr::zero(),
+            ],
+            vec![
+                Expr::zero(),
+                Expr::Call(
+                    interner.get_or_intern("exp"),
+                    vec![Expr::mul(vec![Expr::Int((-2).into()), i, t])]
+                ),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn time_evolution_operator_rejects_nonhermitian_input() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+    let h = vec![
+        vec![Expr::zero(), Expr::one()],
+        vec![Expr::Int(2.into()), Expr::zero()],
+    ];
+
+    assert_eq!(
+        time_evolution_operator(&h, t, &interner),
+        Err(MatrixExponentialError::MatrixNotHermitian)
+    );
+}
+
+#[test]
+fn schrodinger_evolve_zero_hamiltonian_leaves_state_unchanged() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let psi0 = vec![Expr::one(), Expr::zero()];
+
+    assert_eq!(
+        schrodinger_evolve_state(&h, &psi0, t, &interner).unwrap(),
+        psi0
+    );
+}
+
+#[test]
+fn schrodinger_evolve_pauli_z_on_zero_state_picks_up_phase() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+    let i = Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()));
+
+    assert_eq!(
+        schrodinger_evolve_state(
+            &pauli_z(&interner),
+            &[Expr::one(), Expr::zero()],
+            t.clone(),
+            &interner
+        )
+        .unwrap(),
+        vec![
+            Expr::Call(
+                interner.get_or_intern("exp"),
+                vec![Expr::mul(vec![Expr::neg(i), t])]
+            ),
+            Expr::zero(),
+        ]
+    );
+}
+
+#[test]
+fn schrodinger_evolve_rejects_dimension_mismatch() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+
+    assert_eq!(
+        schrodinger_evolve_state(&pauli_z(&interner), &[Expr::one()], t, &interner),
+        Err(StateEvolutionError::StateDimensionMismatch {
+            expected: 2,
+            actual: 1,
+        })
+    );
+}
+
+#[test]
+fn heisenberg_evolve_zero_hamiltonian_leaves_operator_unchanged() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let op0 = pauli_x(&interner);
+
+    assert_eq!(
+        heisenberg_evolve_operator(&h, &op0, t, &interner).unwrap(),
+        op0
+    );
+}
+
+#[test]
+fn heisenberg_evolve_pauli_z_preserves_pauli_z() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+    let op0 = pauli_z(&interner);
+
+    assert_eq!(
+        heisenberg_evolve_operator(&pauli_z(&interner), &op0, t, &interner).unwrap(),
+        op0
+    );
+}
+
+#[test]
+fn heisenberg_evolve_rejects_dimension_mismatch() {
+    let interner = int();
+    let t = Expr::Sym(interner.get_or_intern("t"));
+
+    assert_eq!(
+        heisenberg_evolve_operator(&pauli_z(&interner), &[vec![Expr::one()]], t, &interner),
+        Err(OperatorEvolutionError::OperatorDimensionMismatch {
+            expected: 2,
+            actual: 1,
+        })
+    );
+}
+
+#[test]
+fn liouville_rhs_commuting_diagonal_case_is_zero() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ];
+    let rho_diag = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+
+    assert_eq!(
+        liouville_von_neumann_rhs(&h, &rho_diag, &interner).unwrap(),
+        vec![
+            vec![Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero()],
+        ]
+    );
+}
+
+#[test]
+fn liouville_rhs_maximally_mixed_state_is_zero_for_any_diagonal_h() {
+    let interner = int();
+    let half = Expr::Rational(BigRational::new(1.into(), 2.into()));
+    let h = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ];
+    let rho_mixed = vec![vec![half.clone(), Expr::zero()], vec![Expr::zero(), half]];
+
+    assert_eq!(
+        liouville_von_neumann_rhs(&h, &rho_mixed, &interner).unwrap(),
+        vec![
+            vec![Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero()],
+        ]
+    );
+}
+
+#[test]
+fn liouville_rhs_rejects_dimension_mismatch() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::Int(2.into())],
+    ];
+
+    assert_eq!(
+        liouville_von_neumann_rhs(&h, &[vec![Expr::one()]], &interner),
+        Err(LiouvilleError::DimensionMismatch {
+            expected: 2,
+            actual: 1,
+        })
+    );
+}
+
+#[test]
+fn dyson_series_order_zero_is_one() {
+    let interner = int();
+
+    assert_eq!(
+        dyson_series(
+            Expr::Call(interner.get_or_intern("H"), vec![time_symbol(&interner)]),
+            0,
+            &interner,
+        ),
+        Expr::one()
+    );
+}
+
+#[test]
+fn dyson_series_order_one_contains_minus_i_and_one_integral_of_h_t1() {
+    let interner = int();
+    let result = dyson_series(
+        Expr::Call(interner.get_or_intern("H"), vec![time_symbol(&interner)]),
+        1,
+        &interner,
+    );
+    let Expr::Add(terms) = result else {
+        panic!("expected additive Dyson expansion");
+    };
+
+    assert!(terms.contains(&Expr::one()));
+    assert!(terms.contains(&Expr::mul(vec![
+        Expr::neg(Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()))),
+        Expr::Rational(BigRational::new(1.into(), 1.into())),
+        Expr::Call(
+            interner.get_or_intern("integral"),
+            vec![
+                Expr::Sym(interner.get_or_intern("t1")),
+                Expr::zero(),
+                time_symbol(&interner),
+                Expr::Call(
+                    interner.get_or_intern("H"),
+                    vec![Expr::Sym(interner.get_or_intern("t1"))],
+                ),
+            ],
+        ),
+    ])));
+}
+
+#[test]
+fn dyson_series_order_two_contains_time_order_wrapper_and_half_factorial() {
+    let interner = int();
+    let result = dyson_series(
+        Expr::Call(interner.get_or_intern("H"), vec![time_symbol(&interner)]),
+        2,
+        &interner,
+    );
+    let Expr::Add(terms) = result else {
+        panic!("expected additive Dyson expansion");
+    };
+
+    assert!(terms.contains(&Expr::mul(vec![
+        Expr::pow(
+            Expr::neg(Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()))),
+            Expr::Int(2.into()),
+        ),
+        Expr::Rational(BigRational::new(1.into(), 2.into())),
+        Expr::Call(
+            interner.get_or_intern("integral"),
+            vec![
+                Expr::Sym(interner.get_or_intern("t1")),
+                Expr::zero(),
+                time_symbol(&interner),
+                Expr::Call(
+                    interner.get_or_intern("integral"),
+                    vec![
+                        Expr::Sym(interner.get_or_intern("t2")),
+                        Expr::zero(),
+                        time_symbol(&interner),
+                        Expr::Call(
+                            interner.get_or_intern("time_order"),
+                            vec![Expr::mul(vec![
+                                Expr::Call(
+                                    interner.get_or_intern("H"),
+                                    vec![Expr::Sym(interner.get_or_intern("t1"))],
+                                ),
+                                Expr::Call(
+                                    interner.get_or_intern("H"),
+                                    vec![Expr::Sym(interner.get_or_intern("t2"))],
+                                ),
+                            ])],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ])));
+}
+
+#[test]
+fn magnus_expansion_order_zero_is_zero() {
+    let interner = int();
+
+    assert_eq!(
+        magnus_expansion(
+            Expr::Call(interner.get_or_intern("H"), vec![time_symbol(&interner)]),
+            0,
+            &interner,
+        ),
+        Expr::zero()
+    );
+}
+
+#[test]
+fn magnus_expansion_order_one_contains_one_integral_of_h() {
+    let interner = int();
+
+    assert_eq!(
+        magnus_expansion(
+            Expr::Call(interner.get_or_intern("H"), vec![time_symbol(&interner)]),
+            1,
+            &interner,
+        ),
+        Expr::mul(vec![
+            Expr::neg(Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()))),
+            Expr::Call(
+                interner.get_or_intern("integral"),
+                vec![
+                    Expr::Sym(interner.get_or_intern("t1")),
+                    Expr::zero(),
+                    time_symbol(&interner),
+                    Expr::Call(
+                        interner.get_or_intern("H"),
+                        vec![Expr::Sym(interner.get_or_intern("t1"))],
+                    ),
+                ],
+            ),
+        ])
+    );
+}
+
+#[test]
+fn magnus_expansion_order_two_contains_a_commutator_term() {
+    let interner = int();
+    let result = magnus_expansion(
+        Expr::Call(interner.get_or_intern("H"), vec![time_symbol(&interner)]),
+        2,
+        &interner,
+    );
+    let Expr::Add(terms) = result else {
+        panic!("expected additive Magnus expansion");
+    };
+
+    assert!(terms.contains(&Expr::mul(vec![
+        Expr::Rational(BigRational::new(BigInt::from(-1), BigInt::from(2usize))),
+        Expr::Call(
+            interner.get_or_intern("integral"),
+            vec![
+                Expr::Sym(interner.get_or_intern("t1")),
+                Expr::zero(),
+                time_symbol(&interner),
+                Expr::Call(
+                    interner.get_or_intern("integral"),
+                    vec![
+                        Expr::Sym(interner.get_or_intern("t2")),
+                        Expr::zero(),
+                        time_symbol(&interner),
+                        Expr::Call(
+                            interner.get_or_intern("commutator"),
+                            vec![
+                                Expr::Call(
+                                    interner.get_or_intern("H"),
+                                    vec![Expr::Sym(interner.get_or_intern("t1"))],
+                                ),
+                                Expr::Call(
+                                    interner.get_or_intern("H"),
+                                    vec![Expr::Sym(interner.get_or_intern("t2"))],
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    ])));
+}
+
+#[test]
+fn magnus_expansion_order_three_contains_required_nested_commutator_structure() {
+    fn contains_nested_commutator_sum(expr: &Expr, left: &Expr, right: &Expr) -> bool {
+        match expr {
+            Expr::Add(terms) => {
+                (terms.contains(left) && terms.contains(right))
+                    || terms
+                        .iter()
+                        .any(|term| contains_nested_commutator_sum(term, left, right))
+            }
+            Expr::Complex(re, im) => {
+                contains_nested_commutator_sum(re, left, right)
+                    || contains_nested_commutator_sum(im, left, right)
+            }
+            Expr::Mul(factors) => factors
+                .iter()
+                .any(|factor| contains_nested_commutator_sum(factor, left, right)),
+            Expr::Pow(base, exp) => {
+                contains_nested_commutator_sum(base, left, right)
+                    || contains_nested_commutator_sum(exp, left, right)
+            }
+            Expr::Neg(inner) | Expr::Group(inner, _) => {
+                contains_nested_commutator_sum(inner, left, right)
+            }
+            Expr::Call(_, args) | Expr::List(args) => args
+                .iter()
+                .any(|arg| contains_nested_commutator_sum(arg, left, right)),
+            Expr::Matrix(rows) => rows
+                .iter()
+                .flatten()
+                .any(|entry| contains_nested_commutator_sum(entry, left, right)),
+            Expr::FnDef(_, _, body) => contains_nested_commutator_sum(body, left, right),
+            Expr::Rule(lhs, rhs, _) | Expr::Let(_, lhs, rhs) => {
+                contains_nested_commutator_sum(lhs, left, right)
+                    || contains_nested_commutator_sum(rhs, left, right)
+            }
+            Expr::Piecewise(cases) => cases
+                .iter()
+                .any(|(value, _)| contains_nested_commutator_sum(value, left, right)),
+            Expr::Indexed(base, _) => contains_nested_commutator_sum(base, left, right),
+            _ => false,
+        }
+    }
+
+    let interner = int();
+    let result = magnus_expansion(
+        Expr::Call(interner.get_or_intern("H"), vec![time_symbol(&interner)]),
+        3,
+        &interner,
+    );
+    let expected_left = Expr::Call(
+        interner.get_or_intern("commutator"),
+        vec![
+            Expr::Call(
+                interner.get_or_intern("H"),
+                vec![Expr::Sym(interner.get_or_intern("t1"))],
+            ),
+            Expr::Call(
+                interner.get_or_intern("commutator"),
+                vec![
+                    Expr::Call(
+                        interner.get_or_intern("H"),
+                        vec![Expr::Sym(interner.get_or_intern("t2"))],
+                    ),
+                    Expr::Call(
+                        interner.get_or_intern("H"),
+                        vec![Expr::Sym(interner.get_or_intern("t3"))],
+                    ),
+                ],
+            ),
+        ],
+    );
+    let expected_right = Expr::Call(
+        interner.get_or_intern("commutator"),
+        vec![
+            Expr::Call(
+                interner.get_or_intern("H"),
+                vec![Expr::Sym(interner.get_or_intern("t3"))],
+            ),
+            Expr::Call(
+                interner.get_or_intern("commutator"),
+                vec![
+                    Expr::Call(
+                        interner.get_or_intern("H"),
+                        vec![Expr::Sym(interner.get_or_intern("t2"))],
+                    ),
+                    Expr::Call(
+                        interner.get_or_intern("H"),
+                        vec![Expr::Sym(interner.get_or_intern("t1"))],
+                    ),
+                ],
+            ),
+        ],
+    );
+
+    assert!(contains_nested_commutator_sum(
+        &result,
+        &expected_left,
+        &expected_right,
+    ));
+}
+
+#[test]
+fn kubo_response_contains_minus_i_theta_trace_and_commutator() {
+    let interner = int();
+    let a = Expr::Sym(interner.get_or_intern("A"));
+    let b = Expr::Sym(interner.get_or_intern("B"));
+    let rho0 = Expr::Sym(interner.get_or_intern("rho0"));
+    let t = Expr::Sym(interner.get_or_intern("t"));
+
+    assert_eq!(
+        kubo_response_function(a.clone(), b.clone(), rho0.clone(), t.clone(), &interner),
+        Expr::mul(vec![
+            Expr::neg(Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one()))),
+            Expr::Call(interner.get_or_intern("theta"), vec![t.clone()]),
+            Expr::Call(
+                interner.get_or_intern("trace"),
+                vec![Expr::mul(vec![
+                    rho0,
+                    Expr::Call(
+                        interner.get_or_intern("commutator"),
+                        vec![
+                            Expr::Call(interner.get_or_intern("A"), vec![t]),
+                            Expr::Call(interner.get_or_intern("B"), vec![Expr::zero()]),
+                        ],
+                    ),
+                ])],
+            ),
+        ])
+    );
+}
+
+#[test]
+fn susceptibility_fourier_contains_integral_with_exp_i_omega_t() {
+    let interner = int();
+    let omega = Expr::Sym(interner.get_or_intern("omega"));
+    let response = Expr::Sym(interner.get_or_intern("chi_t"));
+
+    assert_eq!(
+        susceptibility_fourier(response.clone(), omega.clone(), &interner),
+        Expr::Call(
+            interner.get_or_intern("integral"),
+            vec![
+                Expr::Sym(interner.get_or_intern("t")),
+                Expr::Sym(interner.get_or_intern("neg_inf")),
+                Expr::Sym(interner.get_or_intern("inf")),
+                Expr::mul(vec![
+                    Expr::Call(
+                        interner.get_or_intern("exp"),
+                        vec![Expr::mul(vec![
+                            Expr::Complex(Box::new(Expr::zero()), Box::new(Expr::one())),
+                            omega,
+                            Expr::Sym(interner.get_or_intern("t")),
+                        ])],
+                    ),
+                    response,
+                ]),
+            ],
+        )
     );
 }
 
@@ -1197,6 +1845,46 @@ fn bit_flip_identity_limit_at_p_zero() {
 }
 
 #[test]
+fn canonical_channel_family_hint_names_known_constructor_outputs() {
+    let interner = int();
+    let p = Expr::Sym(interner.get_or_intern("p"));
+    let gamma = Expr::Sym(interner.get_or_intern("gamma"));
+
+    assert_eq!(
+        canonical_channel_family_hint(&identity_channel(2), &interner).as_deref(),
+        Some("identity")
+    );
+    assert_eq!(
+        canonical_channel_family_hint(&depolarizing_channel_qubit(p.clone(), &interner), &interner)
+            .as_deref(),
+        Some("depolarizing")
+    );
+    assert_eq!(
+        canonical_channel_family_hint(&dephasing_channel_qubit(p.clone(), &interner), &interner)
+            .as_deref(),
+        Some("dephasing")
+    );
+    assert_eq!(
+        canonical_channel_family_hint(
+            &amplitude_damping_channel_qubit(gamma, &interner),
+            &interner
+        )
+        .as_deref(),
+        Some("amplitude_damping")
+    );
+    assert_eq!(
+        canonical_channel_family_hint(&bit_flip_channel_qubit(p.clone(), &interner), &interner)
+            .as_deref(),
+        Some("bit_flip")
+    );
+    assert_eq!(
+        canonical_channel_family_hint(&bit_phase_flip_channel_qubit(p, &interner), &interner)
+            .as_deref(),
+        Some("bit_phase_flip")
+    );
+}
+
+#[test]
 fn all_canonical_channels_are_trace_preserving_exactly() {
     let interner = int();
     let p = Expr::Sym(interner.get_or_intern("p"));
@@ -1757,6 +2445,103 @@ fn lindblad_rhs_rejects_dimension_mismatch() {
             actual: 1,
             which: "jump operator",
         })
+    );
+}
+
+#[test]
+fn lindbladian_superoperator_zero_hamiltonian_no_jumps_is_zero_matrix() {
+    let interner = int();
+    let zero_2x2 = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+
+    assert_eq!(
+        lindbladian_superoperator(&zero_2x2, &[], &interner).unwrap(),
+        vec![
+            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+            vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+        ]
+    );
+}
+
+#[test]
+fn sparse_lindbladian_zero_generator_has_no_entries() {
+    let interner = int();
+    let zero_2x2 = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+
+    let sparse = sparse_lindbladian_superoperator_numeric(&zero_2x2, &[], &interner).unwrap();
+    assert_eq!(sparse.rows, 4);
+    assert_eq!(sparse.cols, 4);
+    assert!(sparse.entries.is_empty());
+}
+
+#[test]
+fn sparse_lindbladian_identity_hamiltonian_numeric_path_builds() {
+    let interner = int();
+    let identity_2x2 = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::one()],
+    ];
+
+    let sparse = sparse_lindbladian_superoperator_numeric(&identity_2x2, &[], &interner).unwrap();
+    assert_eq!(sparse.rows, 4);
+    assert_eq!(sparse.cols, 4);
+}
+
+#[test]
+fn sparse_lindbladian_rejects_symbolic_input() {
+    let interner = int();
+    let zero_2x2 = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let g = interner.get_or_intern("g");
+    let jump_ops = vec![vec![
+        vec![Expr::Sym(g), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ]];
+
+    assert_eq!(
+        sparse_lindbladian_superoperator_numeric(&zero_2x2, &jump_ops, &interner),
+        Err(LindbladianSpectrumError::NonNumericOperator)
+    );
+}
+
+#[test]
+fn lindbladian_eigenvalues_zero_generator_are_all_zero() {
+    let interner = int();
+    let zero_2x2 = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+
+    assert_eq!(
+        lindbladian_eigenvalues_small(&zero_2x2, &[], &interner).unwrap(),
+        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()]
+    );
+}
+
+#[test]
+fn unsupported_non_diagonal_2_level_dissipator_spectrum_returns_unsupported_dimension() {
+    let interner = int();
+    let zero_2x2 = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let jump_ops = vec![vec![
+        vec![Expr::zero(), Expr::one()],
+        vec![Expr::zero(), Expr::zero()],
+    ]];
+
+    assert_eq!(
+        lindbladian_eigenvalues_small(&zero_2x2, &jump_ops, &interner),
+        Err(LindbladianSpectrumError::UnsupportedDimension { dim: 2 })
     );
 }
 

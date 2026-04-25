@@ -503,7 +503,11 @@ pub fn expectation_trajectory_svg(
         .collect::<Vec<_>>();
     let (x_min, x_max, y_min, y_max) = compute_bounds(std::slice::from_ref(&points));
 
-    let mut svg = render_plot(title, &[(&points, "#2563eb", title)], Some((x_min, x_max, y_min, y_max)));
+    let mut svg = render_plot(
+        title,
+        &[(&points, "#2563eb", title)],
+        Some((x_min, x_max, y_min, y_max)),
+    );
     let insert_at = svg.rfind("</svg>").unwrap_or(svg.len());
     let labels = format!(
         r##"<text x="420" y="494" text-anchor="middle" font-size="14" font-family="monospace" fill="#222">t</text><text x="20" y="245" text-anchor="middle" font-size="14" font-family="monospace" fill="#222" transform="rotate(-90 20 245)">{}</text>"##,
@@ -593,7 +597,8 @@ mod tests {
 
     #[test]
     fn expectation_trajectory_svg_contains_polyline_and_axes() {
-        let svg = expectation_trajectory_svg(&[0.0, 1.0, 2.0], &[1.0, 0.5, 0.25], "⟨Z⟩", "Trajectory");
+        let svg =
+            expectation_trajectory_svg(&[0.0, 1.0, 2.0], &[1.0, 0.5, 0.25], "⟨Z⟩", "Trajectory");
         assert!(svg.contains("<polyline"), "{svg}");
         assert!(svg.contains("t"), "{svg}");
         assert!(svg.contains("⟨Z⟩"), "{svg}");

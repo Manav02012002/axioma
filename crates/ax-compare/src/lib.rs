@@ -20,6 +20,86 @@ use std::sync::{Mutex, OnceLock};
 
 type Sym = lasso::Spur;
 
+/// Returns true when two complex values are equal within absolute or relative tolerances.
+pub fn approx_eq_complex(lhs: (f64, f64), rhs: (f64, f64), abs_tol: f64, rel_tol: f64) -> bool {
+    if !abs_tol.is_finite() || !rel_tol.is_finite() || abs_tol < 0.0 || rel_tol < 0.0 {
+        return false;
+    }
+
+    fn approx_eq_scalar(lhs: f64, rhs: f64, abs_tol: f64, rel_tol: f64) -> bool {
+        let diff = (lhs - rhs).abs();
+        diff <= abs_tol || diff <= rel_tol * lhs.abs().max(rhs.abs())
+    }
+
+    approx_eq_scalar(lhs.0, rhs.0, abs_tol, rel_tol)
+        && approx_eq_scalar(lhs.1, rhs.1, abs_tol, rel_tol)
+}
+
+/// Returns true when two dense complex matrices have matching shape and entries within tolerance.
+pub fn approx_eq_matrix(
+    lhs: &[Vec<(f64, f64)>],
+    rhs: &[Vec<(f64, f64)>],
+    abs_tol: f64,
+    rel_tol: f64,
+) -> bool {
+    lhs.len() == rhs.len()
+        && lhs.iter().zip(rhs.iter()).all(|(lhs_row, rhs_row)| {
+            lhs_row.len() == rhs_row.len()
+                && lhs_row
+                    .iter()
+                    .zip(rhs_row.iter())
+                    .all(|(lhs_entry, rhs_entry)| {
+                        approx_eq_complex(*lhs_entry, *rhs_entry, abs_tol, rel_tol)
+                    })
+        })
+}
+
+#[cfg(test)]
+mod numeric_tolerance_tests {
+    use super::{approx_eq_complex, approx_eq_matrix};
+
+    #[test]
+    fn approx_eq_complex_accepts_absolute_tolerance() {
+        assert!(approx_eq_complex(
+            (1.0, -2.0),
+            (1.0 + 5e-13, -2.0 - 5e-13),
+            1e-12,
+            0.0
+        ));
+        assert!(!approx_eq_complex(
+            (1.0, -2.0),
+            (1.0 + 5e-13, -2.0 - 5e-13),
+            1e-14,
+            0.0
+        ));
+    }
+
+    #[test]
+    fn approx_eq_complex_accepts_relative_tolerance() {
+        assert!(approx_eq_complex(
+            (1.0e9, 0.0),
+            (1.0e9 + 100.0, 0.0),
+            1e-9,
+            1e-6
+        ));
+        assert!(!approx_eq_complex(
+            (1.0e9, 0.0),
+            (1.0e9 + 100.0, 0.0),
+            1e-9,
+            1e-10
+        ));
+    }
+
+    #[test]
+    fn approx_eq_matrix_checks_shape_and_entries() {
+        let lhs = vec![vec![(1.0, 0.0), (0.0, 1.0)]];
+        let rhs = vec![vec![(1.0 + 1e-13, 0.0), (0.0, 1.0 - 1e-13)]];
+        assert!(approx_eq_matrix(&lhs, &rhs, 1e-12, 0.0));
+        assert!(!approx_eq_matrix(&lhs, &rhs, 1e-14, 0.0));
+        assert!(!approx_eq_matrix(&lhs, &[], 1e-12, 0.0));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchResult {
     Exact,

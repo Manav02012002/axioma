@@ -1416,6 +1416,11 @@ fn canonicalise_product(
     if simplified != precanonical {
         return canonicalise(&simplified, tensor_properties, interner);
     }
+    let noncommutative_sorted =
+        canonicalize_noncommutative_product(&precanonical, tensor_properties, interner);
+    if noncommutative_sorted != precanonical {
+        return canonicalise(&noncommutative_sorted, tensor_properties, interner);
+    }
     let sorted = sort_product(&precanonical, tensor_properties, interner);
     if sorted != precanonical {
         return canonicalise(&sorted, tensor_properties, interner);
@@ -1584,6 +1589,11 @@ fn canonicalise_product_parallel(
     let simplified = simplify_property_contractions(&precanonical, tensor_properties, interner);
     if simplified != precanonical {
         return canonicalise_parallel(&simplified, tensor_properties, interner);
+    }
+    let noncommutative_sorted =
+        canonicalize_noncommutative_product(&precanonical, tensor_properties, interner);
+    if noncommutative_sorted != precanonical {
+        return canonicalise_parallel(&noncommutative_sorted, tensor_properties, interner);
     }
     let sorted = sort_product(&precanonical, tensor_properties, interner);
     if sorted != precanonical {
@@ -4843,6 +4853,7 @@ fn frame_metric_from_signature(dim: usize, signature: Signature) -> SymbolicMatr
                     Expr::Int((-1).into())
                 }
             }
+            Signature::Euclidean => Expr::one(),
         })
         .collect();
     SymbolicMatrix::from_diagonal(diag)
@@ -6156,6 +6167,301 @@ fn normalize_diracbar_bilinear_windows(
     }
 
     out
+}
+
+fn mode_metadata_of_factor(
+    expr: &Expr,
+    properties: &dyn PropertyLookup,
+) -> Option<ax_ir::ModeMetadata> {
+    let direct = expr_head_symbol(expr).and_then(|sym| {
+        properties
+            .get_properties(sym)
+            .into_iter()
+            .find_map(|prop| match prop {
+                ax_ir::TensorProperty::ModeMeta(metadata) => Some(metadata),
+                _ => None,
+            })
+    });
+    if direct.is_some() {
+        return direct;
+    }
+
+    match expr {
+        Expr::Call(_, args) if args.len() == 1 => expr_head_symbol(&args[0]).and_then(|sym| {
+            properties
+                .get_properties(sym)
+                .into_iter()
+                .find_map(|prop| match prop {
+                    ax_ir::TensorProperty::ModeMeta(metadata) => Some(metadata),
+                    _ => None,
+                })
+        }),
+        _ => None,
+    }
+}
+
+fn factor_order_symbol(expr: &Expr, properties: &dyn PropertyLookup) -> Option<lasso::Spur> {
+    if matches!(expr, Expr::Call(_, args) if args.len() == 1 && mode_metadata_of_factor(expr, properties).is_some())
+    {
+        if let Expr::Call(_, args) = expr {
+            return expr_head_symbol(&args[0]);
+        }
+    }
+    expr_head_symbol(expr)
+}
+
+fn sort_order_lists_for_symbol(
+    sym: lasso::Spur,
+    properties: &dyn PropertyLookup,
+) -> Vec<Vec<lasso::Spur>> {
+    properties
+        .get_properties(sym)
+        .into_iter()
+        .filter_map(|prop| match prop {
+            ax_ir::TensorProperty::SortOrder(order) => Some(order),
+            _ => None,
+        })
+        .collect()
+}
+
+fn explicit_sort_order_cmp(
+    a: &Expr,
+    b: &Expr,
+    properties: &dyn PropertyLookup,
+) -> Option<Ordering> {
+    let a_sym = factor_order_symbol(a, properties)?;
+    let b_sym = factor_order_symbol(b, properties)?;
+    let orders = sort_order_lists_for_symbol(a_sym, properties)
+        .into_iter()
+        .chain(sort_order_lists_for_symbol(b_sym, properties));
+    for order in orders {
+        let Some(pos_a) = order.iter().position(|sym| *sym == a_sym) else {
+            continue;
+        };
+        let Some(pos_b) = order.iter().position(|sym| *sym == b_sym) else {
+            continue;
+        };
+        return Some(pos_a.cmp(&pos_b));
+    }
+    None
+}
+
+fn factor_has_ordering_metadata(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+    mode_metadata_of_factor(expr, properties).is_some()
+        || factor_order_symbol(expr, properties).is_some_and(|sym| {
+            !sort_order_lists_for_symbol(sym, properties).is_empty()
+                || properties.get_properties(sym).into_iter().any(|prop| {
+                    matches!(
+                        prop,
+                        ax_ir::TensorProperty::Commuting
+                            | ax_ir::TensorProperty::AntiCommuting
+                            | ax_ir::TensorProperty::NonCommuting
+                            | ax_ir::TensorProperty::CommutingWith(_)
+                            | ax_ir::TensorProperty::AntiCommutingWith(_)
+                            | ax_ir::TensorProperty::NonCommutingWith(_)
+                            | ax_ir::TensorProperty::SelfCommuting
+                            | ax_ir::TensorProperty::SelfAntiCommuting
+                            | ax_ir::TensorProperty::SelfNonCommuting
+                            | ax_ir::TensorProperty::Spinor
+                            | ax_ir::TensorProperty::SpinorMeta(_)
+                            | ax_ir::TensorProperty::MajoranaSpinor
+                            | ax_ir::TensorProperty::WeylSpinor
+                    )
+                })
+        })
+}
+
+fn noncommutative_factor_cmp(
+    a: &Expr,
+    b: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Ordering {
+    if let Some(ordering) = explicit_sort_order_cmp(a, b, properties) {
+        return ordering;
+    }
+
+    let a_mode = mode_metadata_of_factor(a, properties);
+    let b_mode = mode_metadata_of_factor(b, properties);
+    if let (Some(lhs), Some(rhs)) = (&a_mode, &b_mode) {
+        let same_mode = lhs.subsystem == rhs.subsystem && lhs.mode_index == rhs.mode_index;
+        if same_mode {
+            return Ordering::Equal;
+        }
+        return lhs
+            .mode_index
+            .cmp(&rhs.mode_index)
+            .then_with(|| lhs.subsystem.cmp(&rhs.subsystem));
+    }
+
+    match (
+        factor_order_symbol(a, properties),
+        factor_order_symbol(b, properties),
+    ) {
+        (Some(lhs), Some(rhs)) => lhs.into_inner().cmp(&rhs.into_inner()),
+        _ => comparison_ordering(subtree_compare(a, b, properties, interner)),
+    }
+}
+
+fn swap_sign_for_noncommutative_factors(
+    a: &Expr,
+    b: &Expr,
+    properties: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> i32 {
+    if let (Some(lhs), Some(rhs)) = (
+        mode_metadata_of_factor(a, properties),
+        mode_metadata_of_factor(b, properties),
+    ) {
+        if lhs.is_fermionic() && rhs.is_fermionic() {
+            return -1;
+        }
+    }
+
+    let comparison = subtree_compare(a, b, properties, interner);
+    can_swap(a, b, comparison, properties, interner, false)
+}
+
+fn is_indexed_non_mode_factor(expr: &Expr, properties: &dyn PropertyLookup) -> bool {
+    matches!(expr, Expr::Indexed(_, _)) && mode_metadata_of_factor(expr, properties).is_none()
+}
+
+/// Canonicalize products whose factors carry explicit noncommutative, graded,
+/// operator-mode, or spinor ordering metadata.
+///
+/// This helper performs only pure adjacent reordering and graded sign
+/// accounting. It never creates CCR/CAR contraction or delta terms: same-mode
+/// ladder-operator pairs are left untouched for the dedicated CCR/CAR
+/// simplifier. When no structured metadata is available to justify a
+/// reordering, the product is returned unchanged.
+pub fn canonicalize_noncommutative_product(
+    expr: &Expr,
+    props: &dyn PropertyLookup,
+    interner: &ax_ir::Interner,
+) -> Expr {
+    match expr {
+        Expr::Mul(factors) => {
+            let mut sorted = factors
+                .iter()
+                .map(|factor| canonicalize_noncommutative_product(factor, props, interner))
+                .collect::<Vec<_>>();
+            let mut overall_sign = 1i32;
+            let num = sorted.len();
+
+            for _ in 1..num {
+                for idx in 0..num.saturating_sub(1) {
+                    let has_explicit_order =
+                        explicit_sort_order_cmp(&sorted[idx], &sorted[idx + 1], props).is_some();
+                    if !has_explicit_order
+                        && (is_indexed_non_mode_factor(&sorted[idx], props)
+                            || is_indexed_non_mode_factor(&sorted[idx + 1], props))
+                    {
+                        continue;
+                    }
+                    if !has_explicit_order
+                        && (!factor_has_ordering_metadata(&sorted[idx], props)
+                            || !factor_has_ordering_metadata(&sorted[idx + 1], props))
+                    {
+                        continue;
+                    }
+                    if noncommutative_factor_cmp(&sorted[idx], &sorted[idx + 1], props, interner)
+                        != Ordering::Greater
+                    {
+                        continue;
+                    }
+                    let sign = swap_sign_for_noncommutative_factors(
+                        &sorted[idx],
+                        &sorted[idx + 1],
+                        props,
+                        interner,
+                    );
+                    if sign == 0 {
+                        continue;
+                    }
+                    sorted.swap(idx, idx + 1);
+                    overall_sign *= sign;
+                }
+            }
+
+            let result = Expr::mul(sorted);
+            if overall_sign < 0 {
+                Expr::neg(result)
+            } else {
+                result
+            }
+        }
+        Expr::Add(terms) => Expr::add(
+            terms
+                .iter()
+                .map(|term| canonicalize_noncommutative_product(term, props, interner))
+                .collect(),
+        ),
+        Expr::Neg(inner) => Expr::neg(canonicalize_noncommutative_product(inner, props, interner)),
+        Expr::Pow(base, exp) => Expr::pow(
+            canonicalize_noncommutative_product(base, props, interner),
+            canonicalize_noncommutative_product(exp, props, interner),
+        ),
+        Expr::Complex(re, im) => Expr::Complex(
+            Box::new(canonicalize_noncommutative_product(re, props, interner)),
+            Box::new(canonicalize_noncommutative_product(im, props, interner)),
+        ),
+        Expr::Call(f, args) => Expr::Call(
+            *f,
+            args.iter()
+                .map(|arg| canonicalize_noncommutative_product(arg, props, interner))
+                .collect(),
+        ),
+        Expr::FnDef(name, params, body) => Expr::FnDef(
+            *name,
+            params.clone(),
+            Box::new(canonicalize_noncommutative_product(body, props, interner)),
+        ),
+        Expr::Rule(lhs, rhs, trust) => Expr::Rule(
+            Box::new(canonicalize_noncommutative_product(lhs, props, interner)),
+            Box::new(canonicalize_noncommutative_product(rhs, props, interner)),
+            *trust,
+        ),
+        Expr::Piecewise(cases) => Expr::Piecewise(
+            cases
+                .iter()
+                .map(|(value, cond)| {
+                    (
+                        canonicalize_noncommutative_product(value, props, interner),
+                        cond.clone(),
+                    )
+                })
+                .collect(),
+        ),
+        Expr::Indexed(base, indices) => Expr::Indexed(
+            Box::new(canonicalize_noncommutative_product(base, props, interner)),
+            indices.clone(),
+        ),
+        Expr::Group(inner, rel) => Expr::Group(
+            Box::new(canonicalize_noncommutative_product(inner, props, interner)),
+            *rel,
+        ),
+        Expr::Let(name, value, body) => Expr::Let(
+            *name,
+            Box::new(canonicalize_noncommutative_product(value, props, interner)),
+            Box::new(canonicalize_noncommutative_product(body, props, interner)),
+        ),
+        Expr::List(items) => Expr::List(
+            items
+                .iter()
+                .map(|item| canonicalize_noncommutative_product(item, props, interner))
+                .collect(),
+        ),
+        Expr::Matrix(rows) => Expr::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| canonicalize_noncommutative_product(cell, props, interner))
+                        .collect()
+                })
+                .collect(),
+        ),
+        _ => expr.clone(),
+    }
 }
 
 pub fn sort_product(
@@ -14374,6 +14680,141 @@ mod tests {
             vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(b), Expr::Sym(c)])],
         );
         assert_eq!(sort_product(&expr, &props, &interner), expected);
+    }
+
+    #[test]
+    fn canonicalize_noncommutative_distinct_fermions_reorder_with_minus_sign() {
+        let interner = ax_ir::Interner::new();
+        let c0 = interner.get_or_intern("c0");
+        let c1 = interner.get_or_intern("c1");
+        let annihilation = interner.get_or_intern("annihilation");
+        let mut props = HashMap::new();
+        props.insert(
+            c0,
+            vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                statistics: ax_ir::ModeStatistics::Fermionic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        props.insert(
+            c1,
+            vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                statistics: ax_ir::ModeStatistics::Fermionic,
+                subsystem: None,
+                mode_index: 1,
+                label: None,
+            })],
+        );
+
+        let expr = Expr::mul(vec![
+            Expr::Call(annihilation, vec![Expr::Sym(c1)]),
+            Expr::Call(annihilation, vec![Expr::Sym(c0)]),
+        ]);
+        let expected = Expr::neg(Expr::mul(vec![
+            Expr::Call(annihilation, vec![Expr::Sym(c0)]),
+            Expr::Call(annihilation, vec![Expr::Sym(c1)]),
+        ]));
+
+        assert_eq!(
+            canonicalize_noncommutative_product(&expr, &props, &interner),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonicalize_noncommutative_distinct_bosons_reorder_without_sign() {
+        let interner = ax_ir::Interner::new();
+        let a0 = interner.get_or_intern("a0");
+        let a1 = interner.get_or_intern("a1");
+        let creation = interner.get_or_intern("creation");
+        let mut props = HashMap::new();
+        props.insert(
+            a0,
+            vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                statistics: ax_ir::ModeStatistics::Bosonic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        props.insert(
+            a1,
+            vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                statistics: ax_ir::ModeStatistics::Bosonic,
+                subsystem: None,
+                mode_index: 1,
+                label: None,
+            })],
+        );
+
+        let expr = Expr::mul(vec![
+            Expr::Call(creation, vec![Expr::Sym(a1)]),
+            Expr::Call(creation, vec![Expr::Sym(a0)]),
+        ]);
+        let expected = Expr::mul(vec![
+            Expr::Call(creation, vec![Expr::Sym(a0)]),
+            Expr::Call(creation, vec![Expr::Sym(a1)]),
+        ]);
+
+        assert_eq!(
+            canonicalize_noncommutative_product(&expr, &props, &interner),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonicalize_noncommutative_sort_order_overrides_symbol_order() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("A");
+        let z = interner.get_or_intern("Z");
+        let mut props = HashMap::new();
+        props.insert(a, vec![ax_ir::TensorProperty::SortOrder(vec![z, a])]);
+
+        let expr = Expr::mul(vec![Expr::Sym(a), Expr::Sym(z)]);
+        let expected = Expr::mul(vec![Expr::Sym(z), Expr::Sym(a)]);
+
+        assert_eq!(
+            canonicalize_noncommutative_product(&expr, &props, &interner),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonicalize_noncommutative_already_canonical_is_stable() {
+        let interner = ax_ir::Interner::new();
+        let a0 = interner.get_or_intern("a0");
+        let a1 = interner.get_or_intern("a1");
+        let annihilation = interner.get_or_intern("annihilation");
+        let mut props = HashMap::new();
+        props.insert(
+            a0,
+            vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                statistics: ax_ir::ModeStatistics::Bosonic,
+                subsystem: None,
+                mode_index: 0,
+                label: None,
+            })],
+        );
+        props.insert(
+            a1,
+            vec![ax_ir::TensorProperty::ModeMeta(ax_ir::ModeMetadata {
+                statistics: ax_ir::ModeStatistics::Bosonic,
+                subsystem: None,
+                mode_index: 1,
+                label: None,
+            })],
+        );
+        let expr = Expr::mul(vec![
+            Expr::Call(annihilation, vec![Expr::Sym(a0)]),
+            Expr::Call(annihilation, vec![Expr::Sym(a1)]),
+        ]);
+
+        assert_eq!(
+            canonicalize_noncommutative_product(&expr, &props, &interner),
+            expr
+        );
     }
 
     #[test]

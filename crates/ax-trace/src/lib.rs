@@ -24,6 +24,116 @@ pub struct TraceReport {
     pub diagnostics_json: serde_json::Value,
 }
 
+/// Provenance record for deterministic numeric tolerance settings used by a workflow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NumericToleranceRecord {
+    pub abs_tolerance: f64,
+    pub rel_tolerance: f64,
+    pub backend: String,
+}
+
+/// Concise AI-facing narrative trace for a quantum workflow result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuantumNarrativeTrace {
+    pub workflow_kind: String,
+    pub explanation_steps: Vec<String>,
+}
+
+/// Builds a provenance record for selected numeric tolerances and backend policy.
+pub fn record_numeric_tolerances(
+    abs_tolerance: f64,
+    rel_tolerance: f64,
+    backend: impl Into<String>,
+) -> NumericToleranceRecord {
+    NumericToleranceRecord {
+        abs_tolerance,
+        rel_tolerance,
+        backend: backend.into(),
+    }
+}
+
+/// Build a narrative for tracing out one subsystem from a composite density matrix.
+pub fn narrative_for_partial_trace(
+    original_dims: &[usize],
+    factor_index: usize,
+) -> QuantumNarrativeTrace {
+    let removed = original_dims
+        .get(factor_index)
+        .copied()
+        .map(|dim| format!("subsystem {factor_index} with dimension {dim}"))
+        .unwrap_or_else(|| format!("subsystem {factor_index}"));
+    let remaining_dims = original_dims
+        .iter()
+        .enumerate()
+        .filter_map(|(index, dim)| (index != factor_index).then_some(dim.to_string()))
+        .collect::<Vec<_>>();
+
+    QuantumNarrativeTrace {
+        workflow_kind: "partial_trace".to_string(),
+        explanation_steps: vec![
+            format!("The reduced state was formed after the calculation traced out {removed}."),
+            format!(
+                "The remaining subsystem dimensions are [{}].",
+                remaining_dims.join(", ")
+            ),
+        ],
+    }
+}
+
+/// Build a narrative for entropy-style summaries of a density matrix.
+pub fn narrative_for_entropy(
+    dimension: usize,
+    entropy_functional: impl Into<String>,
+) -> QuantumNarrativeTrace {
+    let entropy_functional = entropy_functional.into();
+    QuantumNarrativeTrace {
+        workflow_kind: "spectral_summary".to_string(),
+        explanation_steps: vec![
+            format!(
+                "The {dimension}x{dimension} density matrix was diagonalized or spectrally analyzed before evaluating state functionals."
+            ),
+            format!("The {entropy_functional} functional was then computed from that spectrum."),
+        ],
+    }
+}
+
+/// Build a narrative for bipartite negativity calculations.
+pub fn narrative_for_negativity(dim_a: usize, dim_b: usize) -> QuantumNarrativeTrace {
+    QuantumNarrativeTrace {
+        workflow_kind: "entanglement_summary".to_string(),
+        explanation_steps: vec![
+            format!(
+                "A partial transpose was taken on the {}x{} bipartite density matrix.",
+                dim_a, dim_b
+            ),
+            "The partial-transpose spectrum was inspected to extract the negativity measures."
+                .to_string(),
+        ],
+    }
+}
+
+/// Build a narrative for channel summary checks on a Kraus map.
+pub fn narrative_for_channel_summary(
+    dimension: usize,
+    kraus_count: usize,
+    trace_preserving: bool,
+    unital: bool,
+) -> QuantumNarrativeTrace {
+    QuantumNarrativeTrace {
+        workflow_kind: "channel_summary".to_string(),
+        explanation_steps: vec![
+            format!(
+                "The {dimension}-dimensional channel was summarized from {kraus_count} Kraus operators."
+            ),
+            "The Choi matrix, trace-preserving condition, and unital condition were evaluated."
+                .to_string(),
+            format!(
+                "The TP check returned {trace_preserving} and the unital check returned {unital}."
+            ),
+        ],
+    }
+}
+
 fn atomic_write_json(path: &Path, value: &serde_json::Value) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
@@ -72,6 +182,15 @@ mod tests {
         assert_eq!(trace.slot_maps, vec![vec![0, 1]]);
         assert_eq!(trace.canonical_slot_orders, vec![vec![0, 1]]);
         assert_eq!(trace.output_expr, "T_{ab}");
+    }
+
+    #[test]
+    fn numeric_tolerance_record_serializes_and_deserializes() {
+        let record = record_numeric_tolerances(1e-12, 1e-9, "plugin_sparse");
+        let json = serde_json::to_string(&record).expect("serialize tolerance record");
+        let decoded: NumericToleranceRecord =
+            serde_json::from_str(&json).expect("deserialize tolerance record");
+        assert_eq!(decoded, record);
     }
 
     #[test]
@@ -212,5 +331,31 @@ mod tests {
         assert_eq!(trace.kind, "canonicalize");
         assert_eq!(trace.expected, "T[a-, b-]");
         assert!(trace.passed);
+    }
+
+    #[test]
+    fn narrative_for_partial_trace_contains_removed_subsystem_language() {
+        let trace = narrative_for_partial_trace(&[2, 3, 5], 1);
+
+        assert!(
+            trace
+                .explanation_steps
+                .iter()
+                .any(|step| step.contains("traced out")),
+            "{trace:?}"
+        );
+    }
+
+    #[test]
+    fn narrative_for_negativity_mentions_partial_transpose() {
+        let trace = narrative_for_negativity(2, 2);
+
+        assert!(
+            trace
+                .explanation_steps
+                .iter()
+                .any(|step| step.contains("partial transpose")),
+            "{trace:?}"
+        );
     }
 }

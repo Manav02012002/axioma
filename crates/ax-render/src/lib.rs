@@ -14,7 +14,10 @@ pub use tableau::{
     render_tableau_slot_map_ascii, render_tensor_symmetry_summary, render_young_diagram_ascii,
     render_young_diagram_unicode,
 };
-pub use unicode::render_eigenvalue_list_unicode;
+pub use unicode::{
+    render_bloch_vector_unicode, render_channel_family_hint_unicode,
+    render_eigenvalue_list_unicode, render_spectrum_unicode,
+};
 
 pub fn render_classical_irrep_summary(
     summary: &ax_young::classical_groups::ClassicalIrrepSummary,
@@ -241,6 +244,7 @@ pub fn render_cpt_spec_unicode(expr: &ax_ir::Expr, interner: &ax_ir::Interner) -
 
 const PREC_TOP: u8 = 0;
 const PREC_ADD_SUB: u8 = 50;
+const PREC_LABEL: u8 = 55;
 const PREC_MUL_DIV: u8 = 60;
 const PREC_UNARY: u8 = 70;
 const PREC_POW: u8 = 80;
@@ -405,6 +409,26 @@ fn render_latex_tensor_product(lhs: &Expr, rhs: &Expr, interner: &ax_ir::Interne
     )
 }
 
+/// Render a compact LaTeX summary for a canonical Kraus-channel list.
+pub fn render_channel_summary_latex(expr: &Expr, interner: &ax_ir::Interner) -> Option<String> {
+    let Expr::List(items) = expr else {
+        return None;
+    };
+    if items.is_empty() || !items.iter().all(|item| matches!(item, Expr::Matrix(_))) {
+        return None;
+    }
+    let labels = items
+        .iter()
+        .enumerate()
+        .map(|(index, _)| format!("K_{}", index + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = interner;
+    Some(format!(
+        "\\operatorname{{Channel}}\\!\\left(\\{{{labels}\\}}\\right)"
+    ))
+}
+
 fn render_add(terms: &[Expr], parent_prec: u8, interner: &ax_ir::Interner) -> String {
     let mut out = String::new();
     for (idx, term) in terms.iter().enumerate() {
@@ -535,6 +559,41 @@ fn render_call(f: lasso::Spur, args: &[Expr], interner: &ax_ir::Interner) -> Str
     }
     if let ("bra", [arg]) = (name, args) {
         return render_latex_bra(arg, interner);
+    }
+    if let ("normal_order", [arg]) = (name, args) {
+        return format!(
+            "\\mathopen{{:}}{}\\mathclose{{:}}",
+            render(arg, PREC_TOP, interner)
+        );
+    }
+    if let ("on_subsystem", [lhs, rhs]) = (name, args) {
+        return format!(
+            "{}@{}",
+            render(lhs, PREC_LABEL, interner),
+            render(rhs, PREC_LABEL, interner)
+        );
+    }
+    if let ("compose_operators", [lhs, rhs]) = (name, args) {
+        return format!(
+            "{} \\circ {}",
+            render(lhs, PREC_LABEL, interner),
+            render(rhs, PREC_LABEL, interner)
+        );
+    }
+    if let ("time_order", [arg]) = (name, args) {
+        return format!("T\\!\\left({}\\right)", render(arg, PREC_TOP, interner));
+    }
+    if let ("anti_time_order", [arg]) = (name, args) {
+        return format!(
+            "\\bar{{T}}\\!\\left({}\\right)",
+            render(arg, PREC_TOP, interner)
+        );
+    }
+    if let ("lindbladian_superoperator", [h, _jumps]) = (name, args) {
+        return format!(
+            "\\mathcal{{L}}\\!\\left({},\\ldots\\right)",
+            render(h, PREC_TOP, interner)
+        );
     }
     if let ("braket", [lhs, rhs]) = (name, args) {
         if let (Some([bra_inner]), Some([ket_inner])) = (
@@ -937,10 +996,16 @@ fn render(expr: &Expr, parent_prec: u8, interner: &ax_ir::Interner) -> String {
             render(val, PREC_TOP, interner),
             render(body, PREC_TOP, interner)
         ),
-        Expr::List(items) => format!(
-            "\\left[ {} \\right]",
-            render_joined(items, PREC_TOP, interner, ", ")
-        ),
+        Expr::List(items) => {
+            if let Some(summary) = render_channel_summary_latex(expr, interner) {
+                summary
+            } else {
+                format!(
+                    "\\left[ {} \\right]",
+                    render_joined(items, PREC_TOP, interner, ", ")
+                )
+            }
+        }
         Expr::Matrix(rows) => {
             let body = rows
                 .iter()
@@ -977,6 +1042,17 @@ pub fn render_eigenvalue_list_latex(values: &[Expr], interner: &ax_ir::Interner)
             .map(|value| to_latex(value, interner))
             .collect::<Vec<_>>()
             .join(", ")
+    )
+}
+
+/// Render a Bloch vector in compact LaTeX notation using the same component formatting as
+/// `to_latex`.
+pub fn render_bloch_vector_latex(r: &[ax_ir::Expr; 3], interner: &ax_ir::Interner) -> String {
+    format!(
+        "\\left[{}, {}, {}\\right]",
+        to_latex(&r[0], interner),
+        to_latex(&r[1], interner),
+        to_latex(&r[2], interner)
     )
 }
 
@@ -1226,5 +1302,21 @@ mod tests {
 
         assert_eq!(rendered_once, rendered_twice);
         assert_eq!(rendered_once, "TensorHarmonics(closed, k)");
+    }
+
+    #[test]
+    fn anti_time_order_latex_render_uses_bar_t() {
+        let interner = ax_ir::Interner::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let anti_time_order = interner.get_or_intern("anti_time_order");
+        let expr = Expr::Call(
+            anti_time_order,
+            vec![Expr::mul(vec![Expr::Sym(a), Expr::Sym(b)])],
+        );
+
+        let rendered = to_latex(&expr, &interner);
+
+        assert!(rendered.contains("\\bar{T}"), "got: {rendered}");
     }
 }

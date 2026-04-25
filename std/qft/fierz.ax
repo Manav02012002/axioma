@@ -1,0 +1,21 @@
+// Fierz rearrangements with explicit spinor and gamma metadata.
+indices spin [s0, s1, s2, s3] dim=4 values=[s0, s1, s2, s3]
+declare_spinor_meta(psi1, 4, Majorana, none, spin)
+declare_spinor_meta(psi2, 4, Majorana, none, spin)
+declare_spinor_meta(psi3, 4, Majorana, none, spin)
+declare_spinor_meta(psi4, 4, Majorana, none, spin)
+declare_spinor_meta(xi1, 4, Weyl, left, spin)
+declare_spinor_meta(xi2, 4, Weyl, left, spin)
+declare_spinor_meta(xi3, 4, Weyl, left, spin)
+declare_spinor_meta(xi4, 4, Weyl, left, spin)
+declare_gamma_matrix_meta(gamma, 4, eta, spin, true)
+declare_gamma5_convention(gamma, mostly_plus, plus_two_g, abstract_chiral, eps, 4)
+declare_dirac_bar_meta(bar, gamma, spin, true)
+
+fierz(bar(psi1) * gamma(mu) * psi2 * bar(psi3) * psi4)
+fierz(bar(psi1) * gamma(mu) * gamma(nu) * psi2 * bar(psi3) * gamma(rho) * psi4)
+fierz(bar(xi1) * gamma(mu) * xi2 * bar(xi3) * xi4)
+
+sort_product(bar(psi2) * gamma(mu) * psi1)
+join_gamma(gamma(mu) * gamma(nu))
+split_gamma(gamma(mu, nu))

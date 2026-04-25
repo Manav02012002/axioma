@@ -1,10 +1,27 @@
-// Bosonic normal ordering and Wick expansion.
+// Same-mode bosonic CCR example.
+declare_mode(a, bosonic, 0)
+simplify_ccr_car(annihilation(a) * creation(a))
+
+// Same-mode fermionic CAR example.
+declare_mode(c, fermionic, 0)
+simplify_ccr_car(annihilation(c) * creation(c))
+
+// Distinct-mode fermion swap example.
+declare_mode(c0, fermionic, 0)
+declare_mode(c1, fermionic, 1)
+simplify_ccr_car(annihilation(c1) * annihilation(c0))
+
+// Normal ordering and Wick expansion still work on top of the same metadata.
 declare_contraction(a, a, 1)
 normal_order(annihilation(a) * creation(a))
 wick(annihilation(a) * creation(a))
 
-// Fermionic normal ordering via explicit operator statistics metadata.
-declare_operator(c, annihilation, fermionic)
-normal_order(annihilation(c) * creation(c))
+// Fermionic Wick expansion picks up the nontrivial sign from graded swaps.
+declare_contraction(c0, c0, 1)
+declare_contraction(c1, c1, 1)
+wick(annihilation(c0) * annihilation(c1) * creation(c1) * creation(c0))
+
+// Symbolic Baker-Campbell-Hausdorff truncation.
+bch(A, B, 2)
 
 apply_operator(creation(a), vacuum(a))

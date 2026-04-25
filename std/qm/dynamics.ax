@@ -1,0 +1,33 @@
+// Time evolution, Liouville/Lindblad generators, and steady states.
+let H_qubit = pauli_z()
+let psi0 = [1, 0]
+let rho0 = density_matrix(psi0)
+let U_t = time_evolution_operator(H_qubit, t)
+let psi_t = schrodinger_evolve(H_qubit, psi0, t)
+let x_t = heisenberg_evolve(H_qubit, pauli_x(), t)
+
+let H_toy = [[1, 0], [0, 2]]
+let rho_toy = [[1/2, 0], [0, 1/2]]
+let liouville_toy = liouville_rhs(H_toy, rho_toy)
+let lindblad_closed = lindblad_rhs(H_toy, rho_toy, [])
+let lindbladian_closed = lindbladian_superoperator(H_toy, [])
+
+let H_amp = [[0, 0], [0, 0]]
+let jumps_amp = [[[0, 1], [0, 0]]]
+let lindblad_amp = lindblad_rhs(H_amp, rho_toy, jumps_amp)
+let lindbladian_amp = lindbladian_superoperator(H_amp, jumps_amp)
+let rho_euler = lindblad_euler_step(H_amp, rho_toy, jumps_amp, 1/10)
+let rho_rk4 = lindblad_rk4_step(H_amp, rho_toy, jumps_amp, 1/10)
+let rho_steady = lindblad_steady_state(H_amp, jumps_amp)
+
+U_t
+psi_t
+x_t
+liouville_toy
+lindblad_closed
+lindbladian_closed
+lindblad_amp
+lindbladian_amp
+rho_euler
+rho_rk4
+rho_steady

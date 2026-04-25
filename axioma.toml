@@ -5,6 +5,21 @@ version = "0.1.0"
 spec_dir = "spec"
 build_dir = "build"
 
+[qm]
+log_base = "e"
+tensor_product_basis_order = "left_to_right_lexicographic"
+gamma_signature = "mostly_plus"
+clifford_convention = "plus_two_g"
+pretty_bra_ket_unicode = true
+solver_backend = "auto"
+sparse_threshold_dim = 4
+abs_tolerance = 1e-10
+rel_tolerance = 1e-10
+
 [plugins.axp-echo]
 wasm = "target/wasm32-unknown-unknown/debug/axp_echo.wasm"
 allow = []
+
+[plugins.axp-sparse-demo]
+wasm = "target/wasm32-unknown-unknown/debug/axp_sparse_demo.wasm"
+allow = ["sparse_eigenpairs"]

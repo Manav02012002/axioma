@@ -1,0 +1,21 @@
+// Chiral projectors acting on explicitly chiral Weyl spinors.
+indices spin [s0, s1, s2, s3] dim=4 values=[s0, s1, s2, s3]
+declare_spinor_meta(xi_l, 4, Weyl, left, spin)
+declare_spinor_meta(xi_r, 4, Weyl, right, spin)
+declare_spinor_meta(eta_l, 4, Weyl, left, spin)
+declare_spinor_meta(eta_r, 4, Weyl, right, spin)
+declare_gamma_matrix_meta(gamma, 4, eta, spin, true)
+declare_gamma5_convention(gamma, mostly_plus, plus_two_g, abstract_chiral, eps, 4)
+declare_dirac_bar_meta(bar, gamma, spin, true)
+
+simplify_chiral(projector_left() * projector_left() * xi_l)
+simplify_chiral(projector_right() * xi_l)
+simplify_chiral(projector_left() + projector_right())
+
+simplify_spinor_bilinears(bar(xi_l) * projector_left() * xi_r)
+simplify_spinor_bilinears(bar(xi_l) * xi_l)
+simplify_spinor_bilinears(bar(xi_l) * gamma(mu) * eta_r)
+
+sigma_to_gamma(sigma(mu, nu))
+simplify_chiral(projector_left() * projector_right() * eta_l)
+simplify_chiral(projector_right() * projector_right() * eta_r)

@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    fmt,
     path::{Path, PathBuf},
 };
 
@@ -38,7 +39,55 @@ pub struct AxiomaConfig {
 
     #[serde(default)]
     pub cosmology: CosmologyConfig,
+
+    #[serde(default)]
+    pub qm: Option<QmSection>,
 }
+
+/// Project-level QM configuration parsed from the optional `[qm]` table.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq)]
+pub struct QmSection {
+    /// Preferred logarithm base for entropy-style displays.
+    pub log_base: Option<String>,
+    /// Canonical tensor-product basis ordering used by project conventions.
+    pub tensor_product_basis_order: Option<String>,
+    /// Gamma-matrix metric signature convention.
+    pub gamma_signature: Option<String>,
+    /// Clifford algebra convention for gamma matrices.
+    pub clifford_convention: Option<String>,
+    /// Whether Unicode bra/ket renderers should prefer pretty glyphs.
+    pub pretty_bra_ket_unicode: Option<bool>,
+    /// Preferred backend policy for finite-dimensional QM solver workflows.
+    pub solver_backend: Option<String>,
+    /// Dimension at which `auto` may dispatch numeric QM workflows to sparse plugins.
+    pub sparse_threshold_dim: Option<usize>,
+    /// Absolute tolerance for numeric quantum workflows.
+    pub abs_tolerance: Option<f64>,
+    /// Relative tolerance for numeric quantum workflows.
+    pub rel_tolerance: Option<f64>,
+}
+
+/// Structured project-context validation error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextError {
+    message: String,
+}
+
+impl ContextError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ContextError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ContextError {}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AxiomaSection {
@@ -151,6 +200,69 @@ pub fn load_config(paths: &ProjectPaths) -> Result<AxiomaConfig> {
     load_config_from_path(&paths.config_path)
 }
 
+/// Validate the optional `[qm]` section of `axioma.toml`.
+pub fn validate_qm_section(qm: Option<&QmSection>) -> std::result::Result<(), ContextError> {
+    let Some(qm) = qm else {
+        return Ok(());
+    };
+
+    if let Some(log_base) = qm.log_base.as_deref() {
+        if !matches!(log_base, "e" | "2") {
+            return Err(ContextError::new("qm.log_base must be one of: e, 2"));
+        }
+    }
+
+    if let Some(order) = qm.tensor_product_basis_order.as_deref() {
+        if order != "left_to_right_lexicographic" {
+            return Err(ContextError::new(
+                "qm.tensor_product_basis_order must be one of: left_to_right_lexicographic",
+            ));
+        }
+    }
+
+    if let Some(signature) = qm.gamma_signature.as_deref() {
+        if !matches!(signature, "mostly_plus" | "mostly_minus" | "euclidean") {
+            return Err(ContextError::new(
+                "qm.gamma_signature must be one of: mostly_plus, mostly_minus, euclidean",
+            ));
+        }
+    }
+
+    if let Some(convention) = qm.clifford_convention.as_deref() {
+        if !matches!(convention, "plus_two_g" | "minus_two_g") {
+            return Err(ContextError::new(
+                "qm.clifford_convention must be one of: plus_two_g, minus_two_g",
+            ));
+        }
+    }
+
+    if let Some(backend) = qm.solver_backend.as_deref() {
+        if !matches!(backend, "auto" | "exact_dense" | "plugin_sparse") {
+            return Err(ContextError::new(
+                "qm.solver_backend must be one of: auto, exact_dense, plugin_sparse",
+            ));
+        }
+    }
+
+    if let Some(abs_tolerance) = qm.abs_tolerance {
+        if !abs_tolerance.is_finite() || abs_tolerance < 0.0 {
+            return Err(ContextError::new(
+                "qm.abs_tolerance must be a finite nonnegative number",
+            ));
+        }
+    }
+
+    if let Some(rel_tolerance) = qm.rel_tolerance {
+        if !rel_tolerance.is_finite() || rel_tolerance < 0.0 {
+            return Err(ContextError::new(
+                "qm.rel_tolerance must be a finite nonnegative number",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ImportSearchPathConfig {
     pub env_std_path: Option<OsString>,
@@ -245,6 +357,9 @@ fn load_config_from_path(path: &Path) -> Result<AxiomaConfig> {
         .with_context(|| format!("failed to read {}", path.display()))?;
     let cfg: AxiomaConfig = toml::from_str(&text)
         .with_context(|| format!("failed to parse TOML: {}", path.display()))?;
+    validate_qm_section(cfg.qm.as_ref())
+        .map_err(|err| anyhow::anyhow!(err.to_string()))
+        .with_context(|| format!("failed to validate TOML: {}", path.display()))?;
     Ok(cfg)
 }
 
@@ -331,6 +446,125 @@ default_matter = "canonical_scalar"
     fn missing_cosmology_section_defaults_to_empty_cosmology_config() {
         let cfg: AxiomaConfig = toml::from_str("").unwrap();
         assert_eq!(cfg.cosmology, CosmologyConfig::default());
+    }
+
+    #[test]
+    fn valid_qm_config_parses() {
+        let toml_str = r#"
+[qm]
+log_base = "2"
+tensor_product_basis_order = "left_to_right_lexicographic"
+gamma_signature = "mostly_plus"
+clifford_convention = "plus_two_g"
+pretty_bra_ket_unicode = false
+solver_backend = "auto"
+sparse_threshold_dim = 8
+abs_tolerance = 1e-12
+rel_tolerance = 1e-9
+"#;
+        let cfg: AxiomaConfig = toml::from_str(toml_str).unwrap();
+        let qm = cfg.qm.as_ref().expect("qm section");
+        assert_eq!(qm.log_base.as_deref(), Some("2"));
+        assert_eq!(
+            qm.tensor_product_basis_order.as_deref(),
+            Some("left_to_right_lexicographic")
+        );
+        assert_eq!(qm.gamma_signature.as_deref(), Some("mostly_plus"));
+        assert_eq!(qm.clifford_convention.as_deref(), Some("plus_two_g"));
+        assert_eq!(qm.pretty_bra_ket_unicode, Some(false));
+        assert_eq!(qm.solver_backend.as_deref(), Some("auto"));
+        assert_eq!(qm.sparse_threshold_dim, Some(8));
+        assert_eq!(qm.abs_tolerance, Some(1e-12));
+        assert_eq!(qm.rel_tolerance, Some(1e-9));
+        assert_eq!(validate_qm_section(cfg.qm.as_ref()), Ok(()));
+    }
+
+    #[test]
+    fn invalid_qm_log_base_returns_exact_error() {
+        let qm = QmSection {
+            log_base: Some("10".to_string()),
+            ..QmSection::default()
+        };
+        let err = validate_qm_section(Some(&qm)).unwrap_err();
+        assert_eq!(err.to_string(), "qm.log_base must be one of: e, 2");
+    }
+
+    #[test]
+    fn invalid_qm_tensor_product_basis_order_returns_exact_error() {
+        let qm = QmSection {
+            tensor_product_basis_order: Some("right_to_left".to_string()),
+            ..QmSection::default()
+        };
+        let err = validate_qm_section(Some(&qm)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "qm.tensor_product_basis_order must be one of: left_to_right_lexicographic"
+        );
+    }
+
+    #[test]
+    fn invalid_qm_gamma_signature_returns_exact_error() {
+        let qm = QmSection {
+            gamma_signature: Some("lorentzian".to_string()),
+            ..QmSection::default()
+        };
+        let err = validate_qm_section(Some(&qm)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "qm.gamma_signature must be one of: mostly_plus, mostly_minus, euclidean"
+        );
+    }
+
+    #[test]
+    fn invalid_qm_clifford_convention_returns_exact_error() {
+        let qm = QmSection {
+            clifford_convention: Some("anticommutator".to_string()),
+            ..QmSection::default()
+        };
+        let err = validate_qm_section(Some(&qm)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "qm.clifford_convention must be one of: plus_two_g, minus_two_g"
+        );
+    }
+
+    #[test]
+    fn invalid_qm_solver_backend_returns_exact_error() {
+        let qm = QmSection {
+            solver_backend: Some("dense_sparse_maybe".to_string()),
+            ..QmSection::default()
+        };
+        let err = validate_qm_section(Some(&qm)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "qm.solver_backend must be one of: auto, exact_dense, plugin_sparse"
+        );
+    }
+
+    #[test]
+    fn invalid_qm_abs_tolerance_returns_exact_error() {
+        let qm = QmSection {
+            abs_tolerance: Some(-1.0),
+            ..QmSection::default()
+        };
+        let err = validate_qm_section(Some(&qm)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "qm.abs_tolerance must be a finite nonnegative number"
+        );
+    }
+
+    #[test]
+    fn invalid_qm_rel_tolerance_returns_exact_error() {
+        let qm = QmSection {
+            rel_tolerance: Some(f64::INFINITY),
+            ..QmSection::default()
+        };
+        let err = validate_qm_section(Some(&qm)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "qm.rel_tolerance must be a finite nonnegative number"
+        );
     }
 
     #[test]

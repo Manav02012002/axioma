@@ -129,6 +129,18 @@ impl<'a> Parser<'a> {
                     self.builder.finish_node();
                     continue;
                 }
+                SyntaxKind::At => {
+                    let (l_bp, r_bp) = (2, 3);
+                    if l_bp < min_bp {
+                        break;
+                    }
+                    self.builder
+                        .start_node_at(lhs_checkpoint, SyntaxKind::SubsystemLabelExpr.into());
+                    self.bump();
+                    self.parse_expr_bp(r_bp);
+                    self.builder.finish_node();
+                    continue;
+                }
                 _ => {}
             }
 
@@ -201,7 +213,9 @@ impl<'a> Parser<'a> {
                 self.bump_trivia();
                 self.expect(SyntaxKind::RParen, "expected ')'");
             }
-            SyntaxKind::LBrack => self.parse_list_expr(),
+            SyntaxKind::Colon => self.parse_normal_order_expr(),
+            SyntaxKind::LBrack => self.parse_bracket_expr(),
+            SyntaxKind::LBrace => self.parse_anticommutator_expr(),
             SyntaxKind::Pipe => self.parse_ket_expr(),
             SyntaxKind::Less => self.parse_bra_or_braket_expr(),
             _ => {
@@ -568,24 +582,157 @@ impl<'a> Parser<'a> {
         values
     }
 
-    fn parse_list_expr(&mut self) {
-        self.builder.start_node(SyntaxKind::ListExpr.into());
+    fn parse_bracket_expr(&mut self) {
+        let checkpoint = self.builder.checkpoint();
         self.expect(SyntaxKind::LBrack, "expected '['");
         self.bump_trivia();
-        if self.current() != SyntaxKind::RBrack {
-            loop {
-                self.parse_expr_bp(0);
+
+        if self.current() == SyntaxKind::RBrack {
+            self.bump();
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::ListExpr.into());
+            self.builder.finish_node();
+            return;
+        }
+
+        if self.current() == SyntaxKind::LBrack {
+            self.parse_list_tail(checkpoint);
+            return;
+        }
+
+        self.parse_expr_bp(0);
+        self.bump_trivia();
+
+        if self.current() == SyntaxKind::RBrack {
+            self.bump();
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::ListExpr.into());
+            self.builder.finish_node();
+            return;
+        }
+
+        if self.current() != SyntaxKind::Comma {
+            self.unexpected_here("expected ',' in commutator");
+            self.recover_to_bracket_closer("expected ']' to close commutator", SyntaxKind::RBrack);
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::CommutatorExpr.into());
+            self.builder.finish_node();
+            return;
+        }
+
+        let second_start = self.nth_non_trivia_kind(1);
+        if second_start == Some(SyntaxKind::LBrack) {
+            self.parse_list_tail(checkpoint);
+            return;
+        }
+
+        self.bump();
+        self.bump_trivia();
+        self.parse_expr_bp(0);
+        self.bump_trivia();
+
+        if self.current() == SyntaxKind::RBrack {
+            self.bump();
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::CommutatorExpr.into());
+            self.builder.finish_node();
+            return;
+        }
+
+        if self.current() == SyntaxKind::Comma {
+            self.parse_list_remainder();
+            self.bump_trivia();
+            self.expect(SyntaxKind::RBrack, "expected ']'");
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::ListExpr.into());
+            self.builder.finish_node();
+            return;
+        }
+
+        self.unexpected_here("expected ']' to close commutator");
+        self.recover_to_bracket_closer("expected ']' to close commutator", SyntaxKind::RBrack);
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::CommutatorExpr.into());
+        self.builder.finish_node();
+    }
+
+    fn parse_list_tail(&mut self, checkpoint: rowan::Checkpoint) {
+        self.parse_list_remainder();
+        self.bump_trivia();
+        self.expect(SyntaxKind::RBrack, "expected ']'");
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::ListExpr.into());
+        self.builder.finish_node();
+    }
+
+    fn parse_list_remainder(&mut self) {
+        loop {
+            if self.current() == SyntaxKind::Comma {
+                self.bump();
                 self.bump_trivia();
-                if self.current() == SyntaxKind::Comma {
-                    self.bump();
-                    self.bump_trivia();
-                    continue;
-                }
+            }
+            self.parse_expr_bp(0);
+            self.bump_trivia();
+            if self.current() != SyntaxKind::Comma {
                 break;
             }
         }
+    }
+
+    fn parse_anticommutator_expr(&mut self) {
+        let checkpoint = self.builder.checkpoint();
+        self.expect(SyntaxKind::LBrace, "expected '{'");
         self.bump_trivia();
-        self.expect(SyntaxKind::RBrack, "expected ']'");
+        self.parse_expr_bp(0);
+        self.bump_trivia();
+
+        if self.current() != SyntaxKind::Comma {
+            self.unexpected_here("expected ',' in anticommutator");
+            self.recover_to_bracket_closer(
+                "expected '}' to close anticommutator",
+                SyntaxKind::RBrace,
+            );
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::AntiCommutatorExpr.into());
+            self.builder.finish_node();
+            return;
+        }
+
+        self.bump();
+        self.bump_trivia();
+        self.parse_expr_bp(0);
+        self.bump_trivia();
+
+        if self.current() == SyntaxKind::RBrace {
+            self.bump();
+        } else {
+            self.unexpected_here("expected '}' to close anticommutator");
+            self.recover_to_bracket_closer(
+                "expected '}' to close anticommutator",
+                SyntaxKind::RBrace,
+            );
+        }
+
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::AntiCommutatorExpr.into());
+        self.builder.finish_node();
+    }
+
+    fn parse_normal_order_expr(&mut self) {
+        let checkpoint = self.builder.checkpoint();
+        self.expect(SyntaxKind::Colon, "expected ':'");
+        self.bump_trivia();
+        self.parse_expr_bp(0);
+        self.bump_trivia();
+
+        if self.current() == SyntaxKind::Colon {
+            self.bump();
+        } else {
+            self.unexpected_here("expected ':' to close normal-order expression");
+        }
+
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::NormalOrderExpr.into());
         self.builder.finish_node();
     }
 
@@ -734,6 +881,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn recover_to_bracket_closer(&mut self, msg: &str, closer: SyntaxKind) {
+        while self.current() != SyntaxKind::Eof
+            && self.current() != closer
+            && self.current() != SyntaxKind::Semi
+        {
+            self.bump();
+        }
+
+        if self.current() == closer {
+            self.bump();
+        } else {
+            self.unexpected_here(msg);
+        }
+    }
+
     fn at_expr_start(&self) -> bool {
         matches!(
             self.current(),
@@ -745,7 +907,9 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::KwFalse
                 | SyntaxKind::Minus
                 | SyntaxKind::LParen
+                | SyntaxKind::Colon
                 | SyntaxKind::LBrack
+                | SyntaxKind::LBrace
                 | SyntaxKind::Pipe
                 | SyntaxKind::Less
         )

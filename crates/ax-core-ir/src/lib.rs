@@ -236,6 +236,7 @@ impl<'a> Cursor<'a> {
                 if ch.is_ascii_alphabetic()
                     || ch.is_ascii_digit()
                     || ch == '('
+                    || ch == ':'
                     || ch == '['
                     || ch == '"'
                     || ch == '-'
@@ -259,6 +260,87 @@ impl<'a> Cursor<'a> {
             braket,
             vec![bra_expr, Expr::Call(ket, vec![ket_inner])],
         ))
+    }
+
+    /// Parse a commutator expression of the form `[A, B]`.
+    fn parse_commutator_expr(&mut self) -> Result<Expr, LowerError> {
+        self.skip_ws();
+        if !self.eat_if('[') {
+            return Err(self.error("expected '['"));
+        }
+
+        let lhs = self.parse_expr()?;
+        self.skip_ws();
+        if !self.eat_if(',') {
+            return Err(self.error("expected ',' in commutator"));
+        }
+
+        self.skip_ws();
+        let rhs = self.parse_expr()?;
+        self.skip_ws();
+        if !self.eat_if(']') {
+            return Err(self.error("expected ']' to close commutator"));
+        }
+
+        let commutator = self.interner.get_or_intern("commutator");
+        Ok(Expr::Call(commutator, vec![lhs, rhs]))
+    }
+
+    /// Parse an anticommutator expression of the form `{A, B}`.
+    fn parse_anticommutator_expr(&mut self) -> Result<Expr, LowerError> {
+        self.skip_ws();
+        if !self.eat_if('{') {
+            return Err(self.error("expected '{'"));
+        }
+
+        let lhs = self.parse_expr()?;
+        self.skip_ws();
+        if !self.eat_if(',') {
+            return Err(self.error("expected ',' in anticommutator"));
+        }
+
+        self.skip_ws();
+        let rhs = self.parse_expr()?;
+        self.skip_ws();
+        if !self.eat_if('}') {
+            return Err(self.error("expected '}' to close anticommutator"));
+        }
+
+        let anticommutator = self.interner.get_or_intern("anticommutator");
+        Ok(Expr::Call(anticommutator, vec![lhs, rhs]))
+    }
+
+    /// Parse a normal-order expression of the form `:expr:`.
+    fn parse_normal_order_expr(&mut self) -> Result<Expr, LowerError> {
+        self.skip_ws();
+        if !self.eat_if(':') {
+            return Err(self.error("expected ':'"));
+        }
+
+        let inner = self.parse_expr()?;
+        self.skip_ws();
+        if !self.eat_if(':') {
+            return Err(self.error("expected ':' to close normal-order expression"));
+        }
+
+        let normal_order = self.interner.get_or_intern("normal_order");
+        Ok(Expr::Call(normal_order, vec![inner]))
+    }
+
+    /// Parse a subsystem-label expression of the form `expr@label`.
+    fn parse_subsystem_label_expr(&mut self, lhs: Expr) -> Result<Expr, LowerError> {
+        self.skip_ws();
+        if !self.eat_if('@') {
+            return Err(self.error("expected '@'"));
+        }
+
+        let rhs = self.parse_mul()?;
+        let target = match lhs {
+            Expr::Group(inner, _) => *inner,
+            other => other,
+        };
+        let on_subsystem = self.interner.get_or_intern("on_subsystem");
+        Ok(Expr::Call(on_subsystem, vec![target, rhs]))
     }
 
     fn parse_primary(&mut self) -> Result<Expr, LowerError> {
@@ -618,8 +700,65 @@ impl<'a> Cursor<'a> {
                 }
                 Ok(Expr::group(expr))
             }
+            Some(':') => self.parse_normal_order_expr(),
             Some('[') => {
+                let start = self.pos;
                 self.bump_char();
+                self.skip_ws();
+
+                if self.peek_char() == Some(']') {
+                    self.bump_char();
+                    return Ok(Expr::List(Vec::new()));
+                }
+
+                if self.peek_char() != Some('[') {
+                    let first = self.parse_expr()?;
+                    self.skip_ws();
+
+                    if self.eat_if(']') {
+                        return Ok(Expr::List(vec![first]));
+                    }
+
+                    if self.peek_char() != Some(',') {
+                        self.pos = start;
+                        return self.parse_commutator_expr();
+                    }
+
+                    let comma_pos = self.pos;
+                    self.bump_char();
+                    self.skip_ws();
+
+                    if self.peek_char() != Some('[') {
+                        let second = self.parse_expr()?;
+                        self.skip_ws();
+
+                        if self.eat_if(']') {
+                            let commutator = self.interner.get_or_intern("commutator");
+                            return Ok(Expr::Call(commutator, vec![first, second]));
+                        }
+
+                        if self.peek_char() != Some(',') {
+                            self.pos = start;
+                            return self.parse_commutator_expr();
+                        }
+
+                        let mut items = vec![first, second];
+                        while self.eat_if(',') {
+                            self.skip_ws();
+                            items.push(self.parse_expr()?);
+                            self.skip_ws();
+                        }
+                        if !self.eat_if(']') {
+                            return Err(self.error("expected ',' or ']' in list"));
+                        }
+                        return Ok(Expr::List(items));
+                    }
+
+                    self.pos = comma_pos;
+                }
+
+                self.pos = start + '['.len_utf8();
+                self.skip_ws();
                 let mut items = Vec::new();
                 self.skip_ws();
                 if !self.eat_if(']') {
@@ -638,6 +777,7 @@ impl<'a> Cursor<'a> {
                 }
                 Ok(Expr::List(items))
             }
+            Some('{') => self.parse_anticommutator_expr(),
             _ => Err(self.error("expected expression")),
         }
     }
@@ -800,6 +940,38 @@ impl<'a> Cursor<'a> {
                         continue;
                     }
 
+                    if self.interner.resolve(callee) == "T" {
+                        let arg = if !self.eat_if(')') {
+                            let parsed = self.parse_expr()?;
+                            self.skip_ws();
+                            if !self.eat_if(')') {
+                                return Err(self.error("expected ',' or ')' in argument list"));
+                            }
+                            parsed
+                        } else {
+                            return Err(self.error("expected expression"));
+                        };
+                        let time_order = self.interner.get_or_intern("time_order");
+                        expr = Expr::Call(time_order, vec![arg]);
+                        continue;
+                    }
+
+                    if self.interner.resolve(callee) == "Tbar" {
+                        let arg = if !self.eat_if(')') {
+                            let parsed = self.parse_expr()?;
+                            self.skip_ws();
+                            if !self.eat_if(')') {
+                                return Err(self.error("expected ',' or ')' in argument list"));
+                            }
+                            parsed
+                        } else {
+                            return Err(self.error("expected expression"));
+                        };
+                        let anti_time_order = self.interner.get_or_intern("anti_time_order");
+                        expr = Expr::Call(anti_time_order, vec![arg]);
+                        continue;
+                    }
+
                     let mut args = Vec::new();
                     self.skip_ws();
                     if !self.eat_if(')') {
@@ -932,22 +1104,42 @@ impl<'a> Cursor<'a> {
         }
         matches!(
             self.peek_char(),
-            Some(ch) if ch.is_ascii_digit() || ch.is_ascii_alphabetic() || ch == '(' || ch == '[' || ch == '"'
+            Some(ch)
+                if ch.is_ascii_digit()
+                    || ch.is_ascii_alphabetic()
+                    || ch == '('
+                    || ch == '['
+                    || ch == '"'
         )
     }
 
     fn parse_add(&mut self) -> Result<Expr, LowerError> {
-        let mut expr = self.parse_mul()?;
+        let mut expr = self.parse_subsystem_label_chain()?;
 
         loop {
             self.skip_ws();
             if self.eat_if('+') {
-                let rhs = self.parse_mul()?;
+                let rhs = self.parse_subsystem_label_chain()?;
                 expr = Expr::add(vec![expr, rhs]);
             } else if self.eat_if('-') {
-                let rhs = self.parse_mul()?;
+                let rhs = self.parse_subsystem_label_chain()?;
                 expr = Expr::add(vec![expr, Expr::neg(rhs)]);
             } else {
+                return Ok(expr);
+            }
+        }
+    }
+
+    fn parse_subsystem_label_chain(&mut self) -> Result<Expr, LowerError> {
+        let mut expr = self.parse_mul()?;
+
+        loop {
+            let saved = self.pos;
+            self.skip_ws();
+            if self.peek_char() == Some('@') {
+                expr = self.parse_subsystem_label_expr(expr)?;
+            } else {
+                self.pos = saved;
                 return Ok(expr);
             }
         }
@@ -1300,6 +1492,21 @@ pub fn lower_latex(input: &str, interner: &Interner) -> LowerResult {
     lower(&axioma_str, interner)
 }
 
+/// Parse a native commutator surface expression such as `[A, B]`.
+pub fn parse_commutator_expr(input: &str, interner: &Interner) -> Result<Expr, LowerError> {
+    Cursor::new(input, 0, interner).finish()
+}
+
+/// Parse a native anticommutator surface expression such as `{A, B}`.
+pub fn parse_anticommutator_expr(input: &str, interner: &Interner) -> Result<Expr, LowerError> {
+    Cursor::new(input, 0, interner).finish()
+}
+
+/// Parse a native subsystem-label surface expression such as `A@QA`.
+pub fn parse_subsystem_label_expr(input: &str, interner: &Interner) -> Result<Expr, LowerError> {
+    Cursor::new(input, 0, interner).finish()
+}
+
 pub fn lower(source: &str, interner: &Interner) -> LowerResult {
     let mut exprs = Vec::new();
     let mut errors = Vec::new();
@@ -1579,6 +1786,131 @@ mod tests {
                 vec![
                     Expr::Sym(interner.get_or_intern("A")),
                     Expr::Sym(interner.get_or_intern("B"))
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_commutator_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("[A, B];", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("commutator"),
+                vec![
+                    Expr::Sym(interner.get_or_intern("A")),
+                    Expr::Sym(interner.get_or_intern("B"))
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_anticommutator_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("{A, B};", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("anticommutator"),
+                vec![
+                    Expr::Sym(interner.get_or_intern("A")),
+                    Expr::Sym(interner.get_or_intern("B"))
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_normal_order_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower(":a*b:;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("normal_order"),
+                vec![Expr::mul(vec![
+                    Expr::Sym(interner.get_or_intern("a")),
+                    Expr::Sym(interner.get_or_intern("b"))
+                ])]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_time_order_shorthand() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("T(A*B);", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("time_order"),
+                vec![Expr::mul(vec![
+                    Expr::Sym(interner.get_or_intern("A")),
+                    Expr::Sym(interner.get_or_intern("B"))
+                ])]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_anti_time_order_shorthand() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("Tbar(A*B);", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("anti_time_order"),
+                vec![Expr::mul(vec![
+                    Expr::Sym(interner.get_or_intern("A")),
+                    Expr::Sym(interner.get_or_intern("B"))
+                ])]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_subsystem_label_syntax() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("A@QA;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("on_subsystem"),
+                vec![
+                    Expr::Sym(interner.get_or_intern("A")),
+                    Expr::Sym(interner.get_or_intern("QA"))
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn lower_tensor_product_then_subsystem_label() {
+        let interner = ax_ir::Interner::new();
+        let result = lower("(A ⊗ B)@QAB;", &interner);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        assert_eq!(
+            result.exprs[0],
+            Expr::Call(
+                interner.get_or_intern("on_subsystem"),
+                vec![
+                    Expr::Call(
+                        interner.get_or_intern("tensor_product"),
+                        vec![
+                            Expr::Sym(interner.get_or_intern("A")),
+                            Expr::Sym(interner.get_or_intern("B"))
+                        ]
+                    ),
+                    Expr::Sym(interner.get_or_intern("QAB"))
                 ]
             )
         );

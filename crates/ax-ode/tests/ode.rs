@@ -139,3 +139,64 @@ fn lindblad_step_rejects_zero_dt() {
         Err(QuantumOdeError::ZeroTimeStep)
     );
 }
+
+#[test]
+fn schrodinger_euler_zero_hamiltonian_leaves_state_unchanged() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let psi = vec![Expr::one(), Expr::zero()];
+    let dt = one_tenth();
+
+    assert_eq!(
+        schrodinger_euler_step(&h, &psi, &dt, &interner).unwrap(),
+        psi
+    );
+}
+
+#[test]
+fn schrodinger_rk4_zero_hamiltonian_leaves_state_unchanged() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let psi = vec![Expr::one(), Expr::zero()];
+    let dt = one_tenth();
+
+    assert_eq!(schrodinger_rk4_step(&h, &psi, &dt, &interner).unwrap(), psi);
+}
+
+#[test]
+fn liouville_euler_zero_rhs_leaves_density_unchanged() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let rho = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let dt = one_tenth();
+
+    assert_eq!(liouville_euler_step(&h, &rho, &dt, &interner).unwrap(), rho);
+}
+
+#[test]
+fn liouville_rk4_zero_rhs_leaves_density_unchanged() {
+    let interner = int();
+    let h = vec![
+        vec![Expr::zero(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let rho = vec![
+        vec![Expr::one(), Expr::zero()],
+        vec![Expr::zero(), Expr::zero()],
+    ];
+    let dt = one_tenth();
+
+    assert_eq!(liouville_rk4_step(&h, &rho, &dt, &interner).unwrap(), rho);
+}

@@ -5,6 +5,43 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
 
+/// Errors returned by sparse finite-dimensional matrix helpers.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SparseMatrixError {
+    /// The input dense matrix had rows with inconsistent lengths.
+    #[error("ragged dense input")]
+    RaggedDenseInput,
+    /// An input vector or matrix dimension did not match the expected value.
+    #[error("dimension mismatch: expected={expected}, actual={actual}")]
+    DimensionMismatch { expected: usize, actual: usize },
+}
+
+/// One sparse matrix entry in coordinate form.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SparseEntry<T> {
+    pub row: usize,
+    pub col: usize,
+    pub value: T,
+}
+
+/// A sparse matrix stored in coordinate (COO) form.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SparseMatrixCoo<T> {
+    pub rows: usize,
+    pub cols: usize,
+    pub entries: Vec<SparseEntry<T>>,
+}
+
+/// A sparse matrix stored in compressed-sparse-row (CSR) form.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SparseMatrixCsr<T> {
+    pub rows: usize,
+    pub cols: usize,
+    pub row_ptr: Vec<usize>,
+    pub col_idx: Vec<usize>,
+    pub values: Vec<T>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SymbolicMatrix {
     pub dim: usize,
@@ -418,9 +455,175 @@ pub fn tensor_product(a: &[Vec<Expr>], b: &[Vec<Expr>]) -> Vec<Vec<Expr>> {
     out
 }
 
+/// Convert a dense matrix into sparse COO form by dropping entries equal to `zero`.
+pub fn dense_to_sparse_coo<T: Clone + PartialEq>(
+    dense: &[Vec<T>],
+    zero: &T,
+) -> Result<SparseMatrixCoo<T>, SparseMatrixError> {
+    let cols = dense.first().map_or(0, Vec::len);
+    if dense.iter().any(|row| row.len() != cols) {
+        return Err(SparseMatrixError::RaggedDenseInput);
+    }
+
+    let mut entries = Vec::new();
+    for (row_idx, row) in dense.iter().enumerate() {
+        for (col_idx, value) in row.iter().enumerate() {
+            if value != zero {
+                entries.push(SparseEntry {
+                    row: row_idx,
+                    col: col_idx,
+                    value: value.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(SparseMatrixCoo {
+        rows: dense.len(),
+        cols,
+        entries,
+    })
+}
+
+/// Materialize a sparse COO matrix into a dense row-major matrix.
+pub fn sparse_coo_to_dense<T: Clone + Default>(
+    coo: &SparseMatrixCoo<T>,
+) -> Result<Vec<Vec<T>>, SparseMatrixError> {
+    let mut dense = vec![vec![T::default(); coo.cols]; coo.rows];
+    for entry in &coo.entries {
+        if entry.row >= coo.rows {
+            return Err(SparseMatrixError::DimensionMismatch {
+                expected: coo.rows,
+                actual: entry.row + 1,
+            });
+        }
+        if entry.col >= coo.cols {
+            return Err(SparseMatrixError::DimensionMismatch {
+                expected: coo.cols,
+                actual: entry.col + 1,
+            });
+        }
+        dense[entry.row][entry.col] = entry.value.clone();
+    }
+    Ok(dense)
+}
+
+/// Convert a COO matrix into CSR form, sorting entries in row-major order.
+pub fn coo_to_csr<T: Clone>(
+    coo: &SparseMatrixCoo<T>,
+) -> Result<SparseMatrixCsr<T>, SparseMatrixError> {
+    let mut entries = coo.entries.clone();
+    entries.sort_by_key(|entry| (entry.row, entry.col));
+
+    let mut row_ptr = vec![0usize; coo.rows + 1];
+    let mut col_idx = Vec::with_capacity(entries.len());
+    let mut values = Vec::with_capacity(entries.len());
+
+    for entry in &entries {
+        if entry.row >= coo.rows {
+            return Err(SparseMatrixError::DimensionMismatch {
+                expected: coo.rows,
+                actual: entry.row + 1,
+            });
+        }
+        if entry.col >= coo.cols {
+            return Err(SparseMatrixError::DimensionMismatch {
+                expected: coo.cols,
+                actual: entry.col + 1,
+            });
+        }
+        row_ptr[entry.row + 1] += 1;
+        col_idx.push(entry.col);
+        values.push(entry.value.clone());
+    }
+
+    for idx in 1..row_ptr.len() {
+        row_ptr[idx] += row_ptr[idx - 1];
+    }
+
+    Ok(SparseMatrixCsr {
+        rows: coo.rows,
+        cols: coo.cols,
+        row_ptr,
+        col_idx,
+        values,
+    })
+}
+
+/// Multiply a CSR matrix by a dense vector using caller-supplied scalar arithmetic.
+pub fn csr_matvec<T>(
+    csr: &SparseMatrixCsr<T>,
+    x: &[T],
+    add: impl Fn(T, T) -> T + Copy,
+    mul: impl Fn(T, T) -> T + Copy,
+    zero: impl Fn() -> T + Copy,
+) -> Result<Vec<T>, SparseMatrixError>
+where
+    T: Clone,
+{
+    if x.len() != csr.cols {
+        return Err(SparseMatrixError::DimensionMismatch {
+            expected: csr.cols,
+            actual: x.len(),
+        });
+    }
+    if csr.row_ptr.len() != csr.rows + 1 {
+        return Err(SparseMatrixError::DimensionMismatch {
+            expected: csr.rows + 1,
+            actual: csr.row_ptr.len(),
+        });
+    }
+    if csr.col_idx.len() != csr.values.len() {
+        return Err(SparseMatrixError::DimensionMismatch {
+            expected: csr.values.len(),
+            actual: csr.col_idx.len(),
+        });
+    }
+
+    let nnz = csr.values.len();
+    let row_end = csr.row_ptr.last().copied().unwrap_or(0);
+    if row_end != nnz {
+        return Err(SparseMatrixError::DimensionMismatch {
+            expected: nnz,
+            actual: row_end,
+        });
+    }
+
+    let mut out = Vec::with_capacity(csr.rows);
+    for row in 0..csr.rows {
+        let start = csr.row_ptr[row];
+        let end = csr.row_ptr[row + 1];
+        if start > end || end > nnz {
+            return Err(SparseMatrixError::DimensionMismatch {
+                expected: nnz,
+                actual: end.max(start),
+            });
+        }
+        let mut acc = zero();
+        for idx in start..end {
+            let col = csr.col_idx[idx];
+            if col >= csr.cols {
+                return Err(SparseMatrixError::DimensionMismatch {
+                    expected: csr.cols,
+                    actual: col + 1,
+                });
+            }
+            acc = add(acc, mul(csr.values[idx].clone(), x[col].clone()));
+        }
+        out.push(acc);
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use ax_ir::Expr;
+
+    use crate::{
+        coo_to_csr, csr_matvec, dense_to_sparse_coo, sparse_coo_to_dense, SparseEntry,
+        SparseMatrixError,
+    };
 
     fn solve_src(src: &str) -> (ax_ir::Expr, ax_ir::Interner) {
         let interner = ax_ir::Interner::new();
@@ -478,5 +681,73 @@ mod tests {
     #[test]
     fn permutation_matrix_size_is_degree_squared() {
         assert_eq!(crate::permutation_matrix_size(4), 16);
+    }
+
+    #[test]
+    fn dense_to_sparse_coo_identity_has_two_entries() {
+        let dense = vec![vec![1_i32, 0], vec![0, 1]];
+        let coo = dense_to_sparse_coo(&dense, &0).expect("identity should convert to sparse COO");
+        assert_eq!(coo.rows, 2);
+        assert_eq!(coo.cols, 2);
+        assert_eq!(
+            coo.entries,
+            vec![
+                SparseEntry {
+                    row: 0,
+                    col: 0,
+                    value: 1
+                },
+                SparseEntry {
+                    row: 1,
+                    col: 1,
+                    value: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn coo_to_csr_identity_round_trips() {
+        let dense = vec![vec![1_i32, 0], vec![0, 1]];
+        let coo = dense_to_sparse_coo(&dense, &0).expect("identity should convert to sparse COO");
+        let csr = coo_to_csr(&coo).expect("COO should convert to CSR");
+        assert_eq!(csr.row_ptr, vec![0, 1, 2]);
+        assert_eq!(csr.col_idx, vec![0, 1]);
+        assert_eq!(csr.values, vec![1, 1]);
+        let round_trip = sparse_coo_to_dense(&coo).expect("COO should round-trip to dense");
+        assert_eq!(round_trip, dense);
+    }
+
+    #[test]
+    fn csr_matvec_diagonal_matrix() {
+        let dense = vec![vec![2_i32, 0], vec![0, 3]];
+        let coo = dense_to_sparse_coo(&dense, &0).expect("diagonal should convert to sparse COO");
+        let csr = coo_to_csr(&coo).expect("COO should convert to CSR");
+        let out = csr_matvec(&csr, &[5, 7], |a, b| a + b, |a, b| a * b, || 0)
+            .expect("matvec should work");
+        assert_eq!(out, vec![10, 21]);
+    }
+
+    #[test]
+    fn dense_to_sparse_coo_rejects_ragged_input() {
+        let dense = vec![vec![1_i32, 0], vec![0]];
+        let err = dense_to_sparse_coo(&dense, &0).expect_err("ragged dense input should fail");
+        assert_eq!(err, SparseMatrixError::RaggedDenseInput);
+    }
+
+    #[test]
+    fn csr_matvec_rejects_dimension_mismatch() {
+        let dense = vec![vec![2_i32, 0], vec![0, 3]];
+        let coo = dense_to_sparse_coo(&dense, &0).expect("diagonal should convert to sparse COO");
+        let csr = coo_to_csr(&coo).expect("COO should convert to CSR");
+        let err = csr_matvec(&csr, &[5], |a, b| a + b, |a, b| a * b, || 0)
+            .expect_err("short vector should fail");
+        assert_eq!(
+            err,
+            SparseMatrixError::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
     }
 }

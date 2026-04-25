@@ -11,6 +11,7 @@ mod cmd_fix;
 mod cmd_install;
 mod cmd_oracle;
 mod cmd_parse;
+mod cmd_qm;
 mod cmd_render;
 mod cmd_repl;
 mod cmd_run;
@@ -110,6 +111,30 @@ enum OracleCmd {
 }
 
 #[derive(Debug, Subcommand)]
+enum QmCmd {
+    /// Print a compact density-matrix summary.
+    Summarize { expr: String },
+    /// Compute the von Neumann entropy of a density matrix.
+    Entropy { matrix_expr: String },
+    /// Reduce a composite density matrix by tracing out one factor.
+    PartialTrace {
+        matrix_expr: String,
+        #[arg(long)]
+        dims: String,
+        #[arg(long)]
+        factor: usize,
+    },
+    /// Compute the Bloch vector of a 2x2 density matrix.
+    Bloch { matrix_expr: String },
+    /// Solve for a Lindblad steady state using semicolon-separated jump operators.
+    SteadyState {
+        hamiltonian_expr: String,
+        #[arg(long)]
+        jumps: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 
 enum Command {
     Ai {
@@ -142,6 +167,11 @@ enum Command {
     Oracle {
         #[command(subcommand)]
         cmd: OracleCmd,
+    },
+    /// Quantum-mechanics workflows for states, channels, and open-system dynamics.
+    Qm {
+        #[command(subcommand)]
+        cmd: QmCmd,
     },
     Export {
         file: std::path::PathBuf,
@@ -444,6 +474,27 @@ fn real_main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Qm { cmd } => {
+            let result = match cmd {
+                QmCmd::Summarize { expr } => cmd_qm::summarize(&expr),
+                QmCmd::Entropy { matrix_expr } => cmd_qm::entropy(&matrix_expr),
+                QmCmd::PartialTrace {
+                    matrix_expr,
+                    dims,
+                    factor,
+                } => cmd_qm::partial_trace(&matrix_expr, &dims, factor),
+                QmCmd::Bloch { matrix_expr } => cmd_qm::bloch(&matrix_expr),
+                QmCmd::SteadyState {
+                    hamiltonian_expr,
+                    jumps,
+                } => cmd_qm::steady_state(&hamiltonian_expr, &jumps),
+            };
+            if let Err(error) = result {
+                eprintln!("{} {}", error.heading(), error);
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Command::Export {
             file,
             format,
@@ -721,6 +772,27 @@ mod tests {
                 "--manifest",
                 "tests/corpora/benchmark_manifest.json",
             ],
+            vec!["axioma", "qm", "summarize", "[[1,0],[0,0]]"],
+            vec!["axioma", "qm", "entropy", "[[1/2,0],[0,1/2]]"],
+            vec![
+                "axioma",
+                "qm",
+                "partial-trace",
+                "density([1/sqrt(2),0,0,1/sqrt(2)])",
+                "--dims",
+                "2,2",
+                "--factor",
+                "1",
+            ],
+            vec!["axioma", "qm", "bloch", "[[1,0],[0,0]]"],
+            vec![
+                "axioma",
+                "qm",
+                "steady-state",
+                "[[0,0],[0,0]]",
+                "--jumps",
+                "[[0,1],[0,0]]",
+            ],
             vec![
                 "axioma",
                 "tableau",
@@ -776,6 +848,7 @@ mod tests {
                 | Command::Render { .. }
                 | Command::Tableau { .. }
                 | Command::Oracle { .. }
+                | Command::Qm { .. }
                 | Command::Export { .. }
                 | Command::Codegen { .. }
                 | Command::CptDemo

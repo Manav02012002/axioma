@@ -1,6 +1,6 @@
 use ax_plugin_api::PluginRequest;
 use ax_plugin_host::{summarize_symmetry_for_expr, WasmPlugin};
-use std::path::PathBuf;
+use std::{path::PathBuf, process::Command};
 
 fn repo_root() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -9,11 +9,28 @@ fn repo_root() -> PathBuf {
     p
 }
 
-#[test]
-fn wasm_echo_roundtrip() {
+fn build_echo_wasm() -> PathBuf {
+    let status = Command::new("cargo")
+        .current_dir(repo_root())
+        .args([
+            "build",
+            "-p",
+            "axp-echo",
+            "--target",
+            "wasm32-unknown-unknown",
+        ])
+        .status()
+        .expect("cargo build axp-echo wasm");
+    assert!(status.success(), "cargo build axp-echo failed");
+
     let wasm = repo_root().join("target/wasm32-unknown-unknown/debug/axp_echo.wasm");
     assert!(wasm.exists(), "missing wasm at {}", wasm.display());
+    wasm
+}
 
+#[test]
+fn wasm_echo_roundtrip() {
+    let wasm = build_echo_wasm();
     let plugin = WasmPlugin::from_file(&wasm).expect("load wasm");
 
     let req = PluginRequest {

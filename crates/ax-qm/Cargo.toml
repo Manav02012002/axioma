@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+ax-forms = { path = "../ax-forms" }
 ax-ir = { path = "../ax-ir" }
 ax-linalg = { path = "../ax-linalg" }
 ax-tensor = { path = "../ax-tensor" }
@@ -20,3 +21,16 @@ thiserror = { workspace = true }
 [dev-dependencies]
 ax-core-ir = { path = "../ax-core-ir" }
 ax-eval = { path = "../ax-eval" }
+criterion = "0.5"
+
+[[bench]]
+name = "partial_trace"
+harness = false
+
+[[bench]]
+name = "entropy"
+harness = false
+
+[[bench]]
+name = "lindblad_rhs"
+harness = false

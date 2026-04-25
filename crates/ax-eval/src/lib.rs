@@ -125,7 +125,7 @@ impl CliffordConvention {
 }
 
 /// Typed project-level QM settings carried in evaluator session state.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct QmSettings {
     /// Preferred logarithm base for entropy-style displays.
     pub log_base: Option<QmLogBase>,
@@ -137,6 +137,14 @@ pub struct QmSettings {
     pub clifford_convention: Option<CliffordConvention>,
     /// Whether Unicode bra/ket rendering should prefer pretty glyphs.
     pub pretty_bra_ket_unicode: Option<bool>,
+    /// Preferred backend policy for finite-dimensional QM solver workflows.
+    pub solver_backend: Option<String>,
+    /// Dimension at which `auto` may dispatch numeric QM workflows to sparse plugins.
+    pub sparse_threshold_dim: Option<usize>,
+    /// Absolute tolerance for numeric quantum workflows.
+    pub abs_tolerance: Option<f64>,
+    /// Relative tolerance for numeric quantum workflows.
+    pub rel_tolerance: Option<f64>,
 }
 
 fn find_tensor_symmetry(
@@ -179,6 +187,9 @@ pub struct Env {
     pub weights: HashMap<(lasso::Spur, String), i64>,
     /// Typed project-level QM settings loaded from `axioma.toml`.
     pub qm: QmSettings,
+    /// Numeric tolerance provenance recorded by plugin-backed quantum workflows.
+    pub numeric_tolerance_records:
+        std::sync::Arc<std::sync::Mutex<Vec<ax_trace::NumericToleranceRecord>>>,
 }
 
 impl Env {
@@ -213,6 +224,7 @@ impl Env {
             convention: ax_ir::Convention::default(),
             weights: HashMap::new(),
             qm,
+            numeric_tolerance_records: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -251,6 +263,7 @@ impl Env {
             convention: self.convention.clone(),
             weights: self.weights.clone(),
             qm: self.qm.clone(),
+            numeric_tolerance_records: self.numeric_tolerance_records.clone(),
         }
     }
 
@@ -462,12 +475,234 @@ const QM_LINDBLADIAN_SUPEROPERATOR_ERROR: &str =
     "lindbladian_superoperator expects square operators with matching dimensions";
 const QM_LINDBLADIAN_EIGENVALUES_ERROR: &str =
     "lindbladian_eigenvalues currently supports only low-dimensional cases";
+const QM_SPARSE_STEADY_STATE_NUMERIC_ERROR: &str =
+    "sparse_steady_state requires purely numeric operators";
+const QM_SPARSE_LINDBLADIAN_SPECTRUM_NUMERIC_ERROR: &str =
+    "sparse_lindbladian_spectrum requires purely numeric operators";
+const QM_SPARSE_STEADY_STATE_PLUGIN_NOT_CONFIGURED: &str =
+    "sparse steady-state plugin not configured";
+const QM_SPARSE_LINDBLADIAN_SPECTRUM_PLUGIN_NOT_CONFIGURED: &str =
+    "sparse Lindbladian spectrum plugin not configured";
+const QM_PLUGIN_SPARSE_NOT_CONFIGURED: &str =
+    "requested plugin_sparse quantum backend but no suitable plugin is configured";
 
 fn qm_diag_message(
     kind: ax_diagnostics::QuantumDiagnosticKind,
     detail: impl Into<String>,
 ) -> String {
     crate::diagnostics::qm_diag(kind, detail).to_string()
+}
+
+fn configured_plugin_for_op(
+    op: &str,
+) -> Result<Option<(String, ax_plugin_host::WasmPlugin)>, String> {
+    let paths = match ax_context::load_project_paths(None) {
+        Ok(paths) => paths,
+        Err(_) => return Ok(None),
+    };
+    let config = ax_context::load_config(&paths).map_err(|err| err.to_string())?;
+    let Some((plugin_name, plugin_config)) =
+        config.plugins.iter().find(|(plugin_name, plugin_config)| {
+            plugin_name.as_str() == op
+                || plugin_config
+                    .allow
+                    .iter()
+                    .any(|allowed| allowed == op || allowed == "*")
+        })
+    else {
+        return Ok(None);
+    };
+
+    let configured = PathBuf::from(&plugin_config.wasm);
+    let wasm_path = if configured.is_absolute() {
+        configured
+    } else {
+        paths.root.join(configured)
+    };
+    ax_plugin_host::WasmPlugin::from_file(&wasm_path)
+        .map(|plugin| Some((plugin_name.clone(), plugin)))
+        .map_err(|err| err.to_string())
+}
+
+fn choose_quantum_backend_for_env(
+    env: &Env,
+    dim: usize,
+    numeric: bool,
+) -> ax_solve::QuantumBackendChoice {
+    ax_solve::choose_quantum_backend(
+        dim,
+        numeric,
+        env.qm.solver_backend.as_deref(),
+        env.qm.sparse_threshold_dim,
+    )
+}
+
+fn missing_plugin_sparse_backend_expr(interner: &ax_ir::Interner) -> Expr {
+    Expr::Sym(interner.get_or_intern(QM_PLUGIN_SPARSE_NOT_CONFIGURED))
+}
+
+fn matrix_is_numeric(matrix: &[Vec<Expr>], interner: &ax_ir::Interner) -> bool {
+    let simplified = matrix
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|entry| crate::simplify::simplify(entry, interner))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    ax_qm::dense_numeric_matrix_from_expr(&simplified).is_ok()
+}
+
+fn lindblad_inputs_are_numeric(
+    h: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    interner: &ax_ir::Interner,
+) -> bool {
+    matrix_is_numeric(h, interner)
+        && jump_ops
+            .iter()
+            .all(|jump_op| matrix_is_numeric(jump_op, interner))
+}
+
+fn default_sparse_tolerance() -> f64 {
+    1e-10
+}
+
+fn default_relative_tolerance() -> f64 {
+    1e-10
+}
+
+fn selected_numeric_tolerances(env: &Env) -> (f64, f64) {
+    (
+        env.qm
+            .abs_tolerance
+            .unwrap_or_else(default_sparse_tolerance),
+        env.qm
+            .rel_tolerance
+            .unwrap_or_else(default_relative_tolerance),
+    )
+}
+
+fn record_numeric_tolerance_provenance(
+    env: &Env,
+    backend: &str,
+) -> ax_trace::NumericToleranceRecord {
+    let (abs_tolerance, _) = selected_numeric_tolerances(env);
+    record_numeric_tolerance_provenance_with_abs(env, backend, abs_tolerance)
+}
+
+fn record_numeric_tolerance_provenance_with_abs(
+    env: &Env,
+    backend: &str,
+    abs_tolerance: f64,
+) -> ax_trace::NumericToleranceRecord {
+    let rel_tolerance = env
+        .qm
+        .rel_tolerance
+        .unwrap_or_else(default_relative_tolerance);
+    let record = ax_trace::record_numeric_tolerances(abs_tolerance, rel_tolerance, backend);
+    if let Ok(mut records) = env.numeric_tolerance_records.lock() {
+        records.push(record.clone());
+    }
+    record
+}
+
+fn default_sparse_max_iterations() -> usize {
+    4096
+}
+
+fn complex_pair_to_expr((re, im): (f64, f64)) -> Expr {
+    if im == 0.0 {
+        Expr::Float(re)
+    } else {
+        Expr::Complex(Box::new(Expr::Float(re)), Box::new(Expr::Float(im)))
+    }
+}
+
+pub(crate) fn sparse_steady_state_expr(
+    h: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    tolerance: f64,
+    max_iterations: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, String> {
+    let dim = h.len();
+    let superoperator = ax_qm::lindbladian_superoperator(h, jump_ops, interner)
+        .map_err(|_| QM_LINDBLADIAN_SUPEROPERATOR_ERROR.to_string())?;
+    let superoperator = superoperator
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|entry| crate::simplify::simplify(&entry, interner))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    ax_qm::dense_numeric_matrix_from_expr(&superoperator)
+        .map_err(|_| QM_SPARSE_STEADY_STATE_NUMERIC_ERROR.to_string())?;
+
+    let (plugin_name, plugin) = configured_plugin_for_op("sparse_steady_state")
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| QM_SPARSE_STEADY_STATE_PLUGIN_NOT_CONFIGURED.to_string())?;
+    let response = ax_plugin_host::sparse_steady_state_via_plugin(
+        &plugin,
+        &plugin_name,
+        &superoperator,
+        dim,
+        tolerance,
+        max_iterations,
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(Expr::Matrix(
+        response
+            .density_matrix
+            .into_iter()
+            .map(|row| row.into_iter().map(complex_pair_to_expr).collect())
+            .collect(),
+    ))
+}
+
+pub(crate) fn sparse_lindbladian_spectrum_expr(
+    h: &[Vec<Expr>],
+    jump_ops: &[Vec<Vec<Expr>>],
+    k: usize,
+    which: &str,
+    tolerance: f64,
+    max_iterations: usize,
+    interner: &ax_ir::Interner,
+) -> Result<Expr, String> {
+    let superoperator = ax_qm::lindbladian_superoperator(h, jump_ops, interner)
+        .map_err(|_| QM_LINDBLADIAN_SUPEROPERATOR_ERROR.to_string())?;
+    let superoperator = superoperator
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|entry| crate::simplify::simplify(&entry, interner))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    ax_qm::dense_numeric_matrix_from_expr(&superoperator)
+        .map_err(|_| QM_SPARSE_LINDBLADIAN_SPECTRUM_NUMERIC_ERROR.to_string())?;
+
+    let (plugin_name, plugin) = configured_plugin_for_op("sparse_lindbladian_spectrum")
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| QM_SPARSE_LINDBLADIAN_SPECTRUM_PLUGIN_NOT_CONFIGURED.to_string())?;
+    let response = ax_plugin_host::sparse_lindbladian_spectrum_via_plugin(
+        &plugin,
+        &plugin_name,
+        &superoperator,
+        k,
+        which,
+        tolerance,
+        max_iterations,
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(Expr::List(
+        response
+            .eigenvalues
+            .into_iter()
+            .map(complex_pair_to_expr)
+            .collect(),
+    ))
 }
 
 fn qm_diag_expr(
@@ -8574,13 +8809,62 @@ fn builtin_call(
         "time_evolution_operator" => {
             if args.len() == 2 {
                 match &args[0] {
-                    Expr::Matrix(matrix) => {
-                        ax_qm::time_evolution_operator(matrix, args[1].clone(), interner)
-                            .map(Expr::Matrix)
-                            .unwrap_or_else(|_| {
+                    Expr::Matrix(matrix) => match choose_quantum_backend_for_env(
+                        env,
+                        matrix.len(),
+                        matrix_is_numeric(matrix, interner),
+                    ) {
+                        ax_solve::QuantumBackendChoice::ExactDense => {
+                            ax_qm::time_evolution_operator(matrix, args[1].clone(), interner)
+                                .map(Expr::Matrix)
+                                .unwrap_or_else(|_| {
+                                    Expr::Sym(interner.get_or_intern(QM_TIME_EVOLUTION_ERROR))
+                                })
+                        }
+                        ax_solve::QuantumBackendChoice::PluginSparse => {
+                            let Some((plugin_name, plugin)) =
+                                configured_plugin_for_op("matrix_exponential")
+                                    .ok()
+                                    .flatten()
+                            else {
+                                return missing_plugin_sparse_backend_expr(interner);
+                            };
+                            let Some(time) = to_f64(&args[1]) else {
+                                return Expr::Sym(interner.get_or_intern(QM_TIME_EVOLUTION_ERROR));
+                            };
+                            let Ok(numeric_matrix) = ax_qm::dense_numeric_matrix_from_expr(matrix)
+                            else {
+                                return Expr::Sym(interner.get_or_intern(QM_TIME_EVOLUTION_ERROR));
+                            };
+                            record_numeric_tolerance_provenance(env, "plugin_sparse");
+                            let request = ax_plugin_api::MatrixExponentialRequest {
+                                matrix: numeric_matrix,
+                                vector: None,
+                                time,
+                                method: "auto".to_string(),
+                            };
+                            ax_plugin_host::matrix_exponential_via_plugin(
+                                &plugin,
+                                &plugin_name,
+                                &request,
+                            )
+                            .ok()
+                            .and_then(|response| response.matrix_exponential)
+                            .map(|matrix| {
+                                Expr::Matrix(
+                                    matrix
+                                        .into_iter()
+                                        .map(|row| {
+                                            row.into_iter().map(complex_pair_to_expr).collect()
+                                        })
+                                        .collect(),
+                                )
+                            })
+                            .unwrap_or_else(|| {
                                 Expr::Sym(interner.get_or_intern(QM_TIME_EVOLUTION_ERROR))
                             })
-                    }
+                        }
+                    },
                     _ => Expr::Sym(interner.get_or_intern(QM_TIME_EVOLUTION_ERROR)),
                 }
             } else {
@@ -11698,11 +11982,37 @@ fn builtin_call(
         "lindblad_steady_state" => {
             if args.len() == 2 {
                 match (expr_to_matrix(&args[0]), expr_to_3d(&args[1])) {
-                    (Some(h), Some(jump_ops)) => {
-                        ax_solve::lindblad_steady_state_linear(&h, &jump_ops, interner)
-                            .map(Expr::Matrix)
-                            .unwrap_or_else(|_| Expr::Call(f, args))
-                    }
+                    (Some(h), Some(jump_ops)) => match choose_quantum_backend_for_env(
+                        env,
+                        h.len(),
+                        lindblad_inputs_are_numeric(&h, &jump_ops, interner),
+                    ) {
+                        ax_solve::QuantumBackendChoice::ExactDense => {
+                            ax_solve::lindblad_steady_state_linear(&h, &jump_ops, interner)
+                                .map(Expr::Matrix)
+                                .unwrap_or_else(|_| Expr::Call(f, args))
+                        }
+                        ax_solve::QuantumBackendChoice::PluginSparse => {
+                            if configured_plugin_for_op("sparse_steady_state")
+                                .ok()
+                                .flatten()
+                                .is_none()
+                            {
+                                missing_plugin_sparse_backend_expr(interner)
+                            } else {
+                                let tolerance_record =
+                                    record_numeric_tolerance_provenance(env, "plugin_sparse");
+                                sparse_steady_state_expr(
+                                    &h,
+                                    &jump_ops,
+                                    tolerance_record.abs_tolerance,
+                                    default_sparse_max_iterations(),
+                                    interner,
+                                )
+                                .unwrap_or_else(|err| Expr::Sym(interner.get_or_intern(&err)))
+                            }
+                        }
+                    },
                     _ => Expr::Call(f, args),
                 }
             } else {
@@ -11730,14 +12040,110 @@ fn builtin_call(
         "lindbladian_eigenvalues" => {
             if args.len() == 2 {
                 match (expr_to_matrix(&args[0]), expr_to_3d(&args[1])) {
-                    (Some(h), Some(jump_ops)) => {
-                        ax_qm::lindbladian_eigenvalues_small(&h, &jump_ops, interner)
-                            .map(Expr::List)
-                            .unwrap_or_else(|_| {
-                                Expr::Sym(interner.get_or_intern(QM_LINDBLADIAN_EIGENVALUES_ERROR))
-                            })
-                    }
+                    (Some(h), Some(jump_ops)) => match choose_quantum_backend_for_env(
+                        env,
+                        h.len(),
+                        lindblad_inputs_are_numeric(&h, &jump_ops, interner),
+                    ) {
+                        ax_solve::QuantumBackendChoice::ExactDense => {
+                            ax_qm::lindbladian_eigenvalues_small(&h, &jump_ops, interner)
+                                .map(Expr::List)
+                                .unwrap_or_else(|_| {
+                                    Expr::Sym(
+                                        interner.get_or_intern(QM_LINDBLADIAN_EIGENVALUES_ERROR),
+                                    )
+                                })
+                        }
+                        ax_solve::QuantumBackendChoice::PluginSparse => {
+                            if configured_plugin_for_op("sparse_lindbladian_spectrum")
+                                .ok()
+                                .flatten()
+                                .is_none()
+                            {
+                                missing_plugin_sparse_backend_expr(interner)
+                            } else {
+                                let tolerance_record =
+                                    record_numeric_tolerance_provenance(env, "plugin_sparse");
+                                let k = h.len() * h.len();
+                                sparse_lindbladian_spectrum_expr(
+                                    &h,
+                                    &jump_ops,
+                                    k,
+                                    "LM",
+                                    tolerance_record.abs_tolerance,
+                                    default_sparse_max_iterations(),
+                                    interner,
+                                )
+                                .unwrap_or_else(|err| Expr::Sym(interner.get_or_intern(&err)))
+                            }
+                        }
+                    },
                     _ => Expr::Sym(interner.get_or_intern(QM_LINDBLADIAN_EIGENVALUES_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "sparse_steady_state" => {
+            if args.len() == 4 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_3d(&args[1]),
+                    to_f64(&args[2]),
+                    usize_from_expr(&args[3]),
+                ) {
+                    (Some(h), Some(jump_ops), Some(tolerance), Some(max_iterations)) => {
+                        record_numeric_tolerance_provenance_with_abs(
+                            env,
+                            "plugin_sparse",
+                            tolerance,
+                        );
+                        sparse_steady_state_expr(&h, &jump_ops, tolerance, max_iterations, interner)
+                            .unwrap_or_else(|err| Expr::Sym(interner.get_or_intern(&err)))
+                    }
+                    _ => Expr::Sym(interner.get_or_intern(QM_SPARSE_STEADY_STATE_NUMERIC_ERROR)),
+                }
+            } else {
+                Expr::Call(f, args)
+            }
+        }
+        "sparse_lindbladian_spectrum" => {
+            if args.len() == 6 {
+                match (
+                    expr_to_matrix(&args[0]),
+                    expr_to_3d(&args[1]),
+                    usize_from_expr(&args[2]),
+                    symbol_from_expr(&args[3]),
+                    to_f64(&args[4]),
+                    usize_from_expr(&args[5]),
+                ) {
+                    (
+                        Some(h),
+                        Some(jump_ops),
+                        Some(k),
+                        Some(which),
+                        Some(tolerance),
+                        Some(max_iterations),
+                    ) => {
+                        record_numeric_tolerance_provenance_with_abs(
+                            env,
+                            "plugin_sparse",
+                            tolerance,
+                        );
+                        sparse_lindbladian_spectrum_expr(
+                            &h,
+                            &jump_ops,
+                            k,
+                            interner.resolve(which),
+                            tolerance,
+                            max_iterations,
+                            interner,
+                        )
+                        .unwrap_or_else(|err| Expr::Sym(interner.get_or_intern(&err)))
+                    }
+                    _ => Expr::Sym(
+                        interner.get_or_intern(QM_SPARSE_LINDBLADIAN_SPECTRUM_NUMERIC_ERROR),
+                    ),
                 }
             } else {
                 Expr::Call(f, args)
@@ -16181,6 +16587,139 @@ mod tests {
     }
 
     #[test]
+    fn qm_backend_choice_uses_project_settings_and_auto_threshold() {
+        let mut env = Env::with_qm_settings(QmSettings {
+            solver_backend: Some("auto".to_string()),
+            sparse_threshold_dim: Some(8),
+            ..QmSettings::default()
+        });
+        assert_eq!(
+            choose_quantum_backend_for_env(&env, 7, true),
+            ax_solve::QuantumBackendChoice::ExactDense
+        );
+        assert_eq!(
+            choose_quantum_backend_for_env(&env, 8, true),
+            ax_solve::QuantumBackendChoice::PluginSparse
+        );
+        assert_eq!(
+            choose_quantum_backend_for_env(&env, 8, false),
+            ax_solve::QuantumBackendChoice::ExactDense
+        );
+
+        env.qm.solver_backend = Some("exact_dense".to_string());
+        assert_eq!(
+            choose_quantum_backend_for_env(&env, 100, true),
+            ax_solve::QuantumBackendChoice::ExactDense
+        );
+
+        env.qm.solver_backend = Some("plugin_sparse".to_string());
+        assert_eq!(
+            choose_quantum_backend_for_env(&env, 1, false),
+            ax_solve::QuantumBackendChoice::PluginSparse
+        );
+    }
+
+    #[test]
+    fn qm_numeric_tolerance_provenance_records_project_settings() {
+        let env = Env::with_qm_settings(QmSettings {
+            abs_tolerance: Some(1e-8),
+            rel_tolerance: Some(1e-6),
+            ..QmSettings::default()
+        });
+        let record = record_numeric_tolerance_provenance(&env, "plugin_sparse");
+        assert_eq!(record.abs_tolerance, 1e-8);
+        assert_eq!(record.rel_tolerance, 1e-6);
+        assert_eq!(record.backend, "plugin_sparse");
+
+        let records = env
+            .numeric_tolerance_records
+            .lock()
+            .expect("numeric tolerance provenance lock");
+        assert_eq!(records.as_slice(), &[record]);
+    }
+
+    #[test]
+    fn qm_lindblad_steady_state_plugin_sparse_without_plugin_returns_exact_error() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::with_qm_settings(QmSettings {
+            solver_backend: Some("plugin_sparse".to_string()),
+            ..QmSettings::default()
+        });
+        let result = eval(
+            &Expr::Call(
+                interner.get_or_intern("lindblad_steady_state"),
+                vec![
+                    Expr::Matrix(vec![
+                        vec![Expr::zero(), Expr::zero()],
+                        vec![Expr::zero(), Expr::zero()],
+                    ]),
+                    Expr::List(vec![]),
+                ],
+            ),
+            &env,
+            &interner,
+        );
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_PLUGIN_SPARSE_NOT_CONFIGURED))
+        );
+    }
+
+    #[test]
+    fn qm_lindbladian_eigenvalues_plugin_sparse_without_plugin_returns_exact_error() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::with_qm_settings(QmSettings {
+            solver_backend: Some("plugin_sparse".to_string()),
+            ..QmSettings::default()
+        });
+        let result = eval(
+            &Expr::Call(
+                interner.get_or_intern("lindbladian_eigenvalues"),
+                vec![
+                    Expr::Matrix(vec![
+                        vec![Expr::zero(), Expr::zero()],
+                        vec![Expr::zero(), Expr::zero()],
+                    ]),
+                    Expr::List(vec![]),
+                ],
+            ),
+            &env,
+            &interner,
+        );
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_PLUGIN_SPARSE_NOT_CONFIGURED))
+        );
+    }
+
+    #[test]
+    fn qm_time_evolution_plugin_sparse_without_plugin_returns_exact_error() {
+        let interner = ax_ir::Interner::new();
+        let env = Env::with_qm_settings(QmSettings {
+            solver_backend: Some("plugin_sparse".to_string()),
+            ..QmSettings::default()
+        });
+        let result = eval(
+            &Expr::Call(
+                interner.get_or_intern("time_evolution_operator"),
+                vec![
+                    Expr::Matrix(vec![
+                        vec![Expr::zero(), Expr::zero()],
+                        vec![Expr::zero(), Expr::zero()],
+                    ]),
+                    Expr::Float(1.0),
+                ],
+            ),
+            &env,
+            &interner,
+        );
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_PLUGIN_SPARSE_NOT_CONFIGURED))
+        );
+    }
+
+    #[test]
     fn qm_lindbladian_superoperator_zero_generator_returns_zero_4x4_matrix() {
         let (result, _) = eval_src("lindbladian_superoperator([[0,0],[0,0]], []);");
         assert_eq!(
@@ -16210,6 +16749,114 @@ mod tests {
         assert_eq!(
             result,
             Expr::Sym(interner.get_or_intern(QM_LINDBLADIAN_EIGENVALUES_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_sparse_steady_state_rejects_nonnumeric_operators() {
+        let interner = ax_ir::Interner::new();
+        let g = Expr::Sym(interner.get_or_intern("g"));
+        let result = eval(
+            &Expr::Call(
+                interner.get_or_intern("sparse_steady_state"),
+                vec![
+                    Expr::Matrix(vec![
+                        vec![g, Expr::zero()],
+                        vec![Expr::zero(), Expr::zero()],
+                    ]),
+                    Expr::List(vec![]),
+                    Expr::Float(0.00000001),
+                    Expr::Int(100.into()),
+                ],
+            ),
+            &Env::new(),
+            &interner,
+        );
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_SPARSE_STEADY_STATE_NUMERIC_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_sparse_lindbladian_spectrum_rejects_nonnumeric_operators() {
+        let interner = ax_ir::Interner::new();
+        let g = Expr::Sym(interner.get_or_intern("g"));
+        let result = eval(
+            &Expr::Call(
+                interner.get_or_intern("sparse_lindbladian_spectrum"),
+                vec![
+                    Expr::Matrix(vec![
+                        vec![g, Expr::zero()],
+                        vec![Expr::zero(), Expr::zero()],
+                    ]),
+                    Expr::List(vec![]),
+                    Expr::Int(2.into()),
+                    Expr::Sym(interner.get_or_intern("LR")),
+                    Expr::Float(0.00000001),
+                    Expr::Int(100.into()),
+                ],
+            ),
+            &Env::new(),
+            &interner,
+        );
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_SPARSE_LINDBLADIAN_SPECTRUM_NUMERIC_ERROR))
+        );
+    }
+
+    #[test]
+    fn qm_sparse_steady_state_reports_missing_plugin_configuration() {
+        let interner = ax_ir::Interner::new();
+        let result = eval(
+            &Expr::Call(
+                interner.get_or_intern("sparse_steady_state"),
+                vec![
+                    Expr::Matrix(vec![
+                        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+                        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+                        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+                        vec![Expr::zero(), Expr::zero(), Expr::zero(), Expr::zero()],
+                    ]),
+                    Expr::List(vec![]),
+                    Expr::Float(0.00000001),
+                    Expr::Int(100.into()),
+                ],
+            ),
+            &Env::new(),
+            &interner,
+        );
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_SPARSE_STEADY_STATE_PLUGIN_NOT_CONFIGURED))
+        );
+    }
+
+    #[test]
+    fn qm_sparse_lindbladian_spectrum_reports_missing_plugin_configuration() {
+        let interner = ax_ir::Interner::new();
+        let result = eval(
+            &Expr::Call(
+                interner.get_or_intern("sparse_lindbladian_spectrum"),
+                vec![
+                    Expr::Matrix(vec![
+                        vec![Expr::zero(), Expr::zero()],
+                        vec![Expr::zero(), Expr::zero()],
+                    ]),
+                    Expr::List(vec![]),
+                    Expr::Int(2.into()),
+                    Expr::Sym(interner.get_or_intern("LR")),
+                    Expr::Float(0.00000001),
+                    Expr::Int(100.into()),
+                ],
+            ),
+            &Env::new(),
+            &interner,
+        );
+        assert_eq!(
+            result,
+            Expr::Sym(interner.get_or_intern(QM_SPARSE_LINDBLADIAN_SPECTRUM_PLUGIN_NOT_CONFIGURED))
         );
     }
 
