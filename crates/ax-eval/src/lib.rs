@@ -9905,18 +9905,8 @@ fn builtin_call(
             }
         }
         "gamma_trace" => {
-            let parse_indices = |expr: &Expr| -> Option<Vec<lasso::Spur>> {
-                let Expr::List(items) = expr else {
-                    return None;
-                };
-                items
-                    .iter()
-                    .map(|item| match item {
-                        Expr::Sym(sym) => Some(*sym),
-                        _ => None,
-                    })
-                    .collect()
-            };
+            let parse_indices =
+                |expr: &Expr| -> Option<Vec<lasso::Spur>> { symbol_list_items(expr, interner) };
             match args.as_slice() {
                 [indices_expr] => {
                     if let Some(indices) = parse_indices(indices_expr) {
@@ -9937,18 +9927,8 @@ fn builtin_call(
             }
         }
         "gamma5_trace" => {
-            let parse_indices = |expr: &Expr| -> Option<Vec<lasso::Spur>> {
-                let Expr::List(items) = expr else {
-                    return None;
-                };
-                items
-                    .iter()
-                    .map(|item| match item {
-                        Expr::Sym(sym) => Some(*sym),
-                        _ => None,
-                    })
-                    .collect()
-            };
+            let parse_indices =
+                |expr: &Expr| -> Option<Vec<lasso::Spur>> { symbol_list_items(expr, interner) };
             match args.as_slice() {
                 [indices_expr] => {
                     if let Some(indices) = parse_indices(indices_expr) {
@@ -12964,7 +12944,7 @@ fn forms_list_items(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<Expr>
     }
 }
 
-fn forms_symbol_list(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<lasso::Spur>> {
+fn symbol_list_items(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<lasso::Spur>> {
     forms_list_items(expr, interner)?
         .iter()
         .map(|expr| match expr {
@@ -12972,6 +12952,10 @@ fn forms_symbol_list(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<lass
             _ => None,
         })
         .collect()
+}
+
+fn forms_symbol_list(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<lasso::Spur>> {
+    symbol_list_items(expr, interner)
 }
 
 fn forms_form_from_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<ax_forms::DiffForm> {
