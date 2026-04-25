@@ -10091,8 +10091,8 @@ fn builtin_call(
         "wedge_1_1" => {
             if args.len() == 2 {
                 match (
-                    ax_forms::one_form_from_expr(&args[0]),
-                    ax_forms::one_form_from_expr(&args[1]),
+                    forms_one_form_from_expr(&args[0], interner),
+                    forms_one_form_from_expr(&args[1], interner),
                 ) {
                     (Some(a), Some(b)) => {
                         ax_forms::form_to_expr(&ax_forms::wedge(&a, &b, interner))
@@ -10106,8 +10106,8 @@ fn builtin_call(
         "wedge" => {
             if args.len() == 2 {
                 match (
-                    ax_forms::form_from_expr(&args[0]),
-                    ax_forms::form_from_expr(&args[1]),
+                    forms_form_from_expr(&args[0], interner),
+                    forms_form_from_expr(&args[1], interner),
                 ) {
                     (Some(a), Some(b)) => {
                         let dim = a.dim.max(b.dim);
@@ -10123,22 +10123,10 @@ fn builtin_call(
         }
         "exterior_d" | "d" => {
             let coords = if args.len() == 2 {
-                match &args[1] {
-                    Expr::List(coords_exprs) => {
-                        let coords = coords_exprs
-                            .iter()
-                            .map(|expr| match expr {
-                                Expr::Sym(sym) => Some(*sym),
-                                _ => None,
-                            })
-                            .collect::<Option<Vec<_>>>();
-                        if let Some(coords) = coords {
-                            Some(coords)
-                        } else {
-                            return Expr::Call(f, args);
-                        }
-                    }
-                    _ => return Expr::Call(f, args),
+                if let Some(coords) = forms_symbol_list(&args[1], interner) {
+                    Some(coords)
+                } else {
+                    return Expr::Call(f, args);
                 }
             } else if args.len() == 1 {
                 let mut coords = env.coordinates.iter().copied().collect::<Vec<_>>();
@@ -10149,7 +10137,7 @@ fn builtin_call(
             };
             if let Some(coords) = coords {
                 let field = &args[0];
-                let form = ax_forms::form_from_expr(field)
+                let form = forms_form_from_expr(field, interner)
                     .map(|form| ax_forms::resize_form(&form, coords.len()))
                     .unwrap_or_else(|| ax_forms::scalar_form(field, coords.len()));
                 ax_forms::form_to_expr(&ax_forms::exterior_derivative(&form, &coords, interner))
@@ -10162,7 +10150,7 @@ fn builtin_call(
                 match (&args[0], matrix_to_symbolic(&args[1])) {
                     (field, Some(metric)) => {
                         let metric = symbolic_to_forms_matrix(&metric);
-                        let form = ax_forms::form_from_expr(field)
+                        let form = forms_form_from_expr(field, interner)
                             .map(|form| ax_forms::resize_form(&form, metric.dim))
                             .unwrap_or_else(|| ax_forms::scalar_form(field, metric.dim));
                         ax_forms::form_to_expr(&ax_forms::hodge_dual(&form, &metric, interner))
@@ -10176,17 +10164,10 @@ fn builtin_call(
         "codifferential" => {
             if args.len() == 3 {
                 match (&args[0], matrix_to_symbolic(&args[1]), &args[2]) {
-                    (field, Some(metric), Expr::List(coords_exprs)) => {
+                    (field, Some(metric), coords_expr) => {
                         let metric = symbolic_to_forms_matrix(&metric);
-                        let coords = coords_exprs
-                            .iter()
-                            .map(|expr| match expr {
-                                Expr::Sym(sym) => Some(*sym),
-                                _ => None,
-                            })
-                            .collect::<Option<Vec<_>>>();
-                        if let Some(coords) = coords {
-                            let form = ax_forms::form_from_expr(field)
+                        if let Some(coords) = forms_symbol_list(coords_expr, interner) {
+                            let form = forms_form_from_expr(field, interner)
                                 .map(|form| ax_forms::resize_form(&form, metric.dim))
                                 .unwrap_or_else(|| ax_forms::scalar_form(field, metric.dim));
                             ax_forms::form_to_expr(&ax_forms::codifferential(
@@ -10204,13 +10185,13 @@ fn builtin_call(
         }
         "interior_product" => {
             if args.len() == 2 {
-                match (&args[0], &args[1]) {
-                    (Expr::List(vector), field) => {
-                        let form = ax_forms::form_from_expr(field)
+                match (forms_list_items(&args[0], interner), &args[1]) {
+                    (Some(vector), field) => {
+                        let form = forms_form_from_expr(field, interner)
                             .map(|form| ax_forms::resize_form(&form, vector.len()));
                         if let Some(form) = form {
                             ax_forms::form_to_expr(&ax_forms::interior_product(
-                                vector, &form, interner,
+                                &vector, &form, interner,
                             ))
                         } else {
                             Expr::Call(f, args)
@@ -10224,20 +10205,17 @@ fn builtin_call(
         }
         "lie_derivative_form" => {
             if args.len() == 3 {
-                match (&args[0], &args[1], &args[2]) {
-                    (field, Expr::List(vector), Expr::List(coords_exprs)) => {
-                        let coords = coords_exprs
-                            .iter()
-                            .map(|expr| match expr {
-                                Expr::Sym(sym) => Some(*sym),
-                                _ => None,
-                            })
-                            .collect::<Option<Vec<_>>>();
-                        let form = ax_forms::form_from_expr(field)
+                match (
+                    &args[0],
+                    forms_list_items(&args[1], interner),
+                    forms_symbol_list(&args[2], interner),
+                ) {
+                    (field, Some(vector), Some(coords)) => {
+                        let form = forms_form_from_expr(field, interner)
                             .map(|form| ax_forms::resize_form(&form, vector.len()));
-                        if let (Some(coords), Some(form)) = (coords, form) {
+                        if let Some(form) = form {
                             ax_forms::form_to_expr(&ax_forms::lie_derivative_form(
-                                vector, &form, &coords, interner,
+                                &vector, &form, &coords, interner,
                             ))
                         } else {
                             Expr::Call(f, args)
@@ -12651,28 +12629,19 @@ pub fn eval(expr: &Expr, env: &Env, interner: &ax_ir::Interner) -> Expr {
         }
         Expr::List(items) => {
             let evaled: Vec<Expr> = items.iter().map(|item| eval(item, env, interner)).collect();
-            if let Some(ncols) = evaled.first().and_then(|e| {
-                if let Expr::List(inner) = e {
-                    Some(inner.len())
-                } else {
-                    None
-                }
-            }) {
-                if evaled
+            if let Some(first_row) = evaled
+                .first()
+                .and_then(|item| matrix_row_from_list_item(item, interner))
+            {
+                let ncols = first_row.len();
+                let rows = evaled
                     .iter()
-                    .all(|e| matches!(e, Expr::List(inner) if inner.len() == ncols))
-                {
-                    let rows = evaled
-                        .into_iter()
-                        .map(|e| {
-                            if let Expr::List(inner) = e {
-                                inner
-                            } else {
-                                unreachable!()
-                            }
-                        })
-                        .collect();
-                    return Expr::Matrix(rows);
+                    .map(|item| matrix_row_from_list_item(item, interner))
+                    .collect::<Option<Vec<_>>>();
+                if let Some(rows) = rows {
+                    if rows.iter().all(|row| row.len() == ncols) {
+                        return Expr::Matrix(rows);
+                    }
                 }
             }
             Expr::List(evaled)
@@ -12971,6 +12940,51 @@ fn matrix_to_symbolic(expr: &Expr) -> Option<ax_tensor::SymbolicMatrix> {
     Some(ax_tensor::SymbolicMatrix {
         dim,
         data: rows.clone(),
+    })
+}
+
+fn commutator_pair_items(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<Expr>> {
+    let Expr::Call(head, args) = expr else {
+        return None;
+    };
+    (interner.resolve(*head) == "commutator" && args.len() == 2).then(|| args.clone())
+}
+
+fn matrix_row_from_list_item(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<Expr>> {
+    match expr {
+        Expr::List(items) => Some(items.clone()),
+        _ => commutator_pair_items(expr, interner),
+    }
+}
+
+fn forms_list_items(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<Expr>> {
+    match expr {
+        Expr::List(items) => Some(items.clone()),
+        _ => commutator_pair_items(expr, interner),
+    }
+}
+
+fn forms_symbol_list(expr: &Expr, interner: &ax_ir::Interner) -> Option<Vec<lasso::Spur>> {
+    forms_list_items(expr, interner)?
+        .iter()
+        .map(|expr| match expr {
+            Expr::Sym(sym) => Some(*sym),
+            _ => None,
+        })
+        .collect()
+}
+
+fn forms_form_from_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<ax_forms::DiffForm> {
+    if let Some(items) = commutator_pair_items(expr, interner) {
+        return ax_forms::form_from_expr(&Expr::List(items));
+    }
+    ax_forms::form_from_expr(expr)
+}
+
+fn forms_one_form_from_expr(expr: &Expr, interner: &ax_ir::Interner) -> Option<ax_forms::DiffForm> {
+    ax_forms::one_form_from_expr(expr).or_else(|| {
+        let items = forms_list_items(expr, interner)?;
+        ax_forms::one_form_from_expr(&Expr::List(items))
     })
 }
 
